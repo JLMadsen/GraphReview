@@ -1,19 +1,22 @@
-import { getSettings } from "@/lib/neo4j";
+import { getActiveAiProviderId, getSettings, listAiProviders } from "@/lib/neo4j";
 import { SettingsForm } from "./settings-form";
 
 /**
- * Settings — DESIGN.md §4, §11.
+ * Settings — DESIGN.md §4, §8, §11.
  *
  * A single global (not per-repo) page for the GitHub PAT and AI provider
- * config (base URL/key/model), since both are instance-wide under decision
- * #6's single-local-admin model. Credential fields are encrypted at rest
- * via lib/crypto (see app/settings/actions.ts) before being written to the
- * Settings node in Neo4j (lib/neo4j).
+ * config, since both are instance-wide under decision #6's
+ * single-local-admin model. AI provider config is a *list* of saved
+ * providers (base URL/key/model each, lib/neo4j/ai-provider.ts) with one
+ * marked active — so a user can keep e.g. a local model server and a hosted
+ * one both configured and flip between them without re-entering credentials.
+ * Credential fields are encrypted at rest via lib/crypto (see
+ * app/settings/actions.ts) before being written to Neo4j (lib/neo4j).
  *
  * This is a server component: it only ever reads whether a secret is
- * currently saved (a boolean), never a decrypted value, so no secret is
- * capable of reaching the client — see settings-form.tsx for how that's
- * rendered.
+ * currently saved (a boolean) or plain metadata (name/base URL/model), never
+ * a decrypted API key, so no secret is capable of reaching the client — see
+ * settings-form.tsx for how that's rendered.
  */
 /**
  * Never prerender this page.
@@ -38,10 +41,18 @@ export default async function SettingsPage() {
   // up`, or mid-development). Degrade to an empty settings view rather than
   // crashing the whole page.
   let settings: Awaited<ReturnType<typeof getSettings>> | null = null;
+  let providers: Awaited<ReturnType<typeof listAiProviders>> = [];
+  let activeProviderId: string | null = null;
   try {
-    settings = await getSettings();
+    [settings, providers, activeProviderId] = await Promise.all([
+      getSettings(),
+      listAiProviders(),
+      getActiveAiProviderId(),
+    ]);
   } catch {
     settings = null;
+    providers = [];
+    activeProviderId = null;
   }
 
   return (
@@ -56,9 +67,14 @@ export default async function SettingsPage() {
 
       <SettingsForm
         initialHasGithubPat={Boolean(settings?.githubPatEncrypted)}
-        initialHasAiApiKey={Boolean(settings?.aiApiKeyEncrypted)}
-        initialAiBaseUrl={settings?.aiBaseUrl ?? ""}
-        initialAiModel={settings?.aiModel ?? ""}
+        initialProviders={providers.map((p) => ({
+          id: p.id,
+          name: p.name,
+          baseUrl: p.baseUrl,
+          model: p.model,
+          hasApiKey: Boolean(p.apiKeyEncrypted),
+        }))}
+        initialActiveProviderId={activeProviderId}
       />
     </div>
   );

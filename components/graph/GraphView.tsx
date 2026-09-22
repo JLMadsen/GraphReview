@@ -173,29 +173,20 @@ export function GraphView({
   return (
     // `data-wide-shell` opts this tab out of the repo shell's `max-w-6xl`
     // cap — see app/repo/[repoId]/layout.tsx for the mechanism and why.
-    <div data-wide-shell className="flex flex-col gap-6 lg:flex-row">
-      <aside className="w-full shrink-0 border-border pb-6 lg:w-80 lg:border-r lg:pr-6 lg:pb-0">
-        {/* Sticks alongside a tall canvas instead of scrolling away from it. */}
-        <div className="space-y-4 lg:sticky lg:top-20">
-          {selectedNode && (
-            // Above the diff panel rather than replacing it: clicking a node
-            // shouldn't take the diff controls away, and the panel is the
-            // first thing in the sidebar so a selection made by clicking
-            // somewhere in a wide canvas is impossible to miss. `key` forces
-            // a fresh fetch/state when the selection moves to another node.
-            <ComponentFilesPanel
-              key={selectedNode.id}
-              repoId={repoId}
-              componentId={selectedNode.id}
-              componentName={selectedNode.name}
-              tier={selectedNode.tier}
-              fileCount={selectedNode.fileCount}
-              description={selectedNode.description}
-              sampleData={usingSample}
-              findings={selectedFindings}
-              onClear={clearSelection}
-            />
-          )}
+    <div data-wide-shell className="flex flex-col gap-4 lg:flex-row">
+      <aside className="w-full shrink-0 border-border pb-4 lg:w-72 lg:border-r lg:pr-4 lg:pb-0">
+        {/* Sticks alongside a tall canvas instead of scrolling away from it.
+            Diff selection comes first so it's the top of the leftmost
+            column, with the repo card below it. */}
+        <div className="space-y-3 lg:sticky lg:top-4">
+          <DiffPanel
+            repoId={repoId}
+            defaultBranch={repo?.defaultBranch}
+            initialPrNumber={initialPrNumber}
+            initialBaseRef={initialBaseRef}
+            initialHeadRef={initialHeadRef}
+            onResult={handleDiffResult}
+          />
           {repo && (
             <div className="rounded-lg bg-card px-3 py-2 ring-1 ring-border">
               <p className="truncate text-xs font-semibold tracking-tight">
@@ -209,18 +200,10 @@ export function GraphView({
               )}
             </div>
           )}
-          <DiffPanel
-            repoId={repoId}
-            defaultBranch={repo?.defaultBranch}
-            initialPrNumber={initialPrNumber}
-            initialBaseRef={initialBaseRef}
-            initialHeadRef={initialHeadRef}
-            onResult={handleDiffResult}
-          />
         </div>
       </aside>
 
-      <div className="min-w-0 flex-1 space-y-4">
+      <div className="min-w-0 flex-1 space-y-3">
         {usingSample && (
           <div className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 text-xs text-warning">
             <FlaskConical className="mt-px size-3.5 shrink-0" aria-hidden />
@@ -257,6 +240,7 @@ export function GraphView({
             rather than in the sidebar. It renders nothing without a target,
             so the Paste-paths flow is untouched. */}
         <ReviewPanel
+          repoId={repoId}
           target={reviewTarget}
           status={review.status}
           state={review.state}
@@ -273,6 +257,29 @@ export function GraphView({
           onSelectComponent={handleSelectNode}
         />
       </div>
+
+      {selectedNode && (
+        // To the right of the graph rather than the left sidebar: clicking a
+        // node shouldn't take the diff controls away, and this keeps the
+        // canvas the visual center. `key` forces a fresh fetch/state when
+        // the selection moves to another node.
+        <aside className="w-full shrink-0 border-border pt-4 lg:w-80 lg:border-l lg:pt-0 lg:pl-4">
+          <div className="lg:sticky lg:top-4">
+            <ComponentFilesPanel
+              key={selectedNode.id}
+              repoId={repoId}
+              componentId={selectedNode.id}
+              componentName={selectedNode.name}
+              tier={selectedNode.tier}
+              fileCount={selectedNode.fileCount}
+              description={selectedNode.description}
+              sampleData={usingSample}
+              findings={selectedFindings}
+              onClear={clearSelection}
+            />
+          </div>
+        </aside>
+      )}
     </div>
   );
 }

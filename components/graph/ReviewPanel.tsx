@@ -36,6 +36,7 @@ import {
   CircleDashed,
   CircleHelp,
   ExternalLink,
+  FileDiff,
   History,
   Info,
   LoaderCircle,
@@ -45,6 +46,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "cn";
+import { FileDiffModal } from "./FileDiffModal";
 import {
   INTENT_ORDER,
   INTENT_VISUALS,
@@ -67,6 +69,7 @@ import {
 const NUMBER = new Intl.NumberFormat("en-US");
 
 export interface ReviewPanelProps {
+  repoId: string;
   /** The PR / ref pair under review. The panel renders nothing without one. */
   target: ReviewTargetDTO | null;
   status: "idle" | "loading" | "ready" | "error";
@@ -144,7 +147,13 @@ function IntentBadge({
 }
 
 /** One finding. `<details>` gives the collapsible rationale for free — no state, keyboard-operable, and it prints open. */
-function FindingCard({ finding }: { finding: FindingDTO }) {
+function FindingCard({
+  finding,
+  onViewDiff,
+}: {
+  finding: FindingDTO;
+  onViewDiff: (finding: FindingDTO) => void;
+}) {
   const location = formatLocation(finding);
   return (
     <li className="px-3 py-2">
@@ -161,12 +170,25 @@ function FindingCard({ finding }: { finding: FindingDTO }) {
         {finding.summary}
       </p>
       {location && (
-        <p
-          className="mt-1 truncate font-mono text-[11px] text-muted-foreground"
-          title={location}
-        >
-          {location}
-        </p>
+        <div className="mt-1 flex items-center gap-1.5">
+          <p
+            className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground"
+            title={location}
+          >
+            {location}
+          </p>
+          {finding.filePath && (
+            <button
+              type="button"
+              onClick={() => onViewDiff(finding)}
+              className="flex shrink-0 items-center gap-1 rounded text-[11px] text-muted-foreground transition-colors hover:text-brand focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+              title={`View the diff for ${finding.filePath}`}
+            >
+              <FileDiff className="size-3" aria-hidden />
+              Diff
+            </button>
+          )}
+        </div>
       )}
       {finding.rationale && (
         <details className="group mt-1.5">
@@ -187,6 +209,7 @@ function FindingCard({ finding }: { finding: FindingDTO }) {
 }
 
 export function ReviewPanel({
+  repoId,
   target,
   status,
   state,
@@ -206,12 +229,15 @@ export function ReviewPanel({
   // list — the graph markers deliberately keep showing everything, so the
   // canvas never disagrees with itself about which nodes were reviewed.
   const [hidden, setHidden] = useState<Set<IntentMatch>>(new Set());
+  /** The finding whose file diff is open in `FileDiffModal`, or `null` when it's closed. */
+  const [diffFinding, setDiffFinding] = useState<FindingDTO | null>(null);
 
   // A new target is a different review; carrying a "mismatch only" filter
   // across to it would silently hide the new findings.
   const targetKey = target ? reviewTargetLabel(target) : null;
   useEffect(() => {
     setHidden(new Set());
+    setDiffFinding(null);
   }, [targetKey]);
 
   const counts = useMemo(() => countByIntent(findings), [findings]);
@@ -271,6 +297,7 @@ export function ReviewPanel({
   const isQueueProblem = noticeCode === "queue_unavailable";
 
   return (
+    <>
     <section
       className="overflow-hidden rounded-xl bg-card ring-1 ring-border"
       aria-label="AI review"
@@ -617,7 +644,11 @@ export function ReviewPanel({
                   </button>
                   <ul className="divide-y divide-border/60">
                     {group.findings.map((finding) => (
-                      <FindingCard key={finding.id} finding={finding} />
+                      <FindingCard
+                        key={finding.id}
+                        finding={finding}
+                        onViewDiff={setDiffFinding}
+                      />
                     ))}
                   </ul>
                 </li>
@@ -647,5 +678,12 @@ export function ReviewPanel({
         posted to GitHub.
       </p>
     </section>
+    <FileDiffModal
+      repoId={repoId}
+      target={target}
+      finding={diffFinding}
+      onClose={() => setDiffFinding(null)}
+    />
+    </>
   );
 }

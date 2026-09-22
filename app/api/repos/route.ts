@@ -10,6 +10,7 @@ import {
   detectDefaultBranch,
   enqueueAnalysis,
   gitHubCloneUrl,
+  gitHubRepoWebUrl,
   LocalPathOutsideRootError,
   listRepoDtos,
   parseGitHubUrl,
@@ -89,14 +90,14 @@ export async function POST(request: Request): Promise<NextResponse> {
     const ref = parseGitHubUrl(input.url);
     if (!ref) {
       return apiError(
-        `Could not parse an owner/repo out of "${input.url}". Expected something like https://github.com/owner/repo.`,
+        `Could not parse an owner/repo out of "${input.url}". Expected something like ${gitHubRepoWebUrl({ owner: "owner", repo: "repo" })}.`,
         400
       );
     }
     repoInput = {
       id,
       name: input.name ?? `${ref.owner}/${ref.repo}`,
-      url: `https://github.com/${ref.owner}/${ref.repo}`,
+      url: gitHubRepoWebUrl(ref),
       provider: "github",
       defaultBranch: await detectDefaultBranch({
         provider: "github",

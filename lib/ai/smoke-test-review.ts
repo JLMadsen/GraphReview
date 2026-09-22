@@ -151,6 +151,23 @@ async function partA(): Promise<void> {
     check("prose-wrapped JSON parsed", !r.parseFailed && r.findings.length === 1 && r.findings[0].intentMatch === "mismatch");
   }
 
+  // --- unescaped inner quote (observed from smaller/local models, e.g. Ollama) ---
+  {
+    const raw =
+      '{"findings":[{"filePath":"src/math/square.ts","lineRange":"449-449",' +
+      '"summary":"Added a console log for testing purposes.","intentMatch":"match","confidence":1,' +
+      '"rationale":"The change adds a `console.log("TESTING")` line at line 449, which aligns with the intent."}]}';
+    const fake = fakeChat(raw);
+    const r = await reviewComponentChange(config, baseInput(), { chat: fake.chat });
+    check(
+      "unescaped inner quote: parsed as a real finding, not dumped as raw JSON",
+      !r.parseFailed &&
+        r.findings.length === 1 &&
+        r.findings[0].summary === "Added a console log for testing purposes." &&
+        r.findings[0].intentMatch === "match"
+    );
+  }
+
   // --- usage missing --------------------------------------------------------
   {
     const fake = fakeChat(fenced({ findings: [{ summary: "x", intentMatch: "match", confidence: 1, rationale: "y" }] }), null);

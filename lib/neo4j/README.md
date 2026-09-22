@@ -28,7 +28,7 @@ From DESIGN.md §3:
   rather than a composite `(repoId, sha)` key.
 - One repository module per node label in the schema (§7): `repo.ts`,
   `component.ts`, `file.ts`, `pullRequest.ts`, `refSnapshot.ts`,
-  `finding.ts`, `settings.ts`. Each owns the Cypher for its entity —
+  `finding.ts`, `settings.ts`, `ai-provider.ts`. Each owns the Cypher for its entity —
   parameterized only, never string-concatenated — and returns typed
   results. Each also owns the relationship functions where it's the
   "from" side of that edge (e.g. `file.ts` exports `linkFileToComponent`
@@ -38,7 +38,11 @@ From DESIGN.md §3:
   exports `linkPullRequestToRepo` for `BELONGS_TO` and
   `linkPullRequestChangesFile` for `CHANGES`; `finding.ts` exports
   `linkFindingAboutComponent` for `ABOUT` and `linkFindingForPullRequest`
-  for `FOR`).
+  for `FOR`; `ai-provider.ts` exports `createAiProvider`/`listAiProviders`/
+  `getActiveAiProvider`/`setActiveAiProvider`/`updateAiProvider`/
+  `deleteAiProvider` for `(:Settings)-[:HAS_AI_PROVIDER]->(:AiProvider)` and
+  also owns the one-time lazy migration off the old single-provider
+  `Settings` fields).
 - `index.ts` — barrel re-exporting all of the above.
 - No Neo4j import belongs in a client component. Route handlers and
   `worker/` are the only callers.

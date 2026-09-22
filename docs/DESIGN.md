@@ -46,7 +46,7 @@ These were decided deliberately and should not be relitigated without a document
   - **Branches** — branch list, plus the ad-hoc "compare two refs" tool from the original prototype's sidebar.
   - **Pull Requests** — PR list fetched from GitHub (state filter: open/closed/merged), so a reviewer can browse without loading the graph first.
   - **Graph** — the main visualization (§6). Opened directly with no filter, or pre-filtered when arrived at from a PR row or a ref comparison. The diff-selection control itself (pick a PR, or two refs) lives as a panel inside this tab, not a separate screen — matching the prototype's always-present sidebar, just scoped to this one tab instead of being global.
-- **Settings** — a single global (not per-repo) page for the GitHub PAT and AI provider config (base URL/key/model), since both are instance-wide under decision #6's single-local-admin model.
+- **Settings** — a single global (not per-repo) page for the GitHub PAT and AI provider config, since both are instance-wide under decision #6's single-local-admin model. **As built:** AI provider config is a *list* of saved providers (base URL/key/model each), with a toggle marking one active — so a local model server and a hosted one can both stay configured and switching between them doesn't mean hunting down and re-entering a base URL/key each time (§7).
 
 This differs from the prototype screenshot's single always-on graph+sidebar view: browsing branches/PRs is a first-class step before committing to loading a graph, which matters more once repos are polyglot and potentially large (§5).
 
@@ -136,7 +136,8 @@ Single Neo4j database; every node except `Settings` is `repoId`-scoped so multip
 - `(:PullRequest)` — `id`, `repoId`, `number`, `title`, `description`, `author`, `state`, `baseRef`, `headRef`, `headSha`, `url`, `createdAt`, `updatedAt`
 - `(:RefSnapshot)` — `sha`, `repoId`, `ref`, `message`, `author`, `timestamp` — covers both a PR's base/head and ad-hoc ref-to-ref comparisons
 - `(:Finding)` — `id`, `repoId`, `prId` (nullable), **`targetKey`** (what was reviewed: `pr:<number>` or `refs:<baseRef>...<headRef>` — added so ref-comparison reviews, which have no `PullRequest` node, can be stored and replaced), `componentId`, `filePath`, `lineRange`, `summary`, `intentMatch` (`match` | `partial` | `mismatch` | `unknown`), `confidence`, `rationale`, `model`, `createdAt`, **`reviewedBaseSha`, `reviewedHeadSha`, `reviewedAt`** (as built — the exact commits the review actually covered, captured at review time so staleness can be detected later even after the BullMQ job record has aged out; see §10's "As built") — `filePath`/`lineRange` are populated from the diff hunk the finding was generated from (§6.2, §9), so a finding attached to a component can still be navigated to the exact file/lines it's about. Findings are **overwritten**, not versioned, when a PR's head SHA changes — see §10.
-- `(:Settings {id: "global"})` — a singleton, not `repoId`-scoped, since GitHub PAT and AI provider config are shared instance-wide under decision #6. Credential fields are stored encrypted — see §11.
+- `(:Settings {id: "global"})` — a singleton, not `repoId`-scoped, since GitHub PAT and AI provider config are shared instance-wide under decision #6. Credential fields are stored encrypted — see §11. `activeAiProviderId` points at whichever `AiProvider` node (below) is currently in use.
+- `(:AiProvider)` — **as built (beyond the original single-provider design)**: `id`, `name`, `baseUrl`, `apiKeyEncrypted`, `model`, `createdAt`. Decision #8 fixes the *shape* of a provider (generic OpenAI-compatible base URL/key/model, no per-vendor fields) but says nothing about how many can be saved at once; in practice, switching between e.g. a local model server and a hosted one by re-typing a base URL/key every time was annoying enough to warrant more than one, so this is a list of saved providers rather than three properties directly on `Settings`. Exactly one is "active" at a time (`Settings.activeAiProviderId`), and only the active provider's config is used for reviews/labeling. A one-time lazy migration (`lib/neo4j/ai-provider.ts`) converts an existing single-provider `Settings` node (its old `aiBaseUrl`/`aiApiKeyEncrypted`/`aiModel` properties) into the first saved, auto-activated `AiProvider` node, so nobody who already had a provider configured has to re-enter it.
 
 **Relationships:**
 
@@ -149,6 +150,7 @@ Single Neo4j database; every node except `Settings` is `repoId`-scoped so multip
 - `(Component)-[:PART_OF]->(Repo)`
 - `(Finding)-[:ABOUT]->(Component)`
 - `(Finding)-[:FOR]->(PullRequest)`
+- `(Settings)-[:HAS_AI_PROVIDER]->(AiProvider)` — as built, links every saved provider to the singleton
 
 ## 8. GitHub integration surface
 
@@ -218,10 +220,10 @@ The domain-tier feature described in §6.1 has its own pipeline, structurally pa
 
 ## 11. Secrets & credential storage
 
-Decision #6 waives real user authentication (single local admin), but the GitHub PAT and AI provider API key are still meaningful secrets and deserve better than plaintext-in-a-queryable-database defaults. Two proportionate, cheap steps — not a full secrets-manager:
+Decision #6 waives real user authentication (single local admin), but the GitHub PAT and each saved AI provider's API key are still meaningful secrets and deserve better than plaintext-in-a-queryable-database defaults. Two proportionate, cheap steps — not a full secrets-manager:
 
 1. **Neo4j and Redis ports are not published to the host** in the default `docker-compose.yml` — only the `app`/`worker` containers reach them over the internal Compose network. Anyone wanting the Neo4j Browser for debugging can add a port mapping themselves; it isn't exposed by default.
-2. **Credential fields are encrypted at rest.** The PAT and AI API key on the `Settings` node (§7) are encrypted with AES-256-GCM, keyed by `SESSION_SECRET` (already an env var, §12), before being written to Neo4j, and decrypted only in-process when making an API call. This stops a plaintext DB dump or backup from being an instant credential leak, without building out per-user key management that decision #6 makes moot.
+2. **Credential fields are encrypted at rest.** The PAT (on `Settings`, §7) and every saved provider's API key (on its own `AiProvider` node, §7) are encrypted with AES-256-GCM, keyed by `SESSION_SECRET` (already an env var, §12), before being written to Neo4j, and decrypted only in-process when making an API call. This stops a plaintext DB dump or backup from being an instant credential leak, without building out per-user key management that decision #6 makes moot.
 
 Out of scope: a full secrets manager/vault integration, or per-user credential isolation.
 
@@ -233,6 +235,7 @@ Out of scope: a full secrets manager/vault integration, or per-user credential i
 - **Ports**: only `app`'s web port is published to the host by default; `neo4j` and `redis` stay on the internal Compose network (§11).
 - **As built:** the compose file lives at `docker/docker-compose.yml` with its env at `docker/.env` (copy `docker/.env.example`); run it from `docker/` with `docker compose --env-file .env up -d --build`. One multi-stage `docker/Dockerfile` provides the `app` and `worker` targets. Extra optional env vars: `REPO_CACHE_DIR` (clone cache; defaults to `/data/repos`, else `./.data/repos`), `LOCAL_REPOS_ROOT`, `ANALYSIS_CONCURRENCY`, `STALENESS_SWEEP_INTERVAL_MS`. **Code changes require rebuilding the `app` and `worker` images** — there is no bind-mounted source. Pages that read Neo4j must be `dynamic = "force-dynamic"`: the image is built with no database reachable, so a statically prerendered DB-backed page bakes in "empty" (this hid saved credentials on `/settings` until fixed).
 - **Env vars**: `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `REDIS_URL`, `LOCAL_REPOS_PATH`, `SESSION_SECRET`. The GitHub PAT and AI provider config (base URL/key/model) live primarily in the in-app settings UI, persisted encrypted to Neo4j (§11), since they are meant to be edited at runtime — env vars serve only as optional bootstrap defaults.
+- **As built — closed-network / mirror support.** Every other outbound third-party dependency this app has (besides the AI provider, which was already fully user-configurable via Settings, §8) is now also overridable by env var, so the whole stack can run against internal mirrors instead of the real GitHub/Docker Hub/Alpine: `GITHUB_API_URL` and `GITHUB_WEB_URL` (GitHub Enterprise Server or an internal GitHub proxy — lib/github/client.ts, lib/jobs/github-access.ts) and, at the Docker layer, `NODE_BASE_IMAGE`/`ALPINE_MIRROR` (build args, `docker/Dockerfile`) and `NEO4J_IMAGE`/`REDIS_IMAGE` (`docker/docker-compose.yml`). All default to the real-world service, so none of this changes anything for a normal internet-connected setup. Deliberately **not covered**: npm's own registry — `npm ci`/`npm run build` inside the image build still need either real registry access or a `.npmrc`/`NPM_CONFIG_REGISTRY` pointed at a mirror, set up independently of this app's env vars. See `docker/.env.example`'s "Closed-network / mirror support" section for the full list.
 
 ## 13. Module/folder structure
 

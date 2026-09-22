@@ -69,6 +69,36 @@ export interface DiffImpactResponseDTO {
   unmatchedFiles: string[];
 }
 
+/**
+ * File status vocabulary shared by GitHub's file-diff APIs and the
+ * local-git equivalent — mirrors `PullRequestFileStatus` in lib/github,
+ * duplicated here for the same client/server-boundary reason as the rest of
+ * this file.
+ */
+export type FileDiffStatus =
+  | "added"
+  | "removed"
+  | "modified"
+  | "renamed"
+  | "copied"
+  | "changed"
+  | "unchanged";
+
+/**
+ * Response shape for `GET /api/repos/[repoId]/diff-impact/file` — the
+ * single-file unified diff behind one `FindingDTO`'s `filePath`. Fetched on
+ * demand (not carried on the finding itself): a review can touch hundreds of
+ * files, but nobody reads more than a handful of diffs in one session.
+ */
+export interface FileDiffResponseDTO {
+  path: string;
+  status: FileDiffStatus;
+  additions: number;
+  deletions: number;
+  /** Unified diff hunks (`@@ ... @@`), the same text GitHub/`git diff -U3` produce. Absent for binary files or a diff too large to keep. */
+  patch?: string;
+}
+
 // ---------------------------------------------------------------------------
 // AI review (DESIGN.md §9, §10) — mirrors app/api/repos/[repoId]/review.
 // ---------------------------------------------------------------------------

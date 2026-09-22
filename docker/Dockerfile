@@ -4,11 +4,24 @@
 # in docker-compose.yml build from this same file, targeting the `app` or
 # `worker` stage respectively (DESIGN.md §3, §12: "same image, different
 # entrypoint"). Build context is the repo root (see docker-compose.yml).
+#
+# Two build args exist purely for closed-network use, where Docker Hub and
+# Alpine's package CDN aren't reachable and an internal mirror stands in for
+# them instead (docker-compose.yml passes both through from
+# `NODE_BASE_IMAGE`/`ALPINE_MIRROR` in docker/.env — see .env.example).
+# Neither changes anything when left unset: the defaults are the real-world
+# services this app already depended on. npm's registry is deliberately
+# *not* made configurable here — see docker/.env.example.
 
-FROM node:20-alpine AS base
+ARG NODE_BASE_IMAGE=node:20-alpine
+FROM ${NODE_BASE_IMAGE} AS base
 # simple-git shells out to the real `git` binary (DESIGN.md §5/§14: local
 # clone + app-managed clone-by-URL both go through it).
-RUN apk add --no-cache git
+ARG ALPINE_MIRROR
+RUN if [ -n "$ALPINE_MIRROR" ]; then \
+      sed -i "s|https://dl-cdn.alpinelinux.org/alpine|${ALPINE_MIRROR}|g" /etc/apk/repositories; \
+    fi \
+ && apk add --no-cache git
 WORKDIR /app
 
 FROM base AS deps

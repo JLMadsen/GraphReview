@@ -27,8 +27,8 @@ import type { AiProviderConfig, LabelInput, LabelModuleInput } from "@/lib/ai";
 import { decrypt } from "@/lib/crypto";
 import {
   deleteAutoDomainComponents,
+  getActiveAiProvider,
   getRepoById,
-  getSettings,
   linkComponentChildOf,
   linkComponentToRepo,
   listModuleLabelInputs,
@@ -58,7 +58,9 @@ const README_CANDIDATES = ["README.md", "readme.md", "README", "Readme.md", "REA
 // ---------------------------------------------------------------------------
 
 /**
- * Reads and decrypts the configured AI provider (§11).
+ * Reads and decrypts the currently *active* saved AI provider (§11 —
+ * multiple providers can be saved, lib/neo4j/ai-provider.ts, with one
+ * marked active at a time).
  *
  * Deliberately a local copy of `./review.ts`'s equivalent rather than a
  * shared helper: that module is the review pipeline and is owned/edited
@@ -66,17 +68,17 @@ const README_CANDIDATES = ["README.md", "readme.md", "README", "Readme.md", "REA
  * all three fields together, because a half-configured provider can only
  * produce a confusing failure deep inside an HTTP call. The API route runs
  * the same check *before* enqueueing (returning `ai_not_configured`); this
- * is the worker-side backstop for the window where settings are cleared
- * between enqueue and execution.
+ * is the worker-side backstop for the window where the active provider is
+ * changed/deleted between enqueue and execution.
  */
 async function loadAiConfig(): Promise<AiProviderConfig> {
-  const settings = await getSettings();
+  const provider = await getActiveAiProvider();
   const missing: string[] = [];
-  if (!settings?.aiBaseUrl) missing.push("base URL");
-  if (!settings?.aiApiKeyEncrypted) missing.push("API key");
-  if (!settings?.aiModel) missing.push("model name");
+  if (!provider?.baseUrl) missing.push("base URL");
+  if (!provider?.apiKeyEncrypted) missing.push("API key");
+  if (!provider?.model) missing.push("model name");
 
-  if (missing.length > 0 || !settings) {
+  if (missing.length > 0 || !provider) {
     throw new UnrecoverableError(
       `AI provider is not fully configured — missing ${missing.join(", ")}. Set it in Settings (DESIGN.md §8).`
     );
@@ -84,7 +86,7 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
 
   let apiKey: string;
   try {
-    apiKey = decrypt(settings.aiApiKeyEncrypted as string);
+    apiKey = decrypt(provider.apiKeyEncrypted as string);
   } catch {
     throw new UnrecoverableError(
       "The stored AI API key could not be decrypted — has SESSION_SECRET changed? Re-enter it in Settings."
@@ -92,9 +94,9 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
   }
 
   return {
-    baseUrl: settings.aiBaseUrl as string,
+    baseUrl: provider.baseUrl,
     apiKey,
-    model: settings.aiModel as string,
+    model: provider.model,
   };
 }
 

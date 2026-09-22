@@ -101,6 +101,31 @@ function main(): void {
   const bareLiteral = extractJson("true");
   check("bare non-object/array JSON literal returns null", bareLiteral === null);
 
+  // --- unescaped inner quotes (observed from smaller/local models, e.g. Ollama) ---
+  const innerQuote = extractJson<{ rationale: string }>(
+    '```json\n{"rationale": "adds console.log("TESTING") for debugging"}\n```'
+  );
+  check(
+    "unescaped quote inside a string value is repaired, not lost",
+    innerQuote?.rationale === 'adds console.log("TESTING") for debugging'
+  );
+
+  const innerQuoteMultiField = extractJson<{ filePath: string; summary: string; rationale: string }>(
+    '{"filePath":"a.ts","summary":"Added a console log for testing purposes.","rationale":"The change adds a `console.log("TESTING")` line at line 449."}'
+  );
+  check(
+    "unescaped inner quote repair works alongside other fields",
+    innerQuoteMultiField?.filePath === "a.ts" &&
+      innerQuoteMultiField?.summary === "Added a console log for testing purposes." &&
+      innerQuoteMultiField?.rationale === 'The change adds a `console.log("TESTING")` line at line 449.'
+  );
+
+  const properlyEscaped = extractJson<{ text: string }>('{"text": "already \\"escaped\\" quotes"}');
+  check(
+    "properly-escaped quotes are untouched (repair only runs after a parse failure)",
+    properlyEscaped?.text === 'already "escaped" quotes'
+  );
+
   console.log("\nbudget:");
 
   check("estimateTokens ~ 4 chars/token", estimateTokens("abcd".repeat(10)) === 10);

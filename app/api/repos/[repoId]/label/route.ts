@@ -17,7 +17,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { enqueueLabel, getLabelJob, type LabelProgress } from "@/lib/jobs";
-import { getLabelSummary, getRepoById, getSettings } from "@/lib/neo4j";
+import { getActiveAiProvider, getLabelSummary, getRepoById } from "@/lib/neo4j";
 
 export const dynamic = "force-dynamic";
 
@@ -68,10 +68,10 @@ function isRedisUnavailable(error: unknown): boolean {
   );
 }
 
-/** All three AI provider fields must be present for a labeling run to be possible (§8: base URL + key + model are one unit). */
+/** The active saved provider must have all three fields present for a labeling run to be possible (§8: base URL + key + model are one unit). */
 async function isAiConfigured(): Promise<boolean> {
-  const settings = await getSettings();
-  return Boolean(settings?.aiBaseUrl && settings?.aiApiKeyEncrypted && settings?.aiModel);
+  const provider = await getActiveAiProvider();
+  return Boolean(provider?.baseUrl && provider?.apiKeyEncrypted && provider?.model);
 }
 
 // ---------------------------------------------------------------------------

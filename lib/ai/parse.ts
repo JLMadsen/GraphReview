@@ -22,6 +22,13 @@
 // wins. This keeps the "first JSON-looking span" contract even when an
 // earlier candidate merely *looks* like JSON but isn't valid (e.g. uses
 // single quotes, or is truncated).
+//
+// One candidate-level repair sits underneath that: smaller/local models
+// (observed with Ollama) routinely cite code inside a string value —
+// `"rationale":"adds console.log(\"x\")"` — without escaping the inner
+// quotes, which ends the string early and breaks `JSON.parse` even though
+// the candidate was otherwise well-formed. `repairUnescapedQuotes` retries
+// once with those quotes escaped before a candidate is given up on.
 
 const FENCED_JSON_BLOCK = /```json[ \t]*\r?\n([\s\S]*?)```/gi;
 const FENCED_BLOCK = /```[ \t]*\w*[ \t]*\r?\n([\s\S]*?)```/g;
@@ -59,8 +66,15 @@ export function extractJson<T = unknown>(text: string): T | null {
 function tryParse<T>(candidate: string): T | null {
   const trimmed = candidate.trim();
   if (trimmed.length === 0) return null;
+  const direct = parseJsonValue<T>(trimmed);
+  if (direct !== null) return direct;
+  const repaired = repairUnescapedQuotes(trimmed);
+  return repaired === trimmed ? null : parseJsonValue<T>(repaired);
+}
+
+function parseJsonValue<T>(text: string): T | null {
   try {
-    const value = JSON.parse(trimmed) as T;
+    const value = JSON.parse(text) as T;
     // `JSON.parse` happily accepts bare literals like `"true"` or `"42"`;
     // those aren't the "structured data" this module exists to recover, so
     // only accept object/array results.
@@ -69,6 +83,51 @@ function tryParse<T>(candidate: string): T | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Escapes a `"` that appears to be embedded inside a JSON string value
+ * rather than ending it. Walks the text tracking whether it's inside a
+ * `"..."` string; on a `"` while inside one, it only treats it as the real
+ * closing quote when the next non-whitespace character is `,`, `:`, `}`,
+ * `]`, or end of text (the only characters valid JSON ever has right after
+ * a string) — anything else means the model left an inner quote
+ * unescaped, so it's escaped here instead and the string continues.
+ *
+ * This is not a general JSON-repair pass (it won't fix unquoted keys,
+ * trailing commas, etc.) — just this one specific, commonly-seen shape.
+ * Backslash escapes are respected so it never double-escapes valid input.
+ */
+function repairUnescapedQuotes(text: string): string {
+  let out = "";
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString && ch === "\\") {
+      out += ch + (text[i + 1] ?? "");
+      i++;
+      continue;
+    }
+    if (ch !== '"') {
+      out += ch;
+      continue;
+    }
+    if (!inString) {
+      inString = true;
+      out += ch;
+      continue;
+    }
+    let j = i + 1;
+    while (j < text.length && /\s/.test(text[j])) j++;
+    const next = text[j];
+    if (next === undefined || ",:}]".includes(next)) {
+      inString = false;
+      out += ch;
+    } else {
+      out += '\\"';
+    }
+  }
+  return out;
 }
 
 function* candidatesFromFences(text: string, pattern: RegExp): Generator<string> {

@@ -14,3 +14,4 @@ export * from "./refSnapshot";
 export * from "./finding";
 export * from "./label";
 export * from "./settings";
+export * from "./ai-provider";

@@ -65,9 +65,25 @@ export function parseGitHubUrl(url: string): GitHubRepoRef | null {
   return { owner, repo };
 }
 
-/** Canonical `https://github.com/<owner>/<repo>.git` remote for cloning. */
+/**
+ * The GitHub *web* host — used for the clone URL and the repo URL stored/
+ * displayed in the UI. Distinct from `GITHUB_API_URL` (lib/github/client.ts)
+ * because a GitHub Enterprise Server instance's web host and API host differ
+ * (`https://host` vs `https://host/api/v3`). Defaults to `https://github.com`;
+ * override via `GITHUB_WEB_URL` on a closed network — see
+ * `docker/.env.example`. Trailing slashes are stripped so the templates
+ * below don't end up with a doubled `//`.
+ */
+const GITHUB_WEB_URL = (process.env.GITHUB_WEB_URL || "https://github.com").replace(/\/+$/, "");
+
+/** Canonical `<GITHUB_WEB_URL>/<owner>/<repo>.git` remote for cloning. */
 export function gitHubCloneUrl(ref: GitHubRepoRef): string {
-  return `https://github.com/${ref.owner}/${ref.repo}.git`;
+  return `${GITHUB_WEB_URL}/${ref.owner}/${ref.repo}.git`;
+}
+
+/** Canonical `<GITHUB_WEB_URL>/<owner>/<repo>` page URL — what gets stored on `(:Repo).url` and shown in the UI. */
+export function gitHubRepoWebUrl(ref: GitHubRepoRef): string {
+  return `${GITHUB_WEB_URL}/${ref.owner}/${ref.repo}`;
 }
 
 /**

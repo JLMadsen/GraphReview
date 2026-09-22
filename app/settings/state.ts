@@ -4,16 +4,14 @@
 // `initialSaveSettingsState` there breaks the Next.js build/runtime with
 // "A 'use server' file can only export async functions, found object."
 
-export interface SaveSettingsState {
+export interface SaveGithubPatState {
   status: "idle" | "success" | "error";
   error?: string;
   /** Whether this submission actually included a new GitHub PAT. */
   githubPatUpdated?: boolean;
-  /** Whether this submission actually included a new AI API key. */
-  aiApiKeyUpdated?: boolean;
 }
 
-export const initialSaveSettingsState: SaveSettingsState = { status: "idle" };
+export const initialSaveGithubPatState: SaveGithubPatState = { status: "idle" };
 
 // ---------------------------------------------------------------------------
 // Test connection (DESIGN.md §8) — `pingProvider` from lib/ai, run server-side
@@ -42,18 +40,45 @@ export const initialTestConnectionState: TestConnectionState = {
 };
 
 // ---------------------------------------------------------------------------
-// Clearing a saved credential
+// Clearing the saved GitHub PAT
 // ---------------------------------------------------------------------------
 
-/** Which saved credential a clear action targeted. Submitted as the clear button's own `name`/`value`. */
-export type ClearableCredential = "githubPat" | "aiApiKey";
-
-export interface ClearCredentialState {
+export interface ClearGithubPatState {
   status: "idle" | "success" | "error";
-  field?: ClearableCredential;
   error?: string;
 }
 
-export const initialClearCredentialState: ClearCredentialState = {
+export const initialClearGithubPatState: ClearGithubPatState = {
+  status: "idle",
+};
+
+// ---------------------------------------------------------------------------
+// AI providers (multiple, one active) — DESIGN.md §8 extended
+// ---------------------------------------------------------------------------
+
+export interface SaveAiProviderState {
+  status: "idle" | "success" | "error";
+  error?: string;
+  /** Whether this submission actually included a new API key (create, or a replace on edit). */
+  apiKeyUpdated?: boolean;
+}
+
+export const initialSaveAiProviderState: SaveAiProviderState = { status: "idle" };
+
+export interface DeleteAiProviderState {
+  status: "idle" | "success" | "error";
+  error?: string;
+}
+
+export const initialDeleteAiProviderState: DeleteAiProviderState = {
+  status: "idle",
+};
+
+export interface SetActiveAiProviderState {
+  status: "idle" | "success" | "error";
+  error?: string;
+}
+
+export const initialSetActiveAiProviderState: SetActiveAiProviderState = {
   status: "idle",
 };

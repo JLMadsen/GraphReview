@@ -25,8 +25,8 @@ import {
   type ReviewTarget,
 } from "@/lib/jobs";
 import {
+  getActiveAiProvider,
   getRepoById,
-  getSettings,
   listFindingsByTargetKey,
   type FindingIntentMatch,
 } from "@/lib/neo4j";
@@ -138,12 +138,10 @@ function isRedisUnavailable(error: unknown): boolean {
   );
 }
 
-/** All three AI provider fields must be present for a review to be possible (§8: base URL + key + model are one unit). */
+/** The active saved provider must have all three fields present for a review to be possible (§8: base URL + key + model are one unit). */
 async function isAiConfigured(): Promise<boolean> {
-  const settings = await getSettings();
-  return Boolean(
-    settings?.aiBaseUrl && settings?.aiApiKeyEncrypted && settings?.aiModel
-  );
+  const provider = await getActiveAiProvider();
+  return Boolean(provider?.baseUrl && provider?.apiKeyEncrypted && provider?.model);
 }
 
 // ---------------------------------------------------------------------------

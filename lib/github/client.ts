@@ -7,6 +7,10 @@
 //
 // REST calls go through `@octokit/rest`; the one GraphQL-only need (linked
 // issues via `closingIssuesReferences`) goes through `@octokit/graphql`.
+//
+// The API host itself is overridable via `GITHUB_API_URL` (GitHub
+// Enterprise Server, or an internal mirror on a closed network) — see
+// `GITHUB_API_BASE_URL` below and `docker/.env.example`.
 
 import { Octokit } from "@octokit/rest";
 import type { OctokitResponse } from "@octokit/types";
@@ -28,8 +32,21 @@ import type {
 
 const DEFAULT_PER_PAGE = 100;
 
+/**
+ * REST/GraphQL base URL override, e.g. for a GitHub Enterprise Server
+ * instance or an internal mirror on a closed network
+ * (`https://github.example.com/api/v3`). Unset means "use Octokit's
+ * built-in default" (`https://api.github.com`) — see `docker/.env.example`.
+ * Read once at module load rather than per-call since it's a deployment-time
+ * constant, not something that changes while the process is running.
+ */
+const GITHUB_API_BASE_URL = process.env.GITHUB_API_URL || undefined;
+
 function createOctokit(token: string): Octokit {
-  return new Octokit({ auth: token });
+  return new Octokit({
+    auth: token,
+    ...(GITHUB_API_BASE_URL ? { baseUrl: GITHUB_API_BASE_URL } : {}),
+  });
 }
 
 /** Reads `x-ratelimit-*` response headers (§8). Returns `null` when a response carries none (e.g. GraphQL, or a mocked/proxied response). */
@@ -423,6 +440,10 @@ export async function getLinkedIssues(
       repo,
       number: prNumber,
       headers: { authorization: `token ${token}` },
+      // Same override as `createOctokit` above — `@octokit/graphql` detects
+      // a GHES-style `/api/v3` suffix on `baseUrl` and rewrites it to
+      // `/api/graphql` itself, so one env var covers both REST and GraphQL.
+      ...(GITHUB_API_BASE_URL ? { baseUrl: GITHUB_API_BASE_URL } : {}),
     });
 
     const nodes = response.repository?.pullRequest?.closingIssuesReferences?.nodes ?? [];

@@ -22,8 +22,8 @@ import { compareRefs, getLinkedIssues, getPullRequest, listPullRequestFiles } fr
 import type { LinkedIssue, PullRequestDetail } from "@/lib/github";
 import {
   deleteFindingsForTargetExceptComponents,
+  getActiveAiProvider,
   getRepoById,
-  getSettings,
   linkPullRequestToRepo,
   replaceFindingsForTargetComponent,
   upsertPullRequest,
@@ -74,23 +74,26 @@ function pullRequestNodeId(repoId: string, prNumber: number): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Reads and decrypts the configured AI provider (§11).
+ * Reads and decrypts the currently *active* saved AI provider (§8, §11 —
+ * now multiple providers can be saved, lib/neo4j/ai-provider.ts, with one
+ * marked active at a time).
  *
  * All three fields are required and checked together: a half-configured
  * provider can only ever produce a confusing failure deep inside an HTTP
  * call, so it fails fast here with a message that names what is missing.
  * The API route performs the same check *before* enqueueing (returning
  * `ai_not_configured`); this is the worker-side backstop for the window
- * where settings are cleared between enqueue and execution.
+ * where the active provider is changed/deleted between enqueue and
+ * execution.
  */
 async function loadAiConfig(): Promise<AiProviderConfig> {
-  const settings = await getSettings();
+  const provider = await getActiveAiProvider();
   const missing: string[] = [];
-  if (!settings?.aiBaseUrl) missing.push("base URL");
-  if (!settings?.aiApiKeyEncrypted) missing.push("API key");
-  if (!settings?.aiModel) missing.push("model name");
+  if (!provider?.baseUrl) missing.push("base URL");
+  if (!provider?.apiKeyEncrypted) missing.push("API key");
+  if (!provider?.model) missing.push("model name");
 
-  if (missing.length > 0 || !settings) {
+  if (missing.length > 0 || !provider) {
     throw new UnrecoverableError(
       `AI provider is not fully configured — missing ${missing.join(", ")}. Set it in Settings (DESIGN.md §8).`
     );
@@ -98,7 +101,7 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
 
   let apiKey: string;
   try {
-    apiKey = decrypt(settings.aiApiKeyEncrypted as string);
+    apiKey = decrypt(provider.apiKeyEncrypted as string);
   } catch {
     throw new UnrecoverableError(
       "The stored AI API key could not be decrypted — has SESSION_SECRET changed? Re-enter it in Settings."
@@ -106,9 +109,9 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
   }
 
   return {
-    baseUrl: settings.aiBaseUrl as string,
+    baseUrl: provider.baseUrl,
     apiKey,
-    model: settings.aiModel as string,
+    model: provider.model,
   };
 }
 

@@ -1,75 +1,93 @@
 "use client";
 
-// Client half of the settings screen (DESIGN.md §4, §11).
+// Client half of the settings screen (DESIGN.md §4, §8, §11).
 //
-// Secret fields (GitHub PAT, AI provider API key) never round-trip a
+// Secret fields (GitHub PAT, AI provider API keys) never round-trip a
 // decrypted value from the server: the server only tells this component
 // whether a secret is currently saved. When one is saved, it renders as a
 // masked badge with a "Replace" action rather than a pre-filled password
 // input — clicking "Replace" swaps in a blank input for fresh entry. Only
-// on submit does a freshly-typed secret leave the browser, straight into
-// the saveSettingsAction server action (never persisted client-side first).
+// on submit does a freshly-typed secret leave the browser, straight into a
+// server action (never persisted client-side first).
 //
-// Three server actions, one form. Save is the form's own `action`; "Test
-// connection" and "Clear" are buttons carrying their own `formAction`,
-// which is what lets them see the values currently typed in this form
-// (React 19 submits the whole form to whichever action the clicked button
-// names). Each has its own `useActionState`, so their results render
-// independently instead of one overwriting the other's message.
+// AI providers are a *list*, each independently saved/edited/deleted/tested,
+// with exactly one marked active (the toggle). Every provider row owns its
+// own `useActionState`s so one row's save/delete/test can't stomp another's,
+// and each server action takes the provider's id as a *bound* first
+// argument rather than reading it from FormData — React 19 builds a server
+// action's FormData itself and does not include a submitter button's own
+// name/value, so binding is what makes "which provider" unambiguous (see
+// app/settings/actions.ts's comments for the full story).
 //
 // Every input is *controlled*, and that is load-bearing rather than taste:
 // React 19 automatically resets a form's uncontrolled fields once an action
 // finishes. With `defaultValue`, clicking "Test connection" emptied the base
 // URL and model name the moment the ping came back — you'd verify an
 // endpoint and be left with a blank form to retype before you could save it.
-// Controlled state survives the reset. The two secret inputs are controlled
-// for the same reason (a freshly typed key must outlive a test), and their
-// state is cleared the instant the field collapses back to its masked row,
-// so a plaintext secret never outlives the input that holds it. Nothing is
-// written anywhere outside React state — see the note above about secrets
-// never being persisted client-side.
+// Controlled state survives the reset.
 
 import { useActionState, useEffect, useState } from "react";
 import {
   Bot,
   Check,
+  Circle,
+  CircleCheck,
   Github,
   LoaderCircle,
+  Pencil,
   PlugZap,
+  Plus,
   ShieldCheck,
   Trash2,
   TriangleAlert,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
   CardDescription,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
-  clearCredentialAction,
-  saveSettingsAction,
+  clearGithubPatAction,
+  createAiProviderAction,
+  deleteAiProviderAction,
+  saveGithubPatAction,
+  setActiveAiProviderAction,
   testAiConnectionAction,
+  updateAiProviderAction,
 } from "./actions";
 import {
-  initialClearCredentialState,
-  initialSaveSettingsState,
+  initialClearGithubPatState,
+  initialDeleteAiProviderState,
+  initialSaveAiProviderState,
+  initialSaveGithubPatState,
+  initialSetActiveAiProviderState,
   initialTestConnectionState,
 } from "./state";
+import type { TestConnectionState } from "./state";
 
 type SecretFieldState = "saved" | "editing";
 
-interface SettingsFormProps {
-  initialHasGithubPat: boolean;
-  initialHasAiApiKey: boolean;
-  initialAiBaseUrl: string;
-  initialAiModel: string;
+export interface AiProviderSummary {
+  id: string;
+  name: string;
+  baseUrl: string;
+  model: string;
+  hasApiKey: boolean;
 }
 
-/** Section heading with a leading icon chip — shared by both cards. */
+interface SettingsFormProps {
+  initialHasGithubPat: boolean;
+  initialProviders: AiProviderSummary[];
+  initialActiveProviderId: string | null;
+}
+
+/** Section heading with a leading icon chip — shared by every card. */
 function SectionTitle({
   icon: Icon,
   children,
@@ -109,9 +127,8 @@ function FieldLabel({
 }
 
 /**
- * The masked "already saved" row, with its two escape hatches: Replace
- * (type a new value) and Clear (delete the stored one outright — the
- * `clearCredentialAction` path, since an empty input on save means "keep").
+ * The masked "already saved" row for a secret, with its two escape hatches:
+ * Replace (type a new value) and Clear (delete the stored one outright).
  */
 function SavedSecret({
   label,
@@ -121,7 +138,6 @@ function SavedSecret({
 }: {
   label: string;
   onReplace: () => void;
-  /** A `clearCredentialAction` already bound to this credential — see that action's comment. */
   clearAction: (formData: FormData) => void;
   clearing: boolean;
 }) {
@@ -160,261 +176,647 @@ function SavedSecret({
   );
 }
 
-export function SettingsForm({
-  initialHasGithubPat,
-  initialHasAiApiKey,
-  initialAiBaseUrl,
-  initialAiModel,
-}: SettingsFormProps) {
-  const [state, formAction, isPending] = useActionState(
-    saveSettingsAction,
-    initialSaveSettingsState
+/** "Sends one tiny chat completion" test-connection result strip, shared by every provider form. */
+function TestConnectionResult({ testState }: { testState: TestConnectionState }) {
+  if (testState.status === "ok") {
+    return (
+      <span className="flex min-w-0 items-center gap-1.5 text-[13px] text-success">
+        <Check className="size-4 shrink-0" aria-hidden />
+        <span className="truncate">
+          Reachable in {testState.latencyMs}ms
+          {testState.model ? ` · ${testState.model}` : ""}
+          {testState.usedSavedKey ? " · saved key" : ""}
+        </span>
+      </span>
+    );
+  }
+  if (testState.status === "error") {
+    return (
+      <span className="flex min-w-0 items-start gap-1.5 text-[13px] text-destructive">
+        <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+        <span className="min-w-0 break-words">{testState.error}</span>
+      </span>
+    );
+  }
+  return (
+    <span className="text-[13px] text-muted-foreground">
+      Sends one tiny chat completion. Nothing is saved.
+    </span>
   );
-  const [testState, testAction, isTesting] = useActionState(
+}
+
+// ---------------------------------------------------------------------------
+// One saved provider: a view row, or (toggled) an inline edit form
+// ---------------------------------------------------------------------------
+
+function ProviderEditForm({
+  provider,
+  onCancel,
+  onSaved,
+}: {
+  provider: AiProviderSummary;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const updateAction = updateAiProviderAction.bind(null, provider.id);
+  const [saveState, saveFormAction, isSaving] = useActionState(
+    updateAction,
+    initialSaveAiProviderState
+  );
+  const [testState, testFormAction, isTesting] = useActionState(
     testAiConnectionAction,
     initialTestConnectionState
   );
-  // One hook per credential, each with the field bound into the action (see
-  // `clearCredentialAction`). Separate hooks also mean a failure on one card
-  // can't paint an error next to the other one.
-  const [clearPatState, clearPatAction, isClearingPat] = useActionState(
-    clearCredentialAction.bind(null, "githubPat"),
-    initialClearCredentialState
-  );
-  const [clearKeyState, clearKeyAction, isClearingKey] = useActionState(
-    clearCredentialAction.bind(null, "aiApiKey"),
-    initialClearCredentialState
-  );
 
-  const [patState, setPatState] = useState<SecretFieldState>(
-    initialHasGithubPat ? "saved" : "editing"
-  );
+  const [name, setName] = useState(provider.name);
+  const [baseUrl, setBaseUrl] = useState(provider.baseUrl);
+  const [model, setModel] = useState(provider.model);
+  const [apiKey, setApiKey] = useState("");
   const [apiKeyState, setApiKeyState] = useState<SecretFieldState>(
-    initialHasAiApiKey ? "saved" : "editing"
+    provider.hasApiKey ? "saved" : "editing"
   );
 
-  const [githubPat, setGithubPat] = useState("");
-  const [aiApiKey, setAiApiKey] = useState("");
-  const [aiBaseUrl, setAiBaseUrl] = useState(initialAiBaseUrl);
-  const [aiModel, setAiModel] = useState(initialAiModel);
-
-  // After a successful save that included a freshly-typed secret, collapse
-  // that field back to the masked "saved" state so the plaintext isn't
-  // left sitting in the input — and drop it from state at the same moment,
-  // so "Replace" always opens an empty box rather than the last value.
   useEffect(() => {
-    if (state.status !== "success") return;
-    if (state.githubPatUpdated) {
-      setPatState("saved");
-      setGithubPat("");
-    }
-    if (state.aiApiKeyUpdated) {
-      setApiKeyState("saved");
-      setAiApiKey("");
-    }
-  }, [state]);
-
-  // A cleared credential has to flip its field back to the blank input:
-  // `revalidatePath` re-renders the server page, but this client component
-  // keeps its own state across that, so the props alone would leave a
-  // "PAT saved" badge sitting over a property that no longer exists.
-  useEffect(() => {
-    if (clearPatState.status === "success") setPatState("editing");
-  }, [clearPatState]);
-  useEffect(() => {
-    if (clearKeyState.status === "success") setApiKeyState("editing");
-  }, [clearKeyState]);
+    if (saveState.status !== "success") return;
+    onSaved();
+  }, [saveState, onSaved]);
 
   return (
-    <form action={formAction} className="space-y-5">
-      <Card className="[--card-spacing:--spacing(5)]">
-        <CardHeader>
-          <SectionTitle icon={Github}>GitHub</SectionTitle>
-          <CardDescription className="text-[13px] leading-relaxed">
-            Personal Access Token used to fetch repos, PRs, diffs, and linked
-            issues (decision #7).
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-2">
-            <FieldLabel htmlFor="githubPat" hint="repo scope">
-              Personal Access Token
-            </FieldLabel>
-            {patState === "saved" ? (
-              <SavedSecret
-                label="PAT"
-                onReplace={() => setPatState("editing")}
-                clearAction={clearPatAction}
-                clearing={isClearingPat}
-              />
-            ) : (
-              <Input
-                id="githubPat"
-                name="githubPat"
-                type="password"
-                autoComplete="off"
-                placeholder="ghp_..."
-                className="font-mono"
-                value={githubPat}
-                onChange={(e) => setGithubPat(e.target.value)}
-              />
-            )}
-          </div>
-        </CardContent>
-      </Card>
+    <form
+      action={saveFormAction}
+      className="space-y-3 rounded-lg border border-border bg-secondary/40 p-3"
+    >
+      <input type="hidden" name="providerId" value={provider.id} />
 
-      <Card className="[--card-spacing:--spacing(5)]">
-        <CardHeader>
-          <SectionTitle icon={Bot}>AI provider</SectionTitle>
-          <CardDescription className="text-[13px] leading-relaxed">
-            Base URL, API key, and model name for any OpenAI-compatible
-            chat-completions endpoint (decision #8).
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <FieldLabel htmlFor="aiBaseUrl">Base URL</FieldLabel>
-            <Input
-              id="aiBaseUrl"
-              name="aiBaseUrl"
-              type="text"
-              autoComplete="off"
-              placeholder="https://api.openai.com/v1"
-              className="font-mono"
-              value={aiBaseUrl}
-              onChange={(e) => setAiBaseUrl(e.target.value)}
-            />
-          </div>
+      <div className="space-y-2">
+        <FieldLabel htmlFor={`name-${provider.id}`}>Name</FieldLabel>
+        <Input
+          id={`name-${provider.id}`}
+          name="name"
+          autoComplete="off"
+          placeholder="Local Ollama"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+      </div>
 
-          <div className="space-y-2">
-            <FieldLabel htmlFor="aiApiKey">API key</FieldLabel>
-            {apiKeyState === "saved" ? (
-              <SavedSecret
-                label="API key"
-                onReplace={() => setApiKeyState("editing")}
-                clearAction={clearKeyAction}
-                clearing={isClearingKey}
-              />
-            ) : (
-              <Input
-                id="aiApiKey"
-                name="aiApiKey"
-                type="password"
-                autoComplete="off"
-                placeholder="sk-..."
-                className="font-mono"
-                value={aiApiKey}
-                onChange={(e) => setAiApiKey(e.target.value)}
-              />
-            )}
-          </div>
+      <div className="space-y-2">
+        <FieldLabel htmlFor={`baseUrl-${provider.id}`}>Base URL</FieldLabel>
+        <Input
+          id={`baseUrl-${provider.id}`}
+          name="baseUrl"
+          autoComplete="off"
+          placeholder="https://api.openai.com/v1"
+          className="font-mono"
+          value={baseUrl}
+          onChange={(e) => setBaseUrl(e.target.value)}
+        />
+      </div>
 
-          <div className="space-y-2">
-            <FieldLabel htmlFor="aiModel">Model name</FieldLabel>
-            <Input
-              id="aiModel"
-              name="aiModel"
-              type="text"
-              autoComplete="off"
-              placeholder="gpt-4o-mini"
-              className="font-mono"
-              value={aiModel}
-              onChange={(e) => setAiModel(e.target.value)}
-            />
-          </div>
-
-          {/*
-            Test connection. `formNoValidate` + `formAction` means this
-            submits the form to the ping action instead of the save action,
-            so it tests exactly what is on screen — including a base URL or
-            model you haven't committed yet. It deliberately saves nothing:
-            "does this endpoint answer?" and "make this my configuration"
-            are different decisions.
-          */}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border pt-4">
+      <div className="space-y-2">
+        <FieldLabel htmlFor={`apiKey-${provider.id}`}>API key</FieldLabel>
+        {apiKeyState === "saved" ? (
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-background px-2.5 py-1.5">
+            <span className="flex items-center gap-2 text-[13px] text-muted-foreground">
+              <ShieldCheck className="size-4 shrink-0" aria-hidden />
+              Key saved
+              <span className="font-mono" aria-hidden>
+                ••••••••
+              </span>
+            </span>
             <Button
-              type="submit"
+              type="button"
               variant="outline"
-              size="sm"
-              formAction={testAction}
-              formNoValidate
-              disabled={isTesting}
+              size="xs"
+              onClick={() => setApiKeyState("editing")}
             >
-              {isTesting ? (
-                <>
-                  <LoaderCircle className="animate-spin" aria-hidden />
-                  Testing…
-                </>
-              ) : (
-                <>
-                  <PlugZap aria-hidden />
-                  Test connection
-                </>
-              )}
+              Replace
             </Button>
-
-            {testState.status === "ok" && (
-              <span className="flex min-w-0 items-center gap-1.5 text-[13px] text-success">
-                <Check className="size-4 shrink-0" aria-hidden />
-                <span className="truncate">
-                  Reachable in {testState.latencyMs}
-                  ms
-                  {testState.model ? ` · ${testState.model}` : ""}
-                  {testState.usedSavedKey ? " · saved key" : ""}
-                </span>
-              </span>
-            )}
-            {testState.status === "error" && (
-              <span className="flex min-w-0 items-start gap-1.5 text-[13px] text-destructive">
-                <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
-                <span className="min-w-0 break-words">{testState.error}</span>
-              </span>
-            )}
-            {testState.status === "idle" && (
-              <span className="text-[13px] text-muted-foreground">
-                Sends one tiny chat completion. Nothing is saved.
-              </span>
-            )}
           </div>
-        </CardContent>
-      </Card>
+        ) : (
+          <Input
+            id={`apiKey-${provider.id}`}
+            name="apiKey"
+            type="password"
+            autoComplete="off"
+            placeholder="sk-..."
+            className="font-mono"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+          />
+        )}
+      </div>
 
-      {[clearPatState, clearKeyState].map((clearState, index) =>
-        clearState.status === "error" ? (
-          <p
-            key={index}
-            className="flex items-start gap-1.5 text-[13px] text-destructive"
-          >
-            <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
-            {clearState.error}
-          </p>
-        ) : null
-      )}
+      <div className="space-y-2">
+        <FieldLabel htmlFor={`model-${provider.id}`}>Model name</FieldLabel>
+        <Input
+          id={`model-${provider.id}`}
+          name="model"
+          autoComplete="off"
+          placeholder="gpt-4o-mini"
+          className="font-mono"
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+        />
+      </div>
 
-      <div className="flex items-center gap-3 border-t border-border pt-5">
-        <Button type="submit" disabled={isPending}>
-          {isPending ? (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border pt-3">
+        <Button
+          type="submit"
+          variant="outline"
+          size="sm"
+          formAction={testFormAction}
+          formNoValidate
+          disabled={isTesting}
+        >
+          {isTesting ? (
+            <>
+              <LoaderCircle className="animate-spin" aria-hidden />
+              Testing…
+            </>
+          ) : (
+            <>
+              <PlugZap aria-hidden />
+              Test connection
+            </>
+          )}
+        </Button>
+        <TestConnectionResult testState={testState} />
+      </div>
+
+      <div className="flex items-center gap-2 border-t border-border pt-3">
+        <Button type="submit" size="sm" disabled={isSaving}>
+          {isSaving ? (
             <>
               <LoaderCircle className="animate-spin" aria-hidden />
               Saving…
             </>
           ) : (
-            "Save settings"
+            "Save"
           )}
         </Button>
-        {state.status === "success" && (
-          <span className="flex items-center gap-1.5 text-[13px] text-success">
-            <Check className="size-4" aria-hidden />
-            Saved
-          </span>
-        )}
-        {state.status === "error" && (
+        <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+          <X aria-hidden />
+          Cancel
+        </Button>
+        {saveState.status === "error" && (
           <span className="flex items-center gap-1.5 text-[13px] text-destructive">
             <TriangleAlert className="size-4 shrink-0" aria-hidden />
-            {state.error}
+            {saveState.error}
           </span>
         )}
       </div>
     </form>
+  );
+}
+
+function ProviderViewRow({
+  provider,
+  isActive,
+}: {
+  provider: AiProviderSummary;
+  isActive: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  const activateAction = setActiveAiProviderAction.bind(null, provider.id);
+  const [activateState, activateFormAction, isActivating] = useActionState(
+    activateAction,
+    initialSetActiveAiProviderState
+  );
+
+  const deleteAction = deleteAiProviderAction.bind(null, provider.id);
+  const [deleteState, deleteFormAction, isDeleting] = useActionState(
+    deleteAction,
+    initialDeleteAiProviderState
+  );
+
+  const [testState, testFormAction, isTesting] = useActionState(
+    testAiConnectionAction,
+    initialTestConnectionState
+  );
+
+  if (editing) {
+    return (
+      <ProviderEditForm
+        provider={provider}
+        onCancel={() => setEditing(false)}
+        onSaved={() => setEditing(false)}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-border px-3 py-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2.5">
+          {isActive ? (
+            <span
+              className="flex size-5 shrink-0 items-center justify-center text-success"
+              title="Active provider"
+            >
+              <CircleCheck className="size-5" aria-hidden />
+            </span>
+          ) : (
+            <form action={activateFormAction}>
+              <button
+                type="submit"
+                disabled={isActivating}
+                className="flex size-5 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+                title="Use this provider"
+              >
+                {isActivating ? (
+                  <LoaderCircle className="size-4 animate-spin" aria-hidden />
+                ) : (
+                  <Circle className="size-5" aria-hidden />
+                )}
+              </button>
+            </form>
+          )}
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="truncate text-[13px] font-medium">
+                {provider.name}
+              </span>
+              {isActive && (
+                <span className="shrink-0 rounded-full bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success">
+                  Active
+                </span>
+              )}
+            </div>
+            <div className="truncate font-mono text-[12px] text-muted-foreground">
+              {provider.baseUrl} · {provider.model}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => setEditing(true)}
+            title="Edit"
+          >
+            <Pencil aria-hidden />
+          </Button>
+          {confirmingDelete ? (
+            <form action={deleteFormAction} className="flex items-center gap-1">
+              <Button
+                type="submit"
+                variant="destructive"
+                size="xs"
+                disabled={isDeleting}
+              >
+                {isDeleting ? (
+                  <LoaderCircle className="animate-spin" aria-hidden />
+                ) : (
+                  "Confirm delete"
+                )}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                onClick={() => setConfirmingDelete(false)}
+                title="Cancel"
+              >
+                <X aria-hidden />
+              </Button>
+            </form>
+          ) : (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => setConfirmingDelete(true)}
+              className="text-muted-foreground hover:text-destructive"
+              title="Delete"
+            >
+              <Trash2 aria-hidden />
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <form action={testFormAction} className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <input type="hidden" name="providerId" value={provider.id} />
+        <Button
+          type="submit"
+          variant="outline"
+          size="xs"
+          disabled={isTesting}
+        >
+          {isTesting ? (
+            <>
+              <LoaderCircle className="animate-spin" aria-hidden />
+              Testing…
+            </>
+          ) : (
+            <>
+              <PlugZap aria-hidden />
+              Test
+            </>
+          )}
+        </Button>
+        {testState.status !== "idle" && <TestConnectionResult testState={testState} />}
+      </form>
+
+      {activateState.status === "error" && (
+        <p className="flex items-start gap-1.5 text-[13px] text-destructive">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+          {activateState.error}
+        </p>
+      )}
+      {deleteState.status === "error" && (
+        <p className="flex items-start gap-1.5 text-[13px] text-destructive">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+          {deleteState.error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Add a new provider
+// ---------------------------------------------------------------------------
+
+function AddProviderForm() {
+  const [open, setOpen] = useState(false);
+  const [saveState, saveFormAction, isSaving] = useActionState(
+    createAiProviderAction,
+    initialSaveAiProviderState
+  );
+  const [testState, testFormAction, isTesting] = useActionState(
+    testAiConnectionAction,
+    initialTestConnectionState
+  );
+
+  const [name, setName] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState("");
+
+  useEffect(() => {
+    if (saveState.status !== "success") return;
+    setName("");
+    setBaseUrl("");
+    setApiKey("");
+    setModel("");
+    setOpen(false);
+  }, [saveState]);
+
+  if (!open) {
+    return (
+      <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
+        <Plus aria-hidden />
+        Add provider
+      </Button>
+    );
+  }
+
+  return (
+    <form
+      action={saveFormAction}
+      className="space-y-3 rounded-lg border border-dashed border-border p-3"
+    >
+      <div className="space-y-2">
+        <FieldLabel htmlFor="new-name">Name</FieldLabel>
+        <Input
+          id="new-name"
+          name="name"
+          autoComplete="off"
+          placeholder="Local Ollama"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+      </div>
+
+      <div className="space-y-2">
+        <FieldLabel htmlFor="new-baseUrl">Base URL</FieldLabel>
+        <Input
+          id="new-baseUrl"
+          name="baseUrl"
+          autoComplete="off"
+          placeholder="http://localhost:11434/v1"
+          className="font-mono"
+          value={baseUrl}
+          onChange={(e) => setBaseUrl(e.target.value)}
+        />
+      </div>
+
+      <div className="space-y-2">
+        <FieldLabel htmlFor="new-apiKey">API key</FieldLabel>
+        <Input
+          id="new-apiKey"
+          name="apiKey"
+          type="password"
+          autoComplete="off"
+          placeholder="sk-... (any placeholder if the server doesn't check one)"
+          className="font-mono"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+        />
+      </div>
+
+      <div className="space-y-2">
+        <FieldLabel htmlFor="new-model">Model name</FieldLabel>
+        <Input
+          id="new-model"
+          name="model"
+          autoComplete="off"
+          placeholder="gpt-4o-mini"
+          className="font-mono"
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+        />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border pt-3">
+        <Button
+          type="submit"
+          variant="outline"
+          size="sm"
+          formAction={testFormAction}
+          formNoValidate
+          disabled={isTesting}
+        >
+          {isTesting ? (
+            <>
+              <LoaderCircle className="animate-spin" aria-hidden />
+              Testing…
+            </>
+          ) : (
+            <>
+              <PlugZap aria-hidden />
+              Test connection
+            </>
+          )}
+        </Button>
+        <TestConnectionResult testState={testState} />
+      </div>
+
+      <div className="flex items-center gap-2 border-t border-border pt-3">
+        <Button type="submit" size="sm" disabled={isSaving}>
+          {isSaving ? (
+            <>
+              <LoaderCircle className="animate-spin" aria-hidden />
+              Saving…
+            </>
+          ) : (
+            "Save provider"
+          )}
+        </Button>
+        <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
+          <X aria-hidden />
+          Cancel
+        </Button>
+        {saveState.status === "error" && (
+          <span className="flex items-center gap-1.5 text-[13px] text-destructive">
+            <TriangleAlert className="size-4 shrink-0" aria-hidden />
+            {saveState.error}
+          </span>
+        )}
+      </div>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Top-level form
+// ---------------------------------------------------------------------------
+
+export function SettingsForm({
+  initialHasGithubPat,
+  initialProviders,
+  initialActiveProviderId,
+}: SettingsFormProps) {
+  const [patState, patFormAction, isPatSaving] = useActionState(
+    saveGithubPatAction,
+    initialSaveGithubPatState
+  );
+  const [clearPatState, clearPatFormAction, isClearingPat] = useActionState(
+    clearGithubPatAction,
+    initialClearGithubPatState
+  );
+
+  const [patFieldState, setPatFieldState] = useState<SecretFieldState>(
+    initialHasGithubPat ? "saved" : "editing"
+  );
+  const [githubPat, setGithubPat] = useState("");
+
+  useEffect(() => {
+    if (patState.status !== "success" || !patState.githubPatUpdated) return;
+    setPatFieldState("saved");
+    setGithubPat("");
+  }, [patState]);
+
+  useEffect(() => {
+    if (clearPatState.status === "success") setPatFieldState("editing");
+  }, [clearPatState]);
+
+  return (
+    <div className="space-y-5">
+      <form action={patFormAction}>
+        <Card className="[--card-spacing:--spacing(5)]">
+          <CardHeader>
+            <SectionTitle icon={Github}>GitHub</SectionTitle>
+            <CardDescription className="text-[13px] leading-relaxed">
+              Personal Access Token used to fetch repos, PRs, diffs, and linked
+              issues (decision #7).
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              <FieldLabel htmlFor="githubPat" hint="repo scope">
+                Personal Access Token
+              </FieldLabel>
+              {patFieldState === "saved" ? (
+                <SavedSecret
+                  label="PAT"
+                  onReplace={() => setPatFieldState("editing")}
+                  clearAction={clearPatFormAction}
+                  clearing={isClearingPat}
+                />
+              ) : (
+                <Input
+                  id="githubPat"
+                  name="githubPat"
+                  type="password"
+                  autoComplete="off"
+                  placeholder="ghp_..."
+                  className="font-mono"
+                  value={githubPat}
+                  onChange={(e) => setGithubPat(e.target.value)}
+                />
+              )}
+            </div>
+          </CardContent>
+          <CardFooter className="flex items-center gap-3">
+            <Button type="submit" size="sm" disabled={isPatSaving}>
+              {isPatSaving ? (
+                <>
+                  <LoaderCircle className="animate-spin" aria-hidden />
+                  Saving…
+                </>
+              ) : (
+                "Save"
+              )}
+            </Button>
+            {patState.status === "success" && (
+              <span className="flex items-center gap-1.5 text-[13px] text-success">
+                <Check className="size-4" aria-hidden />
+                Saved
+              </span>
+            )}
+            {patState.status === "error" && (
+              <span className="flex items-center gap-1.5 text-[13px] text-destructive">
+                <TriangleAlert className="size-4 shrink-0" aria-hidden />
+                {patState.error}
+              </span>
+            )}
+            {clearPatState.status === "error" && (
+              <span className="flex items-center gap-1.5 text-[13px] text-destructive">
+                <TriangleAlert className="size-4 shrink-0" aria-hidden />
+                {clearPatState.error}
+              </span>
+            )}
+          </CardFooter>
+        </Card>
+      </form>
+
+      <Card className="[--card-spacing:--spacing(5)]">
+        <CardHeader>
+          <SectionTitle icon={Bot}>AI providers</SectionTitle>
+          <CardDescription className="text-[13px] leading-relaxed">
+            Save more than one OpenAI-compatible provider — e.g. a local
+            model server and a hosted one — and toggle which is active. Only
+            the active provider is used for reviews and labeling (decision
+            #8).
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {initialProviders.length === 0 ? (
+            <p className="text-[13px] text-muted-foreground">
+              No providers saved yet.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {initialProviders.map((provider) => (
+                <ProviderViewRow
+                  key={provider.id}
+                  provider={provider}
+                  isActive={provider.id === initialActiveProviderId}
+                />
+              ))}
+            </div>
+          )}
+
+          <AddProviderForm />
+        </CardContent>
+      </Card>
+    </div>
   );
 }

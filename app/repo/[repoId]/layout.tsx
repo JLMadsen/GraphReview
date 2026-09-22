@@ -1,21 +1,18 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ChevronRight, Github, HardDrive, TriangleAlert } from "lucide-react";
+import { Github, HardDrive, TriangleAlert } from "lucide-react";
 import { getRepoDto } from "@/lib/jobs";
 import type { RepoDto } from "@/lib/jobs";
 import { getRepoById } from "@/lib/neo4j";
 import { ProviderBadge, RepoStatusBadge } from "@/app/repo-status-badge";
-import { RepoSwitcher } from "@/app/repo-switcher";
-import { RepoTabs } from "./repo-tabs";
 
 /**
  * Repo detail shell — DESIGN.md §4.
  *
- * Shows the real repo name, source and §10 status, then hosts the three
- * tabs. Computing the status here is also what implements "opening a repo's
+ * Shows the real repo name, source and §10 status, then hosts the Graph
+ * tab. Computing the status here is also what implements "opening a repo's
  * Graph tab … enqueues a background re-analysis when the stored graph is
- * behind" (§10) for every tab at once: the check is one cheap HEAD probe and
- * it never blocks the render on the analysis itself.
+ * behind" (§10): the check is one cheap HEAD probe and it never blocks the
+ * render on the analysis itself.
  */
 
 // Status reflects live queue/git state, so this layout can't be prerendered.
@@ -68,38 +65,20 @@ export default async function RepoDetailLayout({
     // rendered tab marks itself wide with `data-wide-shell` — `:has()` lets
     // this shared shell respond to which child route is inside it. See
     // `components/graph/GraphView.tsx` for the only element that sets it.
-    <div className="mx-auto w-full max-w-6xl px-6 py-8 has-[[data-wide-shell]]:max-w-[2000px]">
-      <nav
-        aria-label="Breadcrumb"
-        className="mb-4 flex items-center gap-1 text-xs text-muted-foreground"
-      >
-        <Link
-          href="/"
-          className="rounded px-1 py-0.5 transition-colors hover:text-foreground"
-        >
-          Repositories
-        </Link>
-        <ChevronRight className="size-3.5 opacity-50" aria-hidden />
-        {repo ? (
-          <RepoSwitcher repoId={repoId} repoName={repo.name} />
-        ) : (
-          <span className="truncate px-1 py-0.5 text-foreground/80">{repoId}</span>
-        )}
-      </nav>
-
-      <div className="mb-7 flex flex-wrap items-start justify-between gap-4">
+    <div className="mx-auto w-full max-w-6xl px-6 py-4 has-[[data-wide-shell]]:max-w-[2000px]">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="text-2xl leading-tight font-semibold tracking-[-0.02em]">
+          <h1 className="text-xl leading-tight font-semibold tracking-[-0.02em]">
             {repo?.name ?? repoId}
           </h1>
           {source ? (
-            <p className="mt-2 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+            <p className="mt-1 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
               <SourceIcon className="size-3.5 shrink-0 opacity-70" aria-hidden />
               <span className="truncate font-mono">{source}</span>
             </p>
           ) : null}
           {loadError ? (
-            <p className="mt-2 flex items-center gap-1.5 text-xs text-destructive">
+            <p className="mt-1 flex items-center gap-1.5 text-xs text-destructive">
               <TriangleAlert className="size-3.5 shrink-0" aria-hidden />
               Could not load repo details: {loadError}
             </p>
@@ -115,8 +94,6 @@ export default async function RepoDetailLayout({
           </div>
         ) : null}
       </div>
-
-      <RepoTabs repoId={repoId} />
 
       {children}
     </div>

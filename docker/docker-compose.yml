@@ -3,6 +3,14 @@
 # Run from the repo root with:
 #   docker compose -f docker/docker-compose.yml --env-file docker/.env up
 # or `cd docker && cp .env.example .env` (fill in values) `&& docker compose up`.
+#
+# Every `${VAR:-default}` below falls back to the real-world service this
+# app already depended on, so a normal setup needs none of them set — they
+# exist for running on a closed network against internal mirrors instead
+# (GitHub Enterprise/proxy, a mirrored Docker Hub image, a mirrored Alpine
+# package CDN). See docker/.env.example's "Closed-network / mirror support"
+# section for what each one does. npm's registry is deliberately *not*
+# covered — see that same section.
 
 services:
   app:
@@ -10,6 +18,9 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: app
+      args:
+        NODE_BASE_IMAGE: ${NODE_BASE_IMAGE:-node:20-alpine}
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-}
     environment:
       NEO4J_URI: ${NEO4J_URI}
       NEO4J_USER: ${NEO4J_USER}
@@ -17,6 +28,8 @@ services:
       REDIS_URL: ${REDIS_URL}
       LOCAL_REPOS_PATH: ${LOCAL_REPOS_PATH}
       SESSION_SECRET: ${SESSION_SECRET}
+      GITHUB_API_URL: ${GITHUB_API_URL:-}
+      GITHUB_WEB_URL: ${GITHUB_WEB_URL:-}
     ports:
       # Only app's web port is published to the host by default (§11, §12)
       - "3000:3000"
@@ -39,6 +52,9 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: worker
+      args:
+        NODE_BASE_IMAGE: ${NODE_BASE_IMAGE:-node:20-alpine}
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-}
     environment:
       NEO4J_URI: ${NEO4J_URI}
       NEO4J_USER: ${NEO4J_USER}
@@ -46,6 +62,8 @@ services:
       REDIS_URL: ${REDIS_URL}
       LOCAL_REPOS_PATH: ${LOCAL_REPOS_PATH}
       SESSION_SECRET: ${SESSION_SECRET}
+      GITHUB_API_URL: ${GITHUB_API_URL:-}
+      GITHUB_WEB_URL: ${GITHUB_WEB_URL:-}
     # No ports published — the worker has no HTTP surface (§3, §13).
     volumes:
       - repo_cache:/data/repos
@@ -58,7 +76,7 @@ services:
     restart: unless-stopped
 
   neo4j:
-    image: neo4j:5
+    image: ${NEO4J_IMAGE:-neo4j:5}
     environment:
       NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
     # Not published to the host by default (§11): only app/worker reach it
@@ -69,7 +87,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
+    image: ${REDIS_IMAGE:-redis:7-alpine}
     # Not published to the host by default (§11) — BullMQ backing store,
     # internal to app/worker only.
     restart: unless-stopped

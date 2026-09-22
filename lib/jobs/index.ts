@@ -67,6 +67,7 @@ export {
   getRepoPullRequests,
   getStoredGitHubToken,
   gitHubCloneUrl,
+  gitHubRepoWebUrl,
   parseGitHubUrl,
   resolveGitHubAccess,
   type BranchesResponse,

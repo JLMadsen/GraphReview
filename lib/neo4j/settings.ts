@@ -5,6 +5,13 @@
 // This module only persists whatever strings it's given for the two
 // `*Encrypted` fields — encryption/decryption is lib/crypto/'s
 // responsibility (§11), not this module's.
+//
+// AI provider config no longer lives directly on this node — it moved to
+// `(:AiProvider)` nodes (lib/neo4j/ai-provider.ts) so more than one can be
+// saved at once, with `activeAiProviderId` here pointing at whichever is
+// in use. `aiBaseUrl`/`aiApiKeyEncrypted`/`aiModel` below are kept only as
+// the read side of ai-provider.ts's one-time migration off the old
+// single-provider shape; nothing writes them anymore.
 
 import { runRead, runWrite } from "./client";
 
@@ -12,8 +19,17 @@ const SETTINGS_ID = "global";
 
 export interface SettingsRecord {
   githubPatEncrypted?: string;
+  /** Which saved `(:AiProvider)` node (lib/neo4j/ai-provider.ts) is active, if any. */
+  activeAiProviderId?: string;
+  /**
+   * @deprecated Pre-multi-provider fields. Only ever read by
+   * ai-provider.ts's one-time migration into `AiProvider` nodes — new code
+   * should go through lib/neo4j/ai-provider.ts instead.
+   */
   aiBaseUrl?: string;
+  /** @deprecated See `aiBaseUrl`. */
   aiApiKeyEncrypted?: string;
+  /** @deprecated See `aiBaseUrl`. */
   aiModel?: string;
 }
 
@@ -21,6 +37,8 @@ function toSettingsRecord(props: Record<string, unknown>): SettingsRecord {
   return {
     githubPatEncrypted:
       (props.githubPatEncrypted as string | undefined) ?? undefined,
+    activeAiProviderId:
+      (props.activeAiProviderId as string | undefined) ?? undefined,
     aiBaseUrl: (props.aiBaseUrl as string | undefined) ?? undefined,
     aiApiKeyEncrypted:
       (props.aiApiKeyEncrypted as string | undefined) ?? undefined,

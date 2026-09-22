@@ -9,7 +9,6 @@
 import { useEffect, useState } from "react";
 import {
   ChevronDown,
-  FileText,
   GitCompare,
   GitPullRequest,
   LoaderCircle,
@@ -45,6 +44,9 @@ function reviewTargetFor(
 
 type Mode = "pr" | "refs" | "paths";
 
+// "Paths" (paste changed file paths) is hidden from the mode switcher for
+// now — the handling code below still supports it, it's just not reachable
+// from the UI.
 const MODES: Array<{
   value: Mode;
   label: string;
@@ -52,7 +54,6 @@ const MODES: Array<{
 }> = [
   { value: "pr", label: "PR", icon: GitPullRequest },
   { value: "refs", label: "Refs", icon: GitCompare },
-  { value: "paths", label: "Paths", icon: FileText },
 ];
 
 // Minimal shapes for the two GitHub-backed list endpoints this panel
