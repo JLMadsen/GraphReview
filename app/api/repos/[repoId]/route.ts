@@ -2,7 +2,7 @@
 //
 // Response contract (depended on by the Graph tab):
 //
-//   { id, name, provider: "local" | "github", url?, localPath?,
+//   { id, name, provider: "local" | "github" | "gitlab", url?, localPath?,
 //     defaultBranch?, lastAnalyzedAt?, lastAnalyzedSha?,
 //     status: "analyzing" | "up_to_date" | "stale" | "error" }
 //

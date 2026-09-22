@@ -19,6 +19,7 @@ const SETTINGS_ID = "global";
 
 export interface SettingsRecord {
   githubPatEncrypted?: string;
+  gitlabPatEncrypted?: string;
   /** Which saved `(:AiProvider)` node (lib/neo4j/ai-provider.ts) is active, if any. */
   activeAiProviderId?: string;
   /**
@@ -37,6 +38,8 @@ function toSettingsRecord(props: Record<string, unknown>): SettingsRecord {
   return {
     githubPatEncrypted:
       (props.githubPatEncrypted as string | undefined) ?? undefined,
+    gitlabPatEncrypted:
+      (props.gitlabPatEncrypted as string | undefined) ?? undefined,
     activeAiProviderId:
       (props.activeAiProviderId as string | undefined) ?? undefined,
     aiBaseUrl: (props.aiBaseUrl as string | undefined) ?? undefined,
@@ -69,6 +72,7 @@ export async function upsertSettings(
     `
     MERGE (s:Settings {id: $id})
     SET s.githubPatEncrypted = coalesce($githubPatEncrypted, s.githubPatEncrypted),
+        s.gitlabPatEncrypted = coalesce($gitlabPatEncrypted, s.gitlabPatEncrypted),
         s.aiBaseUrl = coalesce($aiBaseUrl, s.aiBaseUrl),
         s.aiApiKeyEncrypted = coalesce($aiApiKeyEncrypted, s.aiApiKeyEncrypted),
         s.aiModel = coalesce($aiModel, s.aiModel)
@@ -76,6 +80,7 @@ export async function upsertSettings(
     {
       id: SETTINGS_ID,
       githubPatEncrypted: fields.githubPatEncrypted ?? null,
+      gitlabPatEncrypted: fields.gitlabPatEncrypted ?? null,
       aiBaseUrl: fields.aiBaseUrl ?? null,
       aiApiKeyEncrypted: fields.aiApiKeyEncrypted ?? null,
       aiModel: fields.aiModel ?? null,
@@ -88,6 +93,7 @@ export type SettingsField = keyof SettingsRecord;
 
 const CLEARABLE_FIELDS: readonly SettingsField[] = [
   "githubPatEncrypted",
+  "gitlabPatEncrypted",
   "aiBaseUrl",
   "aiApiKeyEncrypted",
   "aiModel",

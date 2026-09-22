@@ -21,6 +21,12 @@ import { decrypt } from "@/lib/crypto";
 import { compareRefs, getLinkedIssues, getPullRequest, listPullRequestFiles } from "@/lib/github";
 import type { LinkedIssue, PullRequestDetail } from "@/lib/github";
 import {
+  compareRefs as compareGitLabRefs,
+  getLinkedIssues as getGitLabLinkedIssues,
+  getMergeRequest,
+  listMergeRequestFiles,
+} from "@/lib/gitlab";
+import {
   deleteFindingsForTargetExceptComponents,
   getActiveAiProvider,
   getRepoById,
@@ -37,6 +43,7 @@ import {
   type ComponentReviewContext,
 } from "./diff-components";
 import { resolveGitHubAccess } from "./github-access";
+import { resolveGitLabAccess } from "./gitlab-access";
 import {
   listLocalFilePatches,
   resolveLocalRefSha,
@@ -226,6 +233,59 @@ async function resolveTarget(
       // something to "match" that nobody actually claimed.
       intent: { source: "ref_comparison" },
       description: `local ${target.baseRef}...${target.headRef} (${baseSha.slice(0, 7)}...${headSha.slice(0, 7)})`,
+    };
+  }
+
+  // --- GitLab repo --------------------------------------------------------
+  if (repo.provider === "gitlab") {
+    const access = await resolveGitLabAccess(repo);
+    if (!access.ok) {
+      throw new UnrecoverableError(
+        access.reason === "no_token"
+          ? "No GitLab PAT configured in Settings — it is needed to fetch this diff."
+          : `This repo is not usable over the GitLab API (${access.reason}).`
+      );
+    }
+    const { path: projectPath } = access.ref;
+
+    if (target.kind === "refs") {
+      const { data: comparison } = await compareGitLabRefs(
+        access.token,
+        projectPath,
+        target.baseRef,
+        target.headRef
+      );
+      return {
+        files: comparison.files.map(toLocalFilePatch),
+        reviewed: { baseSha: comparison.baseSha, headSha: comparison.headSha },
+        intent: { source: "ref_comparison" },
+        description: `${projectPath} ${target.baseRef}...${target.headRef}`,
+      };
+    }
+
+    const [detail, filesResult, linkedIssues] = await Promise.all([
+      getMergeRequest(access.token, projectPath, target.prNumber),
+      listMergeRequestFiles(access.token, projectPath, target.prNumber),
+      getGitLabLinkedIssues(access.token, projectPath, target.prNumber).catch((error: unknown) => {
+        log(`linked-issue lookup failed (continuing without it): ${(error as Error).message}`);
+        return { data: [] as LinkedIssue[], rateLimit: null };
+      }),
+    ]);
+
+    const mr = detail.data;
+    const prId = await persistPullRequestNode(repo, mr, log);
+
+    return {
+      files: filesResult.data.map(toLocalFilePatch),
+      reviewed: { baseSha: mr.baseSha, headSha: mr.headSha },
+      intent: {
+        source: "pull_request",
+        title: mr.title,
+        body: mr.body ?? undefined,
+        linkedIssues: toIntentIssues(linkedIssues.data),
+      },
+      prId,
+      description: `${projectPath}!${target.prNumber} "${mr.title}"`,
     };
   }
 

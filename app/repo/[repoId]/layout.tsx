@@ -1,9 +1,9 @@
 import { notFound } from "next/navigation";
-import { Github, HardDrive, TriangleAlert } from "lucide-react";
+import { TriangleAlert } from "lucide-react";
 import { getRepoDto } from "@/lib/jobs";
 import type { RepoDto } from "@/lib/jobs";
 import { getRepoById } from "@/lib/neo4j";
-import { ProviderBadge, RepoStatusBadge } from "@/app/repo-status-badge";
+import { ProviderBadge, RepoStatusBadge, providerIcon } from "@/app/repo-status-badge";
 
 /**
  * Repo detail shell — DESIGN.md §4.
@@ -52,8 +52,8 @@ export default async function RepoDetailLayout({
     }
   }
 
-  const source = repo?.provider === "github" ? repo.url : repo?.localPath;
-  const SourceIcon = repo?.provider === "github" ? Github : HardDrive;
+  const source = repo?.provider === "local" ? repo.localPath : repo?.url;
+  const SourceIcon = providerIcon(repo?.provider ?? "local");
 
   return (
     // Width is capped at `max-w-6xl` for the reading-oriented tabs

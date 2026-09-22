@@ -59,12 +59,19 @@ export default async function BranchesPage({
       {!result || !repo ? (
         <DatabaseErrorNotice message={dbError ?? "Repo unavailable."} />
       ) : !result.linked ? (
-        <GitHubNotice reason={result.reason ?? "not_linked"} subject="branches" />
+        <GitHubNotice
+          reason={result.reason ?? "not_linked"}
+          subject="branches"
+          provider={repo.provider === "gitlab" ? "gitlab" : "github"}
+        />
       ) : result.error ? (
-        <GitHubErrorNotice message={result.error} />
+        <GitHubErrorNotice
+          message={result.error}
+          provider={repo.provider === "gitlab" ? "gitlab" : "github"}
+        />
       ) : result.branches.length === 0 ? (
         <NoticeCard icon={GitBranch} title="No branches">
-          GitHub returned no branches for this repository.
+          The host returned no branches for this repository.
         </NoticeCard>
       ) : (
         <ul className="divide-y divide-border overflow-hidden rounded-xl bg-card ring-1 ring-border">

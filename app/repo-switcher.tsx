@@ -22,9 +22,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronDown, Github, HardDrive, Search } from "lucide-react";
+import { ChevronDown, Search } from "lucide-react";
 import { cn } from "cn";
 import type { RepoDto } from "@/lib/jobs";
+import { providerIcon } from "./repo-status-badge";
 
 export interface RepoSwitcherProps {
   repoId: string;
@@ -156,7 +157,7 @@ export function RepoSwitcher({ repoId, repoName }: RepoSwitcherProps) {
               </p>
             ) : (
               filtered.map((repo) => {
-                const Icon = repo.provider === "github" ? Github : HardDrive;
+                const Icon = providerIcon(repo.provider);
                 const current = repo.id === repoId;
                 return (
                   <button

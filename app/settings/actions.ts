@@ -28,9 +28,11 @@ import {
 } from "@/lib/neo4j";
 import type {
   ClearGithubPatState,
+  ClearGitlabPatState,
   DeleteAiProviderState,
   SaveAiProviderState,
   SaveGithubPatState,
+  SaveGitlabPatState,
   SetActiveAiProviderState,
   TestConnectionState,
 } from "./state";
@@ -75,6 +77,44 @@ export async function clearGithubPatAction(): Promise<ClearGithubPatState> {
     return {
       status: "error",
       error: err instanceof Error ? err.message : "Failed to clear the GitHub PAT.",
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GitLab PAT — same shape as the GitHub PAT above (decision #6/#7, extended)
+// ---------------------------------------------------------------------------
+
+export async function saveGitlabPatAction(
+  _prevState: SaveGitlabPatState,
+  formData: FormData
+): Promise<SaveGitlabPatState> {
+  try {
+    const gitlabPat = readField(formData, "gitlabPat");
+    // Blank means "leave the currently-saved PAT alone" — same convention as
+    // the GitHub PAT action above.
+    if (gitlabPat) {
+      await upsertSettings({ gitlabPatEncrypted: encrypt(gitlabPat) });
+    }
+    revalidatePath("/settings");
+    return { status: "success", gitlabPatUpdated: Boolean(gitlabPat) };
+  } catch (err) {
+    return {
+      status: "error",
+      error: err instanceof Error ? err.message : "Failed to save the GitLab PAT.",
+    };
+  }
+}
+
+export async function clearGitlabPatAction(): Promise<ClearGitlabPatState> {
+  try {
+    await clearSettingsFields(["gitlabPatEncrypted"]);
+    revalidatePath("/settings");
+    return { status: "success" };
+  } catch (err) {
+    return {
+      status: "error",
+      error: err instanceof Error ? err.message : "Failed to clear the GitLab PAT.",
     };
   }
 }

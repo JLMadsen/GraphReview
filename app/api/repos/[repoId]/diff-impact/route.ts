@@ -11,14 +11,18 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { decrypt } from "@/lib/crypto";
 import { compareRefs, listPullRequestFiles } from "@/lib/github";
+import { compareRefs as compareGitLabRefs, listMergeRequestFiles } from "@/lib/gitlab";
 import {
   listLocalChangedFiles,
   matchFilesToComponents,
+  resolveGitHubAccess,
+  resolveGitLabAccess,
   toDiffImpactResponse,
+  type GitHubUnavailableReason,
+  type GitLabUnavailableReason,
 } from "@/lib/jobs";
-import { getRepoById, getSettings } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/neo4j";
 import type { DiffImpactResponseDTO } from "@/components/graph/types";
 
 export const dynamic = "force-dynamic";
@@ -29,25 +33,19 @@ const bodySchema = z.union([
   z.object({ filePaths: z.array(z.string()) }),
 ]);
 
-/** Extracts `{ owner, repo }` from a GitHub HTTPS or SSH remote URL. Returns `null` if `url` doesn't look like a GitHub remote. */
-function parseGitHubOwnerRepo(url: string): { owner: string; repo: string } | null {
-  const match = url.match(/github\.com[/:]([^/]+)\/([^/]+?)(\.git)?\/?$/i);
-  if (!match) return null;
-  return { owner: match[1], repo: match[2] };
-}
-
-async function resolveGitHubToken(): Promise<
-  { token: string } | { error: string }
-> {
-  const settings = await getSettings();
-  if (!settings?.githubPatEncrypted) {
-    return { error: "No GitHub PAT configured in Settings." };
+/** Turns a resolver's "why not" reason into the message this route already returned for that case, so the response shape stays the same for GitHub as it dispatches to GitLab too. */
+function accessErrorMessage(
+  host: "GitHub" | "GitLab",
+  reason: GitHubUnavailableReason | GitLabUnavailableReason,
+  repoUrl?: string
+): string {
+  if (reason === "no_token") return `No ${host} PAT configured in Settings.`;
+  if (reason === "invalid_url") {
+    return host === "GitLab"
+      ? `Could not parse a project path from ${repoUrl ?? "the stored URL"}.`
+      : `Could not parse an owner/repo from ${repoUrl ?? "the stored URL"}.`;
   }
-  try {
-    return { token: decrypt(settings.githubPatEncrypted) };
-  } catch {
-    return { error: "Failed to decrypt the stored GitHub PAT." };
-  }
+  return `This repo has no ${host} URL on record.`;
 }
 
 // The file-path -> component resolution itself lives in
@@ -116,39 +114,53 @@ export async function POST(
           { status: 400 }
         );
       }
-    } else {
-      if (!repo.url) {
+    } else if (repo.provider === "gitlab") {
+      const access = await resolveGitLabAccess(repo);
+      if (!access.ok) {
         return NextResponse.json(
-          { error: "This repo has no GitHub URL on record." },
-          { status: 400 }
-        );
-      }
-      const ownerRepo = parseGitHubOwnerRepo(repo.url);
-      if (!ownerRepo) {
-        return NextResponse.json(
-          { error: `Could not parse an owner/repo from ${repo.url}.` },
+          { error: accessErrorMessage("GitLab", access.reason, repo.url) },
           { status: 400 }
         );
       }
 
-      const tokenResult = await resolveGitHubToken();
-      if ("error" in tokenResult) {
-        return NextResponse.json({ error: tokenResult.error }, { status: 400 });
+      if ("prNumber" in parsed.data) {
+        const { data: files } = await listMergeRequestFiles(
+          access.token,
+          access.ref.path,
+          parsed.data.prNumber
+        );
+        changedPaths = files.map((f) => f.filename);
+      } else {
+        const { data: comparison } = await compareGitLabRefs(
+          access.token,
+          access.ref.path,
+          parsed.data.baseRef,
+          parsed.data.headRef
+        );
+        changedPaths = comparison.files.map((f) => f.filename);
+      }
+    } else {
+      const access = await resolveGitHubAccess(repo);
+      if (!access.ok) {
+        return NextResponse.json(
+          { error: accessErrorMessage("GitHub", access.reason, repo.url) },
+          { status: 400 }
+        );
       }
 
       if ("prNumber" in parsed.data) {
         const { data: files } = await listPullRequestFiles(
-          tokenResult.token,
-          ownerRepo.owner,
-          ownerRepo.repo,
+          access.token,
+          access.ref.owner,
+          access.ref.repo,
           parsed.data.prNumber
         );
         changedPaths = files.map((f) => f.filename);
       } else {
         const { data: comparison } = await compareRefs(
-          tokenResult.token,
-          ownerRepo.owner,
-          ownerRepo.repo,
+          access.token,
+          access.ref.owner,
+          access.ref.repo,
           parsed.data.baseRef,
           parsed.data.headRef
         );

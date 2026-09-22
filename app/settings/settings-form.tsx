@@ -33,6 +33,7 @@ import {
   Circle,
   CircleCheck,
   Github,
+  Gitlab,
   LoaderCircle,
   Pencil,
   PlugZap,
@@ -54,18 +55,22 @@ import {
 import { Input } from "@/components/ui/input";
 import {
   clearGithubPatAction,
+  clearGitlabPatAction,
   createAiProviderAction,
   deleteAiProviderAction,
   saveGithubPatAction,
+  saveGitlabPatAction,
   setActiveAiProviderAction,
   testAiConnectionAction,
   updateAiProviderAction,
 } from "./actions";
 import {
   initialClearGithubPatState,
+  initialClearGitlabPatState,
   initialDeleteAiProviderState,
   initialSaveAiProviderState,
   initialSaveGithubPatState,
+  initialSaveGitlabPatState,
   initialSetActiveAiProviderState,
   initialTestConnectionState,
 } from "./state";
@@ -83,6 +88,7 @@ export interface AiProviderSummary {
 
 interface SettingsFormProps {
   initialHasGithubPat: boolean;
+  initialHasGitlabPat: boolean;
   initialProviders: AiProviderSummary[];
   initialActiveProviderId: string | null;
 }
@@ -690,6 +696,7 @@ function AddProviderForm() {
 
 export function SettingsForm({
   initialHasGithubPat,
+  initialHasGitlabPat,
   initialProviders,
   initialActiveProviderId,
 }: SettingsFormProps) {
@@ -716,6 +723,30 @@ export function SettingsForm({
   useEffect(() => {
     if (clearPatState.status === "success") setPatFieldState("editing");
   }, [clearPatState]);
+
+  const [gitlabPatState, gitlabPatFormAction, isGitlabPatSaving] = useActionState(
+    saveGitlabPatAction,
+    initialSaveGitlabPatState
+  );
+  const [clearGitlabPatState, clearGitlabPatFormAction, isClearingGitlabPat] = useActionState(
+    clearGitlabPatAction,
+    initialClearGitlabPatState
+  );
+
+  const [gitlabPatFieldState, setGitlabPatFieldState] = useState<SecretFieldState>(
+    initialHasGitlabPat ? "saved" : "editing"
+  );
+  const [gitlabPat, setGitlabPat] = useState("");
+
+  useEffect(() => {
+    if (gitlabPatState.status !== "success" || !gitlabPatState.gitlabPatUpdated) return;
+    setGitlabPatFieldState("saved");
+    setGitlabPat("");
+  }, [gitlabPatState]);
+
+  useEffect(() => {
+    if (clearGitlabPatState.status === "success") setGitlabPatFieldState("editing");
+  }, [clearGitlabPatState]);
 
   return (
     <div className="space-y-5">
@@ -781,6 +812,75 @@ export function SettingsForm({
               <span className="flex items-center gap-1.5 text-[13px] text-destructive">
                 <TriangleAlert className="size-4 shrink-0" aria-hidden />
                 {clearPatState.error}
+              </span>
+            )}
+          </CardFooter>
+        </Card>
+      </form>
+
+      <form action={gitlabPatFormAction}>
+        <Card className="[--card-spacing:--spacing(5)]">
+          <CardHeader>
+            <SectionTitle icon={Gitlab}>GitLab</SectionTitle>
+            <CardDescription className="text-[13px] leading-relaxed">
+              Personal Access Token used to fetch repos, merge requests,
+              diffs, and linked issues. For a self-hosted instance, also set{" "}
+              <span className="font-mono text-foreground/80">GITLAB_API_URL</span>.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              <FieldLabel htmlFor="gitlabPat" hint="api scope">
+                Personal Access Token
+              </FieldLabel>
+              {gitlabPatFieldState === "saved" ? (
+                <SavedSecret
+                  label="PAT"
+                  onReplace={() => setGitlabPatFieldState("editing")}
+                  clearAction={clearGitlabPatFormAction}
+                  clearing={isClearingGitlabPat}
+                />
+              ) : (
+                <Input
+                  id="gitlabPat"
+                  name="gitlabPat"
+                  type="password"
+                  autoComplete="off"
+                  placeholder="glpat-..."
+                  className="font-mono"
+                  value={gitlabPat}
+                  onChange={(e) => setGitlabPat(e.target.value)}
+                />
+              )}
+            </div>
+          </CardContent>
+          <CardFooter className="flex items-center gap-3">
+            <Button type="submit" size="sm" disabled={isGitlabPatSaving}>
+              {isGitlabPatSaving ? (
+                <>
+                  <LoaderCircle className="animate-spin" aria-hidden />
+                  Saving…
+                </>
+              ) : (
+                "Save"
+              )}
+            </Button>
+            {gitlabPatState.status === "success" && (
+              <span className="flex items-center gap-1.5 text-[13px] text-success">
+                <Check className="size-4" aria-hidden />
+                Saved
+              </span>
+            )}
+            {gitlabPatState.status === "error" && (
+              <span className="flex items-center gap-1.5 text-[13px] text-destructive">
+                <TriangleAlert className="size-4 shrink-0" aria-hidden />
+                {gitlabPatState.error}
+              </span>
+            )}
+            {clearGitlabPatState.status === "error" && (
+              <span className="flex items-center gap-1.5 text-[13px] text-destructive">
+                <TriangleAlert className="size-4 shrink-0" aria-hidden />
+                {clearGitlabPatState.error}
               </span>
             )}
           </CardFooter>

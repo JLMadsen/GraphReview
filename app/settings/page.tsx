@@ -67,6 +67,7 @@ export default async function SettingsPage() {
 
       <SettingsForm
         initialHasGithubPat={Boolean(settings?.githubPatEncrypted)}
+        initialHasGitlabPat={Boolean(settings?.gitlabPatEncrypted)}
         initialProviders={providers.map((p) => ({
           id: p.id,
           name: p.name,

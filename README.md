@@ -1,8 +1,9 @@
 # GraphReview
 
-A locally-run tool for reviewing GitHub pull requests against a codebase's
-component graph. See [`docs/DESIGN.md`](docs/DESIGN.md) for the full
-architecture and product spec.
+A locally-run tool for reviewing GitHub pull requests and GitLab merge
+requests against a codebase's component graph. See
+[`docs/DESIGN.md`](docs/DESIGN.md) for the full architecture and product
+spec.
 
 This is currently a project **skeleton**: navigation and screens exist as
 placeholders, with no real Neo4j queries, static analysis, GitHub calls, or

@@ -1,22 +1,16 @@
 import Link from "next/link";
-import {
-  ChevronRight,
-  Clock3,
-  Github,
-  HardDrive,
-  Plug,
-  Waypoints,
-} from "lucide-react";
+import { ChevronRight, Clock3, Plug, Waypoints } from "lucide-react";
 import { listRepoDtos, type RepoDto } from "@/lib/jobs";
 import { AddRepoDialog } from "./add-repo-dialog";
-import { ProviderBadge, RepoStatusBadge } from "./repo-status-badge";
+import { ProviderBadge, RepoStatusBadge, providerIcon } from "./repo-status-badge";
 import { RepoRetryButton } from "./repo-retry-button";
 
 /**
  * Repo list (landing page) — DESIGN.md §4.
  *
- * Every added repo, with name, source (local | github) and the §10 status
- * indicator. Rendering this list is itself a "view" for §10's purposes:
+ * Every added repo, with name, source (local | github | gitlab) and the §10
+ * status indicator. Rendering this list is itself a "view" for §10's
+ * purposes:
  * `listRepoDtos` runs the cheap staleness check per repo and schedules a
  * background refresh for anything whose HEAD has moved, which is what makes
  * "stale, refreshing…" accurate without a manual refresh button.
@@ -45,9 +39,9 @@ function formatTimestamp(iso?: string): string | undefined {
 }
 
 function RepoRow({ repo }: { repo: RepoDto }) {
-  const source = repo.provider === "github" ? repo.url : repo.localPath;
+  const source = repo.provider === "local" ? repo.localPath : repo.url;
   const analyzedAt = formatTimestamp(repo.lastAnalyzedAt);
-  const SourceIcon = repo.provider === "github" ? Github : HardDrive;
+  const SourceIcon = providerIcon(repo.provider);
   const isError = repo.status === "error";
 
   return (
