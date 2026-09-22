@@ -90,6 +90,7 @@ export default async function RepoDetailLayout({
             <RepoStatusBadge
               status={repo.status}
               lastAnalyzedSha={repo.lastAnalyzedSha}
+              repoId={repo.id}
             />
           </div>
         ) : null}

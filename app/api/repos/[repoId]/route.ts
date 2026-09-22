@@ -15,13 +15,13 @@
 // immediately. The caller is never blocked on the re-analysis.
 
 import { NextResponse } from "next/server";
-import { getRepoDto } from "@/lib/jobs";
+import { getAnalysisJobLogs, getRepoDto } from "@/lib/jobs";
 import { apiError, errorMessage, loadRepo } from "../_shared";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ repoId: string }> }
 ): Promise<NextResponse> {
   const { repoId } = await params;
@@ -30,7 +30,23 @@ export async function GET(
   if ("response" in loaded) return loaded.response;
 
   try {
-    return NextResponse.json(await getRepoDto(loaded.repo, { autoEnqueue: true }));
+    const dto = await getRepoDto(loaded.repo, { autoEnqueue: true });
+
+    // `?logs=1` is a separate, on-demand read (the "hover the Analyzing
+    // badge" affordance) rather than part of the regular status payload —
+    // fetching a job's log tail on every poll would be wasted work for the
+    // common case where nobody is looking. Best-effort: a Redis hiccup here
+    // must not hide the status this endpoint otherwise successfully read.
+    if (new URL(request.url).searchParams.get("logs") === "1") {
+      try {
+        return NextResponse.json({ ...dto, logs: await getAnalysisJobLogs(repoId) });
+      } catch (error) {
+        console.error(`GET /api/repos/${repoId}?logs=1 — could not read job logs:`, error);
+        return NextResponse.json({ ...dto, logs: [] });
+      }
+    }
+
+    return NextResponse.json(dto);
   } catch (error) {
     return apiError(
       `Could not determine repo status: ${errorMessage(error)}`,

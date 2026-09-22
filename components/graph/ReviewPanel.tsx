@@ -47,6 +47,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "cn";
 import { FileDiffModal } from "./FileDiffModal";
+import { JobLogHover } from "./JobLogHover";
 import {
   INTENT_ORDER,
   INTENT_VISUALS,
@@ -58,6 +59,7 @@ import {
 } from "./review-visuals";
 import {
   reviewTargetLabel,
+  reviewTargetQuery,
   type FindingDTO,
   type IntentMatch,
   type ReviewFreshnessDTO,
@@ -295,6 +297,7 @@ export function ReviewPanel({
     Boolean(freshness) && status === "ready" && state === "completed" && !running && !rerunning;
   const isPullRequest = "prNumber" in target;
   const isQueueProblem = noticeCode === "queue_unavailable";
+  const logsUrl = `/api/repos/${encodeURIComponent(repoId)}/review?${reviewTargetQuery(target)}&logs=1`;
 
   return (
     <>
@@ -322,10 +325,12 @@ export function ReviewPanel({
           </span>
         )}
         {running && (
-          <span className="flex items-center gap-1.5 text-[11px] font-medium text-brand">
-            <LoaderCircle className="size-3 animate-spin" aria-hidden />
-            {state === "queued" ? "Queued" : "Reviewing"}
-          </span>
+          <JobLogHover logsUrl={logsUrl} label="Review job log">
+            <span className="flex cursor-default items-center gap-1.5 text-[11px] font-medium text-brand">
+              <LoaderCircle className="size-3 animate-spin" aria-hidden />
+              {state === "queued" ? "Queued" : "Reviewing"}
+            </span>
+          </JobLogHover>
         )}
         {state === "failed" && (
           <span className="flex items-center gap-1.5 text-[11px] font-medium text-destructive">

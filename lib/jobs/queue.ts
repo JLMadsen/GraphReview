@@ -167,6 +167,25 @@ export async function getAnalysisJobFailure(
   return job?.failedReason;
 }
 
+/** How many of the most recent `job.log()` lines to hand back — enough to show a run's shape without an unbounded fetch. */
+const JOB_LOG_TAIL = 200;
+
+/**
+ * The most recent `job.log()` lines the worker wrote for a repo's analysis
+ * job, oldest first. Best-effort and read on demand only (never part of the
+ * regular status poll) — it backs the "hover the analyzing spinner to see
+ * what's happening" affordance, not anything that gates behaviour. Empty
+ * when there is no job, or once its retention window has evicted it.
+ */
+export async function getAnalysisJobLogs(repoId: string): Promise<string[]> {
+  const { logs } = await getAnalysisQueue().getJobLogs(
+    analysisJobId(repoId),
+    -JOB_LOG_TAIL,
+    -1
+  );
+  return logs;
+}
+
 export interface EnqueueAnalysisResult {
   /** `false` when a job for this repo was already pending/active — not an error. */
   enqueued: boolean;

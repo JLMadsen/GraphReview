@@ -86,6 +86,7 @@ function RepoRow({ repo }: { repo: RepoDto }) {
           <RepoStatusBadge
             status={repo.status}
             lastAnalyzedSha={repo.lastAnalyzedSha}
+            repoId={repo.id}
           />
         </div>
       </div>

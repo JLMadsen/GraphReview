@@ -22,6 +22,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { cn } from "cn";
+import { JobLogHover } from "./JobLogHover";
 import {
   formatLabelCost,
   labelPhaseLabel,
@@ -45,7 +46,7 @@ export function LabelsControl({
   onToggleCollapse,
   className,
 }: LabelsControlProps) {
-  const { aiConfigured, hasLabels, running, progress, status } = labels;
+  const { aiConfigured, hasLabels, running, progress, status, logsUrl } = labels;
 
   // First GET still in flight: render a same-sized placeholder so the
   // toolbar doesn't jump when the answer lands.
@@ -107,22 +108,26 @@ export function LabelsControl({
         </span>
       )}
 
-      {/* Live progress + §10's running cost counter. */}
+      {/* Live progress + §10's running cost counter. Hoverable: the job's
+          own log lines (worker/index.ts) are one fetch away, for "what is it
+          actually doing right now" beyond the done/total counter. */}
       {running && (
-        <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          {progress ? (
-            <>
-              <span>{labelPhaseLabel(progress.phase)}</span>
-              <span className="font-mono text-foreground">
-                {progress.done}/{progress.total}
-              </span>
-              <span className="opacity-40">·</span>
-              <span className="font-mono">{formatLabelCost(progress)}</span>
-            </>
-          ) : (
-            <span>Queued…</span>
-          )}
-        </span>
+        <JobLogHover logsUrl={logsUrl} label="Labeling job log">
+          <span className="flex cursor-default items-center gap-1.5 text-[11px] text-muted-foreground">
+            {progress ? (
+              <>
+                <span>{labelPhaseLabel(progress.phase)}</span>
+                <span className="font-mono text-foreground">
+                  {progress.done}/{progress.total}
+                </span>
+                <span className="opacity-40">·</span>
+                <span className="font-mono">{formatLabelCost(progress)}</span>
+              </>
+            ) : (
+              <span>Queued…</span>
+            )}
+          </span>
+        </JobLogHover>
       )}
 
       {/* What exists today, once a run has produced something. */}

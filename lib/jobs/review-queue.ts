@@ -159,6 +159,26 @@ export async function getReviewJobState(
   return getReviewQueue().getJobState(reviewJobId(repoId, targetKey));
 }
 
+/** How many of the most recent `job.log()` lines to hand back — mirrors `queue.ts`'s analysis equivalent. */
+const JOB_LOG_TAIL = 200;
+
+/**
+ * The most recent `job.log()` lines the worker wrote for a review target,
+ * oldest first. Best-effort and read on demand only, backing the "hover the
+ * reviewing spinner" affordance rather than the regular progress poll.
+ */
+export async function getReviewJobLogs(
+  repoId: string,
+  targetKey: string
+): Promise<string[]> {
+  const { logs } = await getReviewQueue().getJobLogs(
+    reviewJobId(repoId, targetKey),
+    -JOB_LOG_TAIL,
+    -1
+  );
+  return logs;
+}
+
 export interface EnqueueReviewResult {
   /** `false` when a job for this exact target was already pending/active — not an error. */
   enqueued: boolean;

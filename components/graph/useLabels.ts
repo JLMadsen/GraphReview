@@ -242,9 +242,13 @@ export function useLabels(
   const running = isLabelPending(snapshot.state) || snapshot.starting;
   const canGenerate = snapshot.status !== "loading" && snapshot.aiConfigured && !running;
   const hasLabels = snapshot.domains > 0 || snapshot.describedModules > 0;
+  const logsUrl = useMemo(
+    () => `/api/repos/${encodeURIComponent(repoId)}/label?logs=1`,
+    [repoId]
+  );
 
   return useMemo(
-    () => ({ ...snapshot, generate, canGenerate, hasLabels, running }),
-    [snapshot, generate, canGenerate, hasLabels, running]
+    () => ({ ...snapshot, generate, canGenerate, hasLabels, running, logsUrl }),
+    [snapshot, generate, canGenerate, hasLabels, running, logsUrl]
   );
 }

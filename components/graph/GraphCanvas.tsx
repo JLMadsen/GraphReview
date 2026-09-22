@@ -965,10 +965,19 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         }
         renderTooltip(node);
       };
-      const handlePosition = (evt: cytoscape.EventObject) => {
-        const node = evt.target as cytoscape.NodeSingular;
+      // Shared by the node's own `position` event (dragging/layout) *and*
+      // `pan`/`zoom` on the core — for the latter, `evt.target` is `cy`
+      // itself, which has no `renderedPosition()` (only elements do), so
+      // this always repositions from the hovered node rather than the event
+      // target. Reading `evt.target.renderedPosition()` there used to throw
+      // "t.renderedPosition is not a function" on the first pan/zoom while a
+      // tooltip was open, and the uncaught error inside Cytoscape's own
+      // event dispatch left the canvas unresponsive to further input.
+      const handlePosition = () => {
         const tooltip = tooltipRef.current;
+        const node = hoveredNodeRef.current;
         if (!tooltip || tooltip.style.display !== "block") return;
+        if (!node || node.removed()) return;
         const pos = node.renderedPosition();
         tooltip.style.left = `${pos.x}px`;
         tooltip.style.top = `${pos.y}px`;
@@ -995,7 +1004,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       cy.on("mouseover", "node", handleMouseOver);
       cy.on("mouseout", "node", handleMouseOut);
       cy.on("position", "node", handlePosition);
-      cy.on("pan zoom", handlePosition as unknown as cytoscape.EventHandler);
+      cy.on("pan zoom", handlePosition);
       cy.on("tap", "node", handleNodeTap);
       cy.on("tap", handleBackgroundTap);
 
@@ -1031,6 +1040,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         cy.removeListener("mouseover", "node", handleMouseOver);
         cy.removeListener("mouseout", "node", handleMouseOut);
         cy.removeListener("position", "node", handlePosition);
+        cy.removeListener("pan zoom", handlePosition);
         cy.removeListener("tap", "node", handleNodeTap);
         cy.removeListener("tap", handleBackgroundTap);
         cy.destroy();

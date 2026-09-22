@@ -130,6 +130,23 @@ export async function getLabelJobState(
   return getLabelQueue().getJobState(labelJobId(repoId));
 }
 
+/** How many of the most recent `job.log()` lines to hand back — mirrors `queue.ts`'s analysis equivalent. */
+const JOB_LOG_TAIL = 200;
+
+/**
+ * The most recent `job.log()` lines the worker wrote for a repo's labeling
+ * job, oldest first. Best-effort and read on demand only, backing the "hover
+ * the labeling spinner" affordance rather than the regular progress poll.
+ */
+export async function getLabelJobLogs(repoId: string): Promise<string[]> {
+  const { logs } = await getLabelQueue().getJobLogs(
+    labelJobId(repoId),
+    -JOB_LOG_TAIL,
+    -1
+  );
+  return logs;
+}
+
 export interface EnqueueLabelResult {
   /** `false` when a labeling run for this repo was already pending/active — not an error. */
   enqueued: boolean;

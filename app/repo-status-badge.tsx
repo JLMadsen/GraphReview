@@ -1,8 +1,13 @@
 // The §4 status indicator ("analyzing… / up to date as of <sha> / stale,
 // refreshing…"), shared by the repo list and the repo detail header.
 //
-// A plain server-renderable component — no client state, it just maps the
-// `status` field of the repo API's response onto a Badge variant.
+// A plain server-renderable component — no client state of its own, it just
+// maps the `status` field of the repo API's response onto a Badge variant.
+// The two in-progress states delegate their hover-to-see-progress affordance
+// to `StatusLogHover` (a separate `"use client"` file): this file must stay
+// server-safe because `providerIcon` below is called as a plain function
+// from the server layout, and a file's exports all become client-only
+// references the moment it carries a top-level `"use client"`.
 //
 // Each state carries its own icon and hue so the four statuses are
 // distinguishable at a glance in a list, instead of four identically-grey
@@ -22,6 +27,7 @@ import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import type { RepoStatus } from "@/lib/jobs";
 import type { RepoProvider } from "@/lib/neo4j";
+import { StatusLogHover } from "./status-log-hover";
 
 function shortSha(sha?: string): string | undefined {
   return sha ? sha.slice(0, 7) : undefined;
@@ -30,31 +36,48 @@ function shortSha(sha?: string): string | undefined {
 export function RepoStatusBadge({
   status,
   lastAnalyzedSha,
+  /** Enables the hover-to-see-progress affordance on the two in-progress states. Omitted where no repo id is at hand — the badge still renders, just without the hover. */
+  repoId,
 }: {
   status: RepoStatus;
   lastAnalyzedSha?: string;
+  repoId?: string;
 }) {
   switch (status) {
-    case "analyzing":
-      return (
+    case "analyzing": {
+      const badge = (
         <Badge
           variant="outline"
-          className="gap-1.5 border-warning/30 bg-warning/10 text-warning"
+          className="cursor-default gap-1.5 border-warning/30 bg-warning/10 text-warning"
         >
           <LoaderCircle className="animate-spin" aria-hidden />
           Analyzing
         </Badge>
       );
-    case "stale":
+      if (!repoId) return badge;
       return (
+        <StatusLogHover repoId={repoId} label="Analysis job log">
+          {badge}
+        </StatusLogHover>
+      );
+    }
+    case "stale": {
+      const badge = (
         <Badge
           variant="outline"
-          className="gap-1.5 border-warning/30 bg-warning/10 text-warning"
+          className="cursor-default gap-1.5 border-warning/30 bg-warning/10 text-warning"
         >
           <RefreshCw className="animate-spin [animation-duration:2.5s]" aria-hidden />
           Refreshing
         </Badge>
       );
+      if (!repoId) return badge;
+      return (
+        <StatusLogHover repoId={repoId} label="Analysis job log">
+          {badge}
+        </StatusLogHover>
+      );
+    }
     case "error":
       return (
         <Badge

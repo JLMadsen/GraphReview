@@ -78,6 +78,8 @@ export interface UseLabelsResult extends LabelSnapshot {
   hasLabels: boolean;
   /** True while a run is queued or active. */
   running: boolean;
+  /** The status endpoint with `logs=1` — feeds `JobLogHover` on the "Labeling…" spinner. */
+  logsUrl: string;
 }
 
 export function isLabelPending(state: LabelStateDTO): boolean {

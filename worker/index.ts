@@ -72,6 +72,19 @@ function logError(message: string): void {
   console.error(`[worker] ${new Date().toISOString()} ${message}`);
 }
 
+/**
+ * Mirrors a job-scoped log line into BullMQ's own per-job log (`job.log()`,
+ * stored in Redis under the job's retention window) alongside the stdout
+ * write every call site already does. This is what lets the UI's hover-to-
+ * see-progress affordance read back what the worker was doing — `docker
+ * logs` is the only channel today, and it isn't reachable from the app.
+ * Best-effort: a Redis hiccup here must never fail the job over a nice-to-
+ * have.
+ */
+function mirrorToJobLog(job: { log: (row: string) => Promise<number> }, message: string): void {
+  void job.log(message).catch(() => undefined);
+}
+
 async function main(): Promise<void> {
   log(
     `starting — queue "${ANALYSIS_QUEUE_NAME}" (concurrency ${CONCURRENCY}), ` +
@@ -97,9 +110,10 @@ async function main(): Promise<void> {
       const attempt = `attempt ${job.attemptsMade + 1}/${job.opts.attempts ?? 1}`;
       log(`job ${job.id} started — repo ${repoId} (${attempt})`);
 
-      return runAnalysisJob(repoId, (message) =>
-        log(`job ${job.id} · ${message}`)
-      );
+      return runAnalysisJob(repoId, (message) => {
+        log(`job ${job.id} · ${message}`);
+        mirrorToJobLog(job, message);
+      });
     },
     { connection: getBlockingRedisConnection(), concurrency: CONCURRENCY }
   );
@@ -138,9 +152,10 @@ async function main(): Promise<void> {
           : `${target.baseRef}...${target.headRef}`;
       log(`review job ${job.id} started — repo ${repoId}, ${describedTarget}`);
 
-      return runReviewJob(job.data, job, (message) =>
-        log(`review job ${job.id} · ${message}`)
-      );
+      return runReviewJob(job.data, job, (message) => {
+        log(`review job ${job.id} · ${message}`);
+        mirrorToJobLog(job, message);
+      });
     },
     { connection: getBlockingRedisConnection(), concurrency: REVIEW_CONCURRENCY }
   );
@@ -172,9 +187,10 @@ async function main(): Promise<void> {
       const { repoId, force } = job.data;
       log(`label job ${job.id} started — repo ${repoId}${force ? " (force)" : ""}`);
 
-      return runLabelJob(job.data, job, (message) =>
-        log(`label job ${job.id} · ${message}`)
-      );
+      return runLabelJob(job.data, job, (message) => {
+        log(`label job ${job.id} · ${message}`);
+        mirrorToJobLog(job, message);
+      });
     },
     { connection: getBlockingRedisConnection(), concurrency: LABEL_CONCURRENCY }
   );

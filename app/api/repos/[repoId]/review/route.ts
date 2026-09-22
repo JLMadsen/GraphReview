@@ -18,6 +18,7 @@ import {
   checkReviewFreshness,
   enqueueReview,
   getReviewJob,
+  getReviewJobLogs,
   invalidateReviewFreshness,
   reviewTargetKey,
   type ReviewFreshness,
@@ -75,6 +76,8 @@ export interface ReviewStatusResponse {
   freshness?: ReviewFreshness;
   /** Whether all three AI provider settings are present — lets the UI decide whether auto-running a review can work at all (§10: no cost gate, but no point firing into an unconfigured provider either). */
   aiConfigured: boolean;
+  /** Recent `job.log()` lines from the worker, oldest first — present only for `?logs=1` (the dock's hover-to-see-progress affordance). */
+  logs?: string[];
 }
 
 export interface EnqueueReviewResponse {
@@ -293,7 +296,8 @@ export async function GET(
   { params }: { params: Promise<{ repoId: string }> }
 ) {
   const { repoId } = await params;
-  const target = targetFromSearchParams(new URL(request.url).searchParams);
+  const searchParams = new URL(request.url).searchParams;
+  const target = targetFromSearchParams(searchParams);
   if (!target) {
     return errorResponse(
       "Query must be ?prNumber=N or ?baseRef=X&headRef=Y.",
@@ -301,6 +305,7 @@ export async function GET(
     );
   }
   const targetKey = reviewTargetKey(target);
+  const includeLogs = searchParams.get("logs") === "1";
 
   try {
     const repo = await getRepoById(repoId);
@@ -349,12 +354,26 @@ export async function GET(
       if (reviewed) freshness = await checkReviewFreshness(repo, target, targetKey, reviewed);
     }
 
+    // Read on demand only (`?logs=1`) — never part of the regular ~1.2s
+    // progress poll. Best-effort: a failure here must not take down a
+    // response that otherwise successfully answered the status question.
+    let logs: string[] | undefined;
+    if (includeLogs) {
+      try {
+        logs = await getReviewJobLogs(repoId, targetKey);
+      } catch (logError) {
+        console.error(`GET /api/repos/${repoId}/review?logs=1 — could not read job logs:`, logError);
+        logs = [];
+      }
+    }
+
     const body: ReviewStatusResponse = {
       targetKey,
       state,
       ...(progress ? { progress } : {}),
       ...(error ? { error } : {}),
       ...(freshness ? { freshness } : {}),
+      ...(logs ? { logs } : {}),
       findings: findingRecords.map((finding) => ({
         id: finding.id,
         componentId: finding.componentId,

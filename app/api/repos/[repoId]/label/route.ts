@@ -16,7 +16,12 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { enqueueLabel, getLabelJob, type LabelProgress } from "@/lib/jobs";
+import {
+  enqueueLabel,
+  getLabelJob,
+  getLabelJobLogs,
+  type LabelProgress,
+} from "@/lib/jobs";
 import { getActiveAiProvider, getLabelSummary, getRepoById } from "@/lib/neo4j";
 
 export const dynamic = "force-dynamic";
@@ -41,6 +46,8 @@ export interface LabelStatusResponse {
   describedModules: number;
   /** Module-tier components in total — the denominator for `describedModules`. */
   modules: number;
+  /** Recent `job.log()` lines from the worker, oldest first — present only for `?logs=1` (the toolbar's hover-to-see-progress affordance). */
+  logs?: string[];
 }
 
 export interface EnqueueLabelResponse {
@@ -172,10 +179,11 @@ function toProgress(raw: unknown): LabelProgress | undefined {
 }
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ repoId: string }> }
 ) {
   const { repoId } = await params;
+  const includeLogs = new URL(request.url).searchParams.get("logs") === "1";
 
   try {
     const repo = await getRepoById(repoId);
@@ -214,6 +222,21 @@ export async function GET(
       state = "completed";
     }
 
+    // Read on demand only (`?logs=1`) — never part of the regular ~1.2s
+    // progress poll, since that would spend a Redis round trip on every tick
+    // for a hover nobody may ever make. Best-effort: a failure here must not
+    // take down a response that otherwise successfully answered the status
+    // question.
+    let logs: string[] | undefined;
+    if (includeLogs) {
+      try {
+        logs = await getLabelJobLogs(repoId);
+      } catch (logError) {
+        console.error(`GET /api/repos/${repoId}/label?logs=1 — could not read job logs:`, logError);
+        logs = [];
+      }
+    }
+
     const body: LabelStatusResponse = {
       state,
       ...(progress ? { progress } : {}),
@@ -222,6 +245,7 @@ export async function GET(
       domains: summary.domains,
       describedModules: summary.describedModules,
       modules: summary.modules,
+      ...(logs ? { logs } : {}),
     };
     return NextResponse.json(body);
   } catch (err) {
