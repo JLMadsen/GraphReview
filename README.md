@@ -3,9 +3,6 @@
 A locally-run tool for reviewing GitHub pull requests and GitLab merge
 requests against a codebase's component graph.
 
-This is currently a project **skeleton**: navigation and screens exist as
-placeholders, with no real Neo4j queries, static analysis, GitHub calls, or
-AI integration wired up yet.
 
 ![GraphReview's component graph and AI review view](example.png)
 
