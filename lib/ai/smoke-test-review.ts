@@ -285,6 +285,10 @@ async function partA(): Promise<void> {
     })());
     check("oversized diff: small file untouched (not starved by the huge one)", user.includes("+SMALL_FILE_MARKER"));
     check("oversized diff: the small file is not marked truncated", !/SMALL_FILE_MARKER\s*\n\[diff truncated\]/.test(user));
+    check(
+      "oversized diff: marker names the dropped hunks' own function headings, cheaply, with no extra model call",
+      r.calls === 1 && /\[diff truncated\] \(also touches: function f\d+\(\)(, function f\d+\(\))*, \+\d+ more hunks?\)/.test(user)
+    );
 
     const fake2 = fakeChat(fenced({ findings: [{ summary: "x", intentMatch: "match", confidence: 1, rationale: "y" }] }));
     const r2 = await reviewComponentChange(config, baseInput(), { chat: fake2.chat });

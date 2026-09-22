@@ -82,10 +82,29 @@ function authConfig(token: string | null): string[] {
  * `GIT_TERMINAL_PROMPT=0` (no terminal is ever attached here). That message
  * is accurate but says nothing about *why*, so it's worth translating.
  */
+/**
+ * Every phrasing seen in practice for "this clone/fetch failed because of
+ * missing or insufficient access", across both git's own credential-prompt
+ * failure and GitHub's several different server-side rejection messages:
+ *   - "could not read Username" — git's own message when it falls back to
+ *     its interactive credential flow and there's no terminal (§17).
+ *   - "Authentication failed" / "status code: 401" — an invalid/expired PAT.
+ *   - "Write access to repository not granted" / "403" — an authenticated
+ *     but insufficiently-scoped PAT, or (with no token at all) how GitHub's
+ *     git-http-backend sometimes phrases "you can't read this private repo"
+ *     rather than the plain 404 "repository not found" case below.
+ *   - "repository not found" — GitHub deliberately can't distinguish
+ *     "doesn't exist" from "exists but you can't see it" for a private repo,
+ *     so this is just as likely to mean "wrong/missing credentials" as a
+ *     typo'd URL.
+ */
+const AUTH_FAILURE_PATTERN =
+  /could not read username|authentication failed|write access to repository not granted|status code: ?40[13]\b|remote: .*forbidden|repository not found/i;
+
 function withFriendlyAuthError<T>(promise: Promise<T>, hadToken: boolean): Promise<T> {
   return promise.catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
-    if (/could not read username|authentication failed|status code: ?401/i.test(message)) {
+    if (AUTH_FAILURE_PATTERN.test(message)) {
       throw new Error(
         hadToken
           ? "GitHub rejected the request (likely an invalid, expired, or insufficiently-scoped PAT — it needs `repo` scope for a private repository). Re-enter it in Settings."

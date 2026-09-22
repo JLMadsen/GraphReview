@@ -17,12 +17,21 @@ export const DEFAULT_IGNORED_DIRS: readonly string[] = [
   "dist",
   "build",
   "out",
-  "target",
   "coverage",
   "__pycache__",
   "venv",
   "site-packages",
 ];
+
+/**
+ * Directory names only ignored when the evidence that they are build output is
+ * actually present in the same directory - unlike the names above, these are
+ * common enough as ordinary source folders that skipping them unconditionally
+ * causes real misses (a JS/TS repo can easily have a `lib/target/` full of
+ * source files). `target` is Cargo's build output, but only when it sits next
+ * to the `Cargo.toml` that produced it.
+ */
+const CONDITIONALLY_IGNORED_DIRS: ReadonlyMap<string, string> = new Map([["target", "Cargo.toml"]]);
 
 /** Files that are technically source but never meaningful to parse. */
 const IGNORED_FILE_PATTERNS: readonly RegExp[] = [
@@ -85,6 +94,8 @@ export async function walkRepo(
 
       if (isDirectory) {
         if (name.startsWith(".") || ignored.has(name) || name.endsWith(".egg-info")) continue;
+        const evidenceFile = CONDITIONALLY_IGNORED_DIRS.get(name);
+        if (evidenceFile && entries.some((e) => e.name === evidenceFile)) continue;
         if (seenDirs.has(abs)) continue;
         seenDirs.add(abs);
         await walk(abs, rel);

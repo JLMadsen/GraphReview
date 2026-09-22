@@ -140,6 +140,19 @@
  *   canvas (graph) < background (page) < card/sidebar < popover/elevated
  */
 .dark {
+  /*
+   * Without this, a browser renders native form controls (a <select>'s
+   * popped-out option list, scrollbars, date pickers) using the OS's light
+   * theme regardless of the page's own dark CSS — the text colour still
+   * inherits from this stylesheet (white), but the control's own background
+   * stays light, so an <option> list reads as white-on-white. `color-scheme`
+   * tells the browser which system palette to render *native* widget chrome
+   * with; it's the one thing page CSS can't fake with custom properties.
+   * Unconditional here (not a media query) because the app has no light mode
+   * — <html> always carries this class (app/layout.tsx).
+   */
+  color-scheme: dark;
+
   --background: oklch(0.155 0.008 266);
   --foreground: oklch(0.97 0.004 266);
   --card: oklch(0.195 0.009 266);

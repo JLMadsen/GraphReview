@@ -24,7 +24,7 @@ export interface Token {
 }
 
 export interface TokenizeOptions {
-  /** Kotlin: nested `/* /* */ */` comments and `${...}` / `$name` string templates. */
+  /** Kotlin: nested block comments and `${...}` / `$name` string templates. */
   kotlin: boolean;
 }
 
@@ -67,7 +67,7 @@ export function tokenize(source: string, options: TokenizeOptions): Token[] {
   const kotlin = options.kotlin;
   let i = 0;
 
-  /** Skip a `/* ... */` comment starting at `i` (which points at the `/`). */
+  /** Skip a block comment starting at `i` (which points at its leading slash). */
   function skipBlockComment(): void {
     let depth = 1;
     i += 2;

@@ -161,14 +161,17 @@ const FCOSE_LAYOUT_OPTIONS = {
 };
 
 /**
- * Ordering for the two discrete layouts. Circle and Grid have no concept of
- * compound nodes — they place every node on a ring / in a matrix and leave
- * the parent boxes to be drawn around whatever ended up inside them, so with
- * an interleaved order every domain box overlaps every other one and the
- * grouping becomes unreadable. Sorting siblings together makes a domain a
- * contiguous arc (Circle) or a contiguous block of cells (Grid), which is
- * the best these two can do and is perfectly legible. Cytoscape passes the
- * comparator every node it is laying out, including the parents themselves.
+ * Sibling-first ordering for the two discrete layouts.
+ *
+ * Circle and Grid have no concept of compound nodes — they place every node
+ * independently and leave the parent boxes to be drawn around whatever ended
+ * up inside them, so with an interleaved order every domain box overlaps
+ * every other one and the grouping disappears. Keeping siblings adjacent is
+ * the first half of the fix (and the whole of it for a flat graph);
+ * `runTiledByDomain` below is the second half, since contiguity alone still
+ * leaves a domain's bounding box spanning whole rows (Grid) or a wide arc
+ * (Circle).
+ * Cytoscape passes the comparator every node it is laying out.
  */
 function siblingSort(a: cytoscape.NodeSingular, b: cytoscape.NodeSingular): number {
   const parentA = (a.data("parent") as string | undefined) ?? "";
@@ -177,6 +180,85 @@ function siblingSort(a: cytoscape.NodeSingular, b: cytoscape.NodeSingular): numb
   const nameA = (a.data("name") as string | undefined) ?? "";
   const nameB = (b.data("name") as string | undefined) ?? "";
   return nameA.localeCompare(nameB);
+}
+
+/** Space between two domains' tiles, comfortably more than twice the `:parent` padding so their boxes can't touch. */
+const DOMAIN_TILE_GAP = 140;
+
+/**
+ * Circle and Grid, run once per domain and packed into tiles.
+ *
+ * Neither layout understands compound nodes. Run over the whole graph they
+ * place every node independently and leave the parent boxes to be drawn
+ * around whatever ended up inside them: with 4 domains over 109 modules a
+ * domain's members occupy a wide arc (Circle) or a band of full-width rows
+ * (Grid), and the resulting boxes all overlap each other, so the grouping
+ * the labeling pass just created is invisible. `sort` only guarantees the
+ * members are contiguous, which isn't enough, and Grid's `position`
+ * callback can't fix it either — the parent nodes take part in the same
+ * cell grid and displace their own children.
+ *
+ * So each domain gets its own layout run, and the results are packed
+ * row-major into disjoint tiles. Modules with no domain (new since the last
+ * labeling run) share one final tile. Circle still draws rings and Grid
+ * still draws a matrix — one per box instead of one for the graph.
+ */
+function runTiledByDomain(cy: cytoscape.Core, name: "circle" | "grid"): void {
+  const parents = cy.nodes(":parent").sort((a, b) => a.id().localeCompare(b.id()));
+  // `.map`'s callback is typed as a bare element (it could be an edge for a
+  // mixed collection), so the node-only API needs the cast.
+  const groups = parents.map((parent) => (parent as cytoscape.NodeSingular).children());
+  const loose = cy.nodes().not(":parent").not(":child");
+  if (loose.nonempty()) groups.push(loose);
+
+  const cols = Math.max(1, Math.ceil(Math.sqrt(groups.length)));
+  let x = 0;
+  let y = 0;
+  let rowHeight = 0;
+
+  groups.forEach((group, index) => {
+    // Each group is laid out wherever it happens to be, then *translated*
+    // into its tile. Passing the tile as the layout's `boundingBox` instead
+    // looks tidier but doesn't hold: `avoidOverlap` grows a ring's radius
+    // until every member fits on the circumference — about 1.4x past any
+    // diameter estimated from node count — and it then spills out of the
+    // tile it was supposed to stay inside. Measuring the real bounding box
+    // afterwards and shifting is exact, whatever the layout decided.
+    group
+      .layout({
+        name,
+        fit: false,
+        animate: false,
+        avoidOverlap: true,
+        padding: 0,
+        sort: siblingSort,
+        ...(name === "grid"
+          ? { cols: Math.max(1, Math.ceil(Math.sqrt(group.length))) }
+          : {}),
+      } as unknown as cytoscape.LayoutOptions)
+      .run();
+
+    // `boundingBox()` includes labels, which sit below each node — counting
+    // them is what stops one domain's labels landing on the next one's tile.
+    const bounds = group.boundingBox();
+    const dx = x - bounds.x1;
+    const dy = y - bounds.y1;
+    group.positions((node) => ({
+      x: node.position().x + dx,
+      y: node.position().y + dy,
+    }));
+
+    rowHeight = Math.max(rowHeight, bounds.h);
+    if ((index + 1) % cols === 0) {
+      x = 0;
+      y += rowHeight + DOMAIN_TILE_GAP;
+      rowHeight = 0;
+    } else {
+      x += bounds.w + DOMAIN_TILE_GAP;
+    }
+  });
+
+  cy.fit(undefined, 32);
 }
 
 /** One place that knows each layout's options, so the first render and a later switch can never drift apart. */
@@ -193,8 +275,64 @@ function buildLayoutOptions(
   };
   if (layout === "fcose") Object.assign(options, FCOSE_LAYOUT_OPTIONS);
   if (layout === "elk") options.elk = ELK_LAYOUT_OPTIONS;
+  // Only reached for a flat graph — `applyLayout` diverts Circle/Grid to
+  // `runTiledByDomain` as soon as there is a domain box to respect.
   if (layout === "circle" || layout === "grid") options.sort = siblingSort;
   return options;
+}
+
+/**
+ * The layout currently running per Cytoscape instance, so a switch can stop
+ * it before starting another. A `WeakMap` rather than a ref because
+ * `applyLayout` is module scope (shared by three call sites) and a destroyed
+ * instance must not keep its layout alive.
+ */
+const runningLayouts = new WeakMap<cytoscape.Core, cytoscape.Layouts>();
+
+/**
+ * Runs `layout` on `cy`, hiding the three things every call site would
+ * otherwise have to repeat: stopping the previous layout, ELK's lazy
+ * registration (async, hence the returned cancel function) and Circle's
+ * per-domain special case.
+ */
+function applyLayout(
+  cy: cytoscape.Core,
+  layout: LayoutMode,
+  extra: Record<string, unknown> = {}
+): () => void {
+  let cancelled = false;
+  const run = (): void => {
+    if (cancelled) return;
+    // Stop whatever was still running first. A layout keeps writing
+    // positions over several frames, so switching before the previous one
+    // settles used to let the *old* layout overwrite the new one's result —
+    // clicking Circle right after the graph loaded gave a force-directed
+    // blob inside correctly-placed boxes.
+    runningLayouts.get(cy)?.stop();
+    runningLayouts.delete(cy);
+
+    if ((layout === "circle" || layout === "grid") && cy.nodes(":parent").nonempty()) {
+      runTiledByDomain(cy, layout);
+      return;
+    }
+    const instance = cy.layout(
+      buildLayoutOptions(layout, extra) as unknown as cytoscape.LayoutOptions
+    );
+    // `cytoscape-elk` computes asynchronously and its own `fit` lands before
+    // the final positions do, so a tall hierarchy (which is what the domain
+    // tier produces) opens scrolled into the middle of itself. Re-fitting
+    // once the layout signals it has stopped is the reliable moment.
+    if (layout === "elk") instance.one("layoutstop", () => cy.fit(undefined, 32));
+    runningLayouts.set(cy, instance);
+    instance.run();
+  };
+
+  if (layout === "elk") void ensureElkRegistered().then(run);
+  else run();
+
+  return () => {
+    cancelled = true;
+  };
 }
 
 type AffectedCategory = "touched" | "neighbor" | "notAffected";
@@ -952,19 +1090,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       // Rebuilding the elements drops any collapsed state with them, so the
       // toolbar's toggle has to start from "expanded" again.
       setCollapsed(false);
-      const initialOptions = buildLayoutOptions(layout, { animate: false });
-
-      let cancelled = false;
-      if (layout === "elk") {
-        ensureElkRegistered().then(() => {
-          if (!cancelled) cy.layout(initialOptions as unknown as cytoscape.LayoutOptions).run();
-        });
-      } else {
-        cy.layout(initialOptions as unknown as cytoscape.LayoutOptions).run();
-      }
-      return () => {
-        cancelled = true;
-      };
+      return applyLayout(cy, layout, { animate: false });
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [nodes, edges, ready]);
 
@@ -972,22 +1098,10 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     useEffect(() => {
       const cy = cyRef.current;
       if (!cy || !ready || cy.elements().length === 0) return;
-      const options = buildLayoutOptions(layout, {
+      return applyLayout(cy, layout, {
         animate: true,
         ...(layout === "fcose" ? { randomize: false } : {}),
       });
-
-      let cancelled = false;
-      if (layout === "elk") {
-        ensureElkRegistered().then(() => {
-          if (!cancelled) cy.layout(options as unknown as cytoscape.LayoutOptions).run();
-        });
-      } else {
-        cy.layout(options as unknown as cytoscape.LayoutOptions).run();
-      }
-      return () => {
-        cancelled = true;
-      };
     }, [layout, ready]);
 
     // Touched/neighbor/not-affected classes + filter-driven dimming.
@@ -1146,13 +1260,10 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     const runCurrentLayout = (): void => {
       const cy = cyRef.current;
       if (!cy || cy.elements().length === 0) return;
-      const options = buildLayoutOptions(layout, {
+      applyLayout(cy, layout, {
         animate: true,
         ...(layout === "fcose" ? { randomize: false } : {}),
       });
-      const run = () => cy.layout(options as unknown as cytoscape.LayoutOptions).run();
-      if (layout === "elk") void ensureElkRegistered().then(run);
-      else run();
     };
 
     const handleToggleCollapse = (): void => {

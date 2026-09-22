@@ -249,26 +249,81 @@ function truncatePatchesToShare(
   return { files: out, truncated };
 }
 
-/** Keeps leading whole hunks that fit in `maxChars`; if not even the first fits, keeps a line-boundary prefix of it. */
+/**
+ * Unified-diff hunk headers carry an optional trailing "section heading" —
+ * `@@ -12,7 +12,9 @@ function handleSubmit() {` — that git's own diff
+ * driver derives from the nearest preceding function/class/method signature.
+ * When a hunk gets dropped for length, this is the cheapest possible signal
+ * of *what* was dropped: no extra model call, no extra cost, just reading
+ * text `git diff` already generated. Empty when the driver found no
+ * enclosing declaration (e.g. top-of-file changes, or a language git's
+ * default heuristics don't know).
+ */
+const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@[ \t]*(.*)$/;
+
+function hunkHeading(hunk: string): string {
+  return HUNK_HEADER.exec(hunk.split("\n", 1)[0])?.[1]?.trim() ?? "";
+}
+
+/**
+ * A short, cheap summary of what a truncation dropped, built purely from the
+ * hunks' own section headings — the "smarter pre-summarization" §9 flagged
+ * as owed, short of an actual second model call (which §9's "one call per
+ * component" deliberately rules out spending on every oversized file).
+ * Named headings are deduped and capped; anonymous ones (no heading) just
+ * add to the trailing "+N more" count so they aren't silently invisible.
+ */
+const MAX_NAMED_HEADINGS = 3;
+
+function summarizeDropped(droppedHunks: string[]): string {
+  if (droppedHunks.length === 0) return DIFF_TRUNCATED_MARKER;
+
+  const headingOf = droppedHunks.map(hunkHeading);
+  const uniqueHeadings = [...new Set(headingOf.filter((h) => h.length > 0))];
+  const named = uniqueHeadings.slice(0, MAX_NAMED_HEADINGS);
+  const namedSet = new Set(named);
+
+  if (named.length === 0) {
+    return `${DIFF_TRUNCATED_MARKER} (${droppedHunks.length} more hunk${droppedHunks.length === 1 ? "" : "s"} omitted)`;
+  }
+  // Every dropped hunk not represented by one of the named headings above —
+  // whether it had no heading at all, or a heading that didn't make the cap —
+  // is still real, dropped content, so it's counted rather than silently
+  // disappearing. A hunk whose heading *is* named isn't double-counted here,
+  // even if another hunk happens to share that same heading.
+  const unnamedCount = headingOf.filter((h) => !namedSet.has(h)).length;
+  const suffix = unnamedCount > 0 ? `, +${unnamedCount} more hunk${unnamedCount === 1 ? "" : "s"}` : "";
+  return `${DIFF_TRUNCATED_MARKER} (also touches: ${named.join(", ")}${suffix})`;
+}
+
+/** Keeps leading whole hunks that fit in `maxChars`; if not even the first fits, keeps a line-boundary prefix of it. Appends a summary of what was dropped, built from the dropped hunks' own section headings — see {@link summarizeDropped}. */
 function keepWholeHunks(patch: string, maxChars: number): string {
   const hunks = patch.split(/^(?=@@ )/m);
   const kept: string[] = [];
   let used = 0;
-  for (const hunk of hunks) {
+  let splitIndex = 0;
+  for (; splitIndex < hunks.length; splitIndex++) {
+    const hunk = hunks[splitIndex];
     if (used + hunk.length > maxChars) break;
     kept.push(hunk);
     used += hunk.length;
   }
 
   let text: string;
+  let dropped: string[];
   if (kept.length > 0) {
     text = kept.join("");
+    dropped = hunks.slice(splitIndex);
   } else {
     const cut = patch.slice(0, maxChars);
     const lastNewline = cut.lastIndexOf("\n");
     text = lastNewline > 0 ? cut.slice(0, lastNewline) : cut;
+    // The one hunk that didn't fit even partially still counts as dropped,
+    // so its heading (if any) still reaches the summary.
+    dropped = hunks.slice(0, 1);
   }
-  return `${text.replace(/\s+$/, "")}\n${DIFF_TRUNCATED_MARKER}`;
+
+  return `${text.replace(/\s+$/, "")}\n${summarizeDropped(dropped)}`;
 }
 
 // ---------------------------------------------------------------------------

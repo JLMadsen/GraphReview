@@ -5,6 +5,7 @@ import { getRepoDto } from "@/lib/jobs";
 import type { RepoDto } from "@/lib/jobs";
 import { getRepoById } from "@/lib/neo4j";
 import { ProviderBadge, RepoStatusBadge } from "@/app/repo-status-badge";
+import { RepoSwitcher } from "@/app/repo-switcher";
 import { RepoTabs } from "./repo-tabs";
 
 /**
@@ -79,9 +80,11 @@ export default async function RepoDetailLayout({
           Repositories
         </Link>
         <ChevronRight className="size-3.5 opacity-50" aria-hidden />
-        <span className="truncate px-1 py-0.5 text-foreground/80">
-          {repo?.name ?? repoId}
-        </span>
+        {repo ? (
+          <RepoSwitcher repoId={repoId} repoName={repo.name} />
+        ) : (
+          <span className="truncate px-1 py-0.5 text-foreground/80">{repoId}</span>
+        )}
       </nav>
 
       <div className="mb-7 flex flex-wrap items-start justify-between gap-4">

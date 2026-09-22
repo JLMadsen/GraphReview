@@ -23,6 +23,12 @@ services:
     volumes:
       - repo_cache:/data/repos
       - ${LOCAL_REPOS_PATH}:/data/local-repos:ro
+    extra_hosts:
+      # Docker Desktop (Windows/Mac) already resolves host.docker.internal;
+      # this makes it resolve on native Linux Docker Engine too, so a
+      # locally-run AI server (README's "Running your own AI") is reachable
+      # from inside the container the same way on both.
+      - "host.docker.internal:host-gateway"
     depends_on:
       - neo4j
       - redis
@@ -44,6 +50,8 @@ services:
     volumes:
       - repo_cache:/data/repos
       - ${LOCAL_REPOS_PATH}:/data/local-repos:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - neo4j
       - redis
