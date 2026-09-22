@@ -1,0 +1,278 @@
+"use client";
+
+// Client-side orchestrator for the Graph tab (DESIGN.md §4): fetches the
+// component graph and optional repo context, hosts the diff-selection
+// sidebar, and feeds diff-impact results into GraphCanvas for touched-node
+// highlighting. Everything fetches client-side (rather than the server
+// page doing it) so a missing/not-yet-built `/api/repos/[repoId]` repo
+// endpoint or an unreachable Neo4j degrades gracefully in the browser
+// instead of failing the page render.
+//
+// It is also where the v2 AI review (§9, §10) is hung off the diff flow:
+// `DiffPanel` reports *what* was checked alongside the impact result, that
+// target drives `useReview` (auto-run + polling), and the resulting findings
+// fan out to three places — marker halos on the canvas, the full dock below
+// it, and the selected component's own panel in the sidebar.
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { FlaskConical, GitBranch, LoaderCircle } from "lucide-react";
+import { GraphCanvas } from "./GraphCanvas";
+import { ComponentFilesPanel } from "./ComponentFilesPanel";
+import { DiffPanel } from "./DiffPanel";
+import { ReviewPanel } from "./ReviewPanel";
+import { buildReviewMarkers } from "./review-visuals";
+import { SAMPLE_EDGES, SAMPLE_NODES } from "./sample-data";
+import { useLabels } from "./useLabels";
+import { useReview } from "./useReview";
+import type {
+  DiffImpactResponseDTO,
+  GraphResponseDTO,
+  ReviewTargetDTO,
+} from "./types";
+
+/** Trimmed shape of `GET /api/repos/[repoId]` — see this repo's task brief. Only the fields this view needs. */
+interface RepoContext {
+  name: string;
+  defaultBranch?: string;
+}
+
+export interface GraphViewProps {
+  repoId: string;
+  /** From the page's `?pr=<number>` query param. */
+  initialPrNumber?: number;
+  /** From the page's `?base=<ref>&head=<ref>` query params (Branches tab's "Compare in graph" link). */
+  initialBaseRef?: string;
+  initialHeadRef?: string;
+}
+
+export function GraphView({
+  repoId,
+  initialPrNumber,
+  initialBaseRef,
+  initialHeadRef,
+}: GraphViewProps) {
+  const [repo, setRepo] = useState<RepoContext | null>(null);
+  const [graph, setGraph] = useState<GraphResponseDTO | null>(null);
+  const [usingSample, setUsingSample] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [diffResult, setDiffResult] = useState<DiffImpactResponseDTO | null>(null);
+  /** What the current impact result was a check *of* — `null` for "paste paths" (no diff to review) and before any check. Drives the whole review flow below. */
+  const [reviewTarget, setReviewTarget] = useState<ReviewTargetDTO | null>(null);
+  /** The component whose node was clicked in the canvas — drives both the canvas's neighbourhood highlight and the file panel below. */
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+
+  /**
+   * Bumped to re-fetch the component graph without remounting anything —
+   * currently by the AI labeling run finishing, which adds the domain-tier
+   * nodes and the `parentId`s that turn them into compound boxes (§6.1).
+   * Never read by the effect that sets it, per DESIGN.md §17.
+   */
+  const [graphNonce, setGraphNonce] = useState(0);
+
+  const review = useReview(repoId, reviewTarget);
+  const handleLabelsCompleted = useCallback(() => setGraphNonce((n) => n + 1), []);
+  const labels = useLabels(repoId, handleLabelsCompleted);
+
+  // A selection is only meaningful against the graph it was made in — but a
+  // *re-fetch* of the same repo's graph (a finished labeling run) keeps the
+  // same module ids, so it deliberately doesn't clear the selection.
+  useEffect(() => {
+    setSelectedNodeId(null);
+  }, [repoId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    // Repo context is a nice-to-have header/default — fail silently if the
+    // endpoint 404s (not built yet) or errors (no live Neo4j in dev).
+    fetch(`/api/repos/${repoId}`)
+      .then((res) => (res.ok ? (res.json() as Promise<RepoContext>) : null))
+      .then((data) => {
+        if (!cancelled && data) setRepo(data);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [repoId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch(`/api/repos/${repoId}/graph`)
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`Graph request failed (${res.status}).`);
+        return (await res.json()) as GraphResponseDTO;
+      })
+      .then((data) => {
+        if (cancelled) return;
+        if (data.nodes.length === 0) {
+          // Genuinely empty (not-yet-analyzed repo) — fall back to a
+          // sample graph so the Graph tab is never a dead end.
+          setGraph({ nodes: SAMPLE_NODES, edges: SAMPLE_EDGES });
+          setUsingSample(true);
+        } else {
+          setGraph(data);
+          setUsingSample(false);
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        // No live Neo4j / repo not analyzed yet — show sample data rather
+        // than a dead page, but surface the real error too.
+        setGraph({ nodes: SAMPLE_NODES, edges: SAMPLE_EDGES });
+        setUsingSample(true);
+        setLoadError(err instanceof Error ? err.message : "Failed to load graph.");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [repoId, graphNonce]);
+
+  const handleDiffResult = useCallback(
+    (result: DiffImpactResponseDTO | null, target: ReviewTargetDTO | null) => {
+      setDiffResult(result);
+      setReviewTarget(target);
+    },
+    []
+  );
+
+  const handleSelectNode = useCallback((nodeId: string | null) => {
+    setSelectedNodeId(nodeId);
+  }, []);
+
+  const clearSelection = useCallback(() => setSelectedNodeId(null), []);
+
+  // The graph payload already carries the selected component's name/tier/
+  // count, so the panel's header renders instantly and only the file list
+  // waits on the network.
+  const selectedNode = useMemo(
+    () =>
+      selectedNodeId
+        ? (graph?.nodes.find((n) => n.id === selectedNodeId) ?? null)
+        : null,
+    [graph, selectedNodeId]
+  );
+
+  // One marker per component (worst finding wins) for the canvas's third
+  // highlight layer. Memoized because `GraphCanvas` uses it as an effect
+  // dependency and this component re-renders on every poll tick.
+  const reviewMarkers = useMemo(
+    () => buildReviewMarkers(review.findings),
+    [review.findings]
+  );
+
+  const selectedFindings = useMemo(
+    () =>
+      selectedNodeId
+        ? review.findings.filter((f) => f.componentId === selectedNodeId)
+        : [],
+    [review.findings, selectedNodeId]
+  );
+
+  return (
+    // `data-wide-shell` opts this tab out of the repo shell's `max-w-6xl`
+    // cap — see app/repo/[repoId]/layout.tsx for the mechanism and why.
+    <div data-wide-shell className="flex flex-col gap-6 lg:flex-row">
+      <aside className="w-full shrink-0 border-border pb-6 lg:w-80 lg:border-r lg:pr-6 lg:pb-0">
+        {/* Sticks alongside a tall canvas instead of scrolling away from it. */}
+        <div className="space-y-4 lg:sticky lg:top-20">
+          {selectedNode && (
+            // Above the diff panel rather than replacing it: clicking a node
+            // shouldn't take the diff controls away, and the panel is the
+            // first thing in the sidebar so a selection made by clicking
+            // somewhere in a wide canvas is impossible to miss. `key` forces
+            // a fresh fetch/state when the selection moves to another node.
+            <ComponentFilesPanel
+              key={selectedNode.id}
+              repoId={repoId}
+              componentId={selectedNode.id}
+              componentName={selectedNode.name}
+              tier={selectedNode.tier}
+              fileCount={selectedNode.fileCount}
+              description={selectedNode.description}
+              sampleData={usingSample}
+              findings={selectedFindings}
+              onClear={clearSelection}
+            />
+          )}
+          {repo && (
+            <div className="rounded-lg bg-card px-3 py-2 ring-1 ring-border">
+              <p className="truncate text-xs font-semibold tracking-tight">
+                {repo.name}
+              </p>
+              {repo.defaultBranch && (
+                <p className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <GitBranch className="size-3 shrink-0" aria-hidden />
+                  <span className="truncate font-mono">{repo.defaultBranch}</span>
+                </p>
+              )}
+            </div>
+          )}
+          <DiffPanel
+            repoId={repoId}
+            defaultBranch={repo?.defaultBranch}
+            initialPrNumber={initialPrNumber}
+            initialBaseRef={initialBaseRef}
+            initialHeadRef={initialHeadRef}
+            onResult={handleDiffResult}
+          />
+        </div>
+      </aside>
+
+      <div className="min-w-0 flex-1 space-y-4">
+        {usingSample && (
+          <div className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 text-xs text-warning">
+            <FlaskConical className="mt-px size-3.5 shrink-0" aria-hidden />
+            <p>
+              <span className="font-medium">Showing sample data</span> — this
+              repo has no analyzed component graph yet
+              {loadError ? ` (${loadError})` : ""}.
+            </p>
+          </div>
+        )}
+        {graph ? (
+          <GraphCanvas
+            nodes={graph.nodes}
+            edges={graph.edges}
+            touchedComponentIds={diffResult?.touchedComponentIds}
+            selectedNodeId={selectedNodeId}
+            onSelectNode={handleSelectNode}
+            reviewMarkers={reviewMarkers}
+            // No labeling control over sample data: those component ids
+            // don't exist in Neo4j, so there is nothing to label.
+            labels={usingSample ? undefined : labels}
+          />
+        ) : (
+          <div className="flex h-96 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border bg-canvas">
+            <LoaderCircle
+              className="size-5 animate-spin text-muted-foreground"
+              aria-hidden
+            />
+            <p className="text-sm text-muted-foreground">Loading graph…</p>
+          </div>
+        )}
+
+        {/* The review dock — see ReviewPanel's header for why it lives here
+            rather than in the sidebar. It renders nothing without a target,
+            so the Paste-paths flow is untouched. */}
+        <ReviewPanel
+          target={reviewTarget}
+          status={review.status}
+          state={review.state}
+          progress={review.progress}
+          findings={review.findings}
+          freshness={review.freshness}
+          aiConfigured={review.aiConfigured}
+          notice={review.notice}
+          noticeCode={review.noticeCode}
+          rerunning={review.rerunning}
+          canRerun={review.canRerun}
+          onRerun={review.rerun}
+          selectedComponentId={selectedNodeId}
+          onSelectComponent={handleSelectNode}
+        />
+      </div>
+    </div>
+  );
+}

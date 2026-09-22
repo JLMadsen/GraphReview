@@ -1,0 +1,71 @@
+# GraphReview Docker Compose layout — DESIGN.md §12.
+#
+# Run from the repo root with:
+#   docker compose -f docker/docker-compose.yml --env-file docker/.env up
+# or `cd docker && cp .env.example .env` (fill in values) `&& docker compose up`.
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: app
+    environment:
+      NEO4J_URI: ${NEO4J_URI}
+      NEO4J_USER: ${NEO4J_USER}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      REDIS_URL: ${REDIS_URL}
+      LOCAL_REPOS_PATH: ${LOCAL_REPOS_PATH}
+      SESSION_SECRET: ${SESSION_SECRET}
+    ports:
+      # Only app's web port is published to the host by default (§11, §12)
+      - "3000:3000"
+    volumes:
+      - repo_cache:/data/repos
+      - ${LOCAL_REPOS_PATH}:/data/local-repos:ro
+    depends_on:
+      - neo4j
+      - redis
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: worker
+    environment:
+      NEO4J_URI: ${NEO4J_URI}
+      NEO4J_USER: ${NEO4J_USER}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      REDIS_URL: ${REDIS_URL}
+      LOCAL_REPOS_PATH: ${LOCAL_REPOS_PATH}
+      SESSION_SECRET: ${SESSION_SECRET}
+    # No ports published — the worker has no HTTP surface (§3, §13).
+    volumes:
+      - repo_cache:/data/repos
+      - ${LOCAL_REPOS_PATH}:/data/local-repos:ro
+    depends_on:
+      - neo4j
+      - redis
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
+    # Not published to the host by default (§11): only app/worker reach it
+    # over the internal Compose network. Add a `ports:` mapping yourself
+    # (e.g. "7474:7474" / "7687:7687") to use the Neo4j Browser for debugging.
+    volumes:
+      - neo4j_data:/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # Not published to the host by default (§11) — BullMQ backing store,
+    # internal to app/worker only.
+    restart: unless-stopped
+
+volumes:
+  neo4j_data:
+  repo_cache:

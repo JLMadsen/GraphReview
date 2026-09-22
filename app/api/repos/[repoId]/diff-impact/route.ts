@@ -1,0 +1,172 @@
+// POST /api/repos/[repoId]/diff-impact — the "PR diff impact" feature from
+// the original prototype (DESIGN.md §4's Graph-tab sidebar). Accepts one of
+// three request shapes and resolves the changed files to the `Component`s
+// that own them via `BELONGS_TO`.
+//
+// This route is intentionally read-only against Neo4j — it does not upsert
+// a `PullRequest`/`RefSnapshot` node or write `CHANGES` edges. Persisting
+// PR/ref-comparison data is the analysis/ingestion pipeline's job (outside
+// this task's owned paths); this endpoint only answers "what does this diff
+// touch right now" for the graph UI.
+
+import { NextResponse } from "next/server";
+import { z } from "zod";
+import { decrypt } from "@/lib/crypto";
+import { compareRefs, listPullRequestFiles } from "@/lib/github";
+import {
+  listLocalChangedFiles,
+  matchFilesToComponents,
+  toDiffImpactResponse,
+} from "@/lib/jobs";
+import { getRepoById, getSettings } from "@/lib/neo4j";
+import type { DiffImpactResponseDTO } from "@/components/graph/types";
+
+export const dynamic = "force-dynamic";
+
+const bodySchema = z.union([
+  z.object({ prNumber: z.number().int().positive() }),
+  z.object({ baseRef: z.string().min(1), headRef: z.string().min(1) }),
+  z.object({ filePaths: z.array(z.string()) }),
+]);
+
+/** Extracts `{ owner, repo }` from a GitHub HTTPS or SSH remote URL. Returns `null` if `url` doesn't look like a GitHub remote. */
+function parseGitHubOwnerRepo(url: string): { owner: string; repo: string } | null {
+  const match = url.match(/github\.com[/:]([^/]+)\/([^/]+?)(\.git)?\/?$/i);
+  if (!match) return null;
+  return { owner: match[1], repo: match[2] };
+}
+
+async function resolveGitHubToken(): Promise<
+  { token: string } | { error: string }
+> {
+  const settings = await getSettings();
+  if (!settings?.githubPatEncrypted) {
+    return { error: "No GitHub PAT configured in Settings." };
+  }
+  try {
+    return { token: decrypt(settings.githubPatEncrypted) };
+  } catch {
+    return { error: "Failed to decrypt the stored GitHub PAT." };
+  }
+}
+
+// The file-path -> component resolution itself lives in
+// `lib/jobs/diff-components.ts`, shared with the AI review pipeline (§9),
+// which starts from the exact same question ("what does this diff touch?")
+// and additionally needs the per-component file grouping. This route only
+// projects that result down to its own response shape.
+
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ repoId: string }> }
+) {
+  const { repoId } = await params;
+
+  let rawBody: unknown;
+  try {
+    rawBody = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
+  }
+
+  const parsed = bodySchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return NextResponse.json(
+      {
+        error:
+          "Body must be { prNumber } or { baseRef, headRef } or { filePaths }.",
+      },
+      { status: 400 }
+    );
+  }
+
+  try {
+    const repo = await getRepoById(repoId);
+    if (!repo) {
+      return NextResponse.json({ error: "Repo not found." }, { status: 404 });
+    }
+
+    let changedPaths: string[];
+
+    if ("filePaths" in parsed.data) {
+      changedPaths = parsed.data.filePaths.map((p) => p.trim()).filter(Boolean);
+    } else if ("baseRef" in parsed.data && repo.provider === "local") {
+      // Local repos have no GitHub URL to compare against, but the refs are
+      // sitting right there in the checkout — same "no PAT needed" reasoning
+      // as the Branches tab's local-git path (lib/jobs/local-git.ts).
+      if (!repo.localPath) {
+        return NextResponse.json(
+          { error: "This local repo has no path on record." },
+          { status: 400 }
+        );
+      }
+      try {
+        changedPaths = await listLocalChangedFiles(
+          repo.localPath,
+          parsed.data.baseRef,
+          parsed.data.headRef
+        );
+      } catch (err) {
+        return NextResponse.json(
+          {
+            error: `Local ref comparison failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          },
+          { status: 400 }
+        );
+      }
+    } else {
+      if (!repo.url) {
+        return NextResponse.json(
+          { error: "This repo has no GitHub URL on record." },
+          { status: 400 }
+        );
+      }
+      const ownerRepo = parseGitHubOwnerRepo(repo.url);
+      if (!ownerRepo) {
+        return NextResponse.json(
+          { error: `Could not parse an owner/repo from ${repo.url}.` },
+          { status: 400 }
+        );
+      }
+
+      const tokenResult = await resolveGitHubToken();
+      if ("error" in tokenResult) {
+        return NextResponse.json({ error: tokenResult.error }, { status: 400 });
+      }
+
+      if ("prNumber" in parsed.data) {
+        const { data: files } = await listPullRequestFiles(
+          tokenResult.token,
+          ownerRepo.owner,
+          ownerRepo.repo,
+          parsed.data.prNumber
+        );
+        changedPaths = files.map((f) => f.filename);
+      } else {
+        const { data: comparison } = await compareRefs(
+          tokenResult.token,
+          ownerRepo.owner,
+          ownerRepo.repo,
+          parsed.data.baseRef,
+          parsed.data.headRef
+        );
+        changedPaths = comparison.files.map((f) => f.filename);
+      }
+    }
+
+    // Dedupe defensively — GitHub shouldn't return duplicates, but a pasted
+    // paths textarea easily could.
+    const uniquePaths = Array.from(new Set(changedPaths));
+    const match = await matchFilesToComponents(repoId, uniquePaths);
+    const body: DiffImpactResponseDTO = toDiffImpactResponse(match);
+    return NextResponse.json(body);
+  } catch (err) {
+    console.error(`POST /api/repos/${repoId}/diff-impact failed:`, err);
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Failed to compute diff impact." },
+      { status: 500 }
+    );
+  }
+}
