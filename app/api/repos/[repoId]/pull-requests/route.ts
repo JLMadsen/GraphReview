@@ -1,9 +1,9 @@
 // `GET /api/repos/[repoId]/pull-requests?state=open|closed|all` — the PR
-// list behind the Pull Requests tab (§4).
+// list behind the Pull Requests tab.
 //
 // `state` maps straight onto GitHub's own filter. Merged PRs come back under
 // `closed`/`all`, with lib/github deriving the three-value
-// `open | closed | merged` state on each item (§7, §8) — so the UI can show a
+// `open | closed | merged` state on each item — so the UI can show a
 // "merged" badge without a separate request.
 //
 // As with branches, a repo that isn't linked to GitHub returns

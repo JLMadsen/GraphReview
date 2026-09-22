@@ -1,9 +1,8 @@
-// Generic OpenAI-compatible chat-completions client — decision #8 of
-// docs/DESIGN.md (§8) and the flow described in §9.
+// Generic OpenAI-compatible chat-completions client.
 //
 // Deliberately provider-agnostic: `AiProviderConfig` is just
 // `{ baseUrl, apiKey, model }`, nothing here special-cases OpenAI, Ollama,
-// LM Studio, vLLM, etc. And per §9, this never sets `response_format` or
+// LM Studio, vLLM, etc. This never sets `response_format` or
 // `tools`/`tool_choice` on the request — those aren't universally supported
 // by OpenAI-*compatible* servers, so structured output is the caller's
 // problem via plain prompting + `parse.ts`, not this client's.
@@ -132,7 +131,7 @@ function extractResult(body: unknown, endpoint: string, rawText: string): ChatCo
  * shape (`{ model, messages, ... }`) and returns the first choice's
  * assistant text plus token usage when the provider reports it.
  *
- * No `response_format`/`tools` are ever sent (§9) — `messages` must already
+ * No `response_format`/`tools` are ever sent — `messages` must already
  * contain plain prompted instructions asking for whatever shape of answer
  * the caller wants; use `parse.ts` to pull structured data back out of the
  * returned text.

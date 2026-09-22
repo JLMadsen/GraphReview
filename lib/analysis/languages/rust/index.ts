@@ -1,5 +1,5 @@
 /**
- * Rust analyzer (DESIGN.md §5, §15 v2 - proves out the language extension point).
+ * Rust analyzer (v2 - proves out the language extension point).
  *
  * File-level edges only. Every `mod foo;`, `extern crate` and each leaf of a
  * (brace/glob) `use` tree becomes one import:

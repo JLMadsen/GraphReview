@@ -12,11 +12,11 @@ import {
 } from "../github-notice";
 
 /**
- * Branches tab — DESIGN.md §4.
+ * Branches tab.
  *
- * Branch list fetched through lib/github with the stored PAT (§8, §11). The
- * ad-hoc "compare two refs" tool itself lives in the Graph tab's diff panel
- * (§4), so each row links across to it rather than duplicating the control
+ * Branch list fetched through lib/github with the stored PAT. The
+ * ad-hoc "compare two refs" tool itself lives in the Graph tab's diff panel,
+ * so each row links across to it rather than duplicating the control
  * here.
  */
 

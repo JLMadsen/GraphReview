@@ -1,5 +1,5 @@
 // BullMQ queue definitions shared by the `app` (producer) and `worker`
-// (consumer) processes — DESIGN.md §3, §12.
+// (consumer) processes.
 //
 // Server-only: this reads `REDIS_URL` and opens a Redis connection, so it
 // must never be imported from a client component. Route handlers, server
@@ -12,7 +12,7 @@ import { Redis } from "ioredis";
 /** Queue name — must match on both sides (app enqueues, worker consumes). */
 export const ANALYSIS_QUEUE_NAME = "analysis";
 
-/** Job name inside the analysis queue. One job type for now (§15: v1 has no AI jobs yet). */
+/** Job name inside the analysis queue. One job type for now (v1 has no AI jobs yet). */
 export const ANALYSIS_JOB_NAME = "analyze-repo";
 
 /** Typed payload of an analysis job. Deliberately minimal — everything else is looked up from Neo4j by the worker, so a queued job can never carry a stale copy of the repo record. */
@@ -50,12 +50,12 @@ export function isPendingJobState(state: JobState | "unknown"): boolean {
   return PENDING_STATES.has(state);
 }
 
-/** Default retry/retention policy for analysis jobs (§10: failures retry, they are not swallowed). */
+/** Default retry/retention policy for analysis jobs (failures retry, they are not swallowed). */
 const ANALYSIS_JOB_OPTIONS: JobsOptions = {
   attempts: 3,
   backoff: { type: "exponential", delay: 15_000 },
   // Keep a short tail of finished jobs so `getAnalysisJobState` can still
-  // report a recent failure as the repo's `error` status (§4's status
+  // report a recent failure as the repo's `error` status (the status
   // indicator) rather than losing it immediately.
   removeOnComplete: { age: 24 * 60 * 60, count: 50 },
   removeOnFail: { age: 7 * 24 * 60 * 60, count: 50 },
@@ -157,7 +157,7 @@ export async function getAnalysisJobState(
  *
  * `getAnalysisJobState` only returns a bare state string — this instead
  * loads the actual BullMQ `Job`, whose `failedReason` carries the thrown
- * error's message. Used to surface *why* a repo's status is `error` (§4)
+ * error's message. Used to surface *why* a repo's status is `error`
  * instead of just that it is.
  */
 export async function getAnalysisJobFailure(
@@ -195,7 +195,7 @@ export interface EnqueueAnalysisResult {
 }
 
 /**
- * Enqueues a static-analysis job for a repo, at most once at a time (§10).
+ * Enqueues a static-analysis job for a repo, at most once at a time.
  *
  * BullMQ's job-id dedup only covers jobs that still exist in Redis; a
  * *finished* job keeps occupying its id until it is evicted, and a plain

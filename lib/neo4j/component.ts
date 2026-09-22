@@ -1,6 +1,6 @@
-// Typed repository functions for the `(:Component)` node label (DESIGN.md
-// §7, §6/§6.1), plus the relationships it participates in as the "owning"
-// side: DEPENDS_ON, CHILD_OF, and PART_OF.
+// Typed repository functions for the `(:Component)` node label, plus the
+// relationships it participates in as the "owning" side: DEPENDS_ON,
+// CHILD_OF, and PART_OF.
 
 import { runRead, runWrite } from "./client";
 import type { ComponentRecord, DependsOnProps } from "./types";
@@ -57,7 +57,7 @@ export async function getComponentById(
   return record ? toComponentRecord(record.get("c").properties) : null;
 }
 
-/** Lists every component for a repo, optionally narrowed to one tier (§6.1). */
+/** Lists every component for a repo, optionally narrowed to one tier. */
 export async function listComponentsByRepoId(
   repoId: string,
   tier?: ComponentRecord["tier"]
@@ -76,7 +76,7 @@ export async function listComponentsByRepoId(
   );
 }
 
-/** Lists the direct children (`CHILD_OF` this component) — e.g. module-tier components under a domain-tier parent (§6.1). */
+/** Lists the direct children (`CHILD_OF` this component) — e.g. module-tier components under a domain-tier parent. */
 export async function listChildComponents(
   parentComponentId: string
 ): Promise<ComponentRecord[]> {
@@ -97,7 +97,7 @@ export async function deleteComponent(id: string): Promise<void> {
   await runWrite(`MATCH (c:Component {id: $id}) DETACH DELETE c`, { id });
 }
 
-/** `(Component)-[:DEPENDS_ON {weight}]->(Component)` — aggregated from file-level `IMPORTS` edges (§7). */
+/** `(Component)-[:DEPENDS_ON {weight}]->(Component)` — aggregated from file-level `IMPORTS` edges. */
 export async function linkComponentDependency(
   fromComponentId: string,
   toComponentId: string,
@@ -127,7 +127,7 @@ export async function unlinkComponentDependency(
   );
 }
 
-/** `(Component)-[:CHILD_OF]->(Component)` — nests a module-tier component under its domain-tier parent (§6.1). */
+/** `(Component)-[:CHILD_OF]->(Component)` — nests a module-tier component under its domain-tier parent. */
 export async function linkComponentChildOf(
   childComponentId: string,
   parentComponentId: string

@@ -1,5 +1,5 @@
 /**
- * Shared Java + Kotlin import resolution (DESIGN.md §5).
+ * Shared Java + Kotlin import resolution.
  *
  * One fully-qualified-name -> file index is built per run from the analysers'
  * `FileAnalysis.declares` (package + top-level types; Kotlin also top-level

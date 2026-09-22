@@ -1,7 +1,7 @@
 "use client";
 
-// The "view diff" action behind a finding in `ReviewPanel` (DESIGN.md
-// §9/§10): fetches `GET /api/repos/[repoId]/diff-impact/file` for the
+// The "view diff" action behind a finding in `ReviewPanel`: fetches
+// `GET /api/repos/[repoId]/diff-impact/file` for the
 // finding's `filePath` against the review's own target (PR or refs) and
 // renders it in `DiffViewer`, with the finding's `lineRange` highlighted so
 // a reviewer can find the spot the finding is actually about inside a

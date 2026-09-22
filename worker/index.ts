@@ -1,4 +1,4 @@
-// Worker process entrypoint — DESIGN.md §3, §12.
+// Worker process entrypoint.
 //
 // Same image as `app`, different command (`npm run worker`). It has no HTTP
 // surface: it consumes the `analysis`, `review` and `label` queues defined
@@ -7,7 +7,7 @@
 // anyone observes it.
 //
 // Errors are never swallowed — a throwing job is handed back to BullMQ,
-// which applies the retry/backoff policy from lib/jobs/queue.ts (§10).
+// which applies the retry/backoff policy from lib/jobs/queue.ts.
 
 import { Worker } from "bullmq";
 import type { Job } from "bullmq";
@@ -37,15 +37,15 @@ import { runReviewJob } from "@/lib/jobs/review";
 import { runLabelJob } from "@/lib/jobs/label";
 import { closeDriver, runMigrations } from "@/lib/neo4j";
 
-/** One job at a time: static analysis is CPU-bound (tree-sitter parsing, §3) and a second concurrent run would just contend for the same core. */
+/** One job at a time: static analysis is CPU-bound (tree-sitter parsing) and a second concurrent run would just contend for the same core. */
 const CONCURRENCY = Number(process.env.ANALYSIS_CONCURRENCY ?? 1);
 
 /**
  * One review job at a time as well. A review is I/O-bound rather than
  * CPU-bound, but it already fans out to several concurrent model calls
- * internally (§9), and running two whole reviews at once would multiply that
- * fan-out against a provider that may be a single local model server
- * (decision #8) — and against Neo4j's serial finding writes.
+ * internally, and running two whole reviews at once would multiply that
+ * fan-out against a provider that may be a single local model server — and
+ * against Neo4j's serial finding writes.
  */
 const REVIEW_CONCURRENCY = Number(process.env.REVIEW_CONCURRENCY ?? 1);
 
@@ -53,12 +53,13 @@ const REVIEW_CONCURRENCY = Number(process.env.REVIEW_CONCURRENCY ?? 1);
  * One labeling job at a time, for the same reasons as a review — it spends
  * model calls against a provider that may be a single local server, and its
  * domain-tier writes are relationship writes, which Neo4j Community insists
- * on seeing serially (§17).
+ * on seeing serially.
  */
 const LABEL_CONCURRENCY = Number(process.env.LABEL_CONCURRENCY ?? 1);
 
 /**
- * Optional periodic staleness sweep. §10's refresh trigger is "on view", so
+ * Optional periodic staleness sweep. The normal refresh trigger is "on
+ * view", so
  * this is off unless `STALENESS_SWEEP_INTERVAL_MS` is set — it exists for
  * setups that want repos kept warm without anyone opening the UI.
  */
@@ -141,7 +142,7 @@ async function main(): Promise<void> {
     logError(`worker error: ${error.message}`);
   });
 
-  // --- review queue (§9, §10) -------------------------------------------
+  // --- review queue -------------------------------------------------------
   const reviewWorker = new Worker<ReviewJobData, ReviewJobResult>(
     REVIEW_QUEUE_NAME,
     async (job: Job<ReviewJobData, ReviewJobResult>) => {
@@ -180,7 +181,7 @@ async function main(): Promise<void> {
     logError(`review worker error: ${error.message}`);
   });
 
-  // --- label queue (§6.1, §10) ------------------------------------------
+  // --- label queue ---------------------------------------------------------
   const labelWorker = new Worker<LabelJobData, LabelJobResult>(
     LABEL_QUEUE_NAME,
     async (job: Job<LabelJobData, LabelJobResult>) => {
@@ -243,7 +244,7 @@ async function main(): Promise<void> {
 }
 
 /**
- * Periodically re-runs the §10 staleness check for every repo, enqueueing
+ * Periodically re-runs the staleness check for every repo, enqueueing
  * work for any that have moved on. Disabled unless configured.
  */
 function startStalenessSweep(): NodeJS.Timeout | undefined {

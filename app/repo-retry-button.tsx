@@ -1,6 +1,6 @@
 "use client";
 
-// Retry button for a repo card in `status: "error"` (DESIGN.md §4/§10).
+// Retry button for a repo card in `status: "error"`.
 //
 // Force-re-enqueues analysis via `POST /api/repos/[repoId]/refresh` — the
 // escape hatch documented in that route: a failed job is cleared and

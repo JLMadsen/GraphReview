@@ -1,8 +1,8 @@
-// Typed repository functions for the `(:Finding)` node label (DESIGN.md
-// §7, §9), plus the relationships it participates in as the "owning"
+// Typed repository functions for the `(:Finding)` node label, plus the
+// relationships it participates in as the "owning"
 // side: ABOUT (-> Component) and FOR (-> PullRequest).
 //
-// Findings are overwritten, not versioned, when a review is re-run (§10) —
+// Findings are overwritten, not versioned, when a review is re-run —
 // `replaceFindingsForTargetComponent` implements that overwrite-only
 // semantics for a given (repoId, targetKey, componentId) triple, where
 // `targetKey` identifies *what* was reviewed (`pr:<number>` or
@@ -140,7 +140,7 @@ export async function deleteFinding(id: string): Promise<void> {
 /**
  * Deletes every existing `(:Finding)` for a given `(prId, componentId)`
  * pair. Call this immediately before writing fresh findings for that pair
- * to implement §10's "overwritten, not versioned" behavior when a PR's
+ * to implement the "overwritten, not versioned" behavior when a PR's
  * head SHA changes.
  */
 export async function deleteFindingsForPullRequestComponent(
@@ -157,7 +157,7 @@ export async function deleteFindingsForPullRequestComponent(
 }
 
 // ---------------------------------------------------------------------------
-// Target-scoped findings (§9, §10) — one "review target" is a PR or a
+// Target-scoped findings — one "review target" is a PR or a
 // base...head ref comparison, identified by `targetKey`.
 // ---------------------------------------------------------------------------
 
@@ -172,7 +172,7 @@ export interface FindingWithComponent extends FindingRecord {
  * component's name.
  *
  * Deliberately a plain read with no job/queue awareness: the review job
- * writes findings per component *as it goes* (§9 — "findings stream into the
+ * writes findings per component *as it goes* ("findings stream into the
  * UI per node as they complete"), so polling this while a job is running is
  * exactly how the UI streams them.
  */
@@ -202,11 +202,11 @@ export type TargetFindingInput = Omit<
 > & { createdAt?: string };
 
 /**
- * Overwrite-only persistence for one (target, component) slot (§10):
+ * Overwrite-only persistence for one (target, component) slot:
  * deletes whatever findings exist for `(repoId, targetKey, componentId)` and
  * writes `findings` in their place, wiring up `ABOUT -> (:Component)` and,
  * when a `(:PullRequest)` node with the finding's `prId` exists, `FOR ->
- * (:PullRequest)` (§7).
+ * (:PullRequest)`.
  *
  * Written as exactly two statements — one delete, one `UNWIND` insert —
  * rather than a node upsert plus a relationship call per finding. Beyond

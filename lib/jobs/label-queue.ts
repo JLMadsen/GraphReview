@@ -1,13 +1,13 @@
-// BullMQ queue definition for AI-assisted labeling — DESIGN.md §6.1, §10.
+// BullMQ queue definition for AI-assisted labeling.
 //
 // Split from `./queue.ts` and `./review-queue.ts` for the same reason those
 // two are split from each other: the policies differ. Labeling spends money
 // on LLM calls, so like a review it is `attempts: 1` and never retried
 // automatically — but unlike a review it is explicitly **on demand**
-// (§10's "no confirmation, no cap" applies to reviews, which follow a diff
-// selection; re-analysis is frequent and re-labeling after every one of them
-// would spend tokens nobody asked for). Nothing enqueues this except a user
-// pressing "Generate labels".
+// (a review's "no confirmation, no cap" follows a diff selection; re-analysis
+// is frequent and re-labeling after every one of them would spend tokens
+// nobody asked for). Nothing enqueues this except a user pressing "Generate
+// labels".
 //
 // Server-only: opens a Redis connection. Route handlers and `worker/` only.
 // The connections themselves are reused from `./queue.ts`.
@@ -29,7 +29,7 @@ export interface LabelJobData {
   /**
    * Overwrite module descriptions that already have text.
    *
-   * Off by default: a description is user-editable data (decision #9), and
+   * Off by default: a description is user-editable data, and
    * an automatic pass must never silently replace something a human wrote.
    */
   force?: boolean;
@@ -42,7 +42,7 @@ export type LabelPhaseName = "domains" | "descriptions";
  * Live progress of a labeling run, reported via `job.updateProgress()` and
  * surfaced verbatim by `GET /api/repos/[repoId]/label`.
  *
- * `calls`/`promptTokens`/`completionTokens` are §10's running cost counter,
+ * `calls`/`promptTokens`/`completionTokens` are a running cost counter,
  * the same idea as `ReviewProgress` — visible as it accrues, gating nothing.
  */
 export interface LabelProgress {
@@ -109,7 +109,7 @@ export function getLabelQueue(): LabelQueue {
  *
  * `-` rather than `:` as the separator: BullMQ rejects custom job ids
  * containing `:` ("Custom Id cannot contain :"), which once made every
- * enqueue in this codebase fail silently (DESIGN.md §17). Repo ids are
+ * enqueue in this codebase fail silently. Repo ids are
  * UUIDs, but nothing enforces that at the type level, so anything outside
  * `[A-Za-z0-9_-]` is hashed rather than trusted.
  */

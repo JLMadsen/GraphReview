@@ -1,5 +1,5 @@
-// Typed repository functions for the `(:File)` node label (DESIGN.md §7),
-// plus the relationships it participates in as the "owning" side:
+// Typed repository functions for the `(:File)` node label, plus the
+// relationships it participates in as the "owning" side:
 // BELONGS_TO (-> Component) and IMPORTS (-> File).
 
 import { runRead, runWrite } from "./client";
@@ -86,7 +86,7 @@ export async function deleteFile(id: string): Promise<void> {
   await runWrite(`MATCH (f:File {id: $id}) DETACH DELETE f`, { id });
 }
 
-/** `(File)-[:BELONGS_TO]->(Component)` — assigns a file to a component from folder/community clustering (§6). Replaces any prior membership so a file belongs to exactly one component at a given tier. */
+/** `(File)-[:BELONGS_TO]->(Component)` — assigns a file to a component from folder/community clustering. Replaces any prior membership so a file belongs to exactly one component at a given tier. */
 export async function linkFileToComponent(
   fileId: string,
   componentId: string
@@ -110,7 +110,7 @@ export async function unlinkFileFromComponent(fileId: string): Promise<void> {
   );
 }
 
-/** `(File)-[:IMPORTS {kind}]->(File)` — one file-level dependency edge from static analysis (§5). */
+/** `(File)-[:IMPORTS {kind}]->(File)` — one file-level dependency edge from static analysis. */
 export async function linkFileImport(
   fromFileId: string,
   toFileId: string,
@@ -141,7 +141,7 @@ interface FileImportEdge {
   kind: ImportsProps["kind"];
 }
 
-/** Lists the outgoing `IMPORTS` edges for a file, e.g. to feed `DEPENDS_ON` aggregation (§7). */
+/** Lists the outgoing `IMPORTS` edges for a file, e.g. to feed `DEPENDS_ON` aggregation. */
 export async function listFileImports(fileId: string): Promise<FileImportEdge[]> {
   const result = await runRead(
     `

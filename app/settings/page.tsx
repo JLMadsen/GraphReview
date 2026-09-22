@@ -2,10 +2,10 @@ import { getActiveAiProviderId, getSettings, listAiProviders } from "@/lib/neo4j
 import { SettingsForm } from "./settings-form";
 
 /**
- * Settings — DESIGN.md §4, §8, §11.
+ * Settings.
  *
  * A single global (not per-repo) page for the GitHub PAT and AI provider
- * config, since both are instance-wide under decision #6's
+ * config, since both are instance-wide under the
  * single-local-admin model. AI provider config is a *list* of saved
  * providers (base URL/key/model each, lib/neo4j/ai-provider.ts) with one
  * marked active — so a user can keep e.g. a local model server and a hosted

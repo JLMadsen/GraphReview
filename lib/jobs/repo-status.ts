@@ -1,9 +1,9 @@
-// The repo status indicator of DESIGN.md §4 ("analyzing… / up to date as of
+// The repo status indicator ("analyzing… / up to date as of
 // <sha> / stale, refreshing…") and the API DTO both the repo list and the
 // Graph tab read.
 //
 // Status is derived, never stored: it combines the analysis queue's view of
-// the repo (is a job pending / did the last one fail?) with the §10
+// the repo (is a job pending / did the last one fail?) with the
 // staleness comparison. Deriving it means it can't drift out of sync with
 // reality the way a persisted `status` column would after a crashed worker.
 
@@ -41,8 +41,8 @@ export interface RepoDto {
 
 export interface RepoStatusOptions {
   /**
-   * Whether a detected staleness should also *schedule* the refresh (§10's
-   * auto-refresh-on-view). `true` for the detail endpoint and the repo list;
+   * Whether a detected staleness should also *schedule* the refresh
+   * (auto-refresh-on-view). `true` for the detail endpoint and the repo list;
    * `false` for any read that must not cause side effects.
    */
   autoEnqueue?: boolean;
@@ -51,7 +51,7 @@ export interface RepoStatusOptions {
 }
 
 /**
- * Derives a repo's §4 status indicator.
+ * Derives a repo's status indicator.
  *
  * The mapping, spelled out:
  * - a pending/active job with no previous analysis → `analyzing` ("analyzing…")
@@ -106,7 +106,7 @@ export async function computeRepoStatus(
     enqueue: autoEnqueue,
   });
   // A failed probe means "we couldn't tell" — keep showing the last-known
-  // graph as current (§10 stale-while-revalidate), don't cry wolf.
+  // graph as current (stale-while-revalidate), don't cry wolf.
   if (!checked) return "up_to_date";
   return stale ? "stale" : "up_to_date";
 }
@@ -153,7 +153,7 @@ export async function getRepoDto(
 const LIST_STATUS_CONCURRENCY = 4;
 
 /**
- * Every tracked repo with its status, for the landing page (§4).
+ * Every tracked repo with its status, for the landing page.
  * Status probes run with bounded concurrency so a list of repos doesn't fan
  * out an unbounded number of `git ls-remote` subprocesses at once.
  */

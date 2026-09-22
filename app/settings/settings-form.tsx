@@ -1,6 +1,6 @@
 "use client";
 
-// Client half of the settings screen (DESIGN.md §4, §8, §11).
+// Client half of the settings screen.
 //
 // Secret fields (GitHub PAT, AI provider API keys) never round-trip a
 // decrypted value from the server: the server only tells this component
@@ -756,7 +756,7 @@ export function SettingsForm({
             <SectionTitle icon={Github}>GitHub</SectionTitle>
             <CardDescription className="text-[13px] leading-relaxed">
               Personal Access Token used to fetch repos, PRs, diffs, and linked
-              issues (decision #7).
+              issues.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -893,8 +893,7 @@ export function SettingsForm({
           <CardDescription className="text-[13px] leading-relaxed">
             Save more than one OpenAI-compatible provider — e.g. a local
             model server and a hosted one — and toggle which is active. Only
-            the active provider is used for reviews and labeling (decision
-            #8).
+            the active provider is used for reviews and labeling.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">

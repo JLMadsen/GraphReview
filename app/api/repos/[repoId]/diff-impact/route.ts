@@ -1,5 +1,5 @@
 // POST /api/repos/[repoId]/diff-impact — the "PR diff impact" feature from
-// the original prototype (DESIGN.md §4's Graph-tab sidebar). Accepts one of
+// the original prototype's Graph-tab sidebar. Accepts one of
 // three request shapes and resolves the changed files to the `Component`s
 // that own them via `BELONGS_TO`.
 //
@@ -49,7 +49,7 @@ function accessErrorMessage(
 }
 
 // The file-path -> component resolution itself lives in
-// `lib/jobs/diff-components.ts`, shared with the AI review pipeline (§9),
+// `lib/jobs/diff-components.ts`, shared with the AI review pipeline,
 // which starts from the exact same question ("what does this diff touch?")
 // and additionally needs the per-component file grouping. This route only
 // projects that result down to its own response shape.

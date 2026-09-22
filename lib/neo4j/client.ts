@@ -2,7 +2,7 @@
 //
 // This module must never be imported from a client component — it reads
 // server-side env vars (`NEO4J_URI`/`NEO4J_USER`/`NEO4J_PASSWORD`, per
-// docker/.env.example and DESIGN.md §12) and holds a live connection pool.
+// docker/.env.example) and holds a live connection pool.
 // Route handlers, `worker/`, and the repository modules in this directory
 // are the only intended callers (see README.md).
 

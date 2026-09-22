@@ -1,5 +1,5 @@
 /**
- * JS/TS import-specifier resolution (DESIGN.md §5).
+ * JS/TS import-specifier resolution.
  *
  * Deliberately *not* a full Node/TS module resolver: it resolves relative
  * specifiers, `tsconfig.json`/`jsconfig.json` `paths`/`baseUrl` (including
@@ -75,7 +75,7 @@ export function typeScriptExternalPackage(
   const spec = cleanSpecifier(raw);
   if (spec === "" || isRelative(spec) || spec.startsWith("/") || spec.startsWith("#")) return undefined;
   if (isPackageImportsSpecifier(spec, ctx)) return undefined;
-  // externalPackageName gets no importing file (DESIGN.md §5 interface), so this
+  // externalPackageName gets no importing file (per the analyzer interface), so this
   // checks every tsconfig/jsconfig in the repo rather than picking a nearest one.
   if (hasMatchingAlias(spec, ctx)) return undefined;
   if (isWorkspacePackageSpecifier(spec, ctx)) return undefined;

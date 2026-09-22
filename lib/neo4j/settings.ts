@@ -1,10 +1,10 @@
 // Typed repository functions for the singleton `(:Settings {id: "global"})`
-// node (DESIGN.md §7, §11). Not repoId-scoped — GitHub PAT and AI provider
-// config are shared instance-wide under decision #6.
+// node. Not repoId-scoped — GitHub PAT and AI provider
+// config are shared instance-wide.
 //
 // This module only persists whatever strings it's given for the two
 // `*Encrypted` fields — encryption/decryption is lib/crypto/'s
-// responsibility (§11), not this module's.
+// responsibility, not this module's.
 //
 // AI provider config no longer lives directly on this node — it moved to
 // `(:AiProvider)` nodes (lib/neo4j/ai-provider.ts) so more than one can be
@@ -111,7 +111,7 @@ const CLEARABLE_FIELDS: readonly SettingsField[] = [
  * (`Boolean(settings.aiApiKeyEncrypted)`) would be subtly right by accident
  * while the ciphertext slot still existed in the database. `REMOVE` deletes
  * the property outright, which is what "clear my saved credential" should
- * actually mean (§11).
+ * actually mean.
  *
  * Cypher cannot parameterize a property *name*, so the removal list is
  * spliced into the query text — hence the strict allow-list, which makes

@@ -1,4 +1,4 @@
-// Shared DTO shapes for the Graph tab (DESIGN.md §3, §4, §6). These are the
+// Shared DTO shapes for the Graph tab. These are the
 // contract between the two API routes this package owns
 // (app/api/repos/[repoId]/graph, app/api/repos/[repoId]/diff-impact) and the
 // Cytoscape UI in this directory. Intentionally colocated here rather than
@@ -12,7 +12,7 @@ export type GraphNodeTier = "domain" | "module" | "file";
 
 /** One `(:Component)` node, flattened for the graph UI. `parentId` is only
  * present when a `CHILD_OF` edge exists — v1 rarely populates the domain
- * tier (DESIGN.md §6.1/§16), so most nodes have no parent and the UI must
+ * tier, so most nodes have no parent and the UI must
  * render a flat graph in that case rather than assuming a 3-tier hierarchy. */
 export interface GraphNodeDTO {
   id: string;
@@ -70,6 +70,28 @@ export interface DiffImpactResponseDTO {
 }
 
 /**
+ * One AI-labeled, folder-clustered group of `unmatchedFiles` — files a PR
+ * added that have no `(:File)` node in the persisted graph yet (see
+ * lib/jobs/added-components.ts). Never written to Neo4j: synthesized fresh
+ * on request and scoped to one PR view, which is why it travels as its own
+ * DTO instead of joining `GraphNodeDTO`. `description` is absent when the AI
+ * provider isn't configured or the labeling call failed — the component
+ * (and its green node) still renders either way.
+ */
+export interface AddedComponentDTO {
+  id: string;
+  name: string;
+  filePaths: string[];
+  fileCount: number;
+  description?: string;
+}
+
+/** Response shape for `POST /api/repos/[repoId]/diff-impact/added-components`. */
+export interface AddedComponentsResponseDTO {
+  components: AddedComponentDTO[];
+}
+
+/**
  * File status vocabulary shared by GitHub's file-diff APIs and the
  * local-git equivalent — mirrors `PullRequestFileStatus` in lib/github,
  * duplicated here for the same client/server-boundary reason as the rest of
@@ -100,7 +122,7 @@ export interface FileDiffResponseDTO {
 }
 
 // ---------------------------------------------------------------------------
-// AI review (DESIGN.md §9, §10) — mirrors app/api/repos/[repoId]/review.
+// AI review — mirrors app/api/repos/[repoId]/review.
 // ---------------------------------------------------------------------------
 //
 // Duplicated here rather than imported from the route module for the same
@@ -115,7 +137,7 @@ export type IntentMatch = "match" | "partial" | "mismatch" | "unknown";
  * What a review is about — exactly one of the two shapes, matching the
  * review endpoint's POST body (and its `?prNumber=` / `?baseRef=&headRef=`
  * query form). The "paste paths" diff mode has no reviewable target: there
- * is no diff text behind it, only a list of file names (§9 needs hunks).
+ * is no diff text behind it, only a list of file names (the review needs hunks).
  */
 export type ReviewTargetDTO =
   | { prNumber: number }
@@ -129,7 +151,7 @@ export type ReviewStateDTO =
   | "completed"
   | "failed";
 
-/** Live progress of a running review — §10's "running counter", verbatim from the job. */
+/** Live progress of a running review — the "running counter", verbatim from the job. */
 export interface ReviewProgressDTO {
   total: number;
   completed: number;

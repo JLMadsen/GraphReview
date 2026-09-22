@@ -1,5 +1,5 @@
 /**
- * Java import resolution (DESIGN.md §5).
+ * Java import resolution.
  *
  * Java and Kotlin share one resolver - a fully-qualified-name -> file index built
  * from each file's `declares` - so a Java file can import a Kotlin class and vice

@@ -2,16 +2,16 @@
 
 > `lib/github/` Octokit wrapper, PAT handling, PR/diff/linked-issue fetching
 
-From DESIGN.md §8:
+From the project's background on GitHub integration:
 
 > **REST v3** (`@octokit/rest`) covers most of this — notably
 > `GET /repos/{owner}/{repo}/pulls/{pull_number}/files`, which returns
 > per-file unified-diff `patch` text directly, and
 > `GET /repos/{owner}/{repo}/compare/{base}...{head}` for non-PR ref
-> comparisons (decision #4). **GraphQL v4** (`@octokit/graphql`) is used
+> comparisons. **GraphQL v4** (`@octokit/graphql`) is used
 > specifically for linked-issue resolution — `closingIssuesReferences` on a
 > PR is reliably available only via GraphQL — and optionally to batch PR +
-> files + linked-issues into fewer round-trips. The PAT (decision #7) is
+> files + linked-issues into fewer round-trips. The PAT is
 > stored via in-app settings, persisted in Neo4j, and used as a Bearer
 > token. REST rate-limit headers are surfaced in the UI.
 

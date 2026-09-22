@@ -1,5 +1,5 @@
 /**
- * Static analysis engine (DESIGN.md §5, §6, §6.1).
+ * Static analysis engine.
  *
  * Self-contained by design: it takes a directory path and returns an in-memory
  * result. It knows nothing about Neo4j, GitHub, jobs or the AI provider.

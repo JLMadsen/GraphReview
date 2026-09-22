@@ -1,15 +1,14 @@
-// Per-call token budget — §9 of docs/DESIGN.md: "the per-call token budget
-// is configurable, with a conservative default (e.g. 6-8k input tokens),
-// since local models often have much smaller context windows than hosted
-// ones." No real tokenizer dependency (§9 says this is fine for now) — just
-// a character-count estimate.
+// Per-call token budget: the per-call token budget is configurable, with a
+// conservative default (e.g. 6-8k input tokens), since local models often
+// have much smaller context windows than hosted ones. No real tokenizer
+// dependency — just a character-count estimate.
 
 import type { ChatMessage } from "./types";
 
-/** Rough average for English/code text. No provider/model-specific tokenizer — a deliberate simplification per §9. */
+/** Rough average for English/code text. No provider/model-specific tokenizer — a deliberate simplification. */
 export const CHARS_PER_TOKEN = 4;
 
-/** Conservative default input budget (§9: "e.g. 6-8k input tokens"). */
+/** Conservative default input budget (e.g. 6-8k input tokens). */
 export const DEFAULT_TOKEN_BUDGET = 7000;
 
 const TRUNCATION_MARKER = "\n…[truncated]";
@@ -34,7 +33,7 @@ export function estimateMessagesTokens(messages: ChatMessage[]): number {
  *     size of any particular call's content), not per-call data — nothing
  *     is gained by trimming them, and a lot can break if the model loses
  *     its instructions.
- *   - Among the rest, per §9's call shape (shared intent context once,
+ *   - Among the rest, given the call shape (shared intent context once,
  *     then that component's diff hunks, then structural/neighbor context),
  *     later messages carry more call-specific, load-bearing content than
  *     earlier ones. So the **last** message is kept with highest priority,

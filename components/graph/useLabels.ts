@@ -1,6 +1,6 @@
 "use client";
 
-// The polling half of the AI labeling feature (DESIGN.md §6.1, §10).
+// The polling half of the AI labeling feature.
 //
 // Owns exactly one thing: keeping a `LabelSnapshot` in sync with
 // `/api/repos/[repoId]/label`. Rendering lives in `LabelsControl`.
@@ -18,7 +18,7 @@
 //      the caller can refetch the graph and actually show the new domains.
 //
 // ---------------------------------------------------------------------------
-// The dependency-array footgun this file is written around (DESIGN.md §17)
+// The dependency-array footgun this file is written around
 // ---------------------------------------------------------------------------
 // A React effect must not list, in its dependency array, state that it sets:
 // it re-invokes itself the moment its own `setState` commits, and the first

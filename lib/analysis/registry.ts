@@ -1,5 +1,5 @@
 /**
- * Central analyzer registry (DESIGN.md §5): analyzers are looked up by file
+ * Central analyzer registry: analyzers are looked up by file
  * extension, so adding language N+1 means adding it here and nowhere else —
  * `graph-builder.ts` never names a language.
  */
@@ -25,7 +25,7 @@ export function registerAnalyzer(analyzer: LanguageAnalyzer): void {
   }
 }
 
-// v1 language coverage (§15): JS/TS and Python. v2 adds Go, Java and Rust to
+// v1 language coverage: JS/TS and Python. v2 adds Go, Java and Rust to
 // prove out the extension point; Kotlin joins Java on the shared JVM resolver.
 // Everything else falls through unanalyzed.
 registerAnalyzer(typescriptAnalyzer);

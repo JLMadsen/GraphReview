@@ -1,4 +1,4 @@
-# GraphReview Docker Compose layout — DESIGN.md §12.
+# GraphReview Docker Compose layout.
 #
 # Run from the repo root with:
 #   docker compose -f docker/docker-compose.yml --env-file docker/.env up
@@ -33,7 +33,7 @@ services:
       GITLAB_API_URL: ${GITLAB_API_URL:-}
       GITLAB_WEB_URL: ${GITLAB_WEB_URL:-}
     ports:
-      # Only app's web port is published to the host by default (§11, §12)
+      # Only app's web port is published to the host by default
       - "3000:3000"
     volumes:
       - repo_cache:/data/repos
@@ -68,7 +68,7 @@ services:
       GITHUB_WEB_URL: ${GITHUB_WEB_URL:-}
       GITLAB_API_URL: ${GITLAB_API_URL:-}
       GITLAB_WEB_URL: ${GITLAB_WEB_URL:-}
-    # No ports published — the worker has no HTTP surface (§3, §13).
+    # No ports published — the worker has no HTTP surface.
     volumes:
       - repo_cache:/data/repos
       - ${LOCAL_REPOS_PATH}:/data/local-repos:ro
@@ -83,7 +83,7 @@ services:
     image: ${NEO4J_IMAGE:-neo4j:5}
     environment:
       NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
-    # Not published to the host by default (§11): only app/worker reach it
+    # Not published to the host by default: only app/worker reach it
     # over the internal Compose network. Add a `ports:` mapping yourself
     # (e.g. "7474:7474" / "7687:7687") to use the Neo4j Browser for debugging.
     volumes:
@@ -92,7 +92,7 @@ services:
 
   redis:
     image: ${REDIS_IMAGE:-redis:7-alpine}
-    # Not published to the host by default (§11) — BullMQ backing store,
+    # Not published to the host by default — BullMQ backing store,
     # internal to app/worker only.
     restart: unless-stopped
 

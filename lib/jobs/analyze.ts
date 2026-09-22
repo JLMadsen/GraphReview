@@ -1,8 +1,8 @@
-// The analysis job body — DESIGN.md §5, §6, §6.1, §7, §10.
+// The analysis job body.
 //
-// Pipeline: resolve the repo's source on disk (§14) → `analyzeRepo()` from
+// Pipeline: resolve the repo's source on disk → `analyzeRepo()` from
 // lib/analysis → persist the resulting graph through lib/neo4j's typed
-// repository functions → record `lastAnalyzedAt`/`lastAnalyzedSha` (§10).
+// repository functions → record `lastAnalyzedAt`/`lastAnalyzedSha`.
 //
 // Kept out of `worker/index.ts` on purpose: the worker entrypoint is just
 // BullMQ plumbing, while this is the actual unit of work, importable from a
@@ -33,7 +33,7 @@ import { LocalPathOutsideRootError, prepareRepoSource } from "./source";
 
 export type JobLogger = (message: string) => void;
 
-/** How many Neo4j writes to keep in flight. The repository layer runs one statement per call (§7), so persistence is round-trip bound; a small fixed fan-out keeps a big repo from taking minutes without flooding the driver's pool. Safe for node upserts (each targets its own `id`, so parallel MERGEs don't contend). */
+/** How many Neo4j writes to keep in flight. The repository layer runs one statement per call, so persistence is round-trip bound; a small fixed fan-out keeps a big repo from taking minutes without flooding the driver's pool. Safe for node upserts (each targets its own `id`, so parallel MERGEs don't contend). */
 const NEO4J_WRITE_CONCURRENCY = 16;
 
 /**
@@ -88,7 +88,7 @@ async function mapWithConcurrency<T>(
  * below goes through the typed repository functions.
  *
  * Note the deliberate trade-off: for the duration of a re-analysis the
- * repo's edges are missing rather than stale. §10's stale-while-revalidate
+ * repo's edges are missing rather than stale. The stale-while-revalidate
  * promise is about *not blocking* the reviewer, and a job takes seconds, so
  * a short edgeless window is preferred over the alternative (keeping removed
  * edges around until the very end and having to diff them precisely).
@@ -107,11 +107,11 @@ async function clearDerivedEdges(repoId: string): Promise<void> {
 /**
  * Removes `File`/auto-created module `Component` nodes that the latest
  * analysis no longer sees (deleted or renamed in the repo). User-created
- * components are never touched (decision #9).
+ * components are never touched.
  *
- * Note what this deliberately does **not** touch: the domain tier (§6.1).
+ * Note what this deliberately does **not** touch: the domain tier.
  * Domains come from the AI labeling pass (lib/jobs/label.ts), not from
- * static analysis, and re-analysis is frequent (§10 re-runs it on every
+ * static analysis, and re-analysis is frequent (it re-runs on every
  * staleness check) — so `listComponentsByRepoId(repoId, "module")` is
  * scoped to the module tier precisely so a refresh can never delete a
  * domain box or a module's `CHILD_OF` edge to one. Modules that are new
@@ -164,7 +164,7 @@ interface PersistCounts {
   componentEdges: number;
 }
 
-/** Writes an {@link AnalysisResult} into Neo4j as the §7 graph. */
+/** Writes an {@link AnalysisResult} into Neo4j as the component/file graph. */
 export async function persistAnalysis(
   repoId: string,
   sha: string,
@@ -204,11 +204,11 @@ export async function persistAnalysis(
   });
   log(`upserted ${result.files.length} file node(s)`);
 
-  // --- Component nodes (module tier, §6.1) ----------------------------
+  // --- Component nodes (module tier) -----------------------------------
   await mapWithConcurrency(result.modules, NEO4J_WRITE_CONCURRENCY, async (cluster) => {
     const componentId = componentNodeId(repoId, cluster.name);
     // `upsertComponent` fully replaces the node's properties, so anything the
-    // user curated (decision #9: descriptions live only in Neo4j and are
+    // user curated (descriptions live only in Neo4j and are
     // edited in-app) has to be read back and carried across, or every
     // re-analysis would silently wipe it. A component the user has taken
     // ownership of also keeps its name; only its path patterns are refreshed.
@@ -251,7 +251,7 @@ export async function persistAnalysis(
   );
   log(`wrote ${result.edges.length} file import edge(s)`);
 
-  // --- DEPENDS_ON (aggregated from the file edges, §7) ----------------
+  // --- DEPENDS_ON (aggregated from the file edges) ---------------------
   // weight = number of underlying file-level edges between the two
   // components. Intra-component edges are dropped: a component depending on
   // itself carries no information in the component graph.
@@ -288,7 +288,7 @@ export async function persistAnalysis(
 
 /**
  * Runs one full analysis for a repo. Throws on failure — BullMQ's retry
- * policy owns what happens next (§10); nothing here swallows an error.
+ * policy owns what happens next; nothing here swallows an error.
  * Failures that retrying cannot possibly fix (repo deleted, path outside the
  * bind mount) are raised as `UnrecoverableError` so they fail fast instead of
  * burning three attempts.

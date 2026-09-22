@@ -1,7 +1,7 @@
 /**
- * End-to-end check for the shared JVM (Java + Kotlin) analyzer/resolver
- * (DESIGN.md §5, and the JVM coupling fixes: `declares`-based resolution,
- * same-package / wildcard type-reference candidates, a lexical Kotlin analyzer).
+ * End-to-end check for the shared JVM (Java + Kotlin) analyzer/resolver,
+ * and the JVM coupling fixes: `declares`-based resolution,
+ * same-package / wildcard type-reference candidates, a lexical Kotlin analyzer.
  *
  *   npx tsx lib/analysis/smoke-test-jvm.ts          # run assertions
  *   npx tsx lib/analysis/smoke-test-jvm.ts --json   # also dump the full result

@@ -1,5 +1,5 @@
 /**
- * JavaScript / TypeScript / JSX / TSX analyzer (DESIGN.md §5, v1 language set).
+ * JavaScript / TypeScript / JSX / TSX analyzer (v1 language set).
  *
  * One analyzer covers the whole JS family: tree-sitter's `typescript` grammar is
  * a superset of JavaScript, and its `tsx` sibling additionally handles JSX, so

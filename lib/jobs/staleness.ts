@@ -1,4 +1,4 @@
-// Staleness check + auto-refresh — DESIGN.md §10.
+// Staleness check + auto-refresh.
 //
 // "Opening a repo's Graph tab, or selecting a PR/ref comparison, compares
 // `lastAnalyzedSha` against the current HEAD via a cheap check (`git
@@ -28,7 +28,7 @@ export interface StalenessResult {
   /**
    * `false` when the HEAD probe itself failed (offline, missing PAT, bad
    * local path). Callers should keep showing the last-known graph rather
-   * than treating this as staleness — §10's stale-while-revalidate rule
+   * than treating this as staleness — the stale-while-revalidate rule
    * says a reviewer is never blocked just to look at a PR.
    */
   checked: boolean;
@@ -39,7 +39,7 @@ export interface StalenessOptions {
   enqueue?: boolean;
   /**
    * A SHA the caller already knows the graph should match — e.g. a PR's head
-   * SHA from the GitHub API (§10: "or the PR's head SHA"). When given, no
+   * SHA from the GitHub API. When given, no
    * `git ls-remote` is performed at all.
    */
   expectedSha?: string;

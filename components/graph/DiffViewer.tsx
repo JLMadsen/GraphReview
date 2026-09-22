@@ -1,7 +1,7 @@
 "use client";
 
 // Code-editor-style rendering of a parsed unified diff — the finding-level
-// "view diff" action in `ReviewPanel` (DESIGN.md §9/§10). Two line-number
+// "view diff" action in `ReviewPanel`. Two line-number
 // gutters (old/new), a +/- marker column and monospace content, the same
 // shape GitHub's own file diff uses, so a reviewer already fluent in that
 // convention doesn't have to learn a new one.

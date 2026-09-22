@@ -1,5 +1,5 @@
 /**
- * Go import-path resolution (DESIGN.md §5).
+ * Go import-path resolution.
  *
  * A Go import path names a *package*, and a package is a directory - so an
  * import that belongs to a module in this repo resolves to **every non-test

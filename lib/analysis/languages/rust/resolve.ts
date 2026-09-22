@@ -1,5 +1,5 @@
 /**
- * Rust module-path resolution (DESIGN.md §5).
+ * Rust module-path resolution.
  *
  * Rust's module tree maps onto the file tree by convention (`mod a;` in a
  * module living at directory `D` is `D/a.rs` or `D/a/mod.rs`, and `a`'s own

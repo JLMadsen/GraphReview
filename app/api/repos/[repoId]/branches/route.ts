@@ -1,6 +1,6 @@
-// `GET /api/repos/[repoId]/branches` — branch list for the Branches tab (§4).
+// `GET /api/repos/[repoId]/branches` — branch list for the Branches tab.
 //
-// For a `github` repo this decrypts the stored PAT (§11) and calls
+// For a `github` repo this decrypts the stored PAT and calls
 // lib/github's `listBranches`. A `local` repo with no GitHub URL on file is
 // not an error: it returns `linked: false, reason: "not_linked"` so the UI
 // can render the "not linked to GitHub" state.

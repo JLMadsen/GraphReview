@@ -135,7 +135,7 @@ async function main(): Promise<void> {
       !result.externalPackages.some((p) => p.startsWith(".")),
     );
 
-    // --- clustering (§6.1 module tier) ---
+    // --- clustering (module tier) ---
     const moduleNames = result.modules.map((m) => m.name);
     check(
       "folder clustering at depth 2",

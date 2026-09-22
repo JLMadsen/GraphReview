@@ -2,22 +2,18 @@
 
 > `lib/analysis/` languages/<lang>/ (grammar/queries/resolver), graph-builder.ts, ir.ts
 
-From DESIGN.md §5:
+Each language implements a small `LanguageAnalyzer`: a tree-sitter query
+file (`.scm`) that extracts import/require statements, plus a
+`resolveImportPath` function that turns a raw import specifier into a
+repo-relative file path where possible... **Extension point**:
+`lib/analysis/languages/<lang>/{grammar.wasm, queries.scm, resolve.ts}`,
+implementing a shared `LanguageAnalyzer` interface and registered by file
+extension in a central registry.
 
-> Each language implements a small `LanguageAnalyzer`: a tree-sitter query
-> file (`.scm`) that extracts import/require statements, plus a
-> `resolveImportPath` function that turns a raw import specifier into a
-> repo-relative file path where possible... **Extension point**:
-> `lib/analysis/languages/<lang>/{grammar.wasm, queries.scm, resolve.ts}`,
-> implementing a shared `LanguageAnalyzer` interface and registered by file
-> extension in a central registry.
-
-And DESIGN.md §6:
-
-> v1 pipeline: build the file-level import graph (§5) → cluster by folder
-> depth → LLM-label if an AI provider is configured, else use the folder
-> name → persist as editable `Component` nodes → offer manual re-clustering
-> via community detection as a secondary action.
+v1 pipeline: build the file-level import graph → cluster by folder
+depth → LLM-label if an AI provider is configured, else use the folder
+name → persist as editable `Component` nodes → offer manual re-clustering
+via community detection as a secondary action.
 
 ## Scope
 
@@ -25,20 +21,20 @@ And DESIGN.md §6:
   `go`, `java`, `rust`, `kotlin`), each with its tree-sitter WASM grammar
   reference (or, for Kotlin, a grammar-free lexical reader — see below), `.scm`
   query file, and a `resolve.ts` implementing that language's import-path
-  resolution. v1 covered JS/TS and Python (§15); v2 added Go, Java and Rust to
+  resolution. v1 covered JS/TS and Python; v2 added Go, Java and Rust to
   prove out the extension point; v3 added Kotlin and made Java + Kotlin share
   one resolver (`languages/jvm/`) so same-package and wildcard-imported
   coupling — invisible to a pure `import`-statement reading — shows up too, and
   hardened the JS/Node/Next.js resolver (tsconfig `extends` chains, npm/pnpm
   workspaces). The registry is designed so adding language *N+1* touches
   nothing outside its own folder.
-- `ir.ts` — the common `FileAnalysis` intermediate representation (§5) that
+- `ir.ts` — the common `FileAnalysis` intermediate representation that
   every `LanguageAnalyzer` emits, decoupling the graph builder from
   language specifics. `declares` (fully-qualified names a file declares) is an
   optional field of it, used by the JVM resolver.
 - `graph-builder.ts` — turns per-file `FileAnalysis` output into the
   file-level import graph, then the folder-depth clustering pass that
-  produces module/domain-tier `Component`s (§6, §6.1).
+  produces module/domain-tier `Component`s.
 
 Out of scope here: LLM-assisted component labeling (calls out to
 `lib/ai/`), and persisting the resulting graph (calls out to `lib/neo4j/`).
@@ -51,8 +47,8 @@ import { analyzeRepo } from "@/lib/analysis";
 const result = await analyzeRepo("/data/repos/<repoId>", { moduleDepth: 2 });
 // result.files            FileAnalysis[]                (nodes, with their IR imports)
 // result.edges            { from, to, kind }[]          (resolved file → file import edges)
-// result.modules          { name, filePaths }[]         (§6.1 module tier, folder-based)
-// result.externalPackages string[]                      (grouped "external" nodes, §5)
+// result.modules          { name, filePaths }[]         (module tier, folder-based)
+// result.externalPackages string[]                      (grouped "external" nodes)
 ```
 
 The module is self-contained — a directory path in, an in-memory result out. It
@@ -62,7 +58,7 @@ imports nothing from `lib/neo4j`, `lib/github`, `lib/ai` or `lib/jobs`.
 
 | File | Role |
 | --- | --- |
-| `ir.ts` | `FileImport` / `FileAnalysis` — the common IR of §5 |
+| `ir.ts` | `FileImport` / `FileAnalysis` — the common IR |
 | `analyzer.ts` | the `LanguageAnalyzer` extension point + `AnalyzerContext` |
 | `registry.ts` | extension → analyzer lookup (the only file a new language touches) |
 | `tree-sitter.ts` | `web-tree-sitter` runtime: WASM grammar loading, parser/query caches |
@@ -210,7 +206,7 @@ last member sits on the same line as the closing brace
 (`class A { fun a() = 1 }`, `sealed class S { object C : S() }`,
 `class A { companion object { const val X = 1 } }`) produces `ERROR` nodes, and
 in some shapes the declarations after the error vanish from the tree entirely.
-Per DESIGN.md §5's "best-effort... falling back" spirit and this task's
+In the "best-effort... falling back" spirit and this task's
 instruction to time-box the grammar search, Kotlin instead gets a **lexical
 analyzer** (`languages/kotlin/lexical.ts`, `languages/jvm/tokenize.ts`): no
 tree-sitter, no WASM asset.

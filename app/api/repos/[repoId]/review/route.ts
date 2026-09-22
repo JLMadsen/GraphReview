@@ -1,9 +1,9 @@
-// The AI review endpoint — DESIGN.md §9, §10.
+// The AI review endpoint.
 //
 //   POST /api/repos/[repoId]/review   enqueue a review of a PR or a ref pair
 //   GET  /api/repos/[repoId]/review   job state + progress + findings so far
 //
-// The GET is intentionally poll-shaped rather than a one-shot result: §9
+// The GET is intentionally poll-shaped rather than a one-shot result: the review
 // runs one LLM call per touched component and persists each component's
 // findings the moment it completes, so repeatedly reading this endpoint is
 // how findings stream into the graph UI while the job is still running.
@@ -65,7 +65,7 @@ export interface ReviewStatusResponse {
   findings: FindingDto[];
   /**
    * Whether the reviewed code has moved since the review ran (stale-review
-   * detection, DESIGN.md §10/§16). Purely additive and advisory:
+   * detection). Purely additive and advisory:
    *   - present only when `state` is `completed` and the persisted findings
    *     carry the shas they were produced from — absent for legacy findings,
    *     for `queued`/`running`/`failed`, and when there are no findings;
@@ -74,7 +74,7 @@ export interface ReviewStatusResponse {
    *     status on this endpoint.
    */
   freshness?: ReviewFreshness;
-  /** Whether all three AI provider settings are present — lets the UI decide whether auto-running a review can work at all (§10: no cost gate, but no point firing into an unconfigured provider either). */
+  /** Whether all three AI provider settings are present — lets the UI decide whether auto-running a review can work at all (no cost gate, but no point firing into an unconfigured provider either). */
   aiConfigured: boolean;
   /** Recent `job.log()` lines from the worker, oldest first — present only for `?logs=1` (the dock's hover-to-see-progress affordance). */
   logs?: string[];
@@ -141,7 +141,7 @@ function isRedisUnavailable(error: unknown): boolean {
   );
 }
 
-/** The active saved provider must have all three fields present for a review to be possible (§8: base URL + key + model are one unit). */
+/** The active saved provider must have all three fields present for a review to be possible (base URL + key + model are one unit). */
 async function isAiConfigured(): Promise<boolean> {
   const provider = await getActiveAiProvider();
   return Boolean(provider?.baseUrl && provider?.apiKeyEncrypted && provider?.model);
@@ -186,7 +186,7 @@ export async function POST(
     }
 
     // A PR/MR only exists on the GitHub or GitLab side; a local-only repo
-    // has no PRs to review, however valid the number looks (decision #4/#7).
+    // has no PRs to review, however valid the number looks.
     if (target.kind === "pr" && ((repo.provider !== "github" && repo.provider !== "gitlab") || !repo.url)) {
       return errorResponse(
         "This repo is not linked to a supported git host, so it has no pull/merge requests to review — compare two refs instead.",

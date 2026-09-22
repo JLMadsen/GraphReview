@@ -1,5 +1,5 @@
 /**
- * Java analyzer (DESIGN.md §5, §15 v2 - proves out the language extension point).
+ * Java analyzer (v2 - proves out the language extension point).
  *
  * File-level import edges. Besides explicit `import`s it reports the file's
  * `package` and top-level types (`FileAnalysis.declares`) and, for coupling that

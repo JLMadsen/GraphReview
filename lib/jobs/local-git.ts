@@ -1,4 +1,4 @@
-// Local-git branch listing for the Branches tab (§4).
+// Local-git branch listing for the Branches tab.
 //
 // A `provider: "local"` repo's branches are sitting right there in its
 // `.git` directory — no GitHub API call (and no PAT) needed. This mirrors
@@ -6,7 +6,7 @@
 // page can render either source through the same list markup.
 //
 // Reuses source.ts's `gitIn` (same simple-git setup as `readCurrentBranch`)
-// and `resolveLocalRepoPath` (the §14 containment check) rather than
+// and `resolveLocalRepoPath` (the containment check) rather than
 // duplicating either.
 
 import type { Branch, PullRequestFile, PullRequestFileStatus } from "@/lib/github";
@@ -15,8 +15,8 @@ import { gitIn, resolveLocalRepoPath } from "./source";
 /**
  * Git config applied to every command in this module.
  *
- * Local repos are read into the container through a read-only bind mount
- * (§12/§14), so the checkout is owned by whatever uid the *host* user has
+ * Local repos are read into the container through a read-only bind mount,
+ * so the checkout is owned by whatever uid the *host* user has
  * while git runs as the container's user. Git refuses to operate on a repo
  * it considers owned by someone else ("detected dubious ownership in
  * repository"), which would make every local-repo feature fail with a
@@ -26,7 +26,7 @@ import { gitIn, resolveLocalRepoPath } from "./source";
  */
 const LOCAL_GIT_CONFIG = ["safe.directory=*"];
 
-/** Per-file patch text is capped so one enormous generated file (a lockfile, a bundled asset) can't blow up a job payload or an LLM prompt. §9 truncates further before sending; this is just the outer guard. */
+/** Per-file patch text is capped so one enormous generated file (a lockfile, a bundled asset) can't blow up a job payload or an LLM prompt. The review pipeline truncates further before sending; this is just the outer guard. */
 const MAX_PATCH_BYTES = 60_000;
 
 /**
@@ -138,7 +138,7 @@ export async function localMergeBase(
   }
 }
 
-/** One changed file of a local ref comparison. Structurally a `PullRequestFile` minus GitHub-only fields, so the review pipeline can treat local and GitHub diffs identically (§9 only ever reads `path`/`status`/counts/`patch`). */
+/** One changed file of a local ref comparison. Structurally a `PullRequestFile` minus GitHub-only fields, so the review pipeline can treat local and GitHub diffs identically (it only ever reads `path`/`status`/counts/`patch`). */
 export interface LocalFilePatch {
   path: string;
   status: PullRequestFileStatus;
@@ -176,7 +176,7 @@ function splitNul(output: string): string[] {
  * The local-repo counterpart to GitHub's
  * `GET /repos/{owner}/{repo}/pulls/{n}/files` — per-file status, line counts
  * and unified-diff text for a `base...head` comparison of a checkout on
- * disk, so the AI review pipeline (§9) works on a `provider: "local"` repo
+ * disk, so the AI review pipeline works on a `provider: "local"` repo
  * with no GitHub URL and no PAT.
  *
  * Notes on the git invocation:

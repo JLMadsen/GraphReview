@@ -1,5 +1,5 @@
 /**
- * Python import-specifier resolution (DESIGN.md §5).
+ * Python import-specifier resolution.
  *
  * Relative imports (`from .a import b`) are resolved exactly, per Python's
  * package semantics. Absolute imports are best-effort: they are probed against a

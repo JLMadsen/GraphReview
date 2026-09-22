@@ -1,6 +1,6 @@
 "use client";
 
-// The Graph tab's selected-component panel (DESIGN.md §4/§6.1): the files
+// The Graph tab's selected-component panel: the files
 // that actually make up the component whose node was clicked in
 // `GraphCanvas`, which the graph itself only ever shows as a *count* (node
 // size, and the hover tooltip).
@@ -38,7 +38,14 @@ export interface ComponentFilesPanelProps {
   /** True when the canvas is showing `sample-data.ts` (no analyzed graph) — those component ids don't exist in Neo4j, so the fetch is skipped rather than 404'ing. */
   sampleData?: boolean;
   /**
-   * This component's AI review findings (DESIGN.md §9), already filtered by
+   * File paths for a synthetic "added" node (a PR's new, not-yet-analyzed
+   * files — see `AddedComponentDTO`). These never got a `(:File)` node
+   * either, so the fetch is skipped the same way `sampleData` skips it;
+   * the paths are rendered directly instead.
+   */
+  localFiles?: string[];
+  /**
+   * This component's AI review findings, already filtered by
    * the caller. Shown above the file list because the verdict is the reason
    * someone clicked the node in the first place; the files are the detail
    * underneath it. Not fetched here — `GraphView` already holds the whole
@@ -56,6 +63,7 @@ export function ComponentFilesPanel({
   fileCount,
   description,
   sampleData,
+  localFiles,
   findings,
   onClear,
 }: ComponentFilesPanelProps) {
@@ -75,6 +83,17 @@ export function ComponentFilesPanel({
 
   useEffect(() => {
     let cancelled = false;
+    if (localFiles) {
+      setState({
+        status: "loaded",
+        data: {
+          componentId,
+          componentName,
+          files: localFiles.map((path) => ({ id: path, path, language: "", loc: 0 })),
+        },
+      });
+      return;
+    }
     if (sampleData) {
       setState({
         status: "error",
@@ -122,7 +141,7 @@ export function ComponentFilesPanel({
     return () => {
       cancelled = true;
     };
-  }, [repoId, componentId, sampleData]);
+  }, [repoId, componentId, componentName, sampleData, localFiles]);
 
   const files = state.status === "loaded" ? state.data.files : [];
   const count = state.status === "loaded" ? files.length : fileCount;

@@ -8,7 +8,7 @@
 //
 // Optional fields are omitted rather than sent as `null`.
 //
-// Reading this endpoint is also §10's auto-refresh trigger: the status is
+// Reading this endpoint is also the auto-refresh trigger: the status is
 // computed with a *cheap* HEAD probe (`git ls-remote` for URL repos, a local
 // `rev-parse` for bind-mounted ones — never a clone), and when the stored
 // graph is behind, a background job is enqueued and `"stale"` is returned

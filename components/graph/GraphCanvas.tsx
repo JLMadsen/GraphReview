@@ -1,6 +1,6 @@
 "use client";
 
-// Cytoscape wrapper — DESIGN.md §3, §4, §6.1.
+// Cytoscape wrapper.
 //
 // - Layout switcher: Force (`fcose`) / Circle / Grid / Hierarchical
 //   (`cytoscape-elk`, top-to-bottom layered), re-run on switch.
@@ -9,7 +9,7 @@
 //   `cytoscape-expand-collapse` adds the collapse/expand cue on top of that,
 //   and the toolbar's Labels control drives its collapse-all/expand-all.
 //   The domain tier that produces those parents is written on demand by the
-//   AI labeling job (DESIGN.md §6.1, lib/jobs/label.ts) — until someone runs
+//   AI labeling job (lib/jobs/label.ts) — until someone runs
 //   it, no node carries a `parentId`, no node is a parent, and this renders
 //   as a flat graph exactly as before.
 // - Node selection: tapping a node reports it up (`onSelectNode`) so the
@@ -27,8 +27,8 @@
 //   for the full rationale.
 // - Touched/neighbor/not-affected highlighting, mirroring the prototype's
 //   filter toggles.
-// - AI review markers: a THIRD independent highlight layer (DESIGN.md §9,
-//   §10), drawn with Cytoscape's `underlay-*` properties. Underlays are a
+// - AI review markers: a THIRD independent highlight layer,
+//   drawn with Cytoscape's `underlay-*` properties. Underlays are a
 //   halo painted *behind* the node, so unlike the two layers above they
 //   touch neither `background-color` (layer 1, impact) nor `border-*`/
 //   `opacity`/`z-index` (layer 2, selection). All three compose: a touched
@@ -362,6 +362,17 @@ const IMPACT_COLORS: Record<
 };
 
 /**
+ * A file added by the PR under review, with no `(:File)` node in the
+ * persisted graph — rendered as an ephemeral node the moment that PR is
+ * selected (see `addedComponentIds`). Deliberately outside `IMPACT_COLORS`/
+ * `AffectedCategory`: "added" is orthogonal to touched/neighbor/not-affected
+ * — a synthetic node has no real id in `touchedComponentIds` to begin with
+ * — so it gets its own class instead of a fourth category value threaded
+ * through every switch on `AffectedCategory`.
+ */
+const ADDED_COLOR = { fill: "#22c55e", border: "#86efac", label: "#052e14" };
+
+/**
  * Selection palette — the second highlight layer (see the module comment).
  * Deliberately *not* drawn from `IMPACT_COLORS`: selection has to stay
  * readable on top of a touched (amber) or diff-neighbour (indigo) node, so
@@ -486,7 +497,7 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
       // don't touch the edge, and the group's name sitting above it.
       //
       // Nothing changes in v1, where no node carries a `parentId` (the
-      // domain tier isn't populated — DESIGN.md §6.1/§16) so no node is a
+      // domain tier isn't populated) so no node is a
       // parent and this selector matches nothing. It is in place for when
       // the domain tier lands.
       //
@@ -552,6 +563,20 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
         "border-width": 2,
         color: "#c7d2fe",
         "z-index": 10,
+      },
+    },
+    {
+      // Applied/removed by its own effect (not the touched/neighbor one),
+      // so it composes independently — a synthetic added node is never
+      // "touched" (it has no real component id), but should still stand out.
+      selector: "node.added",
+      style: {
+        "background-color": ADDED_COLOR.fill,
+        "border-color": ADDED_COLOR.border,
+        "border-width": 2.5,
+        color: "#dcfce7",
+        "font-weight": 700,
+        "z-index": 20,
       },
     },
     {
@@ -672,12 +697,19 @@ export interface GraphCanvasProps {
   edges: GraphEdgeDTO[];
   /** From the diff-impact endpoint. `undefined` = no diff selected yet, so touched/neighbor highlighting is inactive. */
   touchedComponentIds?: string[];
+  /**
+   * Ids of synthetic nodes for files the current PR added with no stored
+   * component yet (see `AddedComponentDTO`) — these must already be present
+   * in `nodes` for the green style to have something to land on. `undefined`
+   * or empty = nothing highlighted.
+   */
+  addedComponentIds?: string[];
   /** Controlled selection: the component whose node is lit up (with its DEPENDS_ON neighbourhood). `null`/`undefined` = nothing selected. */
   selectedNodeId?: string | null;
   /** Fired on tapping a node (its id) or the background / the same node again (`null`). */
   onSelectNode?: (nodeId: string | null) => void;
   /**
-   * AI review findings collapsed to one marker per component (DESIGN.md §9)
+   * AI review findings collapsed to one marker per component
    * — the third highlight layer. Keyed by component id, which is the same
    * value as a graph node id. Memoize it in the parent: it is an effect
    * dependency here, so a fresh object on every render would re-apply the
@@ -685,7 +717,7 @@ export interface GraphCanvasProps {
    */
   reviewMarkers?: ReviewMarkerMap;
   /**
-   * AI labeling state (DESIGN.md §6.1) for the toolbar's Labels control.
+   * AI labeling state for the toolbar's Labels control.
    * Omitted (e.g. on sample data) means no control is rendered at all.
    */
   labels?: UseLabelsResult;
@@ -698,6 +730,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       nodes,
       edges,
       touchedComponentIds,
+      addedComponentIds,
       selectedNodeId,
       onSelectNode,
       reviewMarkers,
@@ -748,7 +781,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     const hasDiff = Boolean(touchedComponentIds && touchedComponentIds.length > 0);
 
     // Neighbor set: components one DEPENDS_ON hop away from a touched
-    // component, in either direction (§4's "Neighbor" filter).
+    // component, in either direction (the "Neighbor" filter).
     const neighborIds = useMemo(() => {
       if (!touchedComponentIds || touchedComponentIds.length === 0) {
         return new Set<string>();
@@ -1075,7 +1108,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           description: n.description,
           size: nodeSize(n.fileCount, maxFileCount),
           // Only nest under a parent that actually exists in this payload —
-          // tolerates a dangling/absent domain tier gracefully (§6.1/§16).
+          // tolerates a dangling/absent domain tier gracefully.
           ...(n.parentId && nodeIds.has(n.parentId)
             ? { parent: n.parentId }
             : {}),
@@ -1148,6 +1181,24 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [touchedComponentIds, neighborIds, visibleCategories, ready, hasDiff]);
 
+    // "Added" class for this PR's synthetic new-file nodes — deliberately
+    // its own effect rather than folded into the one above: it must survive
+    // that effect's `hasDiff` early return (a synthetic node has no real id
+    // in `touchedComponentIds`, so `hasDiff` is irrelevant to it) and must
+    // not be touched by that effect's blanket `removeClass("touched
+    // neighbor dimmed")`.
+    useEffect(() => {
+      const cy = cyRef.current;
+      if (!cy || !ready) return;
+      const added = new Set(addedComponentIds ?? []);
+      cy.batch(() => {
+        cy.nodes().forEach((node) => {
+          if (added.has(node.id())) node.addClass("added");
+          else node.removeClass("added");
+        });
+      });
+    }, [addedComponentIds, nodes, ready]);
+
     // Selection highlight: the selected node, its direct DEPENDS_ON
     // neighbours in *both* directions, and the edges between them; every
     // other element fades back. Kept in its own effect with its own class
@@ -1167,8 +1218,8 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         const focus = cy.getElementById(selectedNodeId);
         if (focus.empty()) return;
 
-        // A domain box has no DEPENDS_ON edges of its own (§7 aggregates
-        // them at the module tier), so the module rule below would light up
+        // A domain box has no DEPENDS_ON edges of its own (they're aggregated
+        // at the module tier), so the module rule below would light up
         // the box and fade literally everything else — including its own
         // children. Its "neighbourhood" is instead what it contains, which
         // is also the thing its file panel is about to list.
@@ -1323,7 +1374,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
               })}
             </div>
 
-            {/* AI labeling (§6.1) — the on-demand action that creates the
+            {/* AI labeling — the on-demand action that creates the
                 domain tier, plus the collapse/expand toggle for the boxes it
                 produces. Sits next to the layout switcher because both are
                 about how the graph is *arranged*, not about the diff. */}

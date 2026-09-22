@@ -1,5 +1,5 @@
 /**
- * End-to-end check for the Go / Java / Rust analyzers (DESIGN.md §5, §15 v2).
+ * End-to-end check for the Go / Java / Rust analyzers (v2 language coverage).
  *
  *   npx tsx lib/analysis/smoke-test-langs.ts          # run assertions
  *   npx tsx lib/analysis/smoke-test-langs.ts --json   # also dump the full result

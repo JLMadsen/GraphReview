@@ -1,5 +1,5 @@
-// Typed repository functions for the `(:PullRequest)` node label
-// (DESIGN.md §7), plus the relationships it participates in as the
+// Typed repository functions for the `(:PullRequest)` node label,
+// plus the relationships it participates in as the
 // "owning" side: BELONGS_TO (-> Repo) and CHANGES (-> File).
 
 import { runRead, runWrite } from "./client";
@@ -75,7 +75,7 @@ export async function getPullRequestById(
   return record ? toPullRequestRecord(record.get("p").properties) : null;
 }
 
-/** Looks a PR up by repo + number, the natural key a reviewer navigates by (§4). */
+/** Looks a PR up by repo + number, the natural key a reviewer navigates by. */
 export async function getPullRequestByNumber(
   repoId: string,
   number: number
@@ -88,7 +88,7 @@ export async function getPullRequestByNumber(
   return record ? toPullRequestRecord(record.get("p").properties) : null;
 }
 
-/** Lists PRs for a repo, optionally filtered by state (§4's Pull Requests tab). */
+/** Lists PRs for a repo, optionally filtered by state (the Pull Requests tab). */
 export async function listPullRequestsByRepoId(
   repoId: string,
   state?: PullRequestRecord["state"]
@@ -149,7 +149,7 @@ export async function linkPullRequestChangesFile(
   );
 }
 
-/** Removes every outgoing `CHANGES` edge from a PR — useful before re-writing its changed-file set when the head SHA moves (§10). */
+/** Removes every outgoing `CHANGES` edge from a PR — useful before re-writing its changed-file set when the head SHA moves. */
 export async function clearPullRequestChanges(
   pullRequestId: string
 ): Promise<void> {
@@ -165,7 +165,7 @@ interface ChangedFile {
   deletions: number;
 }
 
-/** Lists the files a PR changes, with per-file additions/deletions (§7). */
+/** Lists the files a PR changes, with per-file additions/deletions. */
 export async function listPullRequestChangedFiles(
   pullRequestId: string
 ): Promise<ChangedFile[]> {

@@ -1,6 +1,6 @@
 /**
- * Common intermediate representation emitted by every `LanguageAnalyzer`
- * (DESIGN.md §5). The graph builder only ever sees this shape, never
+ * Common intermediate representation emitted by every `LanguageAnalyzer`.
+ * The graph builder only ever sees this shape, never
  * language-specific syntax trees.
  */
 

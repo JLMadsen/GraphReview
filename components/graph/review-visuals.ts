@@ -1,4 +1,4 @@
-// The AI-review highlight layer's visual language — DESIGN.md §6.2, §9, §10.
+// The AI-review highlight layer's visual language.
 //
 // Single source of truth shared by every surface that renders an
 // `intentMatch`: the Cytoscape `underlay-*` markers in `GraphCanvas`, the

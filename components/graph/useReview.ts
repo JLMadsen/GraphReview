@@ -1,12 +1,12 @@
 "use client";
 
-// The auto-run + polling half of the AI review feature (DESIGN.md §9, §10).
+// The auto-run + polling half of the AI review feature.
 //
 // Owns exactly one thing: keeping a `ReviewSnapshot` in sync with
 // `/api/repos/[repoId]/review` for whichever target the Graph tab currently
 // has selected. Rendering lives in `ReviewPanel`.
 //
-// Flow, per §10 ("no confirmation dialog, no cap"):
+// Flow (no confirmation dialog, no cap):
 //
 //   1. GET the target's review.
 //   2. `aiConfigured === false`  -> stop. Never POST into an unconfigured
@@ -91,7 +91,7 @@ const IDLE_SNAPSHOT: ReviewSnapshot = {
 };
 
 export interface UseReviewResult extends ReviewSnapshot {
-  /** Deliberate re-run (§10): removes the finished job and enqueues a fresh one. */
+  /** Deliberate re-run: removes the finished job and enqueues a fresh one. */
   rerun: () => void;
   /** Whether a re-run is even possible right now. */
   canRerun: boolean;
@@ -128,7 +128,7 @@ export function useReview(
 
   // Read-only mirror of the snapshot for the visibility listener below, which
   // must know "is a run in flight / is there a completed review on screen"
-  // without listing `snapshot` as a dependency (it sets it — §17).
+  // without listing `snapshot` as a dependency (it sets it).
   const snapshotRef = useRef<ReviewSnapshot>(snapshot);
   snapshotRef.current = snapshot;
 
@@ -258,7 +258,7 @@ export function useReview(
         rerunning: prev.rerunning && !isPending(data.state),
       }));
 
-      // §10: automatic, no confirm — but never into an unconfigured provider,
+      // Automatic, no confirm — but never into an unconfigured provider,
       // and never a second time over findings that already exist.
       const shouldPost =
         data.aiConfigured &&

@@ -1,6 +1,6 @@
-// Prompt templates for the per-component change review — §9 of
-// docs/DESIGN.md. Plain-prompted output only: no `response_format`, no
-// tool-calling (decision #8 — not every OpenAI-compatible provider supports
+// Prompt templates for the per-component change review. Plain-prompted
+// output only: no `response_format`, no
+// tool-calling (not every OpenAI-compatible provider supports
 // them), so the model is asked for exactly one fenced ```json block and
 // `review.ts` recovers it with `extractJson`.
 //

@@ -1,5 +1,5 @@
-// Queries behind AI-assisted labeling — DESIGN.md §6/§6.1 (the domain tier
-// that completes the Domain > Module > File hierarchy) and §15's v2 item.
+// Queries behind AI-assisted labeling — the domain tier
+// that completes the Domain > Module > File hierarchy.
 //
 // These are the set-based reads/writes the labeling job needs and that the
 // per-entity modules (component.ts, file.ts) deliberately don't expose:
@@ -18,7 +18,7 @@ function toNumber(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-/** Everything the labeler needs to know about one module-tier component (DESIGN.md §6: names, paths and dependencies only — never file contents). */
+/** Everything the labeler needs to know about one module-tier component (names, paths and dependencies only — never file contents). */
 export interface ModuleLabelInput {
   id: string;
   name: string;
@@ -38,7 +38,7 @@ export interface ModuleLabelInput {
  * The two `OPTIONAL MATCH`es form a cartesian product per component, which
  * `collect(DISTINCT …)` folds back down — the same trade-off
  * `lib/jobs/diff-components.ts` documents, and the same scale (tens to low
- * hundreds of components, DESIGN.md §3).
+ * hundreds of components).
  */
 export async function listModuleLabelInputs(
   repoId: string
@@ -84,7 +84,7 @@ export async function listModuleLabelInputs(
  * This is what makes a re-label a *replace* rather than a duplicate: the ids
  * are derived from the domain names the model picks, so a second run with
  * different names would otherwise leave the first run's boxes behind.
- * `createdBy: 'user'` domains are never touched (decision #9).
+ * `createdBy: 'user'` domains are never touched.
  */
 export async function deleteAutoDomainComponents(repoId: string): Promise<number> {
   const result = await runWrite(
@@ -103,7 +103,7 @@ export async function deleteAutoDomainComponents(repoId: string): Promise<number
 /**
  * Removes auto domain components that have no children left.
  *
- * Called by the analysis job after it prunes modules (DESIGN.md §10):
+ * Called by the analysis job after it prunes modules:
  * re-analysis must not destroy the domain tier, but a domain whose every
  * module disappeared is an empty box with nothing to group, so it goes.
  */
@@ -127,7 +127,7 @@ export async function deleteEmptyAutoDomainComponents(
 /**
  * Writes a component's description, by default only when it doesn't have one.
  *
- * Descriptions are user-editable data (decision #9: they live only in Neo4j
+ * Descriptions are user-editable data (they live only in Neo4j
  * and are edited in-app). There is no description editor in the UI yet, but
  * an automatic labeling pass must not be the thing that establishes the
  * habit of overwriting curated text — so the default is never-clobber, and

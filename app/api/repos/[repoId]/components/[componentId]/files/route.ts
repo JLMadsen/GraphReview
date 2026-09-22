@@ -1,4 +1,4 @@
-// GET /api/repos/[repoId]/components/[componentId]/files — DESIGN.md §6.1/§7.
+// GET /api/repos/[repoId]/components/[componentId]/files
 //
 // The sibling `graph` route only reports a component's file *count* (it's
 // what sizes the nodes); this route answers "which files, exactly", for the
@@ -10,7 +10,7 @@
 // `listFilesByComponentId` (ordered by `f.path ASC`), so this route is a
 // thin repository call plus a repo-scoping check.
 //
-// One special case: a **domain-tier** component (§6.1, created by the AI
+// One special case: a **domain-tier** component (created by the AI
 // labeling job) owns no files of its own — `BELONGS_TO` only ever points at
 // a module. Clicking a domain box in the graph must still show something, so
 // for a domain this returns the union of its child modules' files, merged

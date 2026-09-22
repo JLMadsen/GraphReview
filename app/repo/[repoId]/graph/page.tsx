@@ -1,7 +1,7 @@
 import { GraphView } from "@/components/graph";
 
 /**
- * Graph tab — DESIGN.md §4, §6.
+ * Graph tab.
  *
  * The main visualization. Opened directly with no filter, or pre-filtered
  * when arrived at from a PR row (`?pr=<number>`) or a branch's "Compare in

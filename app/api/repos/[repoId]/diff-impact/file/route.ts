@@ -1,6 +1,6 @@
 // GET /api/repos/[repoId]/diff-impact/file — the unified diff for one file
 // within a review target (PR or ref comparison), fetched on demand for the
-// Graph tab's AI review dock (DESIGN.md §9/§10). A `FindingDTO` only carries
+// Graph tab's AI review dock. A `FindingDTO` only carries
 // a `filePath`/`lineRange`, not the diff text itself, so a "view the code
 // this finding is about" action re-fetches just that one file's patch here
 // rather than shipping every touched file's diff down with the findings.

@@ -1,11 +1,11 @@
 "use client";
 
-// "Add repo" dialog for the landing page — DESIGN.md §4, decision #4.
+// "Add repo" dialog for the landing page.
 //
 // Three ingestion flows behind one dialog: a path under the bind-mounted
-// local-repos folder (§14), or a GitHub/GitLab URL the app clones itself
-// (§12's `repo_cache`). All POST to /api/repos, which creates the node and
-// immediately queues the first analysis (§10) — so on success we just
+// local-repos folder, or a GitHub/GitLab URL the app clones itself
+// (into `repo_cache`). All POST to /api/repos, which creates the node and
+// immediately queues the first analysis — so on success we just
 // refresh the server-rendered list and the new repo shows up as
 // "Analyzing…".
 
@@ -53,7 +53,7 @@ export function AddRepoDialog() {
   const [candidates, setCandidates] = useState<LocalRepoCandidate[]>([]);
   const [candidatesLoaded, setCandidatesLoaded] = useState(false);
 
-  // Populated from the local-repos root (§14) so the user can pick a repo
+  // Populated from the local-repos root so the user can pick a repo
   // instead of typing its full path — fetched once per time the dialog
   // opens rather than on every keystroke.
   useEffect(() => {

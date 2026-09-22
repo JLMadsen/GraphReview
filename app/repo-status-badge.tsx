@@ -1,4 +1,4 @@
-// The §4 status indicator ("analyzing… / up to date as of <sha> / stale,
+// The status indicator ("analyzing… / up to date as of <sha> / stale,
 // refreshing…"), shared by the repo list and the repo detail header.
 //
 // A plain server-renderable component — no client state of its own, it just

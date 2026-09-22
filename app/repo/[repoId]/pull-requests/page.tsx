@@ -20,7 +20,7 @@ import {
 } from "../github-notice";
 
 /**
- * Pull Requests tab — DESIGN.md §4.
+ * Pull Requests tab.
  *
  * "PR list fetched from GitHub (state filter: open/closed/merged), so a
  * reviewer can browse without loading the graph first." Now also GitLab
@@ -30,11 +30,11 @@ import {
  * (lib/github's `PullRequestListState`, reused by lib/gitlab). Merged PRs
  * are not a separate GitHub-side filter — they come back under
  * `closed`/`all` and lib/github derives the three-value
- * `open | closed | merged` state per item (§7, §8), which is what the
+ * `open | closed | merged` state per item, which is what the
  * per-row badge shows.
  *
  * Each row links to the Graph tab as `/repo/[repoId]/graph?pr=<number>` —
- * the convention that tab reads to pre-filter itself to a PR (§4, §10).
+ * the convention that tab reads to pre-filter itself to a PR.
  */
 
 export const dynamic = "force-dynamic";
@@ -186,7 +186,7 @@ export default async function PullRequestsPage({
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <Link
-                      // Pre-filters the Graph tab to this PR (§4).
+                      // Pre-filters the Graph tab to this PR.
                       href={`/repo/${repoId}/graph?pr=${pr.number}`}
                       className="text-[13px] leading-snug font-medium transition-colors hover:text-brand"
                     >

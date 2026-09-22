@@ -1,4 +1,4 @@
-// Typed repository functions for the `(:Repo)` node label (DESIGN.md §7).
+// Typed repository functions for the `(:Repo)` node label.
 
 import { runRead, runWrite } from "./client";
 import type { RepoRecord } from "./types";
@@ -52,7 +52,7 @@ export async function upsertRepo(input: UpsertRepoInput): Promise<RepoRecord> {
   return toRepoRecord(result.records[0].get("r").properties);
 }
 
-/** Updates only `lastAnalyzedAt`/`lastAnalyzedSha` after a (re-)analysis run (§10). */
+/** Updates only `lastAnalyzedAt`/`lastAnalyzedSha` after a (re-)analysis run. */
 export async function markRepoAnalyzed(
   id: string,
   lastAnalyzedSha: string,
@@ -74,7 +74,7 @@ export async function getRepoById(id: string): Promise<RepoRecord | null> {
   return record ? toRepoRecord(record.get("r").properties) : null;
 }
 
-/** Lists every tracked repo (decision #12: one instance, multiple repos). */
+/** Lists every tracked repo (one instance, multiple repos). */
 export async function listRepos(): Promise<RepoRecord[]> {
   const result = await runRead(`MATCH (r:Repo) RETURN r ORDER BY r.name ASC`);
   return result.records.map((record) => toRepoRecord(record.get("r").properties));

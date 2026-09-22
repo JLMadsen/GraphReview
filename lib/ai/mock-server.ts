@@ -17,7 +17,7 @@
  * (~50% match, ~25% partial, ~25% mismatch) and 1-2 findings referencing the
  * real file paths come back in a ```json fence.
  *
- * The AI-labeling calls (lib/ai/label.ts, DESIGN.md §6.1) are recognised by
+ * The AI-labeling calls (lib/ai/label.ts) are recognised by
  * the `TASK: label-domains` / `TASK: describe-modules` marker in their system
  * prompt and answered from the `- m1 | name | N files | files: … | depends
  * on: …` module lines that file emits:
@@ -365,7 +365,7 @@ function makeFinding(
 }
 
 // ---------------------------------------------------------------------------
-// Canned responses — AI labeling (lib/ai/label.ts, DESIGN.md §6.1)
+// Canned responses — AI labeling (lib/ai/label.ts)
 // ---------------------------------------------------------------------------
 
 interface MockModuleLine {

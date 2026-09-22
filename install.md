@@ -5,15 +5,13 @@ against a statically-derived "component graph" of a codebase, with optional
 AI-generated per-component summaries and intent checks. It's built as three
 processes sharing one codebase: the **app** (Next.js web server), a
 **worker** (BullMQ job consumer that does the actual static analysis and AI
-calls), backed by **Neo4j** (graph storage) and **Redis** (job queue). See
-[`docs/DESIGN.md`](docs/DESIGN.md) for the full architecture.
+calls), backed by **Neo4j** (graph storage) and **Redis** (job queue).
 
 > **Note on the root README:** [`README.md`](README.md) currently describes
-> the project as a "skeleton" with nothing wired up. That's stale —
-> `docs/DESIGN.md` (§15) shows v1 and v2 are done (static analysis, the
-> graph UI, GitHub integration, AI review, and AI labeling all work). This
-> file reflects the current, more complete state; when in doubt, trust
-> `docs/DESIGN.md`.
+> the project as a "skeleton" with nothing wired up. That's stale — v1 and
+> v2 are in fact done (static analysis, the graph UI, GitHub integration, AI
+> review, and AI labeling all work). This file reflects the current, more
+> complete state.
 
 ## 1. Prerequisites
 
@@ -29,12 +27,11 @@ image).
 
 ## 2. Install — Docker Compose (recommended)
 
-This is decision #5 in the design doc: Compose is the primary, supported way
-to run the app.
+Compose is the primary, supported way to run the app.
 
 ```bash
 cp docker/.env.example docker/.env
-# edit docker/.env — see §4 below for what's required vs. optional
+# edit docker/.env — see the Configuration section below for what's required vs. optional
 
 npm run docker
 ```
@@ -89,10 +86,10 @@ Easiest way to get those without installing them natively is still Docker,
 just for the two dependency containers — e.g. run only `neo4j`/`redis` from
 `docker/docker-compose.yml`, or their official images directly.
 
-**Caveat:** this path is explicitly *not* the primary supported one (decision
-#5) — local-path repo ingestion in particular is designed around a single
-bind-mounted folder under Docker (§14); outside Docker there's no equivalent
-mount restriction, so it behaves a bit differently (see §4's
+**Caveat:** this path is explicitly *not* the primary supported one —
+local-path repo ingestion in particular is designed around a single
+bind-mounted folder under Docker; outside Docker there's no equivalent
+mount restriction, so it behaves a bit differently (see the
 `LOCAL_REPOS_ROOT` note below).
 
 ## 4. Configuration (env vars)
@@ -214,7 +211,7 @@ non-alarming "not configured" note instead of running.
   npx tsx lib/analysis/smoke-test-jvm.ts [dir]     # Java+Kotlin resolver
   npx tsx lib/analysis/smoke-test-node.ts [dir]    # JS/TS monorepo resolver
   ```
-- **Closed-network / air-gapped deployment** — see the mirror env vars in §4.
+- **Closed-network / air-gapped deployment** — see the mirror env vars above.
 
 ## 7. Other known caveats worth knowing before you rely on this
 
@@ -223,8 +220,8 @@ non-alarming "not configured" note instead of running.
   symlinked into that folder, or ingested via the app's clone-by-URL path
   instead.
 - **GitHub-backed review paths are code-reviewed but not live-tested**
-  against a real PAT/GitHub API as of this writing (per `docs/DESIGN.md`
-  §16) — the plumbing is there but hasn't been exercised end-to-end.
+  against a real PAT/GitHub API as of this writing — the plumbing is there
+  but hasn't been exercised end-to-end.
   Similarly, AI review/labeling has mainly been exercised against the mock
   server; a real provider surfaced client-compatibility issues (reasoning
   models, `temperature`/`max_tokens` rejections) that are now handled, but

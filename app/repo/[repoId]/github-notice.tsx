@@ -1,5 +1,5 @@
 // The "not linked to GitHub/GitLab" / "no PAT configured" empty states
-// shared by the Branches and Pull Requests tabs (§4, decision #7).
+// shared by the Branches and Pull Requests tabs.
 //
 // These are deliberately not errors: a `local` repo without a git-host URL
 // is a perfectly valid, fully analyzable repo — it just has no branches or

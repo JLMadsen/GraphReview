@@ -1,5 +1,5 @@
 /**
- * The shared `LanguageAnalyzer` extension point (DESIGN.md §5).
+ * The shared `LanguageAnalyzer` extension point.
  *
  * Adding language N+1 means dropping a folder under `languages/<lang>/`
  * (`queries.scm` + `resolve.ts` + an analyzer definition) and registering it in
@@ -115,7 +115,7 @@ export interface LanguageAnalyzer {
   indexDeclarations?(ctx: AnalyzerContext): void;
   /**
    * Resolve a specifier to a repo-relative path, or `undefined` when it is
-   * external / unresolvable (DESIGN.md §5).
+   * external / unresolvable.
    */
   resolveImportPath(
     raw: string,
@@ -138,7 +138,7 @@ export interface LanguageAnalyzer {
   ): string[];
   /**
    * The external package an unresolved specifier belongs to, for the grouped
-   * "external" nodes in §5 — or `undefined` when the specifier is not an
+   * "external" nodes — or `undefined` when the specifier is not an
    * external package (e.g. a relative path pointing at a missing file).
    */
   externalPackageName(raw: string, ctx: AnalyzerContext): string | undefined;

@@ -1,4 +1,4 @@
-// GitHub API wrapper — §8 of docs/DESIGN.md.
+// GitHub API wrapper.
 //
 // Fully self-contained: every function takes the PAT as an explicit `token`
 // parameter. Nothing here reads settings, decrypts credentials, or touches
@@ -49,7 +49,7 @@ function createOctokit(token: string): Octokit {
   });
 }
 
-/** Reads `x-ratelimit-*` response headers (§8). Returns `null` when a response carries none (e.g. GraphQL, or a mocked/proxied response). */
+/** Reads `x-ratelimit-*` response headers. Returns `null` when a response carries none (e.g. GraphQL, or a mocked/proxied response). */
 function extractRateLimit(headers: Record<string, unknown> | undefined): RateLimitInfo | null {
   if (!headers) return null;
   const limitRaw = headers["x-ratelimit-limit"];
@@ -132,7 +132,7 @@ function toPullRequestState(rawState: string, mergedAt: string | null): PullRequ
 // Repos & branches
 // ---------------------------------------------------------------------------
 
-/** Repos the authenticated user has access to — for a repo-picker UI when adding a repo (§4, §8). */
+/** Repos the authenticated user has access to — for a repo-picker UI when adding a repo. */
 export async function listUserRepos(token: string): Promise<GitHubResult<RepoSummary[]>> {
   const octokit = createOctokit(token);
   return runPaginated<
@@ -213,7 +213,7 @@ export async function listPullRequests(
   );
 }
 
-/** Title, body, base/head SHA, author, state, url (§8) for a single PR. */
+/** Title, body, base/head SHA, author, state, url for a single PR. */
 export async function getPullRequest(
   token: string,
   owner: string,
@@ -246,7 +246,7 @@ export async function getPullRequest(
   };
 }
 
-/** Per-file unified diffs for a PR, via `GET /repos/{owner}/{repo}/pulls/{pull_number}/files` — `patch` text comes straight from GitHub, no separate diffing step (§8). */
+/** Per-file unified diffs for a PR, via `GET /repos/{owner}/{repo}/pulls/{pull_number}/files` — `patch` text comes straight from GitHub, no separate diffing step. */
 export async function listPullRequestFiles(
   token: string,
   owner: string,
@@ -280,7 +280,7 @@ export async function listPullRequestFiles(
 
 /**
  * Ad-hoc ref-to-ref comparison (not tied to a PR), via
- * `GET /repos/{owner}/{repo}/compare/{base}...{head}` (§8, decision #4).
+ * `GET /repos/{owner}/{repo}/compare/{base}...{head}`.
  *
  * The compare API's response has a `base_commit` but no dedicated "head
  * commit" field (its `commits` array only lists commits ahead of `base`,
@@ -423,7 +423,7 @@ const LINKED_ISSUES_QUERY = /* GraphQL */ `
 
 /**
  * Issues GitHub resolved as "closed by" this PR, via GraphQL
- * `closingIssuesReferences` — reliably available only via GraphQL (§8).
+ * `closingIssuesReferences` — reliably available only via GraphQL.
  * `rateLimit` is always `null`: `@octokit/graphql` doesn't surface
  * REST-style rate-limit headers on success.
  */

@@ -1,6 +1,6 @@
 "use client";
 
-// Client-side orchestrator for the Graph tab (DESIGN.md §4): fetches the
+// Client-side orchestrator for the Graph tab: fetches the
 // component graph and optional repo context, hosts the diff-selection
 // sidebar, and feeds diff-impact results into GraphCanvas for touched-node
 // highlighting. Everything fetches client-side (rather than the server
@@ -8,7 +8,7 @@
 // endpoint or an unreachable Neo4j degrades gracefully in the browser
 // instead of failing the page render.
 //
-// It is also where the v2 AI review (§9, §10) is hung off the diff flow:
+// It is also where the v2 AI review is hung off the diff flow:
 // `DiffPanel` reports *what* was checked alongside the impact result, that
 // target drives `useReview` (auto-run + polling), and the resulting findings
 // fan out to three places — marker halos on the canvas, the full dock below
@@ -25,7 +25,9 @@ import { SAMPLE_EDGES, SAMPLE_NODES } from "./sample-data";
 import { useLabels } from "./useLabels";
 import { useReview } from "./useReview";
 import type {
+  AddedComponentDTO,
   DiffImpactResponseDTO,
+  GraphNodeDTO,
   GraphResponseDTO,
   ReviewTargetDTO,
 } from "./types";
@@ -56,6 +58,8 @@ export function GraphView({
   const [usingSample, setUsingSample] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [diffResult, setDiffResult] = useState<DiffImpactResponseDTO | null>(null);
+  /** AI-labeled components for the current PR's `unmatchedFiles` — see DiffPanel's `onAddedComponents`. Ephemeral: never part of `graph`, cleared the moment the check changes. */
+  const [addedComponents, setAddedComponents] = useState<AddedComponentDTO[]>([]);
   /** What the current impact result was a check *of* — `null` for "paste paths" (no diff to review) and before any check. Drives the whole review flow below. */
   const [reviewTarget, setReviewTarget] = useState<ReviewTargetDTO | null>(null);
   /** The component whose node was clicked in the canvas — drives both the canvas's neighbourhood highlight and the file panel below. */
@@ -64,8 +68,8 @@ export function GraphView({
   /**
    * Bumped to re-fetch the component graph without remounting anything —
    * currently by the AI labeling run finishing, which adds the domain-tier
-   * nodes and the `parentId`s that turn them into compound boxes (§6.1).
-   * Never read by the effect that sets it, per DESIGN.md §17.
+   * nodes and the `parentId`s that turn them into compound boxes.
+   * Never read by the effect that sets it — it only exists to retrigger the fetch.
    */
   const [graphNonce, setGraphNonce] = useState(0);
 
@@ -137,6 +141,39 @@ export function GraphView({
     []
   );
 
+  const handleAddedComponents = useCallback((components: AddedComponentDTO[]) => {
+    setAddedComponents(components);
+  }, []);
+
+  // Synthetic, unpersisted nodes for the current PR's added files (green on
+  // the canvas) — merged into the payload passed to GraphCanvas rather than
+  // into `graph` itself, so a graph re-fetch (e.g. after labeling finishes)
+  // can never accidentally drop or duplicate them.
+  const addedNodes = useMemo<GraphNodeDTO[]>(
+    () =>
+      addedComponents.map((c) => ({
+        id: c.id,
+        name: c.name,
+        tier: "module",
+        fileCount: c.fileCount,
+        description: c.description,
+      })),
+    [addedComponents]
+  );
+  const addedComponentIds = useMemo(
+    () => addedComponents.map((c) => c.id),
+    [addedComponents]
+  );
+  const addedFilesById = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const c of addedComponents) map.set(c.id, c.filePaths);
+    return map;
+  }, [addedComponents]);
+  const canvasNodes = useMemo(
+    () => (graph ? [...graph.nodes, ...addedNodes] : []),
+    [graph, addedNodes]
+  );
+
   const handleSelectNode = useCallback((nodeId: string | null) => {
     setSelectedNodeId(nodeId);
   }, []);
@@ -149,9 +186,11 @@ export function GraphView({
   const selectedNode = useMemo(
     () =>
       selectedNodeId
-        ? (graph?.nodes.find((n) => n.id === selectedNodeId) ?? null)
+        ? (graph?.nodes.find((n) => n.id === selectedNodeId) ??
+          addedNodes.find((n) => n.id === selectedNodeId) ??
+          null)
         : null,
-    [graph, selectedNodeId]
+    [graph, addedNodes, selectedNodeId]
   );
 
   // One marker per component (worst finding wins) for the canvas's third
@@ -186,6 +225,7 @@ export function GraphView({
             initialBaseRef={initialBaseRef}
             initialHeadRef={initialHeadRef}
             onResult={handleDiffResult}
+            onAddedComponents={handleAddedComponents}
           />
           {repo && (
             <div className="rounded-lg bg-card px-3 py-2 ring-1 ring-border">
@@ -216,9 +256,10 @@ export function GraphView({
         )}
         {graph ? (
           <GraphCanvas
-            nodes={graph.nodes}
+            nodes={canvasNodes}
             edges={graph.edges}
             touchedComponentIds={diffResult?.touchedComponentIds}
+            addedComponentIds={addedComponentIds}
             selectedNodeId={selectedNodeId}
             onSelectNode={handleSelectNode}
             reviewMarkers={reviewMarkers}
@@ -274,6 +315,7 @@ export function GraphView({
               fileCount={selectedNode.fileCount}
               description={selectedNode.description}
               sampleData={usingSample}
+              localFiles={addedFilesById.get(selectedNode.id)}
               findings={selectedFindings}
               onClear={clearSelection}
             />

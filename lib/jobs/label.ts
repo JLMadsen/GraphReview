@@ -1,13 +1,12 @@
-// The AI labeling job body — DESIGN.md §6, §6.1, §10, §15.
+// The AI labeling job body.
 //
 // This is the piece that completes the three-tier hierarchy. Static analysis
-// (§5/§6) can only produce the *module* tier from folder structure; §6.1 and
-// §16 both say plainly that the domain tier "does not label reliably from
-// folder structure alone" and needs either an LLM pass or manual tagging.
-// This job is that LLM pass.
+// can only produce the *module* tier from folder structure; the domain tier
+// does not label reliably from folder structure alone and needs either an
+// LLM pass or manual tagging. This job is that LLM pass.
 //
 // Pipeline: load the repo and its module-tier components (+ file paths and
-// dependency names) → load and decrypt the AI provider settings (§11) →
+// dependency names) → load and decrypt the AI provider settings →
 // phase 1, bucket the modules into ≤8 domains → persist the domain tier →
 // phase 2, one description sentence per module, in batches → persist each
 // batch, never clobbering a description that already has text unless the
@@ -45,7 +44,7 @@ import type {
 } from "./label-queue";
 import { repoCacheDir, validateLocalRepoPath } from "./source";
 
-/** Sample paths sent per module (§6: "the file paths in a cluster … never full file contents"). */
+/** Sample paths sent per module ("the file paths in a cluster … never full file contents"). */
 const SAMPLE_FILES_PER_MODULE = 3;
 /** Dependency names sent per module. */
 const DEPENDS_ON_PER_MODULE = 5;
@@ -58,8 +57,8 @@ const README_CANDIDATES = ["README.md", "readme.md", "README", "Readme.md", "REA
 // ---------------------------------------------------------------------------
 
 /**
- * Reads and decrypts the currently *active* saved AI provider (§11 —
- * multiple providers can be saved, lib/neo4j/ai-provider.ts, with one
+ * Reads and decrypts the currently *active* saved AI provider (multiple
+ * providers can be saved, lib/neo4j/ai-provider.ts, with one
  * marked active at a time).
  *
  * Deliberately a local copy of `./review.ts`'s equivalent rather than a
@@ -80,7 +79,7 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
 
   if (missing.length > 0 || !provider) {
     throw new UnrecoverableError(
-      `AI provider is not fully configured — missing ${missing.join(", ")}. Set it in Settings (DESIGN.md §8).`
+      `AI provider is not fully configured — missing ${missing.join(", ")}. Set it in Settings.`
     );
   }
 
@@ -105,11 +104,11 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
 // ---------------------------------------------------------------------------
 
 /**
- * A short README excerpt, if one can be read cheaply — §6 suggests sending
+ * A short README excerpt, if one can be read cheaply — sending
  * "perhaps a README/package.json snippet" alongside the paths.
  *
  * Entirely best-effort: a repo whose source isn't on disk (never cloned, or
- * a local path outside the bind mount, §14) simply gets labeled from its
+ * a local path outside the bind mount) simply gets labeled from its
  * module names and paths, which is the input the feature is designed around
  * anyway. Never throws.
  */
@@ -190,7 +189,7 @@ export async function runLabelJob(
 
   if (modules.length === 0) {
     throw new UnrecoverableError(
-      "This repo has no analyzed module components yet — run an analysis before labeling (DESIGN.md §6)."
+      "This repo has no analyzed module components yet — run an analysis before labeling."
     );
   }
 
@@ -220,7 +219,7 @@ export async function runLabelJob(
   };
   const publishProgress = async (): Promise<void> => {
     try {
-      // Progress is advisory (§10's live counter) — a Redis hiccup writing it
+      // Progress is advisory (a live counter) — a Redis hiccup writing it
       // must never take down a job that is otherwise succeeding.
       await job?.updateProgress({ ...progress });
     } catch {
@@ -250,13 +249,13 @@ export async function runLabelJob(
       (result.parseFailed ? " (some output could not be parsed)" : "")
   );
 
-  // --- Persist the domain tier (§6.1, §7) --------------------------------
+  // --- Persist the domain tier --------------------------------------------
   //
   // Replace, don't accumulate: the previous run's domains are removed first,
   // so re-labeling can't leave orphaned boxes behind when the model picks
   // different names. Every write below is serial — these MERGE relationships
   // onto shared endpoints, and Neo4j Community deadlocks on parallel
-  // relationship writes (DESIGN.md §17, and see analyze.ts's
+  // relationship writes (see analyze.ts's
   // NEO4J_RELATIONSHIP_WRITE_CONCURRENCY).
   const replacedDomains = await deleteAutoDomainComponents(repoId);
   if (replacedDomains > 0) log(`removed ${replacedDomains} domain(s) from a previous labeling run`);
@@ -282,7 +281,7 @@ export async function runLabelJob(
       description: domain.description,
       createdBy: "auto",
       // A domain is defined by its members, not by a path glob — the whole
-      // point of §6.1's note is that it doesn't correspond to a folder.
+      // point is that it doesn't correspond to a folder.
       pathPatterns: [],
       tier: "domain",
     });

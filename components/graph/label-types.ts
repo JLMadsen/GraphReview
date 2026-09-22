@@ -1,4 +1,4 @@
-// Wire shapes for the AI labeling feature (DESIGN.md §6.1) — the contract
+// Wire shapes for the AI labeling feature — the contract
 // between `app/api/repos/[repoId]/label` and the Graph tab's Labels control.
 //
 // A separate file from `./types.ts` for the same reason that file exists at
@@ -13,7 +13,7 @@ export type LabelPhaseDTO = "domains" | "descriptions";
 /** Lifecycle of a repo's labeling run. `"none"` means "never labeled". */
 export type LabelStateDTO = "none" | "queued" | "running" | "completed" | "failed";
 
-/** Live progress of a labeling run — the same "running counter" idea as a review's (§10). */
+/** Live progress of a labeling run — the same "running counter" idea as a review's. */
 export interface LabelProgressDTO {
   phase: LabelPhaseDTO;
   /** Modules handled so far in the current phase. */
@@ -91,7 +91,7 @@ export function labelPhaseLabel(phase: LabelPhaseDTO): string {
   return phase === "domains" ? "Grouping modules into domains" : "Describing modules";
 }
 
-/** `"3 calls · 12.4k prompt + 900 completion tokens"` — §10's cost counter, in the toolbar's space budget. */
+/** `"3 calls · 12.4k prompt + 900 completion tokens"` — the cost counter, in the toolbar's space budget. */
 export function formatLabelCost(progress: LabelProgressDTO): string {
   const calls = `${progress.calls} call${progress.calls === 1 ? "" : "s"}`;
   const tokens = progress.promptTokens + progress.completionTokens;

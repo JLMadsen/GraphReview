@@ -1,4 +1,4 @@
-// GET /api/repos/[repoId]/graph — DESIGN.md §6/§6.1/§7.
+// GET /api/repos/[repoId]/graph
 //
 // Returns every `(:Component)` for the repo plus the `DEPENDS_ON` edges
 // between them, in the flat DTO shape `components/graph/` renders. The

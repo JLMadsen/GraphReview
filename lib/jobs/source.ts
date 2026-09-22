@@ -1,5 +1,4 @@
-// Resolving a `(:Repo)` record to a directory on disk that can be analyzed —
-// DESIGN.md §4 (decision #4), §12, §14.
+// Resolving a `(:Repo)` record to a directory on disk that can be analyzed.
 //
 // Three ingestion paths behind one interface:
 //   - `provider: "local"` — a repo already cloned under the read-only bind
@@ -9,7 +8,7 @@
 //     and would otherwise let anyone read arbitrary container-visible files
 //     into the graph.
 //   - `provider: "github"` / `provider: "gitlab"` — an app-managed clone in
-//     the `repo_cache` volume at `/data/repos/<repoId>` (§12).
+//     the `repo_cache` volume at `/data/repos/<repoId>`.
 //
 // Server-only (spawns `git`, reads env vars) — never import from a client
 // component.
@@ -32,9 +31,9 @@ type RemoteProvider = Exclude<RepoProvider, "local">;
 // configured PAT surfaces as a job error rather than a stuck process.
 process.env.GIT_TERMINAL_PROMPT = "0";
 
-/** Container-side mount point of the `LOCAL_REPOS_PATH` bind mount (§12). */
+/** Container-side mount point of the `LOCAL_REPOS_PATH` bind mount. */
 export const DOCKER_LOCAL_REPOS_MOUNT = "/data/local-repos";
-/** Container-side mount point of the `repo_cache` volume (§12). */
+/** Container-side mount point of the `repo_cache` volume. */
 export const DOCKER_REPO_CACHE_DIR = "/data/repos";
 /** Fallback clone root when running outside Docker (`npm run dev` + `npm run worker`). */
 export const DEV_REPO_CACHE_DIR = ".data/repos";
@@ -68,7 +67,7 @@ export function gitIn(baseDir: string, timeoutMs = QUICK_GIT_TIMEOUT_MS, config:
  * http.extraHeader=…` rather than being baked into the remote URL. Keeping
  * the PAT out of the remote means it is never written to `.git/config` inside
  * the persistent `repo_cache` volume — a plaintext-credential-at-rest leak
- * that §11 explicitly tries to avoid.
+ * this deliberately avoids.
  *
  * The Basic-auth username differs by host convention: GitHub accepts (and
  * its own docs recommend) `x-access-token` as the username for a PAT;
@@ -109,7 +108,7 @@ function providerLabel(provider: RemoteProvider): string {
  * failure and GitHub's/GitLab's several different server-side rejection
  * messages:
  *   - "could not read Username" — git's own message when it falls back to
- *     its interactive credential flow and there's no terminal (§17).
+ *     its interactive credential flow and there's no terminal attached.
  *   - "Authentication failed" / "status code: 401" — an invalid/expired PAT.
  *   - "Write access to repository not granted" / "403" — an authenticated
  *     but insufficiently-scoped PAT, or (with no token at all) how a host's
@@ -156,11 +155,11 @@ export function getLocalReposRoot(): string {
 
   throw new Error(
     "No local-repos root configured: set LOCAL_REPOS_PATH (see docker/.env.example) " +
-      "or LOCAL_REPOS_ROOT to the folder your local repos live under (DESIGN.md §14)."
+      "or LOCAL_REPOS_ROOT to the folder your local repos live under."
   );
 }
 
-/** Root of the app-managed clone cache (§12's `repo_cache` volume), overridable via `REPO_CACHE_DIR`. */
+/** Root of the app-managed clone cache (the `repo_cache` volume), overridable via `REPO_CACHE_DIR`. */
 export function getRepoCacheRoot(): string {
   const explicit = process.env.REPO_CACHE_DIR;
   if (explicit) return path.resolve(explicit);
@@ -177,7 +176,7 @@ export class LocalPathOutsideRootError extends Error {
   constructor(requested: string, root: string) {
     super(
       `Local repo path "${requested}" is outside the allowed local-repos folder ("${root}"). ` +
-        "Only repos under that folder can be used as a local source (DESIGN.md §14)."
+        "Only repos under that folder can be used as a local source."
     );
   }
 }
@@ -188,8 +187,8 @@ export class LocalPathOutsideRootError extends Error {
  *
  * Containment is checked lexically after `path.resolve`, which collapses
  * `..` segments — so `../../etc` and an absolute `/etc/passwd` are both
- * rejected. Symlinks are deliberately *not* resolved away: §14 names
- * symlinking a repo into the folder as a supported workflow, so following a
+ * rejected. Symlinks are deliberately *not* resolved away: symlinking a
+ * repo into the folder is a supported workflow, so following a
  * symlink out of the root is an explicit admin choice on the host side, not
  * an injection through this API.
  */
@@ -236,7 +235,7 @@ export interface RemoteHead {
 }
 
 /**
- * Cheap remote HEAD probe via `git ls-remote --symref <url> HEAD` (§10) —
+ * Cheap remote HEAD probe via `git ls-remote --symref <url> HEAD` —
  * one network round trip, no clone, and it yields the default branch name in
  * the same call.
  */
@@ -295,9 +294,9 @@ type Logger = (message: string) => void;
 
 /**
  * Brings the repo's source on disk up to date and returns the directory to
- * analyze plus its exact commit SHA (recorded as `Repo.lastAnalyzedSha`, §10).
+ * analyze plus its exact commit SHA (recorded as `Repo.lastAnalyzedSha`).
  *
- * Local repos are read-only (the bind mount is `:ro`, §12) — they are never
+ * Local repos are read-only (the bind mount is `:ro`) — they are never
  * fetched or mutated, only read at whatever commit the developer has checked
  * out. URL repos are cloned on first use and fast-forwarded to the remote's
  * default branch afterwards.
@@ -357,7 +356,7 @@ export async function prepareRepoSource(
 
 /**
  * The repo's *current* HEAD SHA without doing any expensive work — the cheap
- * staleness probe of §10. Returns `null` when it can't be determined (offline,
+ * staleness probe. Returns `null` when it can't be determined (offline,
  * bad path, missing credentials); callers treat that as "assume unchanged"
  * rather than failing a page render.
  */

@@ -6,7 +6,7 @@
 // development, per the task's verification instructions.
 //
 // Flat, module-tier only, no `parentId` — mirrors what v1 realistically
-// produces before the domain tier is populated (DESIGN.md §6.1/§16).
+// produces before the domain tier is populated.
 
 import type { GraphEdgeDTO, GraphNodeDTO } from "./types";
 

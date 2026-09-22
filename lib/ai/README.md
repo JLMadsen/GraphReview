@@ -2,16 +2,14 @@
 
 > `lib/ai/` OpenAI-compatible client wrapper, output parser, token-budget helper, per-component change review, AI-assisted labeling, mock AI server
 
-From DESIGN.md §9:
-
-> Because decision #8 requires a fully generic OpenAI-compatible endpoint,
-> the integration **does not rely on `response_format` or tool-calling**
-> for structured output, since these aren't universally supported (e.g. by
-> some Ollama/LM Studio setups). Output uses plain prompted instructions
-> with a robust parser (fenced-JSON extraction plus a fallback). The
-> per-call token budget is configurable, with a conservative default (e.g.
-> 6-8k input tokens), since local models often have much smaller context
-> windows than hosted ones.
+Because a fully generic OpenAI-compatible endpoint is required, the
+integration **does not rely on `response_format` or tool-calling** for
+structured output, since these aren't universally supported (e.g. by some
+Ollama/LM Studio setups). Output uses plain prompted instructions with a
+robust parser (fenced-JSON extraction plus a fallback). The per-call token
+budget is configurable, with a conservative default (e.g. 6-8k input
+tokens), since local models often have much smaller context windows than
+hosted ones.
 
 ## Scope (current)
 
@@ -21,8 +19,8 @@ here:
 
 - `client.ts` — `chatCompletion(config, messages, options?)`: a generic
   OpenAI-compatible chat-completions client (base URL + API key + model
-  name, all user-configured — never hardcoded to one provider, decision
-  #8). Sends the standard `{ model, messages, ... }` request shape, never
+  name, all user-configured — never hardcoded to one provider). Sends the
+  standard `{ model, messages, ... }` request shape, never
   sets `response_format`/`tools`, and returns the assistant's text plus
   token usage when the provider reports it.
 - `parse.ts` — `extractJson<T>(text)`: pulls a JSON object/array back out of
@@ -62,7 +60,7 @@ here:
   types. One model call per component:
   1. If no file has patch text (binary/oversized) -> **no call**, one
      `unknown` finding, `calls: 0`, zero usage.
-  2. Per-file diff truncation (§9) before the message-level fit: if the
+  2. Per-file diff truncation before the message-level fit: if the
      combined patches exceed the budget share (budget minus system prompt
      and non-diff prompt text), whole `@@` hunks are kept in order per file
      (allowances are water-filled so a huge file can't starve small ones)
@@ -84,8 +82,8 @@ here:
   injects a fake `chatCompletion` for tests.
 - `label.ts` — `labelComponents(config, input, options?)` (plus the two
   phases on their own, `labelDomains` / `describeModules`) — the
-  **AI-assisted labeling** of §6/§6.1, which is what populates the domain
-  tier that folder structure alone cannot infer (§6.1, §16). Two tasks, each
+  **AI-assisted labeling**, which is what populates the domain
+  tier that folder structure alone cannot infer. Two tasks, each
   marked in its system prompt so the mock can recognise it:
   1. `TASK: label-domains` — one call. Input is the repo name, an optional
      README excerpt and every module (`{id, name, fileCount, sampleFiles≤3,
@@ -110,7 +108,7 @@ here:
   dependencies, then the README) rather than letting the tail of the list be
   truncated away, which would silently lose whole modules.
   `options.onProgress` fires after every call with `{phase, done, total,
-  calls, promptTokens, completionTokens}` for §10's running cost counter,
+  calls, promptTokens, completionTokens}` for a running cost counter,
   and `options.chat` injects a fake client exactly as `review.ts` does.
   File *contents* are never sent — only names, paths and dependency names.
 - `mock-server.ts` — dependency-free (`node:http`) OpenAI-compatible mock for
@@ -151,19 +149,18 @@ here:
   heuristic buckets, the `[mock] ` prefix, determinism, `MOCK_FAIL` and
   `MOCK_GARBAGE`.
 
-## Not yet built (§9, follow-up work)
+## Not yet built (follow-up work)
 
 - Per-component orchestration (fan out one call per touched component, run
   via `lib/jobs/`, persist `Finding` nodes) — `reviewComponentChange` is the
   per-component unit it builds on.
-- Smarter oversized-diff handling (§9: hunks touching top-level
+- Smarter oversized-diff handling (hunks touching top-level
   declarations; pre-summarization is a v2 idea) — today it keeps leading
   whole hunks.
 - A description *editor* in the UI. `label.ts` writes one sentence per
   module and `lib/jobs/label.ts` refuses to overwrite a non-empty
-  description without `force`, but nothing lets a human curate one yet
-  (decision #9).
-- Module-tier *renaming* by the model (§15's v3 item) — today labeling
+  description without `force`, but nothing lets a human curate one yet.
+- Module-tier *renaming* by the model — today labeling
   writes descriptions and the domain tier, never a module's name.
 
 ## Usage

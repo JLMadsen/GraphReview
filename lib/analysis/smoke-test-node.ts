@@ -1,5 +1,5 @@
 /**
- * End-to-end check for the hardened JS/Node/Next.js resolver (DESIGN.md §5):
+ * End-to-end check for the hardened JS/Node/Next.js resolver:
  * `tsconfig.json`/`jsconfig.json` `extends` chains merged with the nearest
  * config picked per importing file, npm/pnpm workspace packages resolved via
  * `exports`/`main`/conventional subpaths, and `package.json` `"imports"`.

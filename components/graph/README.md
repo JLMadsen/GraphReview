@@ -2,7 +2,7 @@
 
 > `components/graph/` Cytoscape wrapper, layout switcher, sidebar
 
-From DESIGN.md §3 and §6.1:
+On the rendering approach:
 
 > **Graph rendering — Cytoscape.js.** ...a layout registry that maps
 > directly onto the required layout modes (`fcose`/`cose-bilkent` → Force,
@@ -29,14 +29,14 @@ From DESIGN.md §3 and §6.1:
   (`ComponentFilesPanel`, backed by
   `GET /api/repos/[repoId]/components/[componentId]/files`) with that
   component's AI findings above it.
-- The AI review surface (§9, §10), backed by
+- The AI review surface, backed by
   `/api/repos/[repoId]/review`: `useReview` (auto-run on a PR/ref target,
   then poll while the job streams findings in), `ReviewPanel` (the
   full-width dock under the canvas — progress, cost counter, filter chips,
   findings grouped by component) and `review-visuals.ts` (the one place the
   four `intentMatch` colours/glyphs are defined, shared by the panel, the
   sidebar and the canvas markers).
-- The AI labeling surface (§6.1), backed by `/api/repos/[repoId]/label`:
+- The AI labeling surface, backed by `/api/repos/[repoId]/label`:
   `useLabels` (GET on mount, POST only when the user presses the button,
   then poll while the job runs and refetch the graph when it finishes) and
   `LabelsControl` (the toolbar's "Generate labels" / "Re-generate" button
@@ -53,17 +53,16 @@ From DESIGN.md §3 and §6.1:
   a faded node also fades its marker — see `buildStylesheet`.
 - No minimap. `cytoscape-navigator` was removed (plugin, dependency, CSS and
   container): it cost a permanently-occupied corner of the canvas and a
-  second render pass of the whole graph on every pan/zoom, and the §3
-  "minimap" line below predates the tab actually being used on a real
+  second render pass of the whole graph on every pan/zoom, and the
+  "minimap" line above predates the tab actually being used on a real
   100+ node repo, where it was clutter rather than navigation.
 - Tooltips/annotation popovers (`cytoscape-popper`) for `Finding`
-  annotations (§9), and compound-node expand/collapse
-  (`cytoscape-expand-collapse`) for the domain → module → file drill-down
-  (§6.1).
+  annotations, and compound-node expand/collapse
+  (`cytoscape-expand-collapse`) for the domain → module → file drill-down.
 
 The wrapper (`GraphCanvas`), its orchestrator (`GraphView`) and both
 sidebar panels are implemented against real `lib/neo4j`-backed data;
-`cytoscape-popper` annotation popovers for `Finding`s (§9) are still
+`cytoscape-popper` annotation popovers for `Finding`s are still
 follow-up work.
 
 ### Compound (domain) boxes across the four layouts

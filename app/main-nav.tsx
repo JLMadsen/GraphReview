@@ -1,6 +1,6 @@
 "use client";
 
-// Persistent top-nav links (DESIGN.md §4's Repos/Settings destinations).
+// Persistent top-nav links (Repos/Settings destinations).
 //
 // Split out of app/layout.tsx purely so the active-route indicator can read
 // `usePathname()` — a client-only hook. The layout itself stays a server

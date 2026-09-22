@@ -1,12 +1,12 @@
 "use client";
 
-// The Graph tab toolbar's "Labels" control — DESIGN.md §6.1, §10, §16.
+// The Graph tab toolbar's "Labels" control.
 //
 // This is the entry point for the AI pass that completes the three-tier
 // hierarchy: it groups the module-tier components into domain boxes and
-// writes a one-sentence description for each module. §16 says the domain
-// tier's absence "should be communicated in the UI, not silently
-// mislabeled" — so when a repo has no domains the button says exactly what
+// writes a one-sentence description for each module. The domain
+// tier's absence should be communicated in the UI, not silently
+// mislabeled — so when a repo has no domains the button says exactly what
 // pressing it will do, and when no AI provider is configured it says that
 // instead of offering an action that cannot work.
 //
@@ -94,7 +94,7 @@ export function LabelsControl({
               : "Generate labels"}
         </button>
       ) : (
-        // §16: say why the domain tier is missing rather than pretending a
+        // Say why the domain tier is missing rather than pretending a
         // button would work. Never POSTs.
         <span className="flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-xs text-muted-foreground">
           <Sparkles className="size-3.5 opacity-60" aria-hidden />
@@ -108,7 +108,7 @@ export function LabelsControl({
         </span>
       )}
 
-      {/* Live progress + §10's running cost counter. Hoverable: the job's
+      {/* Live progress + running cost counter. Hoverable: the job's
           own log lines (worker/index.ts) are one fetch away, for "what is it
           actually doing right now" beyond the done/total counter. */}
       {running && (

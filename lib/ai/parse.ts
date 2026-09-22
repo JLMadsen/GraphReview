@@ -1,4 +1,4 @@
-// Robust structured-output parser for lib/ai — §9 of docs/DESIGN.md.
+// Robust structured-output parser for lib/ai.
 //
 // Because the client never relies on `response_format`/tool-calling (not
 // every OpenAI-compatible provider supports it), the model's answer is

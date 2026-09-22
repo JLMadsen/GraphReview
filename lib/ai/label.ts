@@ -1,14 +1,13 @@
-// AI-assisted labeling — DESIGN.md §6/§6.1 ("LLM-assisted labeling", the
-// domain tier) and §15's v2 item "LLM-assisted labeling of the domain tier
-// … completing the three-tier hierarchy".
+// AI-assisted labeling — LLM-assisted labeling of the domain tier,
+// completing the three-tier hierarchy.
 //
 // Two phases, one model call each (phase 2 batched):
 //
 //   1. label-domains    — bucket every module into ≤8 domain groups.
 //   2. describe-modules — one plain-English sentence per module.
 //
-// Structure mirrors `./review.ts` exactly, and for the same reasons
-// (decision #8): plain-prompted JSON only — no `response_format`, no
+// Structure mirrors `./review.ts` exactly, and for the same reasons:
+// plain-prompted JSON only — no `response_format`, no
 // tool-calling — recovered with `extractJson`, fitted to the token budget
 // with `truncateMessagesToBudget`, and normalised defensively so a
 // misbehaving model can never produce a broken graph. Errors from the chat
@@ -22,7 +21,7 @@
 // the refs are mapped back to real ids here, so callers only ever see real
 // ids. An answer that echoes the real id anyway is still accepted.
 //
-// Nothing here ever sees file *contents* (§6: "never full file contents") —
+// Nothing here ever sees file *contents* (never full file contents) —
 // only names, paths and dependency names.
 
 import { chatCompletion } from "./client";
@@ -38,7 +37,7 @@ import type { AiProviderConfig, ChatMessage, TokenUsage } from "./types";
 // Public shapes
 // ---------------------------------------------------------------------------
 
-/** One module-tier component, as the labeler sees it. No file contents (§6). */
+/** One module-tier component, as the labeler sees it. No file contents. */
 export interface LabelModuleInput {
   /** The real `(:Component)` id. Never sent to the model verbatim — see the module comment. */
   id: string;
@@ -83,7 +82,7 @@ export interface LabelResult {
 
 export type LabelPhase = "domains" | "descriptions";
 
-/** Emitted after every model call, so a job can publish live progress (§10's counter). */
+/** Emitted after every model call, so a job can publish live progress. */
 export interface LabelProgressEvent {
   phase: LabelPhase;
   /** Modules handled so far in this phase. */
@@ -113,11 +112,11 @@ export interface LabelOptions {
 // Tuning
 // ---------------------------------------------------------------------------
 
-/** §6.1's domain tier is "the widest grouping" — more than a handful stops being one. */
+/** The domain tier is "the widest grouping" — more than a handful stops being one. */
 export const MAX_DOMAINS = 8;
 /** Modules per `describe-modules` call. Bigger batches invite the model to drop entries. */
 export const DEFAULT_DESCRIPTION_BATCH = 25;
-/** Where unassigned modules end up, so the tier is always total (§6.1: the reviewer starts at the domain view). */
+/** Where unassigned modules end up, so the tier is always total (the reviewer starts at the domain view). */
 export const FALLBACK_DOMAIN_NAME = "Other";
 
 const DEFAULT_TEMPERATURE = 0.2;

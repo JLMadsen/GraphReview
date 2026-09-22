@@ -1,15 +1,15 @@
-// Schema initialization: uniqueness constraints for every node label in
-// DESIGN.md §7. Safe to run repeatedly — each statement uses
+// Schema initialization: uniqueness constraints for every node label.
+// Safe to run repeatedly — each statement uses
 // `CREATE CONSTRAINT IF NOT EXISTS`, so re-running on an already-migrated
 // database is a no-op.
 //
-// Note on `RefSnapshot`: §7 gives every other label an `id` property, but
-// lists `sha` as `RefSnapshot`'s first (natural-key) property with no
+// Note on `RefSnapshot`: every other label has an `id` property, but
+// `RefSnapshot`'s first (natural-key) property is `sha`, with no
 // separate `id`, so the constraint below is on `sha` rather than `id`.
 // Ideally this would be a composite `(repoId, sha)` uniqueness constraint
 // (a git sha is scoped per repo in principle), but composite/multi-property
-// uniqueness constraints require Neo4j Enterprise Edition, and DESIGN.md
-// §12 targets the plain `neo4j:5` (Community Edition) Compose image with
+// uniqueness constraints require Neo4j Enterprise Edition, and this project
+// targets the plain `neo4j:5` (Community Edition) Compose image with
 // no mention of an Enterprise license. A single-property constraint on
 // `sha` is the Community-compatible approximation — safe in practice given
 // how astronomically unlikely a cross-repo sha collision is — and

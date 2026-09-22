@@ -1,5 +1,5 @@
 /**
- * `tsconfig.json` / `jsconfig.json` loading (DESIGN.md §5): `baseUrl` + `paths`,
+ * `tsconfig.json` / `jsconfig.json` loading: `baseUrl` + `paths`,
  * including `extends` chains and picking the *nearest* config per importing
  * file (a monorepo has many).
  *

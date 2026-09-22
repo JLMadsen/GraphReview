@@ -1,6 +1,6 @@
 /**
- * npm/yarn/pnpm workspace resolution + `package.json` `"imports"` (`#foo/*`)
- * (DESIGN.md §5). An import of a local workspace package (`@scope/pkg`, `pkg`,
+ * npm/yarn/pnpm workspace resolution + `package.json` `"imports"` (`#foo/*`).
+ * An import of a local workspace package (`@scope/pkg`, `pkg`,
  * or a subpath of either) resolves to a file inside that package's directory —
  * via its `package.json` `exports["."]`/subpath entries, else `main`/`module`/
  * `types`, else a conventional `src/index.*`/`index.*` — and counts as an

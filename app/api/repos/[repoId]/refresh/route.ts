@@ -1,4 +1,4 @@
-// `GET  /api/repos/[repoId]/refresh` — run the §10 staleness check (cheap
+// `GET  /api/repos/[repoId]/refresh` — run the staleness check (cheap
 //        HEAD probe) and auto-enqueue a re-analysis if the stored graph is
 //        behind. This is the same helper the repo detail endpoint and the
 //        Graph tab use, exposed on its own for polling and debugging.

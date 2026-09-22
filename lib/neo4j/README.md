@@ -2,7 +2,7 @@
 
 > `lib/neo4j/` driver singleton + typed repository functions per entity
 
-From DESIGN.md §3:
+From the project's background on the data layer:
 
 > **Neo4j driver**: the official `neo4j-driver` package, wrapped in a
 > server-only singleton (`lib/neo4j/client.ts`) with a connection pool. It is
@@ -16,7 +16,7 @@ From DESIGN.md §3:
   their session, even on error. Reads `NEO4J_URI`/`NEO4J_USER`/
   `NEO4J_PASSWORD` from env (see `docker/.env.example`).
 - `types.ts` — typed shapes for every node label and relationship property
-  bag in §7 (`RepoRecord`, `ComponentRecord`, `FileRecord`,
+  bag (`RepoRecord`, `ComponentRecord`, `FileRecord`,
   `PullRequestRecord`, `RefSnapshotRecord`, `FindingRecord`, plus
   `ImportsProps`/`DependsOnProps`/`ChangesProps` for relationship
   properties). `SettingsRecord` is the one exception — it's defined in
@@ -26,7 +26,7 @@ From DESIGN.md §3:
   (and `Settings.id`). `RefSnapshot` is a documented exception: see the
   Community Edition note in the file for why its constraint is on `sha`
   rather than a composite `(repoId, sha)` key.
-- One repository module per node label in the schema (§7): `repo.ts`,
+- One repository module per node label in the schema: `repo.ts`,
   `component.ts`, `file.ts`, `pullRequest.ts`, `refSnapshot.ts`,
   `finding.ts`, `settings.ts`, `ai-provider.ts`. Each owns the Cypher for its entity —
   parameterized only, never string-concatenated — and returns typed

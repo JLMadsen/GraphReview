@@ -88,7 +88,7 @@ export async function getRepoBranches(
   }
 }
 
-/** Pull/merge requests are a GitHub-or-GitLab-only concept — a local repo always gets the "not linked" empty state (§4). */
+/** Pull/merge requests are a GitHub-or-GitLab-only concept — a local repo always gets the "not linked" empty state. */
 export async function getRepoPullRequests(
   repo: Pick<RepoRecord, "provider" | "url">,
   state: PullRequestListState = "open"

@@ -6,12 +6,12 @@ import { getRepoById } from "@/lib/neo4j";
 import { ProviderBadge, RepoStatusBadge, providerIcon } from "@/app/repo-status-badge";
 
 /**
- * Repo detail shell — DESIGN.md §4.
+ * Repo detail shell.
  *
- * Shows the real repo name, source and §10 status, then hosts the Graph
+ * Shows the real repo name, source and status, then hosts the Graph
  * tab. Computing the status here is also what implements "opening a repo's
  * Graph tab … enqueues a background re-analysis when the stored graph is
- * behind" (§10): the check is one cheap HEAD probe and it never blocks the
+ * behind": the check is one cheap HEAD probe and it never blocks the
  * render on the analysis itself.
  */
 

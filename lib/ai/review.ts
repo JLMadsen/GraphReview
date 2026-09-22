@@ -1,5 +1,5 @@
-// Per-component change review — §9 of docs/DESIGN.md ("one LLM call per
-// touched component"). Sits on top of the generic client (`client.ts`),
+// Per-component change review — one LLM call per touched component. Sits
+// on top of the generic client (`client.ts`),
 // parser (`parse.ts`) and budget helper (`budget.ts`):
 //
 //   build prompt (prompts.ts) -> per-file hunk truncation -> message-level
@@ -128,7 +128,7 @@ export async function reviewComponentChange(
 
   const system = buildSystemPrompt(input.intent.source);
 
-  // Per-file hunk truncation (§9), BEFORE the message-level fit: work out how
+  // Per-file hunk truncation, BEFORE the message-level fit: work out how
   // much of the budget is left for diff text once the system prompt and the
   // non-diff parts of the user message are paid for.
   const overheadTokens =
@@ -267,9 +267,9 @@ function hunkHeading(hunk: string): string {
 
 /**
  * A short, cheap summary of what a truncation dropped, built purely from the
- * hunks' own section headings — the "smarter pre-summarization" §9 flagged
- * as owed, short of an actual second model call (which §9's "one call per
- * component" deliberately rules out spending on every oversized file).
+ * hunks' own section headings — a "smarter pre-summarization" that's still
+ * owed, short of an actual second model call (which the "one call per
+ * component" design deliberately rules out spending on every oversized file).
  * Named headings are deduped and capped; anonymous ones (no heading) just
  * add to the trailing "+N more" count so they aren't silently invisible.
  */

@@ -1,6 +1,6 @@
 // Barrel for lib/jobs — the BullMQ queue/job definitions plus the wiring
-// that turns a stored `(:Repo)` into analyzed graph data (DESIGN.md §3,
-// §10, §12). See README.md for scope.
+// that turns a stored `(:Repo)` into analyzed graph data. See README.md
+// for scope.
 //
 // Everything here is server-only: it reads env vars, opens a Redis
 // connection and spawns `git`. Import it from route handlers, server

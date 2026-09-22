@@ -1,4 +1,4 @@
-// BullMQ queue definition for the AI review feature — DESIGN.md §9, §10.
+// BullMQ queue definition for the AI review feature.
 //
 // Split from `./queue.ts` (which owns the static-analysis queue) rather than
 // merged into it: the two have genuinely different policies — analysis is
@@ -23,7 +23,7 @@ export const REVIEW_QUEUE_NAME = "review";
 /** Job name inside the review queue. */
 export const REVIEW_JOB_NAME = "review-target";
 
-/** What a review is about: a GitHub pull request, or an ad-hoc two-ref comparison (decision #4). */
+/** What a review is about: a GitHub pull request, or an ad-hoc two-ref comparison. */
 export type ReviewTarget =
   | { kind: "pr"; prNumber: number }
   | { kind: "refs"; baseRef: string; headRef: string };
@@ -38,7 +38,7 @@ export interface ReviewJobData {
  * Live progress of a running review, reported via `job.updateProgress()` and
  * surfaced verbatim by `GET /api/repos/[repoId]/review`.
  *
- * `calls`/`promptTokens`/`completionTokens` are §10's "running counter for
+ * `calls`/`promptTokens`/`completionTokens` are a "running counter for
  * the current review session" — cost is made visible as it accrues rather
  * than gated up front.
  */
@@ -90,7 +90,7 @@ export type ReviewJob = Job<ReviewJobData, ReviewJobResult>;
  *
  * `attempts: 1` is the important one and is deliberate: every attempt issues
  * one LLM call per touched component, so an automatic retry would silently
- * double a real bill after a transient provider error. §10 makes review runs
+ * double a real bill after a transient provider error. Review runs are
  * explicit user actions — a re-run is a deliberate POST, never a retry.
  * (Individual *component* failures are already absorbed inside the job
  * itself, so a single bad component never costs the whole run.)
@@ -196,8 +196,8 @@ export interface EnqueueReviewResult {
  * LLM spend), while a *finished* job's id is explicitly removed first —
  * BullMQ would otherwise silently drop the `add()` forever, since a completed
  * job keeps occupying its id until retention evicts it. Removing it is also
- * what makes a re-run a real re-run: §10's overwrite-only findings are
- * rewritten by the job itself, not by anything here.
+ * what makes a re-run a real re-run: findings are overwritten, not versioned,
+ * and rewritten by the job itself, not by anything here.
  */
 export async function enqueueReview(
   repoId: string,

@@ -23,13 +23,13 @@ export interface SaveGitlabPatState {
 export const initialSaveGitlabPatState: SaveGitlabPatState = { status: "idle" };
 
 // ---------------------------------------------------------------------------
-// Test connection (DESIGN.md §8) — `pingProvider` from lib/ai, run server-side
+// Test connection — `pingProvider` from lib/ai, run server-side
 // ---------------------------------------------------------------------------
 
 /**
  * Result of a provider ping. Note what is *not* here: no API key, and no
  * base URL echo. The action runs on the server precisely so the key — which
- * may be the decrypted stored one the browser has never seen (§11) — stays
+ * may be the decrypted stored one the browser has never seen — stays
  * there; only a verdict, a latency and the provider's own error text come
  * back.
  */
@@ -71,7 +71,7 @@ export const initialClearGitlabPatState: ClearGitlabPatState = {
 };
 
 // ---------------------------------------------------------------------------
-// AI providers (multiple, one active) — DESIGN.md §8 extended
+// AI providers (multiple, one active) — extended
 // ---------------------------------------------------------------------------
 
 export interface SaveAiProviderState {

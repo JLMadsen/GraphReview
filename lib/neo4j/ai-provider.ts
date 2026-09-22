@@ -1,14 +1,13 @@
-// Typed repository functions for `(:AiProvider)` nodes (DESIGN.md §7, §8,
-// §11 extended). Originally a single AI provider config lived directly on
-// the `Settings` node; now a user can save several (e.g. a local Ollama
-// server alongside a hosted one) and flip which is active via
-// `Settings.activeAiProviderId`, so switching providers is a click instead
-// of hunting down and re-typing a base URL/key/model. Every provider is
-// still the same generic OpenAI-compatible shape (decision #8 — no
+// Typed repository functions for `(:AiProvider)` nodes. Originally a single
+// AI provider config lived directly on the `Settings` node; now a user can
+// save several (e.g. a local Ollama server alongside a hosted one) and flip
+// which is active via `Settings.activeAiProviderId`, so switching providers
+// is a click instead of hunting down and re-typing a base URL/key/model.
+// Every provider is still the same generic OpenAI-compatible shape (no
 // per-vendor fields); this only adds "more than one, with a selector".
 //
 // `apiKeyEncrypted` follows the same encrypt-at-rest contract as the other
-// secret fields on `Settings` (§11) — this module only persists whatever
+// secret fields on `Settings` — this module only persists whatever
 // ciphertext it's given. lib/crypto/ owns encryption; app/settings/actions.ts
 // calls it before any value reaches here.
 

@@ -1,7 +1,7 @@
-// Typed repository functions for the `(:RefSnapshot)` node label
-// (DESIGN.md §7). Covers both a PR's base/head commit and ad-hoc
-// ref-to-ref comparisons (decision #4). §7 lists no relationships for
-// this label — callers correlate a snapshot with a PR or repo via the
+// Typed repository functions for the `(:RefSnapshot)` node label.
+// Covers both a PR's base/head commit and ad-hoc
+// ref-to-ref comparisons. This label has no relationships of its own —
+// callers correlate a snapshot with a PR or repo via the
 // shared `repoId`/`sha` values rather than a graph edge.
 
 import { runRead, runWrite } from "./client";
@@ -22,7 +22,7 @@ function toRefSnapshotRecord(
 
 /**
  * Creates or fully replaces a `(:RefSnapshot)` node. Unlike the other
- * labels, §7 gives `RefSnapshot` no separate `id` property — `sha` is its
+ * labels, `RefSnapshot` has no separate `id` property — `sha` is its
  * natural key, so upserts and lookups key on `(repoId, sha)` at the
  * application level (the DB-level constraint is on `sha` alone; see the
  * Community Edition note in schema.ts).

@@ -1,5 +1,4 @@
-// Mapping a set of changed file paths onto the stored component graph —
-// DESIGN.md §6, §7, §9.
+// Mapping a set of changed file paths onto the stored component graph.
 //
 // This is the one piece of logic shared by the two features that both start
 // from "here are the files a diff touches": the Graph tab's diff-impact
@@ -116,7 +115,7 @@ export function toDiffImpactResponse(match: DiffComponentMatch): {
   };
 }
 
-/** The structural context §9 sends with every per-component review call: the component's own name/description plus its immediate dependency neighbourhood, by name. */
+/** The structural context sent with every per-component review call: the component's own name/description plus its immediate dependency neighbourhood, by name. */
 export interface ComponentReviewContext {
   id: string;
   name: string;
@@ -128,13 +127,13 @@ export interface ComponentReviewContext {
 }
 
 /**
- * Loads §9's "lightweight structural context" for a set of components in a
+ * Loads the "lightweight structural context" for a set of components in a
  * single query.
  *
  * Both directions of `DEPENDS_ON` are collected in the same statement. The
  * two `OPTIONAL MATCH`es do form a cartesian product per component, but
  * `collect(DISTINCT …)` folds it back down, and at component-graph scale
- * (tens to low hundreds of nodes, §3) that is far cheaper than a round-trip
+ * (tens to low hundreds of nodes) that is far cheaper than a round-trip
  * per component.
  *
  * Components in `componentIds` that no longer exist are simply absent from

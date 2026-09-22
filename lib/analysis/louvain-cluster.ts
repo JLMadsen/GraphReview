@@ -1,5 +1,5 @@
 /**
- * Louvain community-detection clustering (DESIGN.md §6) — an opt-in
+ * Louvain community-detection clustering — an opt-in
  * "suggest a different clustering" alternative to the folder-based
  * `clusterByFolderDepth` in graph-builder.ts, not a replacement for it. Same
  * output shape (`ModuleCluster[]`) so it's a drop-in alternative wherever
@@ -9,7 +9,7 @@
  *
  * Library-only: nothing here is wired into an API route, job, or UI yet.
  * Triggering it and an accept/reject UI for the suggestion are separate
- * follow-up work (§15).
+ * follow-up work.
  */
 import Graph from "graphology";
 import louvain from "graphology-communities-louvain";
@@ -32,7 +32,7 @@ import { dirOf } from "./paths";
 export const UNCONNECTED_CLUSTER_NAME = "unconnected";
 
 /**
- * Community-detection clustering (DESIGN.md §6): builds an undirected
+ * Community-detection clustering: builds an undirected
  * `graphology` graph from the file-level import graph and runs the Louvain
  * algorithm to group files by detected community instead of folder location.
  *
@@ -44,7 +44,7 @@ export const UNCONNECTED_CLUSTER_NAME = "unconnected";
  * edge weight or kind.
  *
  * Naming heuristic (communities have no inherent name the way a folder
- * does — this is the judgment call §6 calls out): for each detected
+ * does — this is a deliberate judgment call): for each detected
  * community, take the most common top-level folder segment (the first path
  * segment, e.g. "src" from "src/auth/index.ts") among its files. If one
  * segment is strictly more common than every other, and it's not "every file

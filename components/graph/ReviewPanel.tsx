@@ -1,8 +1,7 @@
 "use client";
 
-// The AI review dock — DESIGN.md §6.2, §9, §10, and decision #10
-// ("advisory annotations only … never blocks a review and never auto-posts
-// to GitHub").
+// The AI review dock — advisory annotations only; it never blocks a review
+// and never auto-posts to GitHub.
 //
 // ---------------------------------------------------------------------------
 // Why this is a full-width dock under the canvas, not a sidebar card
@@ -340,11 +339,11 @@ export function ReviewPanel({
         )}
 
         <div className="ml-auto flex items-center gap-2">
-          {/* §10's running cost counter — visible in the moment, gating nothing. */}
+          {/* Running cost counter — visible in the moment, gating nothing. */}
           {progress && (
             <span
               className="hidden items-center gap-1.5 rounded-lg bg-muted px-2 py-1 font-mono text-[10px] text-muted-foreground sm:flex"
-              title="Model calls and token usage for this review run — visibility only, nothing is capped (§10)."
+              title="Model calls and token usage for this review run — visibility only, nothing is capped."
             >
               <span className="text-foreground">
                 {NUMBER.format(progress.calls)}
@@ -371,7 +370,7 @@ export function ReviewPanel({
               disabled={!canRerun}
               title={
                 canRerun
-                  ? "Run the intent check again — existing findings are overwritten (§10)."
+                  ? "Run the intent check again — existing findings are overwritten."
                   : "A review of this target is already in flight."
               }
             >
@@ -676,7 +675,7 @@ export function ReviewPanel({
         )
       )}
 
-      {/* ---- Advisory footer (decision #10) ----------------------------- */}
+      {/* ---- Advisory footer ----------------------------- */}
       <p className="flex items-center gap-1.5 border-t border-border bg-muted/40 px-3.5 py-2 text-[11px] text-muted-foreground">
         <Info className="size-3 shrink-0" aria-hidden />
         Advisory only — AI can be wrong. Nothing here blocks a review or is

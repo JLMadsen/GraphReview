@@ -1,5 +1,5 @@
 /**
- * Smoke test for lib/ai's labeling layer (DESIGN.md §6.1 — the domain tier).
+ * Smoke test for lib/ai's labeling layer (the domain tier).
  *
  *   npx tsx lib/ai/smoke-test-label.ts
  *

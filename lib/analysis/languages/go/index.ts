@@ -1,5 +1,5 @@
 /**
- * Go analyzer (DESIGN.md §5, §15 v2 - proves out the language extension point).
+ * Go analyzer (v2 - proves out the language extension point).
  *
  * File-level import edges only. Resolution rules (a package is a directory, so
  * one import fans out to every non-test `.go` file in it) live in `resolve.ts`.

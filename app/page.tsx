@@ -6,10 +6,10 @@ import { ProviderBadge, RepoStatusBadge, providerIcon } from "./repo-status-badg
 import { RepoRetryButton } from "./repo-retry-button";
 
 /**
- * Repo list (landing page) — DESIGN.md §4.
+ * Repo list (landing page).
  *
- * Every added repo, with name, source (local | github | gitlab) and the §10
- * status indicator. Rendering this list is itself a "view" for §10's
+ * Every added repo, with name, source (local | github | gitlab) and the
+ * status indicator. Rendering this list is itself a "view" for staleness
  * purposes:
  * `listRepoDtos` runs the cheap staleness check per repo and schedules a
  * background refresh for anything whose HEAD has moved, which is what makes

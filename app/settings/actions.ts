@@ -1,6 +1,6 @@
 "use server";
 
-// Server actions backing the settings page (DESIGN.md §4, §8, §11).
+// Server actions backing the settings page.
 //
 // Plaintext secrets (GitHub PAT, AI provider API keys) are submitted here as
 // FormData from the client and encrypted (lib/crypto) before ever being
@@ -12,7 +12,7 @@
 // (lib/neo4j/ai-provider.ts) rather than directly on `Settings`, so a user
 // can save several (e.g. a local model server alongside a hosted one) and
 // flip which is active without re-entering anything. GitHub PAT stays a
-// single instance-wide credential on `Settings` (decision #6/#7).
+// single instance-wide credential on `Settings`.
 
 import { revalidatePath } from "next/cache";
 import { pingProvider } from "@/lib/ai";
@@ -82,7 +82,7 @@ export async function clearGithubPatAction(): Promise<ClearGithubPatState> {
 }
 
 // ---------------------------------------------------------------------------
-// GitLab PAT — same shape as the GitHub PAT above (decision #6/#7, extended)
+// GitLab PAT — same shape as the GitHub PAT above (extended)
 // ---------------------------------------------------------------------------
 
 export async function saveGitlabPatAction(
@@ -120,7 +120,7 @@ export async function clearGitlabPatAction(): Promise<ClearGitlabPatState> {
 }
 
 // ---------------------------------------------------------------------------
-// AI providers (multiple, one active) — §8
+// AI providers (multiple, one active)
 // ---------------------------------------------------------------------------
 
 /**
@@ -250,7 +250,7 @@ export async function setActiveAiProviderAction(
 }
 
 /**
- * "Test connection" for a provider card (DESIGN.md §8).
+ * "Test connection" for a provider card.
  *
  * Works for both a saved provider (`providerId` present — resolves
  * typed-else-saved base URL/model, and decrypts the stored key unless a new

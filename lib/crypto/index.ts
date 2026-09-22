@@ -1,7 +1,7 @@
-// lib/crypto — credential encrypt/decrypt helpers (DESIGN.md §11).
+// lib/crypto — credential encrypt/decrypt helpers.
 //
 // AES-256-GCM, keyed by the `SESSION_SECRET` env var. `SESSION_SECRET` is an
-// arbitrary user-supplied string (see docker/.env.example, DESIGN.md §12),
+// arbitrary user-supplied string (see docker/.env.example),
 // not guaranteed to be 32 bytes, so it is never used as the AES key
 // directly. Instead it is stretched into a 256-bit key with `scryptSync`
 // (a deliberately slow KDF — appropriate here since the key is derived once
@@ -15,7 +15,7 @@
 // Output format (`encrypt`'s return value): base64( iv[12] || authTag[16] || ciphertext ).
 // Self-contained and versionless — `decrypt` slices it back apart using the
 // fixed 12/16-byte header lengths, so no separate storage of iv/tag is
-// needed by callers (e.g. the `Settings` node, DESIGN.md §7/§11).
+// needed by callers (e.g. the `Settings` node).
 //
 // This module has no Neo4j or GitHub dependency — it is pure crypto over
 // strings, used by callers (e.g. app/settings' server action, lib/github,
@@ -44,7 +44,7 @@ function getKey(): Buffer {
   if (!secret) {
     throw new Error(
       "lib/crypto: SESSION_SECRET env var is not set. A real secret is " +
-        "required to encrypt/decrypt credential fields (DESIGN.md §11/§12) " +
+        "required to encrypt/decrypt credential fields " +
         "— refusing to fall back to a weak or default key."
     );
   }

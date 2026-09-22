@@ -1,12 +1,12 @@
-// The AI labeling endpoint — DESIGN.md §6.1, §10, §15.
+// The AI labeling endpoint.
 //
 //   POST /api/repos/[repoId]/label   enqueue a labeling run (on demand only)
 //   GET  /api/repos/[repoId]/label   job state + progress + what exists today
 //
-// Deliberately **not** automatic, unlike the review endpoint. §10's "no
-// confirmation dialog, no cap" is about a review that follows an explicit
+// Deliberately **not** automatic, unlike the review endpoint. The "no
+// confirmation dialog, no cap" policy is about a review that follows an explicit
 // diff selection; labeling is triggered by nothing in particular and
-// re-analysis happens constantly (§10's staleness sweep), so running it
+// re-analysis happens constantly (the staleness sweep), so running it
 // automatically would spend tokens nobody asked for. The UI only ever POSTs
 // here when someone presses "Generate labels".
 //
@@ -75,7 +75,7 @@ function isRedisUnavailable(error: unknown): boolean {
   );
 }
 
-/** The active saved provider must have all three fields present for a labeling run to be possible (§8: base URL + key + model are one unit). */
+/** The active saved provider must have all three fields present for a labeling run to be possible (base URL + key + model are one unit). */
 async function isAiConfigured(): Promise<boolean> {
   const provider = await getActiveAiProvider();
   return Boolean(provider?.baseUrl && provider?.apiKeyEncrypted && provider?.model);

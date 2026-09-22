@@ -1,4 +1,4 @@
-// Bridge between a stored `(:Repo)` record and lib/github — DESIGN.md §7, §8, §11.
+// Bridge between a stored `(:Repo)` record and lib/github.
 //
 // lib/github is deliberately credential-free (every function takes an
 // explicit `token`), and lib/neo4j only stores the *encrypted* PAT. This
@@ -101,11 +101,11 @@ export async function getStoredGitHubToken(): Promise<string | null> {
 
 /** Why a repo can't be talked to over the GitHub API right now. */
 export type GitHubUnavailableReason =
-  /** `provider === "local"` and no GitHub URL on file — §4's "not linked to GitHub" state. */
+  /** `provider === "local"` and no GitHub URL on file — the "not linked to GitHub" state. */
   | "not_linked"
   /** A URL is stored but owner/repo couldn't be parsed out of it. */
   | "invalid_url"
-  /** No PAT saved in Settings yet (decision #7). */
+  /** No PAT saved in Settings yet. */
   | "no_token";
 
 export type GitHubAccess =

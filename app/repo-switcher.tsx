@@ -1,7 +1,7 @@
 "use client";
 
 // The repo-detail breadcrumb's name segment, upgraded into a switcher —
-// decision #12 ("switchable in the UI") and DESIGN.md §15's "multi-repo
+// making repo switching available directly from the UI, as a "multi-repo
 // switcher UX polish" v3 item.
 //
 // Until now, switching repos meant "Repositories" -> pick a card -> land on
@@ -53,7 +53,7 @@ export function RepoSwitcher({ repoId, repoName }: RepoSwitcherProps) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Fetched once per mount on first open, not via an effect keyed on `open`
-  // (DESIGN.md §17: an effect must never re-run itself off state it sets) —
+  // (an effect must never re-run itself off state it sets) —
   // a plain guarded call from the click handler that opens the panel has no
   // such footgun, since nothing here is reactive to a changing dependency.
   async function ensureLoaded() {

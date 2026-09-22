@@ -1,5 +1,5 @@
 /**
- * Python analyzer (DESIGN.md §5, v1 language set).
+ * Python analyzer (v1 language set).
  */
 import path from "node:path";
 import type {

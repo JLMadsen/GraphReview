@@ -6,7 +6,7 @@
  * `client.ts` has no live OpenAI-compatible endpoint to test against here —
  * it's checked by hand against the OpenAI chat-completions request/response
  * shape instead (see README.md). This exercises the parts that run
- * entirely offline: `extractJson` (§9's "robust parser") against realistic
+ * entirely offline: `extractJson` (a robust parser) against realistic
  * model-output fixtures, and `truncateMessagesToBudget`.
  */
 import { extractJson } from "./parse";

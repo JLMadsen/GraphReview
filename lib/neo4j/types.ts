@@ -1,5 +1,5 @@
 // Typed shapes for every node label and relationship property bag defined
-// in DESIGN.md §7. These are intentionally local to lib/neo4j/ (not
+// in the Neo4j schema. These are intentionally local to lib/neo4j/ (not
 // types/) since this task is scoped to the Neo4j data-access layer only —
 // promote them to types/ later if/when other layers want to import the
 // canonical shapes directly instead of going through the repository
@@ -26,7 +26,7 @@ export interface RepoRecord {
 }
 
 export type ComponentCreatedBy = "auto" | "user";
-/** Tier within the hierarchical clustering from §6.1. */
+/** Tier within the hierarchical clustering. */
 export type ComponentTier = "domain" | "module" | "file";
 
 export interface ComponentRecord {
@@ -85,15 +85,15 @@ export interface FindingRecord {
    * What was reviewed, as a stable string key: `pr:<number>` for a pull
    * request, or `refs:<baseRef>...<headRef>` for an ad-hoc ref comparison.
    *
-   * §7 only gives `Finding` a nullable `prId`, which cannot identify a
+   * `Finding` only has a nullable `prId`, which cannot identify a
    * ref-comparison review at all — two different ref comparisons of the same
-   * repo would be indistinguishable, and "overwrite, don't version" (§10)
+   * repo would be indistinguishable, and "overwrite, don't version"
    * needs an exact identity for *what* is being overwritten. `targetKey` is
    * that identity; `prId` stays alongside it purely so the `FOR ->
-   * (:PullRequest)` edge and §7's property list still hold for PR reviews.
+   * (:PullRequest)` edge and the property list still hold for PR reviews.
    */
   targetKey: string;
-  /** Nullable per §7 — absent for a finding generated from an ad-hoc ref comparison rather than a PR. */
+  /** Nullable — absent for a finding generated from an ad-hoc ref comparison rather than a PR. */
   prId?: string;
   componentId: string;
   filePath?: string;
@@ -120,7 +120,7 @@ export interface FindingRecord {
 
 // Note: `SettingsRecord` is intentionally defined in settings.ts, not here
 // — the integration contract for that module specifies its exact shape
-// there (singleton `(:Settings {id: "global"})`, §7/§11), and re-declaring
+// there (singleton `(:Settings {id: "global"})`), and re-declaring
 // it in both places would create a duplicate-export collision in index.ts.
 
 /** `(File)-[:IMPORTS {kind}]->(File)` */

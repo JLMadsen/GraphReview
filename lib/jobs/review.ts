@@ -1,11 +1,12 @@
-// The AI review job body — DESIGN.md §9, §10.
+// The AI review job body.
 //
-// Pipeline: load the repo → load and decrypt the AI provider settings (§11)
-// → fetch the diff and the "intent" context for the target → map changed
-// files onto the component graph (§6) → one LLM call per touched component
-// (§9), a few in flight at a time → persist each component's findings the
-// moment it completes (§10's overwrite-only semantics), so they stream into
-// the UI → prune findings for components the target no longer touches.
+// Pipeline: load the repo → load and decrypt the AI provider settings →
+// fetch the diff and the "intent" context for the target → map changed
+// files onto the component graph → one LLM call per touched component,
+// a few in flight at a time → persist each component's findings the
+// moment it completes (overwriting any previous run's findings for that
+// component), so they stream into the UI → prune findings for components
+// the target no longer touches.
 //
 // Kept out of `worker/index.ts` and out of lib/jobs' barrel on purpose, for
 // the same reason as `./analyze.ts`: this is the unit of work (importable
@@ -62,10 +63,10 @@ import {
 /**
  * How many per-component LLM calls are in flight at once.
  *
- * Small on purpose. §9's whole point is that calls are independent and can
- * be parallelized, but the configured provider may well be a single local
- * model server (decision #8) that serializes internally anyway, and a burst
- * of dozens of concurrent requests is the fastest way to trip a hosted
+ * Small on purpose. The whole point of per-component calls is that they are
+ * independent and can be parallelized, but the configured provider may well
+ * be a single local model server that serializes internally anyway, and a
+ * burst of dozens of concurrent requests is the fastest way to trip a hosted
  * provider's rate limit — which, with `attempts: 1`, there is no automatic
  * second chance for.
  */
@@ -81,8 +82,8 @@ function pullRequestNodeId(repoId: string, prNumber: number): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Reads and decrypts the currently *active* saved AI provider (§8, §11 —
- * now multiple providers can be saved, lib/neo4j/ai-provider.ts, with one
+ * Reads and decrypts the currently *active* saved AI provider (multiple
+ * providers can be saved, lib/neo4j/ai-provider.ts, with one
  * marked active at a time).
  *
  * All three fields are required and checked together: a half-configured
@@ -102,7 +103,7 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
 
   if (missing.length > 0 || !provider) {
     throw new UnrecoverableError(
-      `AI provider is not fully configured — missing ${missing.join(", ")}. Set it in Settings (DESIGN.md §8).`
+      `AI provider is not fully configured — missing ${missing.join(", ")}. Set it in Settings.`
     );
   }
 
@@ -123,7 +124,7 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
 }
 
 // ---------------------------------------------------------------------------
-// Diff + intent sources (§8, §9)
+// Diff + intent sources
 // ---------------------------------------------------------------------------
 
 interface ResolvedTarget {
@@ -154,7 +155,7 @@ function toIntentIssues(
 }
 
 /**
- * Persists the PR being reviewed as a `(:PullRequest)` node (§7), so the
+ * Persists the PR being reviewed as a `(:PullRequest)` node, so the
  * `Finding -[:FOR]-> (:PullRequest)` edge has something to point at.
  *
  * Best-effort by design: if this write fails, the review itself is still
@@ -228,7 +229,7 @@ async function resolveTarget(
       files,
       reviewed: { baseSha, headSha },
       // No PR title/body exists for an ad-hoc comparison, so no intent is
-      // asserted — §3's intent validation is specifically "diff vs. the PR's
+      // asserted — intent validation is specifically "diff vs. the PR's
       // stated intent". Inventing a title here would give the model
       // something to "match" that nobody actually claimed.
       intent: { source: "ref_comparison" },
@@ -294,7 +295,7 @@ async function resolveTarget(
   if (!access.ok) {
     throw new UnrecoverableError(
       access.reason === "no_token"
-        ? "No GitHub PAT configured in Settings — it is needed to fetch this diff (decision #7)."
+        ? "No GitHub PAT configured in Settings — it is needed to fetch this diff."
         : `This repo is not usable over the GitHub API (${access.reason}).`
     );
   }
@@ -316,7 +317,7 @@ async function resolveTarget(
     };
   }
 
-  // PR: detail (title/body) + files (patches) + linked issues (§9's shared
+  // PR: detail (title/body) + files (patches) + linked issues (the shared
   // intent context). The three are independent reads, so they go out
   // together rather than serially.
   const [detail, filesResult, linkedIssues] = await Promise.all([
@@ -389,7 +390,7 @@ export async function runReviewJob(
     reviewedAt,
   };
 
-  // --- Map the diff onto the component graph (§6) -----------------------
+  // --- Map the diff onto the component graph -----------------------------
   const filesByPath = new Map(resolved.files.map((file) => [file.path, file]));
   const match = await matchFilesToComponents(repoId, [...filesByPath.keys()]);
   const contexts = await getComponentReviewContexts(repoId, match.touchedComponentIds);
@@ -415,7 +416,7 @@ export async function runReviewJob(
   const publishProgress = async (): Promise<void> => {
     progress.running = [...running.values()];
     try {
-      // Progress is advisory (§10's live counter) — a Redis hiccup writing
+      // Progress is advisory (a live counter) — a Redis hiccup writing
       // it must never take down a job that is otherwise succeeding.
       await job?.updateProgress({ ...progress });
     } catch {
@@ -424,7 +425,7 @@ export async function runReviewJob(
   };
   await publishProgress();
 
-  // --- One call per component, a few at a time (§9) ---------------------
+  // --- One call per component, a few at a time ---------------------------
   let findingsWritten = 0;
   let nextIndex = 0;
   // Persistence is funnelled through this promise chain so that, however
@@ -484,7 +485,7 @@ export async function runReviewJob(
     } catch (error) {
       failed = true;
       // A rejected call still went out (and, with a hosted provider, may
-      // still be billed), so it counts toward §10's running call counter.
+      // still be billed), so it counts toward the running call counter.
       // One is a lower bound — `reviewComponentChange` only throws after its
       // own attempts are exhausted and doesn't report how many it made.
       progress.calls += 1;
@@ -492,7 +493,7 @@ export async function runReviewJob(
       // / network failure, so it needs no special-casing beyond `Error`.
       const message = error instanceof Error ? error.message : String(error);
       // A failed component becomes a visible `unknown` finding rather than
-      // silence: §10 runs these automatically for every touched component,
+      // silence: reviews run automatically for every touched component,
       // so "nothing was said about this component" must not be ambiguous
       // between "the model found nothing" and "the call never landed".
       findings = [

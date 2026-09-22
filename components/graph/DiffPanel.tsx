@@ -1,6 +1,6 @@
 "use client";
 
-// The Graph tab's diff-selection panel (DESIGN.md §4): "pick a PR, or two
+// The Graph tab's diff-selection panel: "pick a PR, or two
 // refs" — plus the prototype's "paste changed file paths" textarea. Lives
 // as a sidebar inside the Graph tab, not a separate screen. Calls
 // `POST /api/repos/[repoId]/diff-impact` and reports the result up to
@@ -18,7 +18,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "cn";
+import { evictClosedAddedCache, readAddedCache, writeAddedCache } from "./added-cache";
 import type {
+  AddedComponentDTO,
+  AddedComponentsResponseDTO,
   DiffImpactRequestDTO,
   DiffImpactResponseDTO,
   ReviewTargetDTO,
@@ -28,7 +31,7 @@ import type {
  * The reviewable target behind a diff-impact request, or `null` when there
  * isn't one.
  *
- * "Paste paths" is the `null` case, and deliberately so: §9's intent check
+ * "Paste paths" is the `null` case, and deliberately so: the intent check
  * needs the diff *hunks* for each changed file, and a pasted list of paths
  * carries none — there is nothing for the model to read. PR and ref modes
  * both name something the worker can fetch a real diff for, so only those
@@ -71,6 +74,8 @@ interface BranchOption {
 interface PullRequestOption {
   number: number;
   title: string;
+  /** Versions the added-components cache — see added-cache.ts. */
+  updatedAt: string;
 }
 
 interface BranchesApiResponse {
@@ -143,7 +148,7 @@ export interface DiffPanelProps {
   initialHeadRef?: string;
   /**
    * Reports the impact result *and* what it was a result of. The second
-   * argument is what the Graph tab's AI review (DESIGN.md §9/§10) is keyed
+   * argument is what the Graph tab's AI review is keyed
    * on — it is `null` for the "paste paths" mode and for any failed check,
    * which is what stops a review from being started for a target that has
    * no diff behind it.
@@ -152,6 +157,15 @@ export interface DiffPanelProps {
     result: DiffImpactResponseDTO | null,
     target: ReviewTargetDTO | null
   ) => void;
+  /**
+   * Reports the AI-labeled components for this check's `unmatchedFiles`
+   * (files the PR added with no stored component yet — see
+   * `AddedComponentDTO`). Fired with `[]` alongside every `onResult` call
+   * that isn't a successful PR-mode check, so the canvas's green highlight
+   * always matches the current result. PR mode only: refs/paths checks have
+   * no stable identity to cache these against, so they're never labeled.
+   */
+  onAddedComponents: (components: AddedComponentDTO[]) => void;
 }
 
 export function DiffPanel({
@@ -161,6 +175,7 @@ export function DiffPanel({
   initialBaseRef,
   initialHeadRef,
   onResult,
+  onAddedComponents,
 }: DiffPanelProps) {
   const initialRefsMode = !initialPrNumber && Boolean(initialBaseRef && initialHeadRef);
   const [mode, setMode] = useState<Mode>(initialRefsMode ? "refs" : "pr");
@@ -173,6 +188,13 @@ export function DiffPanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<DiffImpactResponseDTO | null>(null);
+  /** Local copy of whatever was last reported via `onAddedComponents`, for this panel's own "Added" list below. */
+  const [addedComponents, setAddedComponents] = useState<AddedComponentDTO[]>([]);
+
+  function reportAddedComponents(components: AddedComponentDTO[]) {
+    setAddedComponents(components);
+    onAddedComponents(components);
+  }
 
   const [branchesState, setBranchesState] = useState<ListFetchState<BranchOption>>({
     status: "idle",
@@ -227,12 +249,16 @@ export function DiffPanel({
       .then((res) => res.json())
       .then((json: PullRequestsApiResponse) => {
         if (cancelled) return;
-        if (
-          json?.linked &&
-          !json.error &&
-          Array.isArray(json.pullRequests) &&
-          json.pullRequests.length > 0
-        ) {
+        const loaded = json?.linked && !json.error && Array.isArray(json.pullRequests);
+        if (loaded) {
+          // A genuine, successful load of the open-PR list — including a
+          // truly empty one — is exactly when a stale added-components
+          // cache entry (for a PR that's since merged/closed) is safe to
+          // drop. A failed/not-linked fetch never reaches here, so a
+          // network hiccup can't wipe a still-valid cache.
+          evictClosedAddedCache(repoId, new Set(json.pullRequests.map((pr) => pr.number)));
+        }
+        if (loaded && json.pullRequests.length > 0) {
           setPrListState({ status: "loaded", items: json.pullRequests });
         } else {
           setPrListState({ status: "fallback" });
@@ -248,6 +274,50 @@ export function DiffPanel({
     // deliberately not in this array.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, repoId]);
+
+  // Labels `unmatchedFiles` for a PR-mode check — cache-first (see
+  // added-cache.ts), only reaching the network on a miss. `prList` is read
+  // fresh from state at call time (not a dependency) since this is only
+  // ever invoked from inside `runCheck`, itself an event/effect callback.
+  async function loadAddedComponents(prNumber: number, unmatchedFiles: string[]) {
+    if (unmatchedFiles.length === 0) {
+      reportAddedComponents([]);
+      return;
+    }
+    const knownPr =
+      prListState.status === "loaded"
+        ? prListState.items.find((pr) => pr.number === prNumber)
+        : undefined;
+    if (knownPr) {
+      const cached = readAddedCache(repoId, prNumber, knownPr.updatedAt);
+      if (cached) {
+        reportAddedComponents(cached);
+        return;
+      }
+    }
+    try {
+      const res = await fetch(`/api/repos/${repoId}/diff-impact/added-components`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filePaths: unmatchedFiles }),
+      });
+      const json = (await res.json().catch(() => null)) as
+        | AddedComponentsResponseDTO
+        | { error: string }
+        | null;
+      if (!res.ok || !json || "error" in json) {
+        reportAddedComponents([]);
+        return;
+      }
+      reportAddedComponents(json.components);
+      // Only cacheable when the PR list is loaded — that's where `updatedAt`
+      // (the cache's version tag) comes from. Without it, this result is
+      // still shown, just re-labeled on the next check.
+      if (knownPr) writeAddedCache(repoId, prNumber, knownPr.updatedAt, json.components);
+    } catch {
+      reportAddedComponents([]);
+    }
+  }
 
   async function runCheck(body: DiffImpactRequestDTO) {
     setLoading(true);
@@ -272,17 +342,24 @@ export function DiffPanel({
         setError(message);
         setResult(null);
         onResult(null, null);
+        reportAddedComponents([]);
         return;
       }
       setResult(json);
-      // Only a *successful* impact check starts a review (§10: "once a PR or
-      // ref comparison is selected"), so a 404/not-linked diff never fires an
+      // Only a *successful* impact check starts a review (once a PR or
+      // ref comparison is selected), so a 404/not-linked diff never fires an
       // LLM job off the back of it.
       onResult(json, reviewTargetFor(body));
+      if ("prNumber" in body) {
+        void loadAddedComponents(body.prNumber, json.unmatchedFiles);
+      } else {
+        reportAddedComponents([]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Request failed.");
       setResult(null);
       onResult(null, null);
+      reportAddedComponents([]);
     } finally {
       setLoading(false);
     }
@@ -550,11 +627,39 @@ export function DiffPanel({
             <div className="border-t border-border px-3 py-2.5">
               <p className="text-[11px] font-medium text-muted-foreground">
                 Unmatched ({result.unmatchedFiles.length})
+                {addedComponents.length > 0 && " — shown in green on the graph"}
               </p>
               <ul className="mt-1.5 max-h-32 space-y-0.5 overflow-y-auto font-mono text-[11px] text-muted-foreground/80">
                 {result.unmatchedFiles.map((f) => (
                   <li key={f} className="truncate" title={f}>
                     {f}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {addedComponents.length > 0 && (
+            <div className="border-t border-border px-3 py-2.5">
+              <p className="text-[11px] font-medium text-muted-foreground">
+                Added ({addedComponents.length})
+              </p>
+              <ul className="mt-1.5 max-h-40 space-y-1.5 overflow-y-auto">
+                {addedComponents.map((c) => (
+                  <li key={c.id} className="text-[11px]">
+                    <p className="flex items-center gap-1.5">
+                      <span className="size-1.5 shrink-0 rounded-full bg-[#22c55e]" aria-hidden />
+                      <span className="truncate font-medium" title={c.name}>
+                        {c.name}
+                      </span>
+                      <span className="shrink-0 text-muted-foreground">
+                        {c.fileCount} file{c.fileCount === 1 ? "" : "s"}
+                      </span>
+                    </p>
+                    {c.description && (
+                      <p className="mt-0.5 pl-3 leading-relaxed text-muted-foreground/80">
+                        {c.description}
+                      </p>
+                    )}
                   </li>
                 ))}
               </ul>
