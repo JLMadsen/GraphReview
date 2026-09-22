@@ -1,15 +1,15 @@
 // Resolving a `(:Repo)` record to a directory on disk that can be analyzed —
 // DESIGN.md §4 (decision #4), §12, §14.
 //
-// Two ingestion paths behind one interface:
+// Three ingestion paths behind one interface:
 //   - `provider: "local"` — a repo already cloned under the read-only bind
 //     mount (`LOCAL_REPOS_PATH` on the host → `/data/local-repos` in the
 //     container). Escaping that folder is a security boundary, not a
 //     convenience check: the path is user input from the "add repo" dialog
 //     and would otherwise let anyone read arbitrary container-visible files
 //     into the graph.
-//   - `provider: "github"` — an app-managed clone in the `repo_cache` volume
-//     at `/data/repos/<repoId>` (§12).
+//   - `provider: "github"` / `provider: "gitlab"` — an app-managed clone in
+//     the `repo_cache` volume at `/data/repos/<repoId>` (§12).
 //
 // Server-only (spawns `git`, reads env vars) — never import from a client
 // component.
@@ -19,8 +19,12 @@ import { mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { simpleGit } from "simple-git";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
-import type { RepoRecord } from "@/lib/neo4j";
+import type { RepoProvider, RepoRecord } from "@/lib/neo4j";
 import { getStoredGitHubToken, gitHubCloneUrl, parseGitHubUrl } from "./github-access";
+import { getStoredGitLabToken, gitLabCloneUrl, parseGitLabUrl } from "./gitlab-access";
+
+/** The two providers `source.ts` clones/fetches over git — everything that isn't `"local"`. */
+type RemoteProvider = Exclude<RepoProvider, "local">;
 
 // A `git` subprocess that decides to ask for credentials would hang forever
 // here — there is no terminal attached to a Next.js route handler or a
@@ -65,50 +69,69 @@ export function gitIn(baseDir: string, timeoutMs = QUICK_GIT_TIMEOUT_MS, config:
  * the PAT out of the remote means it is never written to `.git/config` inside
  * the persistent `repo_cache` volume — a plaintext-credential-at-rest leak
  * that §11 explicitly tries to avoid.
+ *
+ * The Basic-auth username differs by host convention: GitHub accepts (and
+ * its own docs recommend) `x-access-token` as the username for a PAT;
+ * GitLab's documented convention for PAT-over-HTTPS is `oauth2`. Either
+ * host actually accepts near-arbitrary non-empty usernames as long as the
+ * password is a valid token, but matching each host's own convention avoids
+ * surprises.
  */
-function authConfig(token: string | null): string[] {
+function authConfig(token: string | null, provider: RemoteProvider): string[] {
   if (!token) return [];
-  const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+  const username = provider === "gitlab" ? "oauth2" : "x-access-token";
+  const basic = Buffer.from(`${username}:${token}`).toString("base64");
   return [`http.extraHeader=Authorization: Basic ${basic}`];
+}
+
+/** The token + host label for whichever remote provider a repo uses. */
+async function resolveRemoteToken(provider: RemoteProvider): Promise<string | null> {
+  return provider === "gitlab" ? getStoredGitLabToken() : getStoredGitHubToken();
+}
+
+function providerLabel(provider: RemoteProvider): string {
+  return provider === "gitlab" ? "GitLab" : "GitHub";
 }
 
 /**
  * Rewrites git's own (cryptic, credential-helper-flavored) failure message
  * into something a user can act on. When a token is missing, wrong, expired,
- * or lacks `repo` scope, GitHub answers the clone/fetch request with a 401 —
- * and rather than reporting that cleanly, git falls back to its interactive
- * credential-prompt flow to try to satisfy the challenge, which then fails
- * with "could not read Username ... terminal prompts disabled" because
- * `GIT_TERMINAL_PROMPT=0` (no terminal is ever attached here). That message
- * is accurate but says nothing about *why*, so it's worth translating.
- */
-/**
+ * or lacks the right scope, the host answers the clone/fetch request with a
+ * 401 — and rather than reporting that cleanly, git falls back to its
+ * interactive credential-prompt flow to try to satisfy the challenge, which
+ * then fails with "could not read Username ... terminal prompts disabled"
+ * because `GIT_TERMINAL_PROMPT=0` (no terminal is ever attached here). That
+ * message is accurate but says nothing about *why*, so it's worth
+ * translating.
+ *
  * Every phrasing seen in practice for "this clone/fetch failed because of
  * missing or insufficient access", across both git's own credential-prompt
- * failure and GitHub's several different server-side rejection messages:
+ * failure and GitHub's/GitLab's several different server-side rejection
+ * messages:
  *   - "could not read Username" — git's own message when it falls back to
  *     its interactive credential flow and there's no terminal (§17).
  *   - "Authentication failed" / "status code: 401" — an invalid/expired PAT.
  *   - "Write access to repository not granted" / "403" — an authenticated
- *     but insufficiently-scoped PAT, or (with no token at all) how GitHub's
+ *     but insufficiently-scoped PAT, or (with no token at all) how a host's
  *     git-http-backend sometimes phrases "you can't read this private repo"
  *     rather than the plain 404 "repository not found" case below.
- *   - "repository not found" — GitHub deliberately can't distinguish
- *     "doesn't exist" from "exists but you can't see it" for a private repo,
- *     so this is just as likely to mean "wrong/missing credentials" as a
- *     typo'd URL.
+ *   - "repository not found" — neither GitHub nor GitLab distinguishes
+ *     "doesn't exist" from "exists but you can't see it" for a private
+ *     repo, so this is just as likely to mean "wrong/missing credentials"
+ *     as a typo'd URL.
  */
 const AUTH_FAILURE_PATTERN =
   /could not read username|authentication failed|write access to repository not granted|status code: ?40[13]\b|remote: .*forbidden|repository not found/i;
 
-function withFriendlyAuthError<T>(promise: Promise<T>, hadToken: boolean): Promise<T> {
+function withFriendlyAuthError<T>(promise: Promise<T>, provider: RemoteProvider, hadToken: boolean): Promise<T> {
   return promise.catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     if (AUTH_FAILURE_PATTERN.test(message)) {
+      const host = providerLabel(provider);
       throw new Error(
         hadToken
-          ? "GitHub rejected the request (likely an invalid, expired, or insufficiently-scoped PAT — it needs `repo` scope for a private repository). Re-enter it in Settings."
-          : "This repository could not be reached without credentials — it's likely private. Add a GitHub PAT with `repo` scope in Settings."
+          ? `${host} rejected the request (likely an invalid, expired, or insufficiently-scoped PAT — it needs repo read access for a private repository). Re-enter it in Settings.`
+          : `This repository could not be reached without credentials — it's likely private. Add a ${host} PAT in Settings.`
       );
     }
     throw error;
@@ -217,8 +240,12 @@ export interface RemoteHead {
  * one network round trip, no clone, and it yields the default branch name in
  * the same call.
  */
-export async function readRemoteHead(url: string, token: string | null): Promise<RemoteHead> {
-  const output = await gitIn(process.cwd(), QUICK_GIT_TIMEOUT_MS, authConfig(token)).listRemote([
+export async function readRemoteHead(
+  url: string,
+  token: string | null,
+  provider: RemoteProvider
+): Promise<RemoteHead> {
+  const output = await gitIn(process.cwd(), QUICK_GIT_TIMEOUT_MS, authConfig(token, provider)).listRemote([
     "--symref",
     url,
     "HEAD",
@@ -239,8 +266,14 @@ export async function readRemoteHead(url: string, token: string | null): Promise
   return result;
 }
 
-/** The clone URL for a github-provider repo, normalized to `https://github.com/<owner>/<repo>.git`. */
+/** The clone URL for a github- or gitlab-provider repo, normalized to `https://<host>/<owner>/<repo>.git`. */
 export function remoteUrlForRepo(repo: Pick<RepoRecord, "provider" | "url">): string {
+  if (repo.provider === "gitlab") {
+    if (!repo.url) throw new Error("remoteUrlForRepo: repo has no GitLab URL.");
+    const ref = parseGitLabUrl(repo.url);
+    if (!ref) throw new Error(`Could not parse a project path out of "${repo.url}".`);
+    return gitLabCloneUrl(ref);
+  }
   if (repo.provider !== "github" || !repo.url) {
     throw new Error("remoteUrlForRepo: repo has no GitHub URL.");
   }
@@ -282,10 +315,11 @@ export async function prepareRepoSource(
     return { dir, sha: await readHeadSha(dir), cloned: false };
   }
 
+  const remoteProvider = repo.provider as RemoteProvider;
   const remote = remoteUrlForRepo(repo);
   const dir = repoCacheDir(repo.id);
-  const token = await getStoredGitHubToken();
-  const config = authConfig(token);
+  const token = await resolveRemoteToken(remoteProvider);
+  const config = authConfig(token, remoteProvider);
 
   if (!existsSync(path.join(dir, ".git"))) {
     // A leftover directory without a .git (interrupted earlier clone) would
@@ -295,6 +329,7 @@ export async function prepareRepoSource(
     log(`cloning ${remote} into ${dir}`);
     await withFriendlyAuthError(
       simpleGit(gitOptions(getRepoCacheRoot(), SLOW_GIT_TIMEOUT_MS, config)).clone(remote, dir),
+      remoteProvider,
       Boolean(token)
     );
     return { dir, sha: await readHeadSha(dir), cloned: true };
@@ -303,7 +338,7 @@ export async function prepareRepoSource(
   log(`fetching ${remote} into existing clone at ${dir}`);
   const git = gitIn(dir, SLOW_GIT_TIMEOUT_MS, config);
   await git.remote(["set-url", "origin", remote]);
-  await withFriendlyAuthError(git.fetch(["--prune", "origin"]), Boolean(token));
+  await withFriendlyAuthError(git.fetch(["--prune", "origin"]), remoteProvider, Boolean(token));
 
   // Force the working tree onto the remote's current default-branch head.
   // `-B` resets an existing local branch instead of failing, and `--force`
@@ -333,8 +368,9 @@ export async function readCurrentSha(repo: RepoRecord): Promise<string | null> {
       const dir = resolveLocalRepoPath(repo.localPath);
       return await readHeadSha(dir);
     }
-    const token = await getStoredGitHubToken();
-    const { sha } = await readRemoteHead(remoteUrlForRepo(repo), token);
+    const remoteProvider = repo.provider as RemoteProvider;
+    const token = await resolveRemoteToken(remoteProvider);
+    const { sha } = await readRemoteHead(remoteUrlForRepo(repo), token, remoteProvider);
     return sha ?? null;
   } catch {
     return null;
@@ -343,14 +379,14 @@ export async function readCurrentSha(repo: RepoRecord): Promise<string | null> {
 
 /** Best-effort default-branch detection when adding a repo, falling back to `"main"`. */
 export async function detectDefaultBranch(
-  source: { provider: "local"; dir: string } | { provider: "github"; url: string }
+  source: { provider: "local"; dir: string } | { provider: RemoteProvider; url: string }
 ): Promise<string> {
   try {
     if (source.provider === "local") {
       return (await readCurrentBranch(source.dir)) ?? "main";
     }
-    const token = await getStoredGitHubToken();
-    const { defaultBranch } = await readRemoteHead(source.url, token);
+    const token = await resolveRemoteToken(source.provider);
+    const { defaultBranch } = await readRemoteHead(source.url, token, source.provider);
     return defaultBranch ?? "main";
   } catch {
     return "main";

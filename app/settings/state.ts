@@ -13,6 +13,15 @@ export interface SaveGithubPatState {
 
 export const initialSaveGithubPatState: SaveGithubPatState = { status: "idle" };
 
+export interface SaveGitlabPatState {
+  status: "idle" | "success" | "error";
+  error?: string;
+  /** Whether this submission actually included a new GitLab PAT. */
+  gitlabPatUpdated?: boolean;
+}
+
+export const initialSaveGitlabPatState: SaveGitlabPatState = { status: "idle" };
+
 // ---------------------------------------------------------------------------
 // Test connection (DESIGN.md §8) — `pingProvider` from lib/ai, run server-side
 // ---------------------------------------------------------------------------
@@ -49,6 +58,15 @@ export interface ClearGithubPatState {
 }
 
 export const initialClearGithubPatState: ClearGithubPatState = {
+  status: "idle",
+};
+
+export interface ClearGitlabPatState {
+  status: "idle" | "success" | "error";
+  error?: string;
+}
+
+export const initialClearGitlabPatState: ClearGitlabPatState = {
   status: "idle",
 };
 

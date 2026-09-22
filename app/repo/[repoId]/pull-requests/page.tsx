@@ -23,13 +23,15 @@ import {
  * Pull Requests tab — DESIGN.md §4.
  *
  * "PR list fetched from GitHub (state filter: open/closed/merged), so a
- * reviewer can browse without loading the graph first."
+ * reviewer can browse without loading the graph first." Now also GitLab
+ * (its merge requests are fetched and mapped onto the same shape).
  *
  * The filter is `?state=open|closed|all`, matching GitHub's own filter
- * (lib/github's `PullRequestListState`). Merged PRs are not a separate
- * GitHub-side filter — they come back under `closed`/`all` and lib/github
- * derives the three-value `open | closed | merged` state per item (§7, §8),
- * which is what the per-row badge shows.
+ * (lib/github's `PullRequestListState`, reused by lib/gitlab). Merged PRs
+ * are not a separate GitHub-side filter — they come back under
+ * `closed`/`all` and lib/github derives the three-value
+ * `open | closed | merged` state per item (§7, §8), which is what the
+ * per-row badge shows.
  *
  * Each row links to the Graph tab as `/repo/[repoId]/graph?pr=<number>` —
  * the convention that tab reads to pre-filter itself to a PR (§4, §10).
@@ -108,6 +110,8 @@ export default async function PullRequestsPage({
   if (!dbError && !repo) notFound();
 
   const result = repo ? await getRepoPullRequests(repo, state) : null;
+  const provider = repo?.provider === "gitlab" ? "gitlab" : "github";
+  const hostLabel = provider === "gitlab" ? "GitLab" : "GitHub";
 
   return (
     <div className="space-y-4">
@@ -146,9 +150,10 @@ export default async function PullRequestsPage({
         <GitHubNotice
           reason={result.reason ?? "not_linked"}
           subject="pull requests"
+          provider={provider}
         />
       ) : result.error ? (
-        <GitHubErrorNotice message={result.error} />
+        <GitHubErrorNotice message={result.error} provider={provider} />
       ) : result.pullRequests.length === 0 ? (
         <NoticeCard
           icon={GitPullRequest}
@@ -157,7 +162,7 @@ export default async function PullRequestsPage({
             " "
           )}
         >
-          Nothing matched this filter on GitHub.
+          Nothing matched this filter on {hostLabel}.
         </NoticeCard>
       ) : (
         <ul className="divide-y divide-border overflow-hidden rounded-xl bg-card ring-1 ring-border">
@@ -222,10 +227,10 @@ export default async function PullRequestsPage({
                     href={pr.url}
                     target="_blank"
                     rel="noreferrer"
-                    aria-label={`Open pull request #${pr.number} on GitHub`}
+                    aria-label={`Open ${provider === "gitlab" ? "merge request" : "pull request"} #${pr.number} on ${hostLabel}`}
                     className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted-foreground/70 transition-colors hover:bg-secondary hover:text-foreground"
                   >
-                    GitHub
+                    {hostLabel}
                     <ArrowUpRight className="size-3.5" aria-hidden />
                   </a>
                 </div>

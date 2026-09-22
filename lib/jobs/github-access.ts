@@ -6,21 +6,15 @@
 // decrypt the PAT with lib/crypto, parse owner/repo out of the stored GitHub
 // URL, and call the matching lib/github function.
 //
-// Shared by the API route handlers and the server components that render the
-// Branches / Pull Requests tabs, so those pages don't have to HTTP-fetch
-// their own API (which would need an absolute URL and a second round trip).
+// getRepoBranches/getRepoPullRequests (the actual per-tab dispatch across
+// local/GitHub/GitLab) live in ./repo-access.ts, not here — this module only
+// exports the GitHub-specific pieces that repo-access.ts (and the
+// diff-impact routes) call into, mirroring gitlab-access.ts's shape.
 
 import { decrypt } from "@/lib/crypto";
-import { GitHubApiError, listBranches, listPullRequests } from "@/lib/github";
-import type {
-  Branch,
-  PullRequestListState,
-  PullRequestSummary,
-  RateLimitInfo,
-} from "@/lib/github";
+import { GitHubApiError } from "@/lib/github";
 import { getSettings } from "@/lib/neo4j";
 import type { RepoRecord } from "@/lib/neo4j";
-import { listLocalBranches } from "./local-git";
 
 export interface GitHubRepoRef {
   owner: string;
@@ -134,110 +128,12 @@ export async function resolveGitHubAccess(
   return { ok: true, ref, token };
 }
 
-/** Shared envelope for the two GitHub-backed tab endpoints. `linked: false` is the UI's "not linked to GitHub" state, not an error. */
-interface GitHubListResponse {
-  linked: boolean;
-  reason?: GitHubUnavailableReason;
-  /** Set when GitHub itself rejected/failed the call — the data is empty but the repo *is* linked. */
-  error?: string;
-  rateLimit: RateLimitInfo | null;
-}
-
-export interface BranchesResponse extends GitHubListResponse {
-  branches: Branch[];
-}
-
-export interface PullRequestsResponse extends GitHubListResponse {
-  state: PullRequestListState;
-  pullRequests: PullRequestSummary[];
-}
-
-function describeGitHubError(err: unknown): string {
+/** Turns any error from a `lib/github` call into a short human-readable string — shared by ./repo-access.ts. */
+export function describeGitHubError(err: unknown): string {
   if (err instanceof GitHubApiError) {
     return err.status
       ? `GitHub API error ${err.status}: ${err.message}`
       : `GitHub API error: ${err.message}`;
   }
   return err instanceof Error ? err.message : "Unknown GitHub error.";
-}
-
-/**
- * Local branches don't go through `resolveGitHubAccess` at all — a
- * `provider: "local"` repo's branches live in its own `.git` directory, so
- * no GitHub call (and no PAT) is involved. A local repo with no `localPath`
- * on file (shouldn't happen, but data can be hand-edited) falls back to the
- * same "not linked" empty state the UI already knows how to render.
- */
-export async function getRepoBranches(
-  repo: Pick<RepoRecord, "provider" | "url" | "localPath">
-): Promise<BranchesResponse> {
-  if (repo.provider === "local") {
-    if (!repo.localPath) {
-      return { linked: false, reason: "not_linked", branches: [], rateLimit: null };
-    }
-    try {
-      const branches = await listLocalBranches(repo.localPath);
-      return { linked: true, branches, rateLimit: null };
-    } catch (err) {
-      return {
-        linked: true,
-        error: err instanceof Error ? err.message : String(err),
-        branches: [],
-        rateLimit: null,
-      };
-    }
-  }
-
-  const access = await resolveGitHubAccess(repo);
-  if (!access.ok) {
-    return { linked: false, reason: access.reason, branches: [], rateLimit: null };
-  }
-  try {
-    const { data, rateLimit } = await listBranches(
-      access.token,
-      access.ref.owner,
-      access.ref.repo
-    );
-    return { linked: true, branches: data, rateLimit };
-  } catch (err) {
-    return {
-      linked: true,
-      error: describeGitHubError(err),
-      branches: [],
-      rateLimit: null,
-    };
-  }
-}
-
-export async function getRepoPullRequests(
-  repo: Pick<RepoRecord, "provider" | "url">,
-  state: PullRequestListState = "open"
-): Promise<PullRequestsResponse> {
-  const access = await resolveGitHubAccess(repo);
-  if (!access.ok) {
-    return {
-      linked: false,
-      reason: access.reason,
-      state,
-      pullRequests: [],
-      rateLimit: null,
-    };
-  }
-  try {
-    const { data, rateLimit } = await listPullRequests(
-      access.token,
-      access.ref.owner,
-      access.ref.repo,
-      state
-    );
-    return { linked: true, state, pullRequests: data, rateLimit };
-  } catch (err) {
-    return {
-      linked: true,
-      error: describeGitHubError(err),
-      state,
-      pullRequests: [],
-      rateLimit: null,
-    };
-  }
 }

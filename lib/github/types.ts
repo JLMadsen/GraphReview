@@ -104,17 +104,28 @@ export interface PullRequestFile {
   patch?: string;
 }
 
-/** Result of an ad-hoc `base...head` ref comparison (§8), not tied to a PR. */
+/**
+ * Result of an ad-hoc `base...head` ref comparison (§8), not tied to a PR.
+ * Shared with `lib/gitlab` (re-exported from there), since a ref comparison
+ * means the same thing regardless of git host.
+ */
 export interface RefComparison {
   baseSha: string;
   headSha: string;
-  mergeBaseSha: string;
+  /**
+   * Absent when the host doesn't cheaply expose the true merge-base of an
+   * arbitrary pair of refs (e.g. GitLab's compare endpoint doesn't return
+   * one) — always present for GitHub. Not read anywhere downstream today,
+   * so this is safe to leave unset.
+   */
+  mergeBaseSha?: string;
   status: "diverged" | "ahead" | "behind" | "identical";
   aheadBy: number;
   behindBy: number;
   totalCommits: number;
   files: PullRequestFile[];
-  htmlUrl: string;
+  /** Absent for hosts whose compare API doesn't hand back a web URL directly (e.g. GitLab) — not read anywhere downstream today. */
+  htmlUrl?: string;
 }
 
 /** An issue GitHub resolved as "closed by" a PR, via GraphQL `closingIssuesReferences` (§8 — GraphQL-only). */

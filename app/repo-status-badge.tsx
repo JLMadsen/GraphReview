@@ -12,13 +12,16 @@
 import {
   CircleCheck,
   Github,
+  Gitlab,
   HardDrive,
   LoaderCircle,
   RefreshCw,
   TriangleAlert,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import type { RepoStatus } from "@/lib/jobs";
+import type { RepoProvider } from "@/lib/neo4j";
 
 function shortSha(sha?: string): string | undefined {
   return sha ? sha.slice(0, 7) : undefined;
@@ -81,15 +84,32 @@ export function RepoStatusBadge({
   }
 }
 
-export function ProviderBadge({ provider }: { provider: "local" | "github" }) {
-  const Icon = provider === "github" ? Github : HardDrive;
+const PROVIDER_ICONS: Record<RepoProvider, LucideIcon> = {
+  local: HardDrive,
+  github: Github,
+  gitlab: Gitlab,
+};
+
+const PROVIDER_LABELS: Record<RepoProvider, string> = {
+  local: "Local",
+  github: "GitHub",
+  gitlab: "GitLab",
+};
+
+/** The icon for a repo's source — shared by the repo list, the repo detail header, and the repo switcher, so the three don't each hand-roll the same lookup. */
+export function providerIcon(provider: RepoProvider): LucideIcon {
+  return PROVIDER_ICONS[provider];
+}
+
+export function ProviderBadge({ provider }: { provider: RepoProvider }) {
+  const Icon = providerIcon(provider);
   return (
     <Badge
       variant="outline"
       className="gap-1.5 border-border bg-secondary/60 font-medium text-muted-foreground"
     >
       <Icon aria-hidden />
-      {provider === "github" ? "GitHub" : "Local"}
+      {PROVIDER_LABELS[provider]}
     </Badge>
   );
 }

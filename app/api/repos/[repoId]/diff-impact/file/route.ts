@@ -14,7 +14,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { compareRefs, listPullRequestFiles } from "@/lib/github";
 import type { PullRequestFile } from "@/lib/github";
-import { listLocalFilePatches, resolveGitHubAccess } from "@/lib/jobs";
+import { compareRefs as compareGitLabRefs, listMergeRequestFiles } from "@/lib/gitlab";
+import { listLocalFilePatches, resolveGitHubAccess, resolveGitLabAccess } from "@/lib/jobs";
 import { getRepoById } from "@/lib/neo4j";
 import type { FileDiffResponseDTO } from "@/components/graph/types";
 
@@ -94,7 +95,7 @@ export async function GET(
         return NextResponse.json(
           {
             error:
-              "A pull request cannot be diffed on a repo with no GitHub link — compare two refs instead.",
+              "A pull/merge request cannot be diffed on a repo with no git-host link — compare two refs instead.",
           },
           { status: 400 }
         );
@@ -119,6 +120,39 @@ export async function GET(
           deletions: match.deletions,
           patch: match.patch,
         };
+      }
+    } else if (repo.provider === "gitlab") {
+      const access = await resolveGitLabAccess(repo);
+      if (!access.ok) {
+        return NextResponse.json(
+          {
+            error:
+              access.reason === "no_token"
+                ? "No GitLab PAT configured in Settings."
+                : "This repo is not linked to GitLab.",
+          },
+          { status: 400 }
+        );
+      }
+      const { path: projectPath } = access.ref;
+
+      if ("prNumber" in parsed.data) {
+        const { data: files } = await listMergeRequestFiles(
+          access.token,
+          projectPath,
+          parsed.data.prNumber
+        );
+        const match = files.find((f) => f.filename === path);
+        if (match) file = fromPullRequestFile(match);
+      } else {
+        const { data: comparison } = await compareGitLabRefs(
+          access.token,
+          projectPath,
+          parsed.data.baseRef,
+          parsed.data.headRef
+        );
+        const match = comparison.files.find((f) => f.filename === path);
+        if (match) file = fromPullRequestFile(match);
       }
     } else {
       const access = await resolveGitHubAccess(repo);

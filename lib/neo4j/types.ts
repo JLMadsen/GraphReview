@@ -9,12 +9,12 @@
 // native temporal type) to keep the driver boundary plain-JSON-friendly
 // for route handlers and BullMQ job payloads.
 
-export type RepoProvider = "local" | "github";
+export type RepoProvider = "local" | "github" | "gitlab";
 
 export interface RepoRecord {
   id: string;
   name: string;
-  /** Present when `provider === "github"`. */
+  /** Present when `provider === "github"` or `provider === "gitlab"`. */
   url?: string;
   /** Present when `provider === "local"`. */
   localPath?: string;

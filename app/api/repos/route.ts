@@ -1,6 +1,7 @@
 // `GET /api/repos`  — every tracked repo with its §4 status indicator.
-// `POST /api/repos` — add a repo (local path or GitHub URL, decision #4) and
-//                     kick off its first analysis immediately (§10).
+// `POST /api/repos` — add a repo (local path, GitHub URL, or GitLab URL,
+//                     decision #4) and kick off its first analysis
+//                     immediately (§10).
 
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -11,9 +12,12 @@ import {
   enqueueAnalysis,
   gitHubCloneUrl,
   gitHubRepoWebUrl,
+  gitLabCloneUrl,
+  gitLabRepoWebUrl,
   LocalPathOutsideRootError,
   listRepoDtos,
   parseGitHubUrl,
+  parseGitLabUrl,
   toRepoDto,
   validateLocalRepoPath,
   type RepoDto,
@@ -34,6 +38,11 @@ const addRepoSchema = z.discriminatedUnion("provider", [
   }),
   z.object({
     provider: z.literal("github"),
+    url: z.string().trim().min(1, "url is required."),
+    name: z.string().trim().min(1).optional(),
+  }),
+  z.object({
+    provider: z.literal("gitlab"),
     url: z.string().trim().min(1, "url is required."),
     name: z.string().trim().min(1).optional(),
   }),
@@ -85,6 +94,24 @@ export async function POST(request: Request): Promise<NextResponse> {
       localPath: resolved,
       provider: "local",
       defaultBranch: await detectDefaultBranch({ provider: "local", dir: resolved }),
+    };
+  } else if (input.provider === "gitlab") {
+    const ref = parseGitLabUrl(input.url);
+    if (!ref) {
+      return apiError(
+        `Could not parse a project path out of "${input.url}". Expected something like ${gitLabRepoWebUrl({ path: "group/project" })}.`,
+        400
+      );
+    }
+    repoInput = {
+      id,
+      name: input.name ?? ref.path,
+      url: gitLabRepoWebUrl(ref),
+      provider: "gitlab",
+      defaultBranch: await detectDefaultBranch({
+        provider: "gitlab",
+        url: gitLabCloneUrl(ref),
+      }),
     };
   } else {
     const ref = parseGitHubUrl(input.url);

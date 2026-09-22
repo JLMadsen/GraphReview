@@ -63,19 +63,36 @@ export {
 } from "./source";
 
 export {
-  getRepoBranches,
-  getRepoPullRequests,
+  describeGitHubError,
   getStoredGitHubToken,
   gitHubCloneUrl,
   gitHubRepoWebUrl,
   parseGitHubUrl,
   resolveGitHubAccess,
-  type BranchesResponse,
   type GitHubAccess,
   type GitHubRepoRef,
   type GitHubUnavailableReason,
-  type PullRequestsResponse,
 } from "./github-access";
+
+export {
+  describeGitLabError,
+  getStoredGitLabToken,
+  gitLabCloneUrl,
+  gitLabRepoWebUrl,
+  parseGitLabUrl,
+  resolveGitLabAccess,
+  type GitLabAccess,
+  type GitLabProjectRef,
+  type GitLabUnavailableReason,
+} from "./gitlab-access";
+
+export {
+  getRepoBranches,
+  getRepoPullRequests,
+  type BranchesResponse,
+  type PullRequestsResponse,
+  type RepoAccessUnavailableReason,
+} from "./repo-access";
 
 export {
   REVIEW_JOB_NAME,

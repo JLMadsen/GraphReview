@@ -182,11 +182,11 @@ export async function POST(
       );
     }
 
-    // A PR only exists on the GitHub side; a local-only repo has no PRs to
-    // review, however valid the number looks (decision #4/#7).
-    if (target.kind === "pr" && (repo.provider !== "github" || !repo.url)) {
+    // A PR/MR only exists on the GitHub or GitLab side; a local-only repo
+    // has no PRs to review, however valid the number looks (decision #4/#7).
+    if (target.kind === "pr" && ((repo.provider !== "github" && repo.provider !== "gitlab") || !repo.url)) {
       return errorResponse(
-        "This repo is not linked to GitHub, so it has no pull requests to review — compare two refs instead.",
+        "This repo is not linked to a supported git host, so it has no pull/merge requests to review — compare two refs instead.",
         400,
         "not_linked"
       );
