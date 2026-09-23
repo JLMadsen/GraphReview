@@ -35,8 +35,19 @@ export interface LabelJobData {
   force?: boolean;
 }
 
-/** Which half of the run is in flight (lib/ai/label.ts's two phases). */
-export type LabelPhaseName = "domains" | "descriptions";
+/**
+ * Which part of the run is in flight: lib/ai/label.ts's two model phases,
+ * then `saving` while the results are written to Neo4j. A run can be
+ * cancelled during the first two; `saving` is short and runs to completion,
+ * so the graph is never left half-replaced.
+ */
+export type LabelPhaseName = "domains" | "descriptions" | "saving";
+
+/**
+ * `failedReason` of a run stopped by the user. The status endpoint reports
+ * such a job as `cancelled` rather than `failed`.
+ */
+export const LABEL_CANCELLED_REASON = "Cancelled by user.";
 
 /**
  * Live progress of a labeling run, reported via `job.updateProgress()` and
@@ -67,6 +78,8 @@ export interface LabelJobResult {
   describedModules: number;
   /** Domain components removed before the new ones were written — the "replace, don't duplicate" count. */
   replacedDomains: number;
+  /** The model produced no usable domains, so the existing ones (if any) were left in place. */
+  keptPreviousDomains?: boolean;
   calls: number;
   promptTokens: number;
   completionTokens: number;
@@ -147,6 +160,61 @@ export async function getLabelJobLogs(repoId: string): Promise<string[]> {
   return logs;
 }
 
+// ---------------------------------------------------------------------------
+// Cancellation
+// ---------------------------------------------------------------------------
+//
+// BullMQ can't stop an *active* job from another process: the worker holds
+// its lock. So cancelling is cooperative — the app sets a short-lived Redis
+// flag, the worker polls it while the job runs and aborts the job's model
+// calls when it appears (worker/index.ts). A job still *waiting* in the
+// queue has no worker yet and is simply removed.
+
+/** Redis key the worker polls while a repo's labeling job is active. */
+function labelCancelKey(repoId: string): string {
+  return `graphreview:${labelJobId(repoId)}:cancel`;
+}
+
+/** Long enough to outlive any single model call; short enough that a stray flag can't linger. */
+const CANCEL_FLAG_TTL_SECONDS = 60 * 60;
+
+export type CancelLabelResult =
+  /** Was waiting in the queue and has been removed. */
+  | { outcome: "removed" }
+  /** Is running; the worker will stop it within a second or two. */
+  | { outcome: "requested" }
+  /** Nothing to cancel (never ran, or already finished). */
+  | { outcome: "not_running" };
+
+export async function cancelLabel(repoId: string): Promise<CancelLabelResult> {
+  const queue = getLabelQueue();
+  const jobId = labelJobId(repoId);
+  const state = await queue.getJobState(jobId);
+  if (state === "active") {
+    await getRedisConnection().set(labelCancelKey(repoId), "1", "EX", CANCEL_FLAG_TTL_SECONDS);
+    return { outcome: "requested" };
+  }
+  if (isPendingJobState(state)) {
+    try {
+      await queue.remove(jobId);
+      return { outcome: "removed" };
+    } catch {
+      // Picked up by the worker between the two calls — cancel it running.
+      await getRedisConnection().set(labelCancelKey(repoId), "1", "EX", CANCEL_FLAG_TTL_SECONDS);
+      return { outcome: "requested" };
+    }
+  }
+  return { outcome: "not_running" };
+}
+
+export async function isLabelCancelRequested(repoId: string): Promise<boolean> {
+  return (await getRedisConnection().exists(labelCancelKey(repoId))) === 1;
+}
+
+export async function clearLabelCancel(repoId: string): Promise<void> {
+  await getRedisConnection().del(labelCancelKey(repoId));
+}
+
 export interface EnqueueLabelResult {
   /** `false` when a labeling run for this repo was already pending/active — not an error. */
   enqueued: boolean;
@@ -178,6 +246,8 @@ export async function enqueueLabel(
   if (previousState !== "unknown") {
     await queue.remove(jobId).catch(() => undefined);
   }
+  // A flag left over from cancelling the previous run must not stop this one.
+  await clearLabelCancel(repoId);
 
   await queue.add(
     LABEL_JOB_NAME,

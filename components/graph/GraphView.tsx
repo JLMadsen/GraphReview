@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FlaskConical, GitBranch, LoaderCircle } from "lucide-react";
 import { GraphCanvas } from "./GraphCanvas";
+import { PanelResizeHandle, usePanelWidth } from "./PanelResizeHandle";
 import { ComponentFilesPanel } from "./ComponentFilesPanel";
 import { DiffPanel } from "./DiffPanel";
 import { ReviewPanel } from "./ReviewPanel";
@@ -24,6 +25,10 @@ import { buildReviewMarkers } from "./review-visuals";
 import { SAMPLE_EDGES, SAMPLE_NODES } from "./sample-data";
 import { useLabels } from "./useLabels";
 import { useReview } from "./useReview";
+import {
+  DEFAULT_REVIEW_EFFORT,
+  type ReviewEffort,
+} from "./types";
 import type {
   AddedComponentDTO,
   DiffImpactResponseDTO,
@@ -73,9 +78,12 @@ export function GraphView({
    */
   const [graphNonce, setGraphNonce] = useState(0);
 
-  const review = useReview(repoId, reviewTarget);
+  const [reviewEffort, setReviewEffort] = useState<ReviewEffort>(DEFAULT_REVIEW_EFFORT);
+  const review = useReview(repoId, reviewTarget, reviewEffort);
   const handleLabelsCompleted = useCallback(() => setGraphNonce((n) => n + 1), []);
   const labels = useLabels(repoId, handleLabelsCompleted);
+  const [leftWidth, setLeftWidth] = usePanelWidth("graphreview.panel.diff", 288, 240, 560);
+  const [rightWidth, setRightWidth] = usePanelWidth("graphreview.panel.files", 320, 260, 720);
 
   // A selection is only meaningful against the graph it was made in — but a
   // *re-fetch* of the same repo's graph (a finished labeling run) keeps the
@@ -213,7 +221,16 @@ export function GraphView({
     // `data-wide-shell` opts this tab out of the repo shell's `max-w-6xl`
     // cap — see app/repo/[repoId]/layout.tsx for the mechanism and why.
     <div data-wide-shell className="flex flex-col gap-4 lg:flex-row">
-      <aside className="w-full shrink-0 border-border pb-4 lg:w-72 lg:border-r lg:pr-4 lg:pb-0">
+      <aside
+        className="relative w-full shrink-0 border-border pb-4 lg:w-(--panel-w) lg:border-r lg:pr-4 lg:pb-0"
+        style={{ "--panel-w": `${leftWidth}px` } as React.CSSProperties}
+      >
+        <PanelResizeHandle
+          edge="right"
+          width={leftWidth}
+          onResize={setLeftWidth}
+          label="Resize diff panel"
+        />
         {/* Sticks alongside a tall canvas instead of scrolling away from it.
             Diff selection comes first so it's the top of the leftmost
             column, with the repo card below it. */}
@@ -296,6 +313,9 @@ export function GraphView({
           onRerun={review.rerun}
           selectedComponentId={selectedNodeId}
           onSelectComponent={handleSelectNode}
+          onSetResolved={review.setResolved}
+          effort={reviewEffort}
+          onEffortChange={setReviewEffort}
         />
       </div>
 
@@ -304,7 +324,16 @@ export function GraphView({
         // node shouldn't take the diff controls away, and this keeps the
         // canvas the visual center. `key` forces a fresh fetch/state when
         // the selection moves to another node.
-        <aside className="w-full shrink-0 border-border pt-4 lg:w-80 lg:border-l lg:pt-0 lg:pl-4">
+        <aside
+          className="relative w-full shrink-0 border-border pt-4 lg:w-(--panel-w) lg:border-l lg:pt-0 lg:pl-4"
+          style={{ "--panel-w": `${rightWidth}px` } as React.CSSProperties}
+        >
+          <PanelResizeHandle
+            edge="left"
+            width={rightWidth}
+            onResize={setRightWidth}
+            label="Resize component panel"
+          />
           <div className="lg:sticky lg:top-4">
             <ComponentFilesPanel
               key={selectedNode.id}

@@ -53,6 +53,7 @@ import {
   type ReviewFreshnessDTO,
   type ReviewProgressDTO,
   type ReviewStateDTO,
+  type ReviewEffort,
   type ReviewStatusResponseDTO,
   type ReviewTargetDTO,
 } from "./types";
@@ -95,6 +96,8 @@ export interface UseReviewResult extends ReviewSnapshot {
   rerun: () => void;
   /** Whether a re-run is even possible right now. */
   canRerun: boolean;
+  /** Marks a below-match finding resolved (or reopens it). Optimistic; reverts with a notice if the server refuses. */
+  setResolved: (findingId: string, resolved: boolean) => void;
 }
 
 function isPending(state: ReviewStateDTO): boolean {
@@ -103,7 +106,8 @@ function isPending(state: ReviewStateDTO): boolean {
 
 export function useReview(
   repoId: string,
-  target: ReviewTargetDTO | null
+  target: ReviewTargetDTO | null,
+  effort: ReviewEffort
 ): UseReviewResult {
   const targetKey = target ? reviewTargetKeyOf(target) : null;
   const [snapshot, setSnapshot] = useState<ReviewSnapshot>(IDLE_SNAPSHOT);
@@ -125,6 +129,10 @@ export function useReview(
   // during render so it is never stale by the time the effect reads it.
   const targetRef = useRef<ReviewTargetDTO | null>(target);
   targetRef.current = target;
+  // Same for the effort level: read when a POST goes out, but changing it
+  // must not restart polling or trigger a run — only `rerun()` does that.
+  const effortRef = useRef<ReviewEffort>(effort);
+  effortRef.current = effort;
 
   // Read-only mirror of the snapshot for the visibility listener below, which
   // must know "is a run in flight / is there a completed review on screen"
@@ -166,7 +174,7 @@ export function useReview(
         const res = await fetch(enqueueUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(currentTarget),
+          body: JSON.stringify({ ...currentTarget, effort: effortRef.current }),
         });
         const json = (await res.json().catch(() => null)) as unknown;
         if (!live()) return false;
@@ -348,6 +356,45 @@ export function useReview(
     setRerunNonce((n) => n + 1);
   }, []);
 
+  const setResolved = useCallback(
+    (findingId: string, resolved: boolean) => {
+      const applyResolved = (resolvedAt: string | undefined) =>
+        setSnapshot((prev) => ({
+          ...prev,
+          findings: prev.findings.map((finding) =>
+            finding.id === findingId ? { ...finding, resolvedAt } : finding
+          ),
+        }));
+      const previous = snapshotRef.current.findings.find((f) => f.id === findingId)?.resolvedAt;
+      applyResolved(resolved ? new Date().toISOString() : undefined);
+
+      const url = `/api/repos/${encodeURIComponent(repoId)}/review/findings/${encodeURIComponent(findingId)}`;
+      void (async () => {
+        try {
+          const res = await fetch(url, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ resolved }),
+          });
+          const json = (await res.json().catch(() => null)) as
+            | { resolvedAt?: string; error?: string }
+            | null;
+          if (!res.ok) throw new Error(json?.error ?? `Could not update the finding (${res.status}).`);
+          // The server's timestamp is the one that will come back on the next poll.
+          applyResolved(json?.resolvedAt);
+        } catch (err) {
+          applyResolved(previous);
+          setSnapshot((prev) => ({
+            ...prev,
+            notice: err instanceof Error ? err.message : "Could not update the finding.",
+            noticeCode: null,
+          }));
+        }
+      })();
+    },
+    [repoId]
+  );
+
   const canRerun =
     snapshot.status === "ready" &&
     snapshot.aiConfigured &&
@@ -355,7 +402,7 @@ export function useReview(
     !snapshot.rerunning;
 
   return useMemo(
-    () => ({ ...snapshot, rerun, canRerun }),
-    [snapshot, rerun, canRerun]
+    () => ({ ...snapshot, rerun, canRerun, setResolved }),
+    [snapshot, rerun, canRerun, setResolved]
   );
 }

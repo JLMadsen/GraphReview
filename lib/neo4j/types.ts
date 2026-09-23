@@ -116,6 +116,13 @@ export interface FindingRecord {
   reviewedHeadSha?: string;
   /** ISO-8601 time the shas above were captured (start of the review run). */
   reviewedAt?: string;
+  /**
+   * ISO-8601 time a reviewer marked this finding resolved; absent while it
+   * is open. Only non-`match` findings can be resolved. A resolved finding
+   * counts as OK in the overall verdict. Not carried over by a re-review:
+   * that replaces the findings, so fresh ones start unresolved.
+   */
+  resolvedAt?: string;
 }
 
 // Note: `SettingsRecord` is intentionally defined in settings.ts, not here

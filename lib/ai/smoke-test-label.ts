@@ -313,6 +313,51 @@ async function partA(): Promise<void> {
     );
   }
 
+  // --- names without members (gemma3:4b) -> one follow-up assignment call ----
+  {
+    const ids = MODULES.map((m) => m.id);
+    const fake = fakeChat([
+      fenced({ domains: [{ name: "Frontend", description: "UI." }, { name: "Backend", description: "Server." }] }),
+      fenced({ assignments: { m1: "Frontend", m2: "frontend", M3: "Backend", "#m4": "Backend", m5: "Nowhere" } }),
+    ]);
+    const r = await labelDomains(config, baseInput(), { chat: fake.chat });
+    const byName = new Map(r.value.map((d) => [d.name, d.moduleIds]));
+    check(
+      "no member lists -> follow-up assignment call, domains kept with their descriptions",
+      fake.calls.length === 2 && r.calls === 2 && !r.parseFailed &&
+        byName.get("Frontend")?.length === 2 && byName.get("Backend")?.length === 2 &&
+        r.value.find((d) => d.name === "Frontend")?.description === "UI."
+    );
+    check("follow-up: unknown domain name falls through to Other, every module placed once", allAssignedOnce(r.value, ids) && byName.get("Other")?.length === 1);
+    check(
+      "follow-up prompt lists the domains and every module ref",
+      fake.calls[1].messages[0].content.includes("TASK: assign-modules") &&
+        fake.calls[1].messages[1].content.includes("- Frontend: UI.") &&
+        ALL_REFS.every((ref) => fake.calls[1].messages[1].content.includes(`- ${ref} |`))
+    );
+    check("follow-up is noted for the job log", r.unusableReplies.length === 1 && /asking for assignments/.test(r.unusableReplies[0]));
+
+    const arrayShape = await labelDomains(config, baseInput(), {
+      chat: fakeChat([
+        fenced({ domains: [{ name: "All" }] }),
+        fenced([{ id: "m1", domain: "All" }, { id: "m2", domain: "All" }]),
+      ]).chat,
+    });
+    check("follow-up accepts an array of {id, domain}", arrayShape.value.find((d) => d.name === "All")?.moduleIds.length === 2);
+
+    const useless = await labelDomains(config, baseInput(), {
+      chat: fakeChat([fenced({ domains: [{ name: "All" }] }), "no idea"]).chat,
+    });
+    check(
+      "useless follow-up -> no domains, parseFailed, both replies logged",
+      useless.value.length === 0 && useless.parseFailed && useless.unusableReplies.length === 2 && /no idea/.test(useless.unusableReplies[1])
+    );
+
+    const fullMembers = fakeChat([fenced({ domains: [{ name: "All", moduleIds: ALL_REFS }] })]);
+    await labelDomains(config, baseInput(), { chat: fullMembers.chat });
+    check("complete member lists -> no follow-up call", fullMembers.calls.length === 1);
+  }
+
   // --- empty input ----------------------------------------------------------
   {
     const fake = fakeChat(["should never be used"]);

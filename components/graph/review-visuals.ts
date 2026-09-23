@@ -122,6 +122,21 @@ export function worstIntent(a: IntentMatch, b: IntentMatch): IntentMatch {
   return compareIntent(a, b) <= 0 ? a : b;
 }
 
+/**
+ * The verdict a finding counts as once reviewers have had their say: a
+ * resolved finding counts as `match`, whatever the model said. Everything
+ * that ranks or colours by severity (markers, groups, the overall verdict)
+ * goes through this; the filter chips keep the model's own verdict.
+ */
+export function effectiveIntent(finding: FindingDTO): IntentMatch {
+  return finding.resolvedAt ? "match" : finding.intentMatch;
+}
+
+/** Only findings below `match` have anything to resolve. */
+export function isResolvable(finding: FindingDTO): boolean {
+  return finding.intentMatch !== "match";
+}
+
 /** What the canvas needs per component to draw its marker and extend its tooltip. */
 export interface ReviewMarker {
   componentName: string;
@@ -148,15 +163,15 @@ export function buildReviewMarkers(findings: FindingDTO[]): ReviewMarkerMap {
     if (!existing) {
       markers[finding.componentId] = {
         componentName: finding.componentName,
-        worst: finding.intentMatch,
+        worst: effectiveIntent(finding),
         count: 1,
         summary: finding.summary,
       };
       continue;
     }
     existing.count += 1;
-    if (compareIntent(finding.intentMatch, existing.worst) < 0) {
-      existing.worst = finding.intentMatch;
+    if (compareIntent(effectiveIntent(finding), existing.worst) < 0) {
+      existing.worst = effectiveIntent(finding);
       existing.summary = finding.summary;
     }
   }
@@ -189,6 +204,94 @@ export function countComponentsByIntent(
   };
   for (const marker of Object.values(markers)) counts[marker.worst] += 1;
   return counts;
+}
+
+/** The whole review in one verdict, for the dock header and the Markdown export. */
+export interface ReviewVerdict {
+  /** Worst effective verdict across every finding (resolved ones count as `match`). */
+  intent: IntentMatch;
+  /** Findings below `match` that nobody has resolved yet. */
+  open: number;
+  resolved: number;
+  total: number;
+}
+
+/** `null` when there are no findings to judge. */
+export function computeVerdict(findings: FindingDTO[]): ReviewVerdict | null {
+  if (findings.length === 0) return null;
+  let intent: IntentMatch = "match";
+  let open = 0;
+  let resolved = 0;
+  for (const finding of findings) {
+    intent = worstIntent(intent, effectiveIntent(finding));
+    if (finding.resolvedAt) resolved += 1;
+    else if (isResolvable(finding)) open += 1;
+  }
+  return { intent, open, resolved, total: findings.length };
+}
+
+/** Escapes the few characters that would change a Markdown line's meaning. */
+function mdInline(text: string): string {
+  return text.replace(/\s+/g, " ").replace(/([\\`*_[\]|<>])/g, "\\$1").trim();
+}
+
+function mdFindingLine(finding: FindingDTO): string {
+  const location = formatLocation(finding);
+  return [
+    `**${INTENT_VISUALS[finding.intentMatch].label}**`,
+    mdInline(finding.componentName || finding.componentId),
+    ...(location ? ["`" + location.replace(/`/g, "'") + "`"] : []),
+  ].join(" · ") + ` — ${mdInline(finding.summary)}`;
+}
+
+/**
+ * The overall assessment as Markdown, for pasting into a PR comment, a
+ * ticket or a chat. Open findings first (worst first), then resolved ones,
+ * then a count of the rest.
+ */
+export function reviewMarkdown(
+  targetLabel: string,
+  verdict: ReviewVerdict,
+  findings: FindingDTO[],
+  reviewedHeadSha?: string
+): string {
+  const bySeverity = (a: FindingDTO, b: FindingDTO) =>
+    compareIntent(a.intentMatch, b.intentMatch) ||
+    (a.componentName || "").localeCompare(b.componentName || "");
+  const open = findings.filter((f) => isResolvable(f) && !f.resolvedAt).sort(bySeverity);
+  const resolved = findings.filter((f) => f.resolvedAt).sort(bySeverity);
+  const matches = findings.filter((f) => !isResolvable(f)).length;
+
+  const openCounts = INTENT_ORDER.filter((intent) => intent !== "match")
+    .map((intent) => ({ intent, n: open.filter((f) => f.intentMatch === intent).length }))
+    .filter(({ n }) => n > 0)
+    .map(({ intent, n }) => `${n} ${INTENT_VISUALS[intent].label.toLowerCase()}`);
+
+  const lines = [
+    `## AI review — ${mdInline(targetLabel)}`,
+    "",
+    `**Overall verdict: ${INTENT_VISUALS[verdict.intent].label}**` +
+      (reviewedHeadSha ? ` (reviewed at \`${reviewedHeadSha.slice(0, 7)}\`)` : ""),
+    "",
+    `${verdict.open} open finding${verdict.open === 1 ? "" : "s"}` +
+      (openCounts.length > 0 ? ` (${openCounts.join(", ")})` : "") +
+      ` · ${verdict.resolved} resolved · ${matches} match`,
+  ];
+  if (open.length > 0) {
+    lines.push("", "### Open findings", "", ...open.map((f) => `- ${mdFindingLine(f)}`));
+  }
+  if (resolved.length > 0) {
+    lines.push(
+      "",
+      "### Resolved",
+      "",
+      ...resolved.map(
+        (f) => `- ${mdFindingLine(f)} _(resolved ${(f.resolvedAt ?? "").slice(0, 10)})_`
+      )
+    );
+  }
+  lines.push("", "_Generated by GraphReview. Advisory only — AI can be wrong._");
+  return lines.join("\n");
 }
 
 /** `"src/x.ts:12-40"`, or just the path, or `null` when the finding has neither. */

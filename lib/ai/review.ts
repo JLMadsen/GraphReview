@@ -2,8 +2,13 @@
 // on top of the generic client (`client.ts`),
 // parser (`parse.ts`) and budget helper (`budget.ts`):
 //
-//   build prompt (prompts.ts) -> per-file hunk truncation -> message-level
-//   budget fit -> ONE chat call -> extractJson -> validate/normalize.
+//   build prompt (prompts.ts) -> fit related-code context -> split the diff
+//   into budget-sized chunks -> one chat call per chunk -> extractJson ->
+//   validate/normalize -> merge.
+//
+// A diff that fits the budget is one chunk and one call, exactly as before.
+// A bigger one is reviewed in several parts instead of being cut off; only
+// past MAX_CHUNKS does anything get truncated.
 //
 // Errors from the chat call (`AiClientError`) are deliberately NOT caught —
 // the calling job decides how to record a failed component. Only *model
@@ -18,7 +23,7 @@ import {
   estimateTokens,
   truncateMessagesToBudget,
 } from "./budget";
-import { buildSystemPrompt, buildUserMessage } from "./prompts";
+import { buildSystemPrompt, buildUserMessage, renderRelatedSections } from "./prompts";
 import type { AiProviderConfig, ChatMessage, TokenUsage } from "./types";
 
 export interface ReviewIntent {
@@ -44,10 +49,36 @@ export interface ReviewFileDiff {
   patch?: string; // unified-diff text; absent for binary / oversized files
 }
 
+/** A component one DEPENDS_ON hop away from the reviewed one. */
+export interface ReviewNeighbor {
+  name: string;
+  description?: string;
+  /** `dependsOn`: the reviewed component depends on it. `dependent`: it depends on the reviewed component. */
+  direction: "dependsOn" | "dependent";
+}
+
+/** A file in another component that the changed files import, or that imports them. */
+export interface ReviewRelatedFile {
+  path: string;
+  componentName: string;
+  relation: "imported" | "importer";
+  /** One-line declaration signatures, bodies stripped. */
+  signatures: string[];
+  /** Full source of declarations the diff refers to by name. */
+  snippets: Array<{ name: string; code: string }>;
+}
+
+/** Extra context beyond the diff, gathered according to the review's effort level. */
+export interface ReviewRelatedContext {
+  neighbors?: ReviewNeighbor[];
+  files?: ReviewRelatedFile[];
+}
+
 export interface ReviewInput {
   intent: ReviewIntent;
   component: ReviewComponentContext;
   files: ReviewFileDiff[];
+  related?: ReviewRelatedContext;
 }
 
 export type IntentMatch = "match" | "partial" | "mismatch" | "unknown";
@@ -64,8 +95,9 @@ export interface ReviewFinding {
 export interface ReviewResult {
   findings: ReviewFinding[];
   usage: TokenUsage; // summed over all model calls made (zeros if none)
-  calls: number; // number of model calls actually made (0 or 1)
-  truncated: boolean; // some diff text was cut to fit the token budget
+  calls: number; // number of model calls actually made (one per chunk)
+  chunks: number; // parts the diff was split into (1 when it fit the budget)
+  truncated: boolean; // some diff text was cut to fit the token budget (beyond MAX_CHUNKS)
   parseFailed: boolean; // model output wasn't parseable; `findings` holds one "unknown" fallback
 }
 
@@ -77,6 +109,14 @@ export interface ReviewOptions {
 
 const DEFAULT_TEMPERATURE = 0.2;
 const MAX_FINDINGS = 6;
+/** Findings kept across all chunks of one component, worst first. */
+const MAX_MERGED_FINDINGS = 12;
+/** Cost guard: a component's diff is split into at most this many calls; past that, the tail is truncated. */
+const MAX_CHUNKS = 6;
+/** Share of the budget related-code context may use; the diff gets the rest. */
+const RELATED_SHARE = 0.3;
+/** Room for the `File:` header and fences each file adds to a chunk. */
+const FILE_OVERHEAD_CHARS = 120;
 const MAX_SUMMARY_CHARS = 600;
 const MAX_RATIONALE_CHARS = 1500;
 const FALLBACK_TEXT_CHARS = 400;
@@ -95,8 +135,9 @@ const INTENT_MATCHES: readonly IntentMatch[] = ["match", "partial", "mismatch", 
 const ZERO_USAGE: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
 /**
- * Reviews one component's change against the stated intent with a single
- * model call. Throws (`AiClientError`) if the call itself fails.
+ * Reviews one component's change against the stated intent — one model call
+ * when the diff fits the budget, one per part when it has to be split.
+ * Throws (`AiClientError`) if a call itself fails.
  */
 export async function reviewComponentChange(
   config: AiProviderConfig,
@@ -121,6 +162,7 @@ export async function reviewComponentChange(
       ],
       usage: { ...ZERO_USAGE },
       calls: 0,
+      chunks: 0,
       truncated: false,
       parseFailed: false,
     };
@@ -128,48 +170,101 @@ export async function reviewComponentChange(
 
   const system = buildSystemPrompt(input.intent.source);
 
-  // Per-file hunk truncation, BEFORE the message-level fit: work out how
-  // much of the budget is left for diff text once the system prompt and the
-  // non-diff parts of the user message are paid for.
+  // Related code first, capped at its share, so the diff's share is known.
+  const related = fitRelatedContext(
+    input.related,
+    Math.floor(budget * RELATED_SHARE) * CHARS_PER_TOKEN
+  );
+  const base: ReviewInput = { ...input, related };
+
+  // Work out how much of the budget is left for diff text once the system
+  // prompt and the non-diff parts of the user message are paid for (the
+  // part note is included, as if the diff were going to be split).
   const overheadTokens =
     estimateTokens(system) +
-    estimateTokens(buildUserMessage(input, { omitPatchText: true })) +
+    estimateTokens(
+      buildUserMessage(base, { omitPatchText: true, part: { index: MAX_CHUNKS, total: MAX_CHUNKS } })
+    ) +
     PROMPT_MARGIN_TOKENS;
-  const shareChars = Math.max(0, budget - overheadTokens) * CHARS_PER_TOKEN;
-  const { files, truncated: diffTruncated } = truncatePatchesToShare(input.files, shareChars);
+  const shareChars = Math.max(
+    MIN_PATCH_CHARS_PER_FILE * 4,
+    (budget - overheadTokens) * CHARS_PER_TOKEN
+  );
+  const { chunks, truncated: diffTruncated } = chunkFiles(input.files, shareChars);
 
-  const messages: ChatMessage[] = [
-    { role: "system", content: system },
-    { role: "user", content: buildUserMessage({ ...input, files }) },
-  ];
-  const fitted = truncateMessagesToBudget(messages, budget);
-  const truncated = diffTruncated || fitted !== messages;
+  const usage: TokenUsage = { ...ZERO_USAGE };
+  const merged: ReviewFinding[] = [];
+  let calls = 0;
+  let truncated = diffTruncated;
+  let parseFailures = 0;
 
-  const result = await chat(config, fitted, { temperature });
-  const usage: TokenUsage = result.usage ? { ...result.usage } : { ...ZERO_USAGE };
+  // Sequential on purpose: the job already runs several components in
+  // parallel, and a big component's parts should not multiply that.
+  for (let index = 0; index < chunks.length; index++) {
+    const files = chunks[index];
+    const part = chunks.length > 1 ? { index: index + 1, total: chunks.length } : undefined;
+    const messages: ChatMessage[] = [
+      { role: "system", content: system },
+      { role: "user", content: buildUserMessage({ ...base, files }, { part }) },
+    ];
+    const fitted = truncateMessagesToBudget(messages, budget);
+    if (fitted !== messages) truncated = true;
 
-  const parsed = extractJson(result.content);
-  const findings = normalizeFindings(parsed, new Set(input.files.map((f) => f.path)));
+    const result = await chat(config, fitted, { temperature });
+    calls += 1;
+    if (result.usage) {
+      usage.promptTokens += result.usage.promptTokens;
+      usage.completionTokens += result.usage.completionTokens;
+      usage.totalTokens += result.usage.totalTokens;
+    }
 
-  if (findings.length === 0) {
+    const findings = normalizeFindings(
+      extractJson(result.content),
+      new Set(files.map((f) => f.path))
+    );
+    if (findings.length > 0) {
+      merged.push(...findings);
+      continue;
+    }
+    parseFailures += 1;
     const raw = result.content.trim().slice(0, FALLBACK_TEXT_CHARS);
-    return {
-      findings: [
-        {
-          summary: raw || "(The model returned an empty response.)",
-          intentMatch: "unknown",
-          confidence: 0,
-          rationale: "Model output could not be parsed as structured JSON.",
-        },
-      ],
-      usage,
-      calls: 1,
-      truncated,
-      parseFailed: true,
-    };
+    merged.push({
+      summary: raw || "(The model returned an empty response.)",
+      intentMatch: "unknown",
+      confidence: 0,
+      rationale:
+        "Model output could not be parsed as structured JSON" +
+        (part ? ` (diff part ${part.index} of ${part.total}).` : "."),
+    });
   }
 
-  return { findings, usage, calls: 1, truncated, parseFailed: false };
+  return {
+    findings: capFindings(merged),
+    usage,
+    calls,
+    chunks: chunks.length,
+    truncated,
+    parseFailed: parseFailures > 0,
+  };
+}
+
+/** Keeps at most MAX_MERGED_FINDINGS, preferring the most severe, in their original order. */
+function capFindings(findings: ReviewFinding[]): ReviewFinding[] {
+  if (findings.length <= MAX_MERGED_FINDINGS) return findings;
+  const rank: Record<IntentMatch, number> = { mismatch: 0, partial: 1, unknown: 2, match: 3 };
+  const keep = new Set(
+    findings
+      .map((finding, index) => ({ finding, index }))
+      .sort(
+        (a, b) =>
+          rank[a.finding.intentMatch] - rank[b.finding.intentMatch] ||
+          b.finding.confidence - a.finding.confidence ||
+          a.index - b.index
+      )
+      .slice(0, MAX_MERGED_FINDINGS)
+      .map(({ index }) => index)
+  );
+  return findings.filter((_, index) => keep.has(index));
 }
 
 /** Cheap "does this provider config work" probe: one tiny chat call. Never throws. */
@@ -202,11 +297,116 @@ export async function pingProvider(
 }
 
 // ---------------------------------------------------------------------------
-// Diff truncation
+// Related-code context
+// ---------------------------------------------------------------------------
+
+/**
+ * Trims related context to `maxChars` of rendered prompt text, dropping the
+ * most expensive and least essential parts first: source snippets (from the
+ * last file backwards), then whole files' signatures, then neighbour
+ * descriptions.
+ */
+function fitRelatedContext(
+  related: ReviewRelatedContext | undefined,
+  maxChars: number
+): ReviewRelatedContext | undefined {
+  if (!related) return undefined;
+  const size = (ctx: ReviewRelatedContext) => renderRelatedSections(ctx).length;
+  const ctx: ReviewRelatedContext = {
+    neighbors: related.neighbors?.map((n) => ({ ...n })),
+    files: related.files?.map((f) => ({ ...f, snippets: [...f.snippets] })),
+  };
+  if (size(ctx) <= maxChars) return ctx;
+
+  for (let i = (ctx.files?.length ?? 0) - 1; i >= 0 && size(ctx) > maxChars; i--) {
+    const file = ctx.files![i];
+    while (file.snippets.length > 0 && size(ctx) > maxChars) file.snippets.pop();
+  }
+  while ((ctx.files?.length ?? 0) > 0 && size(ctx) > maxChars) ctx.files!.pop();
+  if (size(ctx) > maxChars && ctx.neighbors) {
+    ctx.neighbors = ctx.neighbors.map(({ name, direction }) => ({ name, direction }));
+  }
+  while ((ctx.neighbors?.length ?? 0) > 0 && size(ctx) > maxChars) ctx.neighbors!.pop();
+  return ctx;
+}
+
+// ---------------------------------------------------------------------------
+// Diff chunking / truncation
 // ---------------------------------------------------------------------------
 
 function hasPatchText(file: ReviewFileDiff): boolean {
   return typeof file.patch === "string" && file.patch.trim().length > 0;
+}
+
+/**
+ * Splits a component's changed files into parts that each fit `shareChars`
+ * of diff text, keeping whole hunks together and files in order. A diff
+ * that already fits comes back as a single part, unchanged.
+ *
+ * A single hunk larger than a whole part is cut to a line-boundary prefix
+ * (with a marker). More than MAX_CHUNKS parts are not made: the remainder is
+ * folded into the last part and truncated the old way, water-filled across
+ * its files.
+ */
+function chunkFiles(
+  files: ReviewFileDiff[],
+  shareChars: number
+): { chunks: ReviewFileDiff[][]; truncated: boolean } {
+  const total = files.reduce((sum, f) => sum + (hasPatchText(f) ? f.patch!.length : 0), 0);
+  if (total <= shareChars) return { chunks: [files], truncated: false };
+
+  // Parts as file index -> the hunks of that file in the part.
+  const parts: Array<Map<number, string[]>> = [];
+  let current = new Map<number, string[]>();
+  let used = 0;
+  let truncated = false;
+
+  files.forEach((file, fileIndex) => {
+    if (!hasPatchText(file)) {
+      // No diff text to split: the header rides along in the first part.
+      const first = parts[0] ?? current;
+      first.set(fileIndex, first.get(fileIndex) ?? []);
+      return;
+    }
+    for (let hunk of file.patch!.split(/^(?=@@ )/m)) {
+      const overhead = current.has(fileIndex) ? 0 : FILE_OVERHEAD_CHARS;
+      if (used + overhead + hunk.length > shareChars && current.size > 0) {
+        parts.push(current);
+        current = new Map();
+        used = 0;
+      }
+      if (hunk.length + FILE_OVERHEAD_CHARS > shareChars) {
+        hunk = keepWholeHunks(hunk, Math.max(MIN_PATCH_CHARS_PER_FILE, shareChars - FILE_OVERHEAD_CHARS));
+        truncated = true;
+      }
+      const hunks = current.get(fileIndex) ?? [];
+      if (!current.has(fileIndex)) used += FILE_OVERHEAD_CHARS;
+      hunks.push(hunk);
+      current.set(fileIndex, hunks);
+      used += hunk.length;
+    }
+  });
+  if (current.size > 0) parts.push(current);
+
+  const toFiles = (part: Map<number, string[]>): ReviewFileDiff[] =>
+    [...part.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([fileIndex, hunks]) =>
+        hunks.length === 0 ? files[fileIndex] : { ...files[fileIndex], patch: hunks.join("") }
+      );
+
+  if (parts.length <= MAX_CHUNKS) return { chunks: parts.map(toFiles), truncated };
+
+  // Over the cap: merge the tail into the last allowed part and truncate it.
+  const head = parts.slice(0, MAX_CHUNKS - 1).map(toFiles);
+  const tail = new Map<number, string[]>();
+  for (const part of parts.slice(MAX_CHUNKS - 1)) {
+    for (const [fileIndex, hunks] of part) {
+      tail.set(fileIndex, [...(tail.get(fileIndex) ?? []), ...hunks]);
+    }
+  }
+  const { files: last } = truncatePatchesToShare(toFiles(tail), shareChars);
+  return { chunks: [...head, last], truncated: true };
 }
 
 /**

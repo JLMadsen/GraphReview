@@ -15,10 +15,12 @@ import {
   ANALYSIS_QUEUE_NAME,
   LABEL_QUEUE_NAME,
   REVIEW_QUEUE_NAME,
+  clearLabelCancel,
   closeLabelQueue,
   closeQueues,
   closeReviewQueue,
   getBlockingRedisConnection,
+  isLabelCancelRequested,
   listRepoDtos,
   type AnalysisJobData,
   type AnalysisJobResult,
@@ -48,6 +50,9 @@ const CONCURRENCY = Number(process.env.ANALYSIS_CONCURRENCY ?? 1);
  * against Neo4j's serial finding writes.
  */
 const REVIEW_CONCURRENCY = Number(process.env.REVIEW_CONCURRENCY ?? 1);
+
+/** How often an active labeling job checks whether the user cancelled it. */
+const LABEL_CANCEL_POLL_MS = 1000;
 
 /**
  * One labeling job at a time, for the same reasons as a review — it spends
@@ -188,10 +193,34 @@ async function main(): Promise<void> {
       const { repoId, force } = job.data;
       log(`label job ${job.id} started — repo ${repoId}${force ? " (force)" : ""}`);
 
-      return runLabelJob(job.data, job, (message) => {
-        log(`label job ${job.id} · ${message}`);
-        mirrorToJobLog(job, message);
-      });
+      // Cooperative cancellation (see lib/jobs/label-queue.ts): the app sets
+      // a Redis flag, this polls it and aborts the run's model calls.
+      const abort = new AbortController();
+      const poll = setInterval(() => {
+        isLabelCancelRequested(repoId)
+          .then((requested) => {
+            if (requested && !abort.signal.aborted) {
+              log(`label job ${job.id} · cancel requested`);
+              abort.abort();
+            }
+          })
+          .catch(() => undefined);
+      }, LABEL_CANCEL_POLL_MS);
+
+      try {
+        return await runLabelJob(
+          job.data,
+          job,
+          (message) => {
+            log(`label job ${job.id} · ${message}`);
+            mirrorToJobLog(job, message);
+          },
+          abort.signal
+        );
+      } finally {
+        clearInterval(poll);
+        await clearLabelCancel(repoId).catch(() => undefined);
+      }
     },
     { connection: getBlockingRedisConnection(), concurrency: LABEL_CONCURRENCY }
   );

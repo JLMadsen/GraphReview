@@ -16,7 +16,14 @@
 //   - models that reject `max_tokens` in favour of `max_completion_tokens` —
 //     the request is retried once with the renamed field;
 //   - gateways that return `message.content` as an array of text parts.
+//
+// Requests go through undici's own `fetch` with a dedicated dispatcher rather
+// than the global `fetch`: Node's built-in one gives up if response headers
+// haven't arrived within 5 minutes, and a non-streaming call to a local model
+// sends no headers until the whole answer is generated — a 12B model grouping
+// a repo's modules on a laptop hit exactly that ("fetch failed" at 300 s).
 
+import { Agent, fetch as undiciFetch } from "undici";
 import { AiClientError } from "./errors";
 import type { AiProviderConfig, ChatCompletionResult, ChatMessage, TokenUsage } from "./types";
 
@@ -58,6 +65,28 @@ interface RawChatCompletionResponse {
     completion_tokens?: number;
     total_tokens?: number;
   };
+}
+
+/**
+ * How long one AI request may take, in ms: `AI_REQUEST_TIMEOUT_MS`, default
+ * 30 minutes, `0` for no limit. Applies to waiting for the response to start
+ * and to gaps while it arrives. A cancelled labeling run still stops at once
+ * via the request's AbortSignal, whatever this is.
+ */
+function aiRequestTimeoutMs(): number {
+  const raw = process.env.AI_REQUEST_TIMEOUT_MS?.trim();
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 30 * 60_000;
+}
+
+let aiDispatcher: Agent | undefined;
+
+function getAiDispatcher(): Agent {
+  if (!aiDispatcher) {
+    const timeout = aiRequestTimeoutMs();
+    aiDispatcher = new Agent({ headersTimeout: timeout, bodyTimeout: timeout });
+  }
+  return aiDispatcher;
 }
 
 function buildEndpoint(baseUrl: string): string {
@@ -159,9 +188,10 @@ export async function chatCompletion(
 
   // Each adaptation happens at most once, so this loop runs at most 3 times.
   for (let adaptations = 0; ; adaptations++) {
-    let response: Response;
+    let response: Awaited<ReturnType<typeof undiciFetch>>;
     try {
-      response = await fetch(endpoint, {
+      response = await undiciFetch(endpoint, {
+        dispatcher: getAiDispatcher(),
         method: "POST",
         headers: {
           "Content-Type": "application/json",

@@ -16,7 +16,7 @@
 
 import { randomUUID } from "node:crypto";
 import { UnrecoverableError } from "bullmq";
-import { reviewComponentChange } from "@/lib/ai";
+import { DEFAULT_REVIEW_EFFORT, REVIEW_EFFORT_SETTINGS, reviewComponentChange } from "@/lib/ai";
 import type { AiProviderConfig, ReviewInput } from "@/lib/ai";
 import { decrypt } from "@/lib/crypto";
 import { compareRefs, getLinkedIssues, getPullRequest, listPullRequestFiles } from "@/lib/github";
@@ -44,6 +44,7 @@ import {
   type ComponentReviewContext,
 } from "./diff-components";
 import { resolveGitHubAccess } from "./github-access";
+import { gatherRelatedContext } from "./review-context";
 import { resolveGitLabAccess } from "./gitlab-access";
 import {
   listLocalFilePatches,
@@ -369,6 +370,8 @@ export async function runReviewJob(
   const startedAt = Date.now();
   const { repoId, target } = data;
   const targetKey = reviewTargetKey(target);
+  const effort = data.effort ?? DEFAULT_REVIEW_EFFORT;
+  const effortSettings = REVIEW_EFFORT_SETTINGS[effort];
 
   const repo = await getRepoById(repoId);
   if (!repo) {
@@ -376,7 +379,10 @@ export async function runReviewJob(
   }
 
   const aiConfig = await loadAiConfig();
-  log(`repo ${repo.name} (${repo.provider}) · target ${targetKey} · model ${aiConfig.model}`);
+  log(
+    `repo ${repo.name} (${repo.provider}) · target ${targetKey} · model ${aiConfig.model} · ` +
+      `effort ${effort} (${effortSettings.tokenBudget} token budget per call)`
+  );
 
   const resolved = await resolveTarget(repo, target, log);
   log(`diff source: ${resolved.description} — ${resolved.files.length} changed file(s)`);
@@ -408,6 +414,7 @@ export async function runReviewJob(
     completionTokens: 0,
     running: [],
     unmatchedFiles: match.unmatchedFiles.length,
+    effort,
   };
   // Keyed by component id, not name: two components can legitimately share a
   // display name, and removing one from a name-keyed set would drop both
@@ -448,17 +455,30 @@ export async function runReviewJob(
     let failed = false;
 
     try {
-      const result = await reviewComponentChange(aiConfig, {
-        intent: resolved.intent,
-        component: {
-          id: context.id,
-          name: context.name,
-          description: context.description,
-          dependsOn: context.dependsOn,
-          dependents: context.dependents,
-        },
-        files,
+      const related = await gatherRelatedContext({
+        repo,
+        componentId: context.id,
+        changedPaths: paths,
+        patches: files.map((file) => file.patch ?? ""),
+        settings: effortSettings,
+        log: (message) => log(`${context.name}: ${message}`),
       });
+      const result = await reviewComponentChange(
+        aiConfig,
+        {
+          intent: resolved.intent,
+          component: {
+            id: context.id,
+            name: context.name,
+            description: context.description,
+            dependsOn: context.dependsOn,
+            dependents: context.dependents,
+          },
+          files,
+          related,
+        },
+        { tokenBudget: effortSettings.tokenBudget }
+      );
 
       progress.calls += result.calls;
       progress.promptTokens += result.usage.promptTokens;
@@ -479,6 +499,8 @@ export async function runReviewJob(
       }));
       log(
         `${context.name}: ${findings.length} finding(s) from ${files.length} changed file(s)` +
+          (result.chunks > 1 ? ` in ${result.chunks} parts` : "") +
+          (related?.files?.length ? `, ${related.files.length} related file(s) as context` : "") +
           (result.truncated ? " (diff truncated)" : "") +
           (result.parseFailed ? " (model output could not be parsed)" : "")
       );

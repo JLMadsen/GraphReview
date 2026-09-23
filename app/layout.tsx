@@ -1,24 +1,17 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Geist, Geist_Mono } from "next/font/google";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { MainNav } from "./main-nav";
 import "./globals.css";
 
-// These variable names are deliberately NOT `--font-sans`/`--font-mono`:
-// globals.css maps the theme tokens onto them *plus a system fallback
-// stack*, so a build without access to Google Fonts degrades to the native
-// UI sans rather than to the browser's serif default. See the comment on
-// `--font-sans` in globals.css.
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+// Geist is loaded from the `geist` npm package's bundled woff2 files (via
+// next/font/local), never from Google Fonts, so neither the build nor the
+// browser needs internet access. The package names its CSS variables
+// `--font-geist-sans`/`--font-geist-mono` — deliberately NOT the theme's
+// `--font-sans`/`--font-mono`: globals.css maps the theme tokens onto them
+// *plus a system fallback stack*. See the comment on `--font-sans` there.
 
 export const metadata: Metadata = {
   title: "GraphReview",
@@ -64,10 +57,10 @@ export default function RootLayout({
     // fallback list does not rescue it. With the classes on <body> only,
     // <html> had no --font-geist-sans, so the app rendered every page in the
     // browser's default *serif*. (The system stack in globals.css is the
-    // second line of defence, for a build with no access to Google Fonts.)
+    // second line of defence.)
     <html
       lang="en"
-      className={`dark ${geistSans.variable} ${geistMono.variable}`}
+      className={`dark ${GeistSans.variable} ${GeistMono.variable}`}
     >
       <body className="antialiased">
         <TooltipProvider>

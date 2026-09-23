@@ -23,6 +23,10 @@ here:
   standard `{ model, messages, ... }` request shape, never
   sets `response_format`/`tools`, and returns the assistant's text plus
   token usage when the provider reports it.
+  Requests use undici's `fetch` with its own dispatcher, so the
+  `AI_REQUEST_TIMEOUT_MS` limit (default 30 min, `0` = none) applies instead
+  of Node's built-in 5-minute wait for response headers, which slow local
+  models exceed.
 - `parse.ts` — `extractJson<T>(text)`: pulls a JSON object/array back out of
   a model's plain-text response. Tries a fenced ` ```json ` block, then any
   other fenced block, then the first brace-matched `{...}`/`[...]` span in
@@ -42,6 +46,10 @@ here:
   `client.ts` has no live provider to test against here — it's covered by
   careful typing against the OpenAI chat-completions request/response shape
   instead, not by a live call.
+- `effort.ts` — the four review effort levels (low/medium/high/max: 7k/16k/
+  32k/128k tokens per call) and what context each adds (neighbour
+  descriptions, related-file signatures, referenced source). The context
+  itself is gathered by `lib/jobs/review-context.ts`.
 - `prompts.ts` — `buildSystemPrompt(source)` / `buildUserMessage(input)`.
   Plain-prompted output only (no `response_format`, no tool-calling): the
   model must answer with exactly one ```` ```json ```` block of
@@ -92,7 +100,12 @@ here:
      trimmed and case-insensitively merged, unknown/duplicate members
      dropped, at most `MAX_DOMAINS` (8) domains (the largest survive), empty
      domains dropped, and every module the model forgot lands in `Other`.
-     Unparseable output -> no domains + `parseFailed`.
+     If the reply names domains but leaves modules unassigned (small models
+     such as gemma3:4b drop the member lists), one follow-up
+     `TASK: assign-modules` call asks for a flat `{"assignments":{ref: name}}`
+     map instead. Unparseable output -> no domains + `parseFailed`; the
+     start of every unusable reply is returned in `unusableReplies` for the
+     job log.
   2. `TASK: describe-modules` — batches of `DEFAULT_DESCRIPTION_BATCH` (25)
      modules per call; output `{"modules":[{id, description}]}`. One
      sentence each, collapsed to one line and clipped to 160 chars at a word

@@ -35,6 +35,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   isLabelPending,
+  type CancelLabelResponseDTO,
   type EnqueueLabelResponseDTO,
   type LabelErrorDTO,
   type LabelSnapshot,
@@ -57,6 +58,7 @@ const INITIAL_SNAPSHOT: LabelSnapshot = {
   notice: null,
   noticeCode: null,
   starting: false,
+  cancelling: false,
 };
 
 export function useLabels(
@@ -184,9 +186,13 @@ export function useLabels(
         modules: data.modules,
         // A POST error already surfaced (e.g. `ai_not_configured`) must
         // survive the next poll, which carries no `error` of its own.
-        notice: data.error ?? (pending ? null : prev.notice),
-        noticeCode: data.error ? null : prev.noticeCode,
+        notice: data.error ?? data.warning ?? (pending ? null : prev.notice),
+        noticeCode: data.error || data.warning ? null : prev.noticeCode,
         starting: prev.starting && !pending,
+        // The server's word wins once it has one; a cancel this tab just sent
+        // stays visible until the run actually stops.
+        cancelling: pending && (Boolean(data.cancelRequested) || prev.cancelling),
+        finishedAt: data.finishedAt,
       }));
 
       // The run just finished (or failed): tell the caller once, so it can
@@ -239,7 +245,40 @@ export function useLabels(
     setRunNonce((n) => n + 1);
   }, []);
 
+  const cancel = useCallback(() => {
+    setSnapshot((prev) => ({ ...prev, cancelling: true, notice: null, noticeCode: null }));
+    void (async () => {
+      try {
+        const res = await fetch(`/api/repos/${encodeURIComponent(repoId)}/label`, {
+          method: "DELETE",
+        });
+        const json = (await res.json().catch(() => null)) as
+          | (CancelLabelResponseDTO & LabelErrorDTO)
+          | null;
+        if (!res.ok || !json) {
+          throw new Error(json?.error ?? `Could not cancel labeling (${res.status}).`);
+        }
+        // `removed`/`not_running`: nothing left to wait for. `requested`:
+        // the poll loop (still running, the job is pending) sees it stop.
+        if (json.outcome !== "requested") {
+          setSnapshot((prev) => ({ ...prev, cancelling: false }));
+        }
+      } catch (err) {
+        setSnapshot((prev) => ({
+          ...prev,
+          cancelling: false,
+          notice: err instanceof Error ? err.message : "Could not cancel labeling.",
+          noticeCode: null,
+        }));
+      }
+    })();
+  }, [repoId]);
+
   const running = isLabelPending(snapshot.state) || snapshot.starting;
+  const canCancel =
+    isLabelPending(snapshot.state) &&
+    !snapshot.cancelling &&
+    snapshot.progress?.phase !== "saving";
   const canGenerate = snapshot.status !== "loading" && snapshot.aiConfigured && !running;
   const hasLabels = snapshot.domains > 0 || snapshot.describedModules > 0;
   const logsUrl = useMemo(
@@ -248,7 +287,7 @@ export function useLabels(
   );
 
   return useMemo(
-    () => ({ ...snapshot, generate, canGenerate, hasLabels, running, logsUrl }),
-    [snapshot, generate, canGenerate, hasLabels, running, logsUrl]
+    () => ({ ...snapshot, generate, canGenerate, cancel, canCancel, hasLabels, running, logsUrl }),
+    [snapshot, generate, canGenerate, cancel, canCancel, hasLabels, running, logsUrl]
   );
 }

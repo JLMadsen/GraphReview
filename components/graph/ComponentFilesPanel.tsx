@@ -16,6 +16,7 @@ import { Boxes, FileCode2, LoaderCircle, TriangleAlert, X } from "lucide-react";
 import {
   INTENT_VISUALS,
   compareIntent,
+  effectiveIntent,
   formatConfidence,
   formatLocation,
 } from "./review-visuals";
@@ -75,6 +76,7 @@ export function ComponentFilesPanel({
     () =>
       [...(findings ?? [])].sort(
         (a, b) =>
+          compareIntent(effectiveIntent(a), effectiveIntent(b)) ||
           compareIntent(a.intentMatch, b.intentMatch) ||
           b.confidence - a.confidence
       ),
@@ -216,9 +218,15 @@ export function ComponentFilesPanel({
                       <Icon className="size-2.5" aria-hidden />
                       {visual.label}
                     </span>
-                    <span className="font-mono text-[10px] text-muted-foreground">
-                      {formatConfidence(finding.confidence)}
-                    </span>
+                    {finding.resolvedAt ? (
+                      <span className="text-[10px] font-medium text-success">
+                        Resolved
+                      </span>
+                    ) : (
+                      <span className="font-mono text-[10px] text-muted-foreground">
+                        {formatConfidence(finding.confidence)}
+                      </span>
+                    )}
                   </div>
                   <p className="mt-1 text-[11px] leading-relaxed text-foreground/85">
                     {finding.summary}

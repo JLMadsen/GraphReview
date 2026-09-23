@@ -5,7 +5,7 @@
       "name": "graphreview-dev",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
-      "port": 3000
+      "port": 3470
     },
     {
       "name": "graphreview-dev-3100",

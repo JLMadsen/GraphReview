@@ -277,10 +277,29 @@ async function partA(): Promise<void> {
     check("mixed: one call made; patchless file listed as unavailable", r.calls === 1 && user.includes("File: assets/logo.png (added, +0/-0)\n(no diff text available"));
   }
 
-  // --- oversized diff -> truncated ------------------------------------------
+  // --- oversized diff -> split into parts, never silently cut ---------------
   {
     const hunk = (i: number): string =>
       `@@ -${i * 20},10 +${i * 20},10 @@ function f${i}()\n` + Array.from({ length: 10 }, (_, j) => `+const v${i}_${j} = compute(${i}, ${j}); // padding padding padding`).join("\n");
+    const budget = 2000;
+
+    // Big enough for a few parts, small enough to stay under the part cap.
+    const splitPatch = Array.from({ length: 20 }, (_, i) => hunk(i)).join("\n");
+    const fakeSplit = fakeChat(fenced({ findings: [{ summary: "x", intentMatch: "match", confidence: 1, rationale: "y" }] }));
+    const split = await reviewComponentChange(
+      config,
+      baseInput({ files: [{ path: "src/math/split.ts", status: "modified", additions: 200, deletions: 0, patch: splitPatch }] }),
+      { chat: fakeSplit.chat, tokenBudget: budget }
+    );
+    const splitUsers = fakeSplit.calls.map((call) => call.messages[1].content);
+    const sentHunks = splitUsers.flatMap((user) => [...user.matchAll(/^@@ -(\d+),10/gm)].map((m) => Number(m[1])));
+    check("split diff: several calls, one per part, none truncated", split.calls > 1 && split.chunks === split.calls && !split.truncated && !splitUsers.some((u) => u.includes("[diff truncated]")));
+    check("split diff: every hunk sent exactly once, in order", sentHunks.length === 20 && sentHunks.every((start, i) => start === i * 20));
+    check("split diff: each part fits the token budget", fakeSplit.calls.every((call) => estimateMessagesTokens(call.messages) <= budget));
+    check("split diff: each part says which part it is", splitUsers.every((u, i) => u.includes(`Diff part ${i + 1} of ${splitUsers.length}`)));
+    check("split diff: findings from every part are merged", split.findings.length === split.calls);
+
+    // So big that even the part cap can't hold it: the tail part is truncated.
     const hugePatch = Array.from({ length: 80 }, (_, i) => hunk(i)).join("\n");
     const fake = fakeChat(fenced({ findings: [{ summary: "x", intentMatch: "unknown", confidence: 0.1, rationale: "y" }] }));
     const input = baseInput({
@@ -289,22 +308,21 @@ async function partA(): Promise<void> {
         { path: "src/math/small.ts", status: "modified", additions: 1, deletions: 0, patch: "@@ -1 +1,2 @@\n a\n+SMALL_FILE_MARKER" },
       ],
     });
-    const budget = 2000;
     const r = await reviewComponentChange(config, input, { chat: fake.chat, tokenBudget: budget });
-    const sent = fake.calls[0].messages;
-    const user = sent[1].content;
-    check("oversized diff: truncated=true and [diff truncated] marker present", r.truncated && user.includes("[diff truncated]"));
-    check("oversized diff: fits the token budget", estimateMessagesTokens(sent) <= budget, `est ${estimateMessagesTokens(sent)} > ${budget}`);
-    check("oversized diff: whole hunks only (every kept hunk complete)", (() => {
+    const users = fake.calls.map((call) => call.messages[1].content);
+    const last = users[users.length - 1];
+    check("huge diff: capped at 6 parts, truncated=true, marker only in the last part", r.calls === 6 && r.truncated && last.includes("[diff truncated]") && users.slice(0, -1).every((u) => !u.includes("[diff truncated]")));
+    check("huge diff: every part fits the token budget", fake.calls.every((call) => estimateMessagesTokens(call.messages) <= budget));
+    check("huge diff: whole hunks only (every kept hunk complete)", users.every((user) => {
       const kept = [...user.matchAll(/^@@ -(\d+),10/gm)].length;
       const lines = [...user.matchAll(/^\+const v\d+_\d+ =/gm)].length;
-      return kept > 0 && kept < 80 && lines === kept * 10;
-    })());
-    check("oversized diff: small file untouched (not starved by the huge one)", user.includes("+SMALL_FILE_MARKER"));
-    check("oversized diff: the small file is not marked truncated", !/SMALL_FILE_MARKER\s*\n\[diff truncated\]/.test(user));
+      return kept > 0 && lines === kept * 10;
+    }));
+    check("huge diff: small file untouched (not starved by the huge one)", users.some((u) => u.includes("+SMALL_FILE_MARKER")));
+    check("huge diff: the small file is not marked truncated", !users.some((u) => /SMALL_FILE_MARKER\s*\n\[diff truncated\]/.test(u)));
     check(
-      "oversized diff: marker names the dropped hunks' own function headings, cheaply, with no extra model call",
-      r.calls === 1 && /\[diff truncated\] \(also touches: function f\d+\(\)(, function f\d+\(\))*, \+\d+ more hunks?\)/.test(user)
+      "huge diff: marker names the dropped hunks' own function headings, cheaply, with no extra model call",
+      /\[diff truncated\] \(also touches: function f\d+\(\)(, function f\d+\(\))*, \+\d+ more hunks?\)/.test(last)
     );
 
     const fake2 = fakeChat(fenced({ findings: [{ summary: "x", intentMatch: "match", confidence: 1, rationale: "y" }] }));

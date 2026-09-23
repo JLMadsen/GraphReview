@@ -34,6 +34,7 @@ function toFindingRecord(props: Record<string, unknown>): FindingRecord {
     reviewedBaseSha: (props.reviewedBaseSha as string | undefined) ?? undefined,
     reviewedHeadSha: (props.reviewedHeadSha as string | undefined) ?? undefined,
     reviewedAt: (props.reviewedAt as string | undefined) ?? undefined,
+    resolvedAt: (props.resolvedAt as string | undefined) ?? undefined,
   };
 }
 
@@ -131,6 +132,29 @@ export async function listFindingsByComponentId(
   return result.records.map((record) =>
     toFindingRecord(record.get("f").properties)
   );
+}
+
+/**
+ * Marks one finding of `repoId` resolved (stamping `resolvedAt` with the
+ * current time) or reopens it (removing `resolvedAt`). Returns `null` when
+ * no such finding exists in that repo. Callers enforce which verdicts may be
+ * resolved.
+ */
+export async function setFindingResolved(
+  repoId: string,
+  id: string,
+  resolved: boolean
+): Promise<FindingRecord | null> {
+  const result = await runWrite(
+    `
+    MATCH (f:Finding {id: $id, repoId: $repoId})
+    SET f.resolvedAt = CASE WHEN $resolved THEN $now ELSE null END
+    RETURN f
+    `,
+    { id, repoId, resolved, now: new Date().toISOString() }
+  );
+  const record = result.records[0];
+  return record ? toFindingRecord(record.get("f").properties) : null;
 }
 
 export async function deleteFinding(id: string): Promise<void> {

@@ -16,6 +16,9 @@ On the rendering approach:
 > nodes rather than three separate graphs, so a reviewer can start at the
 > domain view and expand down to modules and files in place.
 
+(As built, `cytoscape-expand-collapse` has since been replaced by
+`collapse.ts` — see Scope below.)
+
 ## Scope
 
 - A client-component Cytoscape.js wrapper (this can never be a server
@@ -57,8 +60,25 @@ On the rendering approach:
   "minimap" line above predates the tab actually being used on a real
   100+ node repo, where it was clutter rather than navigation.
 - Tooltips/annotation popovers (`cytoscape-popper`) for `Finding`
-  annotations, and compound-node expand/collapse
-  (`cytoscape-expand-collapse`) for the domain → module → file drill-down.
+  annotations.
+- Domain collapse/expand without a plugin (`collapse.ts`, replacing
+  `cytoscape-expand-collapse`): collapsing removes each domain's children
+  and draws one *summary edge* per connected pair, labelled with how many
+  dependencies it stands for; a collapsed domain takes its members' impact
+  category and worst review verdict. Expanding restores the exact elements.
+- Force-layout tidy-up once domains exist (`layout-tidy.ts`): members with
+  no dependency edges are packed into a grid beside their domain's connected
+  core instead of stretching the box, domains are spread to the canvas's
+  aspect ratio, and overlapping boxes are pushed apart. Circle/Grid tiles and
+  ELK's packing also follow the canvas's aspect ratio.
+- Drag-resizable side panels (`PanelResizeHandle.tsx`), width remembered
+  per browser.
+- Review resolution and the overall verdict: findings below `match` can be
+  resolved/reopened (`PATCH /api/repos/[repoId]/review/findings/[id]`); a
+  resolved finding counts as `match` for markers, grouping and the verdict
+  (`effectiveIntent` in `review-visuals.ts`), and the verdict can be copied
+  as Markdown. The effort dropdown next to Re-run picks the next run's
+  effort level (lib/ai/effort.ts).
 
 The wrapper (`GraphCanvas`), its orchestrator (`GraphView`) and both
 sidebar panels are implemented against real `lib/neo4j`-backed data;

@@ -4,7 +4,7 @@ A locally-run tool for reviewing GitHub pull requests and GitLab merge
 requests against a codebase's component graph.
 
 
-![GraphReview's component graph and AI review view](example.png)
+![GraphReview's component graph and AI review view](docs/images/example.png)
 
 ## Quickstart (Docker Compose — recommended)
 
@@ -15,14 +15,15 @@ cp docker/.env.example docker/.env
 docker compose -f docker/docker-compose.yml --env-file docker/.env up
 ```
 
-The app is served at [http://localhost:3000](http://localhost:3000). Neo4j
+The app is served at [http://localhost:3470](http://localhost:3470) (set
+`APP_PORT` in `docker/.env` to use another port). Neo4j
 and Redis run as internal-only services (not published to the host).
 
 ## Local development (without Docker)
 
 ```bash
 npm install
-npm run dev       # Next.js dev server, http://localhost:3000
+npm run dev       # Next.js dev server, http://localhost:3470 (other port: npm run dev -- -p 4000)
 npm run worker    # BullMQ worker process (separate terminal)
 ```
 

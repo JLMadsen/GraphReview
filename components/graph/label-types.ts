@@ -7,11 +7,11 @@
 // Neo4j driver and a Redis connection), which must never reach a client
 // bundle. Duplicated deliberately, not imported.
 
-/** Which half of a labeling run is in flight. Mirrors `LabelPhaseName` in lib/jobs. */
-export type LabelPhaseDTO = "domains" | "descriptions";
+/** Which part of a labeling run is in flight. Mirrors `LabelPhaseName` in lib/jobs. `saving` can't be cancelled. */
+export type LabelPhaseDTO = "domains" | "descriptions" | "saving";
 
 /** Lifecycle of a repo's labeling run. `"none"` means "never labeled". */
-export type LabelStateDTO = "none" | "queued" | "running" | "completed" | "failed";
+export type LabelStateDTO = "none" | "queued" | "running" | "completed" | "failed" | "cancelled";
 
 /** Live progress of a labeling run — the same "running counter" idea as a review's. */
 export interface LabelProgressDTO {
@@ -31,6 +31,12 @@ export interface LabelStatusResponseDTO {
   progress?: LabelProgressDTO;
   /** A failed job's reason, or a degraded-read note (e.g. Redis down). */
   error?: string;
+  /** `running` only: a cancel was requested and the worker hasn't stopped yet. */
+  cancelRequested?: boolean;
+  /** When the last run finished, while its job is still retained. */
+  finishedAt?: string;
+  /** A completed run that still needs explaining (e.g. no usable domains, old ones kept). */
+  warning?: string;
   /** Whether base URL + key + model are all set. `false` must suppress every POST. */
   aiConfigured: boolean;
   domains: number;
@@ -45,7 +51,12 @@ export interface EnqueueLabelResponseDTO {
   enqueued: boolean;
 }
 
-/** Error envelope both label verbs share. `code` is `ai_not_configured` | `queue_unavailable`. */
+/** Response shape for `DELETE /api/repos/[repoId]/label`. */
+export interface CancelLabelResponseDTO {
+  outcome: "removed" | "requested" | "not_running";
+}
+
+/** Error envelope the label verbs share. `code` is `ai_not_configured` | `queue_unavailable`. */
 export interface LabelErrorDTO {
   error: string;
   code?: string;
@@ -67,6 +78,9 @@ export interface LabelSnapshot {
   noticeCode: string | null;
   /** True between the POST and the first poll that reflects it. */
   starting: boolean;
+  /** A cancel has been sent (by this tab, or reported by the server) and the run hasn't stopped yet. */
+  cancelling: boolean;
+  finishedAt?: string;
 }
 
 export interface UseLabelsResult extends LabelSnapshot {
@@ -74,6 +88,10 @@ export interface UseLabelsResult extends LabelSnapshot {
   generate: (options?: { force?: boolean }) => void;
   /** Whether pressing the button could do anything right now. */
   canGenerate: boolean;
+  /** Cancel the queued or running run. Nothing is saved from a cancelled run. */
+  cancel: () => void;
+  /** A run is pending, not already being cancelled, and not in its (uncancellable) saving phase. */
+  canCancel: boolean;
   /** True once this repo has a domain tier or any module description. */
   hasLabels: boolean;
   /** True while a run is queued or active. */
@@ -88,7 +106,21 @@ export function isLabelPending(state: LabelStateDTO): boolean {
 
 /** Human label for the phase currently in flight, for the progress line. */
 export function labelPhaseLabel(phase: LabelPhaseDTO): string {
+  if (phase === "saving") return "Saving labels";
   return phase === "domains" ? "Grouping modules into domains" : "Describing modules";
+}
+
+/** `"just now"`, `"12 min ago"`, `"3 h ago"`, `"2 days ago"`; empty for a missing/invalid time. */
+export function formatAgo(iso: string | undefined): string {
+  if (!iso) return "";
+  const ms = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} days ago`;
 }
 
 /** `"3 calls · 12.4k prompt + 900 completion tokens"` — the cost counter, in the toolbar's space budget. */

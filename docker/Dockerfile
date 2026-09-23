@@ -12,9 +12,23 @@
 # Neither changes anything when left unset: the defaults are the real-world
 # services this app already depended on. npm's registry is deliberately
 # *not* made configurable here — see docker/.env.example.
+#
+# Internal CA certificates come in through a separate build context named
+# `certs` (docker-compose.yml points it at `CA_CERT_DIR`, default
+# docker/certs/). Every *.crt/*.pem in it is appended to the system bundle
+# *before* anything touches the network, so `apk add`, `npm ci`, and at
+# runtime git and Node (AI endpoint, GitHub/GitLab APIs) all trust it. With
+# plain `docker build`, pass `--build-context certs=docker/certs`.
 
 ARG NODE_BASE_IMAGE=node:20-alpine
 FROM ${NODE_BASE_IMAGE} AS base
+# Alpine's git (libcurl) reads /etc/ssl/certs/ca-certificates.crt directly.
+# Node does not — it ships its own CA list — so NODE_EXTRA_CA_CERTS points
+# it at the same (now extended) bundle. Duplicates of Node's built-in roots
+# are harmless. An empty certs dir leaves the bundle unchanged.
+COPY --from=certs . /tmp/extra-ca/
+RUN for f in /tmp/extra-ca/*.crt /tmp/extra-ca/*.pem; do       [ -f "$f" ] && { cat "$f"; echo; } >> /etc/ssl/certs/ca-certificates.crt;     done;     rm -rf /tmp/extra-ca
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 # simple-git shells out to the real `git` binary (local clone + app-managed
 # clone-by-URL both go through it).
 ARG ALPINE_MIRROR

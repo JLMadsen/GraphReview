@@ -38,7 +38,8 @@ npm run docker
 
 `npm run docker` runs `docker compose -f docker/docker-compose.yml
 --env-file docker/.env build && docker image prune -f && docker compose ...
-up`. The app is served at [http://localhost:3000](http://localhost:3000).
+up`. The app is served at [http://localhost:3470](http://localhost:3470) — set
+`APP_PORT` in `docker/.env` to publish it on another port.
 
 **Caveats:**
 
@@ -59,7 +60,7 @@ up`. The app is served at [http://localhost:3000](http://localhost:3000).
   but nothing will ever get analyzed and the schema constraints won't be
   created.
 - **Neo4j and Redis are not published to the host** by default (only `app`'s
-  port 3000 is). If you want the Neo4j Browser for debugging, add a `ports:`
+  port is, `APP_PORT`, default 3470). If you want the Neo4j Browser for debugging, add a `ports:`
   mapping (e.g. `7474:7474` / `7687:7687`) to the `neo4j` service in
   `docker/docker-compose.yml` yourself.
 - **Windows + Docker Desktop**: after an unclean shutdown, Docker Desktop can
@@ -76,7 +77,7 @@ up`. The app is served at [http://localhost:3000](http://localhost:3000).
 
 ```bash
 npm install
-npm run dev       # Next.js dev server, http://localhost:3000
+npm run dev       # Next.js dev server, http://localhost:3470 (other port: npm run dev -- -p 4000)
 npm run worker    # BullMQ worker — separate terminal, required (see above)
 ```
 
@@ -117,6 +118,7 @@ section; everything else has a working default.
 | `ANALYSIS_CONCURRENCY` | `1` | Parallel static-analysis jobs (CPU-bound; 1 is sensible) |
 | `REVIEW_CONCURRENCY` | `1` | Parallel AI review jobs (documented in `worker/index.ts`, not in `.env.example`) |
 | `LABEL_CONCURRENCY` | `1` | Parallel AI labeling jobs (same as above) |
+| `AI_REQUEST_TIMEOUT_MS` | `1800000` (30 min) | Longest one AI request may take; `0` = no limit. Raise it for large local models |
 | `STALENESS_SWEEP_INTERVAL_MS` | `0` (off) | Periodic background staleness re-check; the normal trigger is "on view", so this is only for keeping repos warm without anyone opening the UI |
 
 ### Optional — closed-network / mirror support
@@ -131,6 +133,10 @@ direct internet access:
 | `NODE_BASE_IMAGE` | Base image for the app/worker build (default: `node:20-alpine`) |
 | `ALPINE_MIRROR` | Alpine package mirror for `apk add git` during image build |
 | `NEO4J_IMAGE` / `REDIS_IMAGE` | Mirrors of the official `neo4j:5` / `redis:7-alpine` images |
+| `CA_CERT_DIR` | Folder of internal CA certificates (`*.crt`/`*.pem`) to trust — default `docker/certs/`. Baked into the app/worker images and trusted by `apk`, `npm ci`, git and Node (AI endpoint, GitHub/GitLab APIs). Rebuild after changing it; see `docker/certs/README.md` |
+
+Fonts are bundled (the `geist` npm package), so neither the build nor the
+browser needs to reach Google Fonts.
 
 **Caveat: npm's registry is deliberately not covered here.** `npm ci`/`npm
 run build` inside the Docker image build still need real npm registry access
@@ -146,7 +152,7 @@ wiring.
 
 ## 5. First-run setup (in the app)
 
-1. Open [http://localhost:3000](http://localhost:3000).
+1. Open [http://localhost:3470](http://localhost:3470) (or your `APP_PORT`).
 2. Go to **Settings**:
    - **GitHub PAT** (optional) — needed only for PR/linked-issue fetching
      and cloning private repos. Local repos work with **no GitHub PAT at

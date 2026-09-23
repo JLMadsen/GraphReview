@@ -162,7 +162,28 @@ export interface ReviewProgressDTO {
   /** Display names of the components currently in flight. */
   running: string[];
   unmatchedFiles: number;
+  /** The effort level the run uses. */
+  effort?: ReviewEffort;
 }
+
+/** Mirrors `ReviewEffort` in lib/ai/effort.ts. */
+export type ReviewEffort = "low" | "medium" | "high" | "max";
+
+/** Dropdown order, labels and the one-line explanation each option shows. Budgets mirror REVIEW_EFFORT_SETTINGS. */
+export const REVIEW_EFFORT_OPTIONS: Array<{
+  value: ReviewEffort;
+  label: string;
+  budget: string;
+  description: string;
+}> = [
+  { value: "low", label: "Low", budget: "7k", description: "The diff and neighbour names only. Safe for small local models." },
+  { value: "medium", label: "Medium", budget: "16k", description: "Adds what each neighbouring component does." },
+  { value: "high", label: "High", budget: "32k", description: "Adds signatures from related files in other components." },
+  { value: "max", label: "Max", budget: "128k", description: "Adds the source of related code the diff refers to. Needs a large-context model." },
+];
+
+/** Pre-selected in the dropdown — mirrors DEFAULT_REVIEW_EFFORT. */
+export const DEFAULT_REVIEW_EFFORT: ReviewEffort = "medium";
 
 /** One persisted `(:Finding)`, flattened for the graph UI. `componentId` is a graph node id. */
 export interface FindingDTO {
@@ -177,6 +198,8 @@ export interface FindingDTO {
   rationale: string;
   model: string;
   createdAt: string;
+  /** ISO-8601 time a reviewer resolved this finding; absent while open. */
+  resolvedAt?: string;
 }
 
 /**

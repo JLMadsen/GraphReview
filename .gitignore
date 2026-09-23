@@ -45,3 +45,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# internal CA certificates for the Docker build (see docker/certs/README.md)
+/docker/certs/*
+!/docker/certs/README.md

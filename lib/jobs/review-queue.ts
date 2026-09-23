@@ -15,6 +15,7 @@
 import { createHash } from "node:crypto";
 import { Queue } from "bullmq";
 import type { Job, JobState, JobsOptions } from "bullmq";
+import type { ReviewEffort } from "@/lib/ai/effort";
 import { getRedisConnection, isPendingJobState } from "./queue";
 
 /** Queue name — must match on both sides (app enqueues, worker consumes). */
@@ -32,6 +33,8 @@ export type ReviewTarget =
 export interface ReviewJobData {
   repoId: string;
   target: ReviewTarget;
+  /** Absent on jobs queued before effort levels existed — the worker treats that as `DEFAULT_REVIEW_EFFORT`. */
+  effort?: ReviewEffort;
 }
 
 /**
@@ -57,6 +60,8 @@ export interface ReviewProgress {
   running: string[];
   /** Changed paths that matched no `(:File)` node — the graph may need re-analysis. */
   unmatchedFiles: number;
+  /** The effort level this run uses. */
+  effort?: ReviewEffort;
 }
 
 /** What a completed review job returns, for `docker logs` visibility and job introspection. */
@@ -201,7 +206,8 @@ export interface EnqueueReviewResult {
  */
 export async function enqueueReview(
   repoId: string,
-  target: ReviewTarget
+  target: ReviewTarget,
+  effort?: ReviewEffort
 ): Promise<EnqueueReviewResult> {
   const queue = getReviewQueue();
   const targetKey = reviewTargetKey(target);
@@ -215,7 +221,7 @@ export async function enqueueReview(
     await queue.remove(jobId).catch(() => undefined);
   }
 
-  await queue.add(REVIEW_JOB_NAME, { repoId, target }, { jobId });
+  await queue.add(REVIEW_JOB_NAME, { repoId, target, ...(effort ? { effort } : {}) }, { jobId });
   return { enqueued: true, jobId, targetKey, previousState };
 }
 

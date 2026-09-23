@@ -15,8 +15,10 @@
 // the Cytoscape instance and is passed down from `GraphCanvas`.
 
 import {
+  Ban,
   ChevronsDownUp,
   ChevronsUpDown,
+  CircleX,
   LoaderCircle,
   Sparkles,
   TriangleAlert,
@@ -24,6 +26,7 @@ import {
 import { cn } from "cn";
 import { JobLogHover } from "./JobLogHover";
 import {
+  formatAgo,
   formatLabelCost,
   labelPhaseLabel,
   type UseLabelsResult,
@@ -114,12 +117,16 @@ export function LabelsControl({
       {running && (
         <JobLogHover logsUrl={logsUrl} label="Labeling job log">
           <span className="flex cursor-default items-center gap-1.5 text-[11px] text-muted-foreground">
-            {progress ? (
+            {labels.cancelling ? (
+              <span className="text-warning">Cancelling…</span>
+            ) : progress ? (
               <>
                 <span>{labelPhaseLabel(progress.phase)}</span>
-                <span className="font-mono text-foreground">
-                  {progress.done}/{progress.total}
-                </span>
+                {progress.phase !== "saving" && (
+                  <span className="font-mono text-foreground">
+                    {progress.done}/{progress.total}
+                  </span>
+                )}
                 <span className="opacity-40">·</span>
                 <span className="font-mono">{formatLabelCost(progress)}</span>
               </>
@@ -128,6 +135,33 @@ export function LabelsControl({
             )}
           </span>
         </JobLogHover>
+      )}
+
+      {/* Stop a run. Hidden once it is saving — that phase is short and must
+          finish, or the old domains would be gone with the new ones half
+          written. */}
+      {running && labels.canCancel && (
+        <button
+          type="button"
+          onClick={labels.cancel}
+          className="flex items-center gap-1 rounded-full border border-border bg-card px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:border-destructive/50 hover:bg-destructive/10 hover:text-destructive"
+          title="Stop this labeling run. Nothing it produced is saved; the tokens already spent are not refunded."
+        >
+          <CircleX className="size-3" aria-hidden />
+          Cancel
+        </button>
+      )}
+
+      {/* How the last run ended, when that isn't obvious from what exists. */}
+      {!running && labels.state === "cancelled" && (
+        <span
+          className="flex items-center gap-1 text-[11px] text-muted-foreground"
+          title="The last labeling run was cancelled before it saved anything"
+        >
+          <Ban className="size-3" aria-hidden />
+          Last run cancelled
+          {formatAgo(labels.finishedAt) && ` ${formatAgo(labels.finishedAt)}`}
+        </span>
       )}
 
       {/* What exists today, once a run has produced something. */}
@@ -143,6 +177,12 @@ export function LabelsControl({
             {labels.describedModules}
           </span>
           /{labels.modules} described
+          {labels.state === "completed" && formatAgo(labels.finishedAt) && (
+            <>
+              <span className="mx-1 opacity-40">·</span>
+              labeled {formatAgo(labels.finishedAt)}
+            </>
+          )}
         </span>
       )}
 

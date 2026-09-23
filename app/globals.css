@@ -9,14 +9,13 @@
   --color-foreground: var(--foreground);
 
   /*
-   * next/font injects `--font-geist-sans` / `--font-geist-mono`. Those can
-   * legitimately be absent — a Docker build with no egress to Google Fonts
-   * emits nothing, and a self-referential `--font-sans: var(--font-sans)`
-   * then resolves to an empty value, which the browser falls back to its
-   * *serif* default for. That's how this app ended up rendering in Times
-   * New Roman. Naming the font variables separately from the theme token
-   * and giving the token a real system stack makes the offline case
-   * degrade to a native UI sans instead.
+   * next/font (via the bundled `geist` package) injects `--font-geist-sans`
+   * / `--font-geist-mono`. Should those ever be absent, a self-referential
+   * `--font-sans: var(--font-sans)` resolves to an empty value, which the
+   * browser falls back to its *serif* default for. That's how this app once
+   * ended up rendering in Times New Roman. Naming the font variables
+   * separately from the theme token and giving the token a real system
+   * stack makes that case degrade to a native UI sans instead.
    */
   --font-sans:
     var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,

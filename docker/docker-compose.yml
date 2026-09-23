@@ -8,7 +8,7 @@
 # app already depended on, so a normal setup needs none of them set — they
 # exist for running on a closed network against internal mirrors instead
 # (GitHub Enterprise/proxy, a mirrored Docker Hub image, a mirrored Alpine
-# package CDN). See docker/.env.example's "Closed-network / mirror support"
+# package CDN, an internal CA). See docker/.env.example's "Closed-network / mirror support"
 # section for what each one does. npm's registry is deliberately *not*
 # covered — see that same section.
 
@@ -18,6 +18,9 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: app
+      additional_contexts:
+        # Internal CA certificates (*.crt/*.pem) — see docker/certs/README.md.
+        certs: ${CA_CERT_DIR:-./certs}
       args:
         NODE_BASE_IMAGE: ${NODE_BASE_IMAGE:-node:20-alpine}
         ALPINE_MIRROR: ${ALPINE_MIRROR:-}
@@ -32,9 +35,12 @@ services:
       GITHUB_WEB_URL: ${GITHUB_WEB_URL:-}
       GITLAB_API_URL: ${GITLAB_API_URL:-}
       GITLAB_WEB_URL: ${GITLAB_WEB_URL:-}
+      AI_REQUEST_TIMEOUT_MS: ${AI_REQUEST_TIMEOUT_MS:-}
     ports:
-      # Only app's web port is published to the host by default
-      - "3000:3000"
+      # Only app's web port is published to the host by default. APP_PORT
+      # picks the host side (default 3470 — 3000 is taken by half the dev
+      # tools out there); inside the container Next.js always listens on 3000.
+      - "${APP_PORT:-3470}:3000"
     volumes:
       - repo_cache:/data/repos
       - ${LOCAL_REPOS_PATH}:/data/local-repos:ro
@@ -54,6 +60,9 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: worker
+      additional_contexts:
+        # Internal CA certificates (*.crt/*.pem) — see docker/certs/README.md.
+        certs: ${CA_CERT_DIR:-./certs}
       args:
         NODE_BASE_IMAGE: ${NODE_BASE_IMAGE:-node:20-alpine}
         ALPINE_MIRROR: ${ALPINE_MIRROR:-}
@@ -68,6 +77,7 @@ services:
       GITHUB_WEB_URL: ${GITHUB_WEB_URL:-}
       GITLAB_API_URL: ${GITLAB_API_URL:-}
       GITLAB_WEB_URL: ${GITLAB_WEB_URL:-}
+      AI_REQUEST_TIMEOUT_MS: ${AI_REQUEST_TIMEOUT_MS:-}
     # No ports published — the worker has no HTTP surface.
     volumes:
       - repo_cache:/data/repos

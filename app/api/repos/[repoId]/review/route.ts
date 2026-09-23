@@ -25,6 +25,7 @@ import {
   type ReviewProgress,
   type ReviewTarget,
 } from "@/lib/jobs";
+import { DEFAULT_REVIEW_EFFORT, isReviewEffort } from "@/lib/ai/effort";
 import {
   getActiveAiProvider,
   getRepoById,
@@ -51,6 +52,8 @@ export interface FindingDto {
   rationale: string;
   model: string;
   createdAt: string;
+  /** ISO-8601 time a reviewer resolved this finding; absent while open. */
+  resolvedAt?: string;
 }
 
 /** Lifecycle of a review target, collapsed from BullMQ's finer-grained job states. `"none"` means "never reviewed". */
@@ -170,6 +173,14 @@ export async function POST(
   }
   const target = toTarget(parsed.data);
 
+  // Optional; anything other than a known level is a client bug worth a 400
+  // rather than silently reviewing at a different cost than was asked for.
+  const rawEffort = (rawBody as { effort?: unknown }).effort;
+  if (rawEffort !== undefined && !isReviewEffort(rawEffort)) {
+    return errorResponse("effort must be one of low, medium, high, max.", 400);
+  }
+  const effort = rawEffort ?? DEFAULT_REVIEW_EFFORT;
+
   try {
     const repo = await getRepoById(repoId);
     if (!repo) return errorResponse("Repo not found.", 404);
@@ -195,7 +206,7 @@ export async function POST(
       );
     }
 
-    const result = await enqueueReview(repoId, target);
+    const result = await enqueueReview(repoId, target, effort);
     // A new run is about to stamp new shas on the findings; whatever "where
     // does the branch point" answer is cached must not be compared to them.
     invalidateReviewFreshness(repoId, result.targetKey);
@@ -386,6 +397,7 @@ export async function GET(
         rationale: finding.rationale,
         model: finding.model,
         createdAt: finding.createdAt,
+        ...(finding.resolvedAt ? { resolvedAt: finding.resolvedAt } : {}),
       })),
       aiConfigured,
     };

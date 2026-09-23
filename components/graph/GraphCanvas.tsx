@@ -5,9 +5,10 @@
 // - Layout switcher: Force (`fcose`) / Circle / Grid / Hierarchical
 //   (`cytoscape-elk`, top-to-bottom layered), re-run on switch.
 // - Compound nodes: a node with a `parentId` that resolves to another node
-//   in the same payload is nested via Cytoscape's native `parent` field;
-//   `cytoscape-expand-collapse` adds the collapse/expand cue on top of that,
-//   and the toolbar's Labels control drives its collapse-all/expand-all.
+//   in the same payload is nested via Cytoscape's native `parent` field.
+//   The toolbar's Labels control collapses/expands all of them at once
+//   (collapse.ts), drawing summary edges between collapsed domains, and the
+//   Force layout is tidied afterwards so boxes stay compact (layout-tidy.ts).
 //   The domain tier that produces those parents is written on demand by the
 //   AI labeling job (lib/jobs/label.ts) — until someone runs
 //   it, no node carries a `parentId`, no node is a parent, and this renders
@@ -46,7 +47,6 @@ import {
 } from "react";
 import cytoscape from "cytoscape";
 import fcose from "cytoscape-fcose";
-import expandCollapse from "cytoscape-expand-collapse";
 import {
   CircleDot,
   Grid3x3,
@@ -65,22 +65,29 @@ import {
   type ReviewMarkerMap,
 } from "./review-visuals";
 import { LabelsControl } from "./LabelsControl";
+import {
+  COLLAPSED_DOMAIN_CLASS,
+  SUMMARY_EDGE_CLASS,
+  collapseDomains,
+  expandDomains,
+  type CollapsedDomains,
+} from "./collapse";
+import { tidyDomainLayout } from "./layout-tidy";
 import type { UseLabelsResult } from "./label-types";
 import type { GraphEdgeDTO, GraphNodeDTO, IntentMatch } from "./types";
 
 let extensionsRegistered = false;
 function registerExtensionsOnce() {
   if (extensionsRegistered) return;
-  // fcose/expandCollapse are typed `any` via the bodiless ambient shims in
+  // fcose is typed `any` via the bodiless ambient shim in
   // cytoscape-shims.d.ts (see that file for why) — cast to `cytoscape.Ext`
-  // here at the one call site each is used. `cytoscape-elk`
+  // here at the one call site it is used. `cytoscape-elk`
   // is deliberately NOT here — it wraps elkjs, whose GWT-compiled bundle is
   // large (~400KB+), so it's dynamically imported by `ensureElkRegistered`
   // only the first time someone actually selects the Hierarchical layout,
   // rather than bloating every Graph tab's initial load for a layout most
   // views of the graph won't use.
   cytoscape.use(fcose as cytoscape.Ext);
-  cytoscape.use(expandCollapse as cytoscape.Ext);
   extensionsRegistered = true;
 }
 
@@ -182,6 +189,13 @@ function siblingSort(a: cytoscape.NodeSingular, b: cytoscape.NodeSingular): numb
   return nameA.localeCompare(nameB);
 }
 
+/** Width over height of the canvas, 1 when it isn't measurable yet. */
+function canvasAspect(cy: cytoscape.Core): number {
+  const width = cy.width();
+  const height = cy.height();
+  return width > 0 && height > 0 ? width / height : 1;
+}
+
 /** Space between two domains' tiles, comfortably more than twice the `:parent` padding so their boxes can't touch. */
 const DOMAIN_TILE_GAP = 140;
 
@@ -211,7 +225,13 @@ function runTiledByDomain(cy: cytoscape.Core, name: "circle" | "grid"): void {
   const loose = cy.nodes().not(":parent").not(":child");
   if (loose.nonempty()) groups.push(loose);
 
-  const cols = Math.max(1, Math.ceil(Math.sqrt(groups.length)));
+  // Tiles are roughly square, so as many columns as keeps the whole
+  // arrangement at the canvas's own aspect ratio — a wide canvas gets a wide
+  // arrangement instead of a square block with empty space either side.
+  const cols = Math.min(
+    groups.length,
+    Math.max(1, Math.round(Math.sqrt(groups.length * canvasAspect(cy))))
+  );
   let x = 0;
   let y = 0;
   let rowHeight = 0;
@@ -263,6 +283,7 @@ function runTiledByDomain(cy: cytoscape.Core, name: "circle" | "grid"): void {
 
 /** One place that knows each layout's options, so the first render and a later switch can never drift apart. */
 function buildLayoutOptions(
+  cy: cytoscape.Core,
   layout: LayoutMode,
   extra: Record<string, unknown> = {}
 ): Record<string, unknown> {
@@ -274,7 +295,11 @@ function buildLayoutOptions(
     ...extra,
   };
   if (layout === "fcose") Object.assign(options, FCOSE_LAYOUT_OPTIONS);
-  if (layout === "elk") options.elk = ELK_LAYOUT_OPTIONS;
+  if (layout === "elk") {
+    // Disconnected parts of the hierarchy are packed side by side towards
+    // this ratio, so match the canvas rather than ELK's 1.6 default.
+    options.elk = { ...ELK_LAYOUT_OPTIONS, "elk.aspectRatio": canvasAspect(cy) };
+  }
   // Only reached for a flat graph — `applyLayout` diverts Circle/Grid to
   // `runTiledByDomain` as soon as there is a domain box to respect.
   if (layout === "circle" || layout === "grid") options.sort = siblingSort;
@@ -310,13 +335,19 @@ function applyLayout(
     // blob inside correctly-placed boxes.
     runningLayouts.get(cy)?.stop();
     runningLayouts.delete(cy);
+    // ...and any node animation `runTidiedForce` left running.
+    cy.nodes().stop(true, true);
 
     if ((layout === "circle" || layout === "grid") && cy.nodes(":parent").nonempty()) {
       runTiledByDomain(cy, layout);
       return;
     }
+    if (layout === "fcose" && cy.nodes(":parent").nonempty()) {
+      runTidiedForce(cy, extra);
+      return;
+    }
     const instance = cy.layout(
-      buildLayoutOptions(layout, extra) as unknown as cytoscape.LayoutOptions
+      buildLayoutOptions(cy, layout, extra) as unknown as cytoscape.LayoutOptions
     );
     // `cytoscape-elk` computes asynchronously and its own `fit` lands before
     // the final positions do, so a tall hierarchy (which is what the domain
@@ -333,6 +364,66 @@ function applyLayout(
   return () => {
     cancelled = true;
   };
+}
+
+/**
+ * Force layout with the domain tier present: fcose, then layout-tidy.ts's
+ * passes (pack unconnected members, spread to the canvas's width, separate
+ * overlapping boxes).
+ *
+ * The tidy passes need fcose's *final* positions, so fcose runs
+ * synchronously (`animate: false`) and the animation — if one was asked
+ * for — is replayed afterwards from the old positions to the tidied ones,
+ * rather than letting fcose animate and then snapping nodes into the grid.
+ */
+function runTidiedForce(cy: cytoscape.Core, extra: Record<string, unknown>): void {
+  const leaves = cy.nodes().not(":parent");
+  const start = new Map<string, cytoscape.Position>();
+  leaves.forEach((node) => {
+    start.set(node.id(), { ...node.position() });
+  });
+
+  cy.layout(
+    buildLayoutOptions(cy, "fcose", {
+      ...extra,
+      animate: false,
+      fit: false,
+    }) as unknown as cytoscape.LayoutOptions
+  ).run();
+  tidyDomainLayout(cy);
+
+  if (extra.animate !== true) {
+    cy.fit(undefined, 32);
+    return;
+  }
+
+  const end = new Map<string, cytoscape.Position>();
+  leaves.forEach((node) => {
+    end.set(node.id(), { ...node.position() });
+  });
+  // Frame the *final* picture: measure it now, then put everything back
+  // where it was and animate nodes and viewport there together.
+  const box = cy.elements().boundingBox();
+  const padding = 32;
+  const zoom = Math.min(
+    cy.maxZoom(),
+    Math.max(
+      cy.minZoom(),
+      Math.min((cy.width() - 2 * padding) / box.w, (cy.height() - 2 * padding) / box.h)
+    )
+  );
+  const pan = {
+    x: (cy.width() - zoom * (box.x1 + box.x2)) / 2,
+    y: (cy.height() - zoom * (box.y1 + box.y2)) / 2,
+  };
+  leaves.positions((node) => start.get(node.id()) ?? node.position());
+  leaves.forEach((node) => {
+    const target = end.get(node.id());
+    if (target) {
+      node.animate({ position: target }, { duration: 500, easing: "ease-in-out-cubic" });
+    }
+  });
+  cy.animate({ zoom, pan }, { duration: 500, easing: "ease-in-out-cubic" });
 }
 
 type AffectedCategory = "touched" | "neighbor" | "notAffected";
@@ -531,6 +622,27 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
       },
     },
     {
+      // A collapsed domain: the box without its children, drawn as one
+      // solid rounded node standing in for all of them (collapse.ts).
+      selector: `node.${COLLAPSED_DOMAIN_CLASS}`,
+      style: {
+        shape: "round-rectangle",
+        "background-color": "#2b3445",
+        "border-style": "dashed",
+        "border-width": 1.5,
+        "border-color": "#64748b",
+        label: "data(collapsedLabel)",
+        color: "#cbd5e1",
+        "font-size": 12,
+        "font-weight": 700,
+        "min-zoomed-font-size": 0,
+        // The fill would otherwise transition from the box's translucent
+        // one, and switching from compound to leaf in the same batch leaves
+        // that transition stuck half-way.
+        "transition-duration": 0,
+      },
+    },
+    {
       selector: "edge",
       style: {
         width: "data(edgeWidth)",
@@ -542,6 +654,22 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
         opacity: 0.5,
         "transition-property": "opacity, line-color",
         "transition-duration": 150,
+      },
+    },
+    {
+      // Stands in for `count` real dependency edges between two collapsed
+      // domains (or a domain and a loose module); the count is its label.
+      selector: `edge.${SUMMARY_EDGE_CLASS}`,
+      style: {
+        label: "data(countLabel)",
+        "font-size": 10,
+        color: "#94a3b8",
+        "text-background-color": CANVAS_COLOR,
+        "text-background-opacity": 0.85,
+        "text-background-padding": "2px",
+        "text-rotation": "autorotate",
+        "min-zoomed-font-size": 6,
+        opacity: 0.7,
       },
     },
     {
@@ -766,10 +894,8 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     const markersRef = useRef<ReviewMarkerMap>({});
     markersRef.current = reviewMarkers ?? {};
 
-    /** `cytoscape-expand-collapse`'s API handle, captured at init so the toolbar can drive it (typed in cytoscape-augment.d.ts). */
-    const expandCollapseRef = useRef<ReturnType<
-      cytoscape.Core["expandCollapse"]
-    > | null>(null);
+    /** What `collapseDomains` took off the canvas, while collapsed; `null` when expanded. */
+    const collapsedRef = useRef<CollapsedDomains | null>(null);
 
     const [layout, setLayout] = useState<LayoutMode>("fcose");
     const [collapsed, setCollapsed] = useState(false);
@@ -800,6 +926,15 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     }, [edges, touchedComponentIds]);
 
     const categoryOf = (id: string): AffectedCategory => {
+      // A collapsed domain takes the strongest category among its members,
+      // so a diff inside it still lights the box it is hidden in.
+      const members = collapsedRef.current?.members.get(id);
+      if (members) {
+        const categories = members.map(categoryOf);
+        if (categories.includes("touched")) return "touched";
+        if (categories.includes("neighbor")) return "neighbor";
+        return "notAffected";
+      }
       if (touchedComponentIds?.includes(id)) return "touched";
       if (neighborIds.has(id)) return "neighbor";
       return "notAffected";
@@ -1041,21 +1176,6 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       cy.on("tap", "node", handleNodeTap);
       cy.on("tap", handleBackgroundTap);
 
-      // Adds the +/- expand/collapse cue to any compound (parent) node, and
-      // gives us the handle the toolbar's Collapse/Expand-all button drives.
-      // A no-op visually when no node has a `parent` set (an unlabeled repo).
-      //
-      // `layoutBy: null` on purpose: the extension would otherwise re-run a
-      // layout of its own choosing on every collapse, fighting the layout
-      // switcher above. The toggle below re-runs the *current* layout itself.
-      expandCollapseRef.current = cy.expandCollapse({
-        layoutBy: null,
-        fisheye: false,
-        animate: true,
-        undoable: false,
-        cueEnabled: true,
-      });
-
       setReady(true);
 
       // Cytoscape sizes its canvas from the container's dimensions once at
@@ -1132,6 +1252,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       cy.add([...nodeElements, ...edgeElements]);
       // Rebuilding the elements drops any collapsed state with them, so the
       // toolbar's toggle has to start from "expanded" again.
+      collapsedRef.current = null;
       setCollapsed(false);
       return applyLayout(cy, layout, { animate: false });
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1157,7 +1278,9 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           node.removeClass("touched neighbor dimmed");
           // Domain boxes are structural, not impacted: they own no files, so
           // they can never be touched, and dimming a box while its children
-          // stay lit (or vice versa) just makes the grouping flicker.
+          // stay lit (or vice versa) just makes the grouping flicker. A
+          // *collapsed* domain is no longer a parent, and takes its members'
+          // category (see `categoryOf`).
           if (!hasDiff || node.isParent()) return;
           const category = categoryOf(node.id());
           node.addClass(category === "notAffected" ? "" : category);
@@ -1178,8 +1301,11 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           if (eitherHidden) edge.addClass("dimmed");
         });
       });
+      // `collapsed`: collapsing/expanding swaps elements in and out, and the
+      // ones coming in don't carry this effect's classes. The same goes for
+      // the three effects below.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [touchedComponentIds, neighborIds, visibleCategories, ready, hasDiff]);
+    }, [touchedComponentIds, neighborIds, visibleCategories, ready, hasDiff, collapsed]);
 
     // "Added" class for this PR's synthetic new-file nodes — deliberately
     // its own effect rather than folded into the one above: it must survive
@@ -1197,7 +1323,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           else node.removeClass("added");
         });
       });
-    }, [addedComponentIds, nodes, ready]);
+    }, [addedComponentIds, nodes, ready, collapsed]);
 
     // Selection highlight: the selected node, its direct DEPENDS_ON
     // neighbours in *both* directions, and the edges between them; every
@@ -1250,7 +1376,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       });
       // `nodes`/`edges` are listed so the classes are re-applied after the
       // element-rebuild effect above replaces the elements they were on.
-    }, [selectedNodeId, nodes, edges, ready]);
+    }, [selectedNodeId, nodes, edges, ready, collapsed]);
 
     // AI review markers — the third layer. Its own effect with its own class
     // namespace (`intent-*`), for the same reason selection has one: it must
@@ -1271,6 +1397,17 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           const node = cy.getElementById(componentId);
           if (!node.empty()) node.addClass(intentClassName(marker.worst));
         }
+        // A collapsed domain shows the worst verdict among its members.
+        for (const [domainId, memberIds] of collapsedRef.current?.members ?? []) {
+          let worst: IntentMatch | null = null;
+          for (const id of memberIds) {
+            const intent = reviewMarkers[id]?.worst;
+            if (intent && (!worst || INTENT_VISUALS[intent].rank < INTENT_VISUALS[worst].rank)) {
+              worst = intent;
+            }
+          }
+          if (worst) cy.getElementById(domainId).addClass(intentClassName(worst));
+        }
       });
 
       // If a tooltip is open on a node whose findings just changed — or
@@ -1280,7 +1417,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       refreshTooltipRef.current?.();
       // `nodes` for the same reason as the selection effect above: the
       // element rebuild drops every class with the elements it replaces.
-    }, [reviewMarkers, nodes, ready]);
+    }, [reviewMarkers, nodes, ready, collapsed]);
 
     // Legend counts for the review layer: how many *components* carry each
     // verdict as their worst finding — i.e. exactly what is drawn on the
@@ -1328,11 +1465,17 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     };
 
     const handleToggleCollapse = (): void => {
-      const api = expandCollapseRef.current;
-      if (!api) return;
+      const cy = cyRef.current;
+      if (!cy) return;
       const next = !collapsed;
-      if (next) api.collapseAll();
-      else api.expandAll();
+      if (next) {
+        const state = collapseDomains(cy);
+        if (!state) return;
+        collapsedRef.current = state;
+      } else if (collapsedRef.current) {
+        expandDomains(cy, collapsedRef.current);
+        collapsedRef.current = null;
+      }
       setCollapsed(next);
       // Collapsing swaps N module nodes for one box (and expanding does the
       // reverse), so the surviving positions are wrong either way until the

@@ -24,7 +24,18 @@ export type {
   ReviewFinding,
   ReviewResult,
   ReviewOptions,
+  ReviewNeighbor,
+  ReviewRelatedFile,
+  ReviewRelatedContext,
 } from "./review";
+
+export {
+  DEFAULT_REVIEW_EFFORT,
+  REVIEW_EFFORTS,
+  REVIEW_EFFORT_SETTINGS,
+  isReviewEffort,
+} from "./effort";
+export type { ReviewEffort, ReviewEffortSettings } from "./effort";
 
 export {
   DEFAULT_DESCRIPTION_BATCH,

@@ -36,11 +36,12 @@ import {
 } from "@/lib/neo4j";
 import type { RepoRecord } from "@/lib/neo4j";
 import type { JobLogger } from "./analyze";
-import type {
-  LabelJob,
-  LabelJobData,
-  LabelJobResult,
-  LabelProgress,
+import {
+  LABEL_CANCELLED_REASON,
+  type LabelJob,
+  type LabelJobData,
+  type LabelJobResult,
+  type LabelProgress,
 } from "./label-queue";
 import { repoCacheDir, validateLocalRepoPath } from "./source";
 
@@ -170,7 +171,9 @@ export function domainNodeId(repoId: string, slug: string): string {
 export async function runLabelJob(
   data: LabelJobData,
   job?: Pick<LabelJob, "updateProgress">,
-  log: JobLogger = (message) => console.log(`[label] ${message}`)
+  log: JobLogger = (message) => console.log(`[label] ${message}`),
+  /** Aborted when the user cancels (worker/index.ts). Honoured until the saving phase starts. */
+  signal?: AbortSignal
 ): Promise<LabelJobResult> {
   const startedAt = Date.now();
   const { repoId, force = false } = data;
@@ -228,26 +231,45 @@ export async function runLabelJob(
   };
   await publishProgress();
 
+  const stopIfCancelled = (): void => {
+    if (signal?.aborted) {
+      log(`cancelled after ${progress.calls} model call(s) — nothing was saved`);
+      throw new UnrecoverableError(LABEL_CANCELLED_REASON);
+    }
+  };
+
   // Both phases run inside one `labelComponents` call so its own cost
   // accounting stays authoritative; the work between them (persisting the
   // domain tier) happens after, since a domain box is worthless until every
   // module is assigned anyway and the phases are only seconds apart.
-  const result = await labelComponents(aiConfig, input, {
-    onProgress: async (event) => {
-      progress.phase = event.phase;
-      progress.done = event.done;
-      progress.total = event.total;
-      progress.calls = event.calls;
-      progress.promptTokens = event.promptTokens;
-      progress.completionTokens = event.completionTokens;
-      await publishProgress();
-    },
-  });
+  let result: Awaited<ReturnType<typeof labelComponents>>;
+  try {
+    result = await labelComponents(aiConfig, input, {
+      signal,
+      onProgress: async (event) => {
+        progress.phase = event.phase;
+        progress.done = event.done;
+        progress.total = event.total;
+        progress.calls = event.calls;
+        progress.promptTokens = event.promptTokens;
+        progress.completionTokens = event.completionTokens;
+        await publishProgress();
+      },
+    });
+  } catch (error) {
+    // An aborted model call surfaces as a network error; report it as what it is.
+    stopIfCancelled();
+    throw error;
+  }
+  // Aborted calls inside the description phase are absorbed there (a failed
+  // batch just yields fewer descriptions), so check again before saving.
+  stopIfCancelled();
   log(
     `model pass done — ${result.domains.length} domain(s), ${result.descriptions.length} description(s), ` +
       `${result.calls} call(s), ${result.usage.promptTokens}+${result.usage.completionTokens} token(s)` +
       (result.parseFailed ? " (some output could not be parsed)" : "")
   );
+  for (const reply of result.unusableReplies) log(reply);
 
   // --- Persist the domain tier --------------------------------------------
   //
@@ -257,8 +279,22 @@ export async function runLabelJob(
   // onto shared endpoints, and Neo4j Community deadlocks on parallel
   // relationship writes (see analyze.ts's
   // NEO4J_RELATIONSHIP_WRITE_CONCURRENCY).
-  const replacedDomains = await deleteAutoDomainComponents(repoId);
-  if (replacedDomains > 0) log(`removed ${replacedDomains} domain(s) from a previous labeling run`);
+  // From here on the run is committed: stopping half-way through these
+  // writes would leave the old domains deleted and the new ones partly
+  // written, so the saving phase ignores cancellation.
+  progress.phase = "saving";
+  await publishProgress();
+
+  // A run that produced no usable domains must not wipe out a previous run's
+  // good ones — keep them, save only the descriptions, and say so.
+  const keptPreviousDomains = result.domains.length === 0;
+  let replacedDomains = 0;
+  if (keptPreviousDomains) {
+    log("the model produced no usable domains — keeping the existing domain groups");
+  } else {
+    replacedDomains = await deleteAutoDomainComponents(repoId);
+    if (replacedDomains > 0) log(`removed ${replacedDomains} domain(s) from a previous labeling run`);
+  }
 
   const usedSlugs = new Set<string>();
   let domainsWritten = 0;
@@ -323,6 +359,7 @@ export async function runLabelJob(
     domains: domainsWritten,
     describedModules,
     replacedDomains,
+    keptPreviousDomains,
     calls: result.calls,
     promptTokens: result.usage.promptTokens,
     completionTokens: result.usage.completionTokens,

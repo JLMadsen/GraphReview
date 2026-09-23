@@ -26,12 +26,14 @@
 // markers on the nodes, the finding counts in the canvas legend, and the
 // selected component's findings in the sidebar panel.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Bot,
+  Check,
   ChevronRight,
   CircleCheck,
+  ClipboardCopy,
   CircleDashed,
   CircleHelp,
   ExternalLink,
@@ -40,6 +42,7 @@ import {
   Info,
   LoaderCircle,
   RefreshCw,
+  RotateCcw,
   Settings2,
   TriangleAlert,
 } from "lucide-react";
@@ -51,15 +54,21 @@ import {
   INTENT_ORDER,
   INTENT_VISUALS,
   compareIntent,
+  computeVerdict,
   countByIntent,
+  effectiveIntent,
   formatConfidence,
   formatLocation,
+  isResolvable,
+  reviewMarkdown,
   worstIntent,
 } from "./review-visuals";
 import {
+  REVIEW_EFFORT_OPTIONS,
   reviewTargetLabel,
   reviewTargetQuery,
   type FindingDTO,
+  type ReviewEffort,
   type IntentMatch,
   type ReviewFreshnessDTO,
   type ReviewProgressDTO,
@@ -89,6 +98,11 @@ export interface ReviewPanelProps {
   selectedComponentId?: string | null;
   /** Clicking a finding selects its component in the graph — same mechanism as tapping the node. */
   onSelectComponent: (componentId: string | null) => void;
+  /** Resolve (or reopen) a below-match finding. */
+  onSetResolved: (findingId: string, resolved: boolean) => void;
+  /** Effort level for the next run (automatic or re-run). Changing it does not start a run by itself. */
+  effort: ReviewEffort;
+  onEffortChange: (effort: ReviewEffort) => void;
 }
 
 const shortSha = (sha: string) => sha.slice(0, 7);
@@ -151,23 +165,67 @@ function IntentBadge({
 function FindingCard({
   finding,
   onViewDiff,
+  onSetResolved,
 }: {
   finding: FindingDTO;
   onViewDiff: (finding: FindingDTO) => void;
+  onSetResolved: (findingId: string, resolved: boolean) => void;
 }) {
   const location = formatLocation(finding);
+  const resolved = Boolean(finding.resolvedAt);
   return (
     <li className="px-3 py-2">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <IntentBadge intent={finding.intentMatch} />
-        <span
-          className="font-mono text-[10px] text-muted-foreground"
-          title="Model-reported confidence"
-        >
-          {formatConfidence(finding.confidence)} confident
+        <span className={cn(resolved && "opacity-55")}>
+          <IntentBadge intent={finding.intentMatch} />
         </span>
+        {resolved ? (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-success/12 px-2 py-0.5 text-[11px] font-medium text-success"
+            title={`Resolved ${new Date(finding.resolvedAt!).toLocaleString()} — counts as OK in the overall verdict`}
+          >
+            <Check className="size-3" aria-hidden />
+            Resolved
+          </span>
+        ) : (
+          <span
+            className="font-mono text-[10px] text-muted-foreground"
+            title="Model-reported confidence"
+          >
+            {formatConfidence(finding.confidence)} confident
+          </span>
+        )}
+        {isResolvable(finding) && (
+          <button
+            type="button"
+            onClick={() => onSetResolved(finding.id, !resolved)}
+            className={cn(
+              "ml-auto flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium transition-colors focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+              resolved
+                ? "border-transparent text-muted-foreground hover:text-foreground"
+                : "border-border text-foreground/85 hover:border-success/50 hover:bg-success/10 hover:text-success"
+            )}
+            title={
+              resolved
+                ? "Reopen this finding"
+                : "Mark this finding resolved — it then counts as OK in the overall verdict"
+            }
+          >
+            {resolved ? (
+              <RotateCcw className="size-3" aria-hidden />
+            ) : (
+              <CircleCheck className="size-3" aria-hidden />
+            )}
+            {resolved ? "Reopen" : "Resolve"}
+          </button>
+        )}
       </div>
-      <p className="mt-1.5 text-[13px] leading-relaxed text-foreground/90">
+      <p
+        className={cn(
+          "mt-1.5 text-[13px] leading-relaxed",
+          resolved ? "text-muted-foreground" : "text-foreground/90"
+        )}
+      >
         {finding.summary}
       </p>
       {location && (
@@ -225,6 +283,9 @@ export function ReviewPanel({
   onRerun,
   selectedComponentId,
   onSelectComponent,
+  onSetResolved,
+  effort,
+  onEffortChange,
 }: ReviewPanelProps) {
   // Chip filters. Held here rather than lifted: they only ever narrow this
   // list — the graph markers deliberately keep showing everything, so the
@@ -256,14 +317,16 @@ export function ReviewPanel({
     >();
     for (const finding of visibleFindings) {
       const existing = byComponent.get(finding.componentId);
+      // Resolved findings count as match here, so a fully resolved
+      // component sinks to the bottom with the matches.
       if (existing) {
         existing.findings.push(finding);
-        existing.worst = worstIntent(existing.worst, finding.intentMatch);
+        existing.worst = worstIntent(existing.worst, effectiveIntent(finding));
       } else {
         byComponent.set(finding.componentId, {
           id: finding.componentId,
           name: finding.componentName,
-          worst: finding.intentMatch,
+          worst: effectiveIntent(finding),
           findings: [finding],
         });
       }
@@ -272,6 +335,7 @@ export function ReviewPanel({
     for (const group of list) {
       group.findings.sort(
         (a, b) =>
+          compareIntent(effectiveIntent(a), effectiveIntent(b)) ||
           compareIntent(a.intentMatch, b.intentMatch) ||
           b.confidence - a.confidence
       );
@@ -282,7 +346,44 @@ export function ReviewPanel({
     return list;
   }, [visibleFindings]);
 
+  const verdict = useMemo(() => computeVerdict(findings), [findings]);
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    },
+    []
+  );
+
   if (!target) return null;
+
+  const handleCopyMarkdown = async () => {
+    if (!verdict) return;
+    const text = reviewMarkdown(
+      reviewTargetLabel(target),
+      verdict,
+      findings,
+      freshness?.reviewedHeadSha
+    );
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard API unavailable (plain http on a non-localhost host):
+      // fall back to a hidden textarea and the legacy copy command.
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand("copy");
+      area.remove();
+    }
+    setCopied(true);
+    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopied(false), 2000);
+  };
 
   const running = state === "queued" || state === "running";
   const total = progress?.total ?? 0;
@@ -359,7 +460,38 @@ export function ReviewPanel({
                 {NUMBER.format(progress.completionTokens)}
               </span>
               completion tokens
+              {progress.effort && (
+                <>
+                  <span className="opacity-40">·</span>
+                  <span className="text-foreground">
+                    {REVIEW_EFFORT_OPTIONS.find((o) => o.value === progress.effort)?.label}
+                  </span>
+                  effort
+                </>
+              )}
             </span>
+          )}
+          {aiConfigured && (
+            <label
+              className="flex items-center gap-1.5 text-[11px] text-muted-foreground"
+              title={`Effort for the next review run: ${
+                REVIEW_EFFORT_OPTIONS.find((o) => o.value === effort)?.description ?? ""
+              } Larger diffs are split into several calls rather than cut off.`}
+            >
+              Effort
+              <select
+                value={effort}
+                onChange={(event) => onEffortChange(event.target.value as ReviewEffort)}
+                className="h-6 rounded-md border border-border bg-card px-1.5 text-[11px] font-medium text-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                aria-label="Review effort"
+              >
+                {REVIEW_EFFORT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value} title={option.description}>
+                    {option.label} · {option.budget}
+                  </option>
+                ))}
+              </select>
+            </label>
           )}
           {aiConfigured && (
             <Button
@@ -370,7 +502,7 @@ export function ReviewPanel({
               disabled={!canRerun}
               title={
                 canRerun
-                  ? "Run the intent check again — existing findings are overwritten."
+                  ? "Run the intent check again at the selected effort — existing findings are overwritten."
                   : "A review of this target is already in flight."
               }
             >
@@ -384,6 +516,36 @@ export function ReviewPanel({
           )}
         </div>
       </div>
+
+      {/* ---- Overall verdict ------------------------------------------- */}
+      {verdict && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-3.5 py-2">
+          <span className="flex items-center gap-2 text-xs">
+            <span className="font-medium text-muted-foreground">
+              {running || rerunning ? "Overall so far" : "Overall"}
+            </span>
+            <IntentBadge intent={verdict.intent} />
+          </span>
+          <span className="text-[11px] text-muted-foreground">
+            <span className="font-mono text-foreground">{verdict.open}</span> open
+            <span className="mx-1 opacity-40">·</span>
+            <span className="font-mono text-foreground">{verdict.resolved}</span> resolved
+            <span className="mx-1 opacity-40">·</span>
+            <span className="font-mono text-foreground">{verdict.total}</span> total
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            className="ml-auto"
+            onClick={() => void handleCopyMarkdown()}
+            title="Copy the overall verdict and every open/resolved finding as Markdown"
+          >
+            {copied ? <Check aria-hidden /> : <ClipboardCopy aria-hidden />}
+            {copied ? "Copied" : "Copy as Markdown"}
+          </Button>
+        </div>
+      )}
 
       {/* ---- Live progress --------------------------------------------- */}
       {progress && (running || rerunning) && (
@@ -652,6 +814,7 @@ export function ReviewPanel({
                         key={finding.id}
                         finding={finding}
                         onViewDiff={setDiffFinding}
+                        onSetResolved={onSetResolved}
                       />
                     ))}
                   </ul>
