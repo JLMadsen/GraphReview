@@ -21,6 +21,8 @@ export interface GraphNodeDTO {
   parentId?: string;
   fileCount: number;
   description?: string;
+  /** `merge` for a merged feature module (DESIGN.md §6.3); absent/`folder` otherwise. */
+  origin?: "folder" | "merge";
 }
 
 /** One `(Component)-[:DEPENDS_ON {weight}]->(Component)` edge. */

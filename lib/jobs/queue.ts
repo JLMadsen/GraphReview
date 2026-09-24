@@ -28,6 +28,8 @@ export interface AnalysisJobResult {
   components: number;
   fileEdges: number;
   componentEdges: number;
+  /** Open merge suggestions after this run (DESIGN.md §6.3). */
+  openSuggestions?: number;
   durationMs: number;
 }
 

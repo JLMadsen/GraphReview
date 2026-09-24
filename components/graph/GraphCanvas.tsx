@@ -36,6 +36,10 @@
 //   component that is also selected and also has a mismatch finding renders
 //   as an amber node with a bright white border sitting in a rose halo.
 //   Colours and glyphs live in review-visuals.ts, shared with ReviewPanel.
+// - Feature merges (DESIGN.md §6.3): a merged module is drawn as a rounded
+//   hexagon (`shape` — owned by no highlight layer), and hovering a merge
+//   suggestion previews the nodes it would combine with an `outline-*`
+//   ring, a fourth property family none of the layers above touch.
 
 import {
   forwardRef,
@@ -522,6 +526,9 @@ function intentUnderlayStyle(
 // this package's `export = / export as namespace` default-import pattern
 // the way its member interfaces (`Core`, `EventObject`, ...) are; only the
 // interfaces merge onto the default-imported binding, not this alias.
+/** Class for the merge-suggestion preview ring. */
+const MERGE_PREVIEW_CLASS = "merge-preview";
+
 function buildStylesheet(): cytoscape.StylesheetStyle[] {
   return [
     {
@@ -781,6 +788,22 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
       },
     },
     {
+      // A merged feature module (DESIGN.md §6.3). Only `shape`, which no
+      // highlight layer sets, so it composes with all of them.
+      selector: 'node[origin = "merge"]',
+      style: { shape: "round-hexagon" },
+    },
+    {
+      // Merge suggestion preview — `outline-*` only, see the header.
+      selector: `node.${MERGE_PREVIEW_CLASS}`,
+      style: {
+        "outline-width": 3,
+        "outline-color": "#a78bfa",
+        "outline-offset": 3,
+        "outline-opacity": 1,
+      } as unknown as cytoscape.StylesheetStyle["style"],
+    },
+    {
       selector: "node.hovered",
       style: {
         "border-width": 3,
@@ -849,6 +872,10 @@ export interface GraphCanvasProps {
    * Omitted (e.g. on sample data) means no control is rendered at all.
    */
   labels?: UseLabelsResult;
+  /** Node ids to ring as a merge-suggestion preview (DESIGN.md §6.3). */
+  previewComponentIds?: string[];
+  /** Extra toolbar controls rendered after the Labels control (the merge suggestions button). */
+  toolbarExtra?: React.ReactNode;
   className?: string;
 }
 
@@ -863,6 +890,8 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       onSelectNode,
       reviewMarkers,
       labels,
+      previewComponentIds,
+      toolbarExtra,
       className,
     },
     ref
@@ -1224,6 +1253,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
             n.fileCount === 1 ? "" : "s"
           }`,
           tier: n.tier,
+          origin: n.origin ?? "folder",
           fileCount: n.fileCount,
           description: n.description,
           size: nodeSize(n.fileCount, maxFileCount),
@@ -1324,6 +1354,20 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         });
       });
     }, [addedComponentIds, nodes, ready, collapsed]);
+
+    // Merge-suggestion preview ring. Its own effect and class for the same
+    // reason as every other layer: it must not clear anyone else's classes.
+    useEffect(() => {
+      const cy = cyRef.current;
+      if (!cy || !ready) return;
+      const preview = new Set(previewComponentIds ?? []);
+      cy.batch(() => {
+        cy.nodes().forEach((node) => {
+          if (preview.has(node.id())) node.addClass(MERGE_PREVIEW_CLASS);
+          else node.removeClass(MERGE_PREVIEW_CLASS);
+        });
+      });
+    }, [previewComponentIds, nodes, ready, collapsed]);
 
     // Selection highlight: the selected node, its direct DEPENDS_ON
     // neighbours in *both* directions, and the edges between them; every
@@ -1529,6 +1573,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
                 onToggleCollapse={handleToggleCollapse}
               />
             )}
+            {toolbarExtra}
           </div>
 
           <div className="flex items-center gap-1.5">

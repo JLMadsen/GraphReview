@@ -19,11 +19,13 @@ import { FlaskConical, GitBranch, LoaderCircle } from "lucide-react";
 import { GraphCanvas } from "./GraphCanvas";
 import { PanelResizeHandle, usePanelWidth } from "./PanelResizeHandle";
 import { ComponentFilesPanel } from "./ComponentFilesPanel";
+import { MergesControl, MergeSuggestionsPanel } from "./MergeSuggestions";
 import { DiffPanel } from "./DiffPanel";
 import { ReviewPanel } from "./ReviewPanel";
 import { buildReviewMarkers } from "./review-visuals";
 import { SAMPLE_EDGES, SAMPLE_NODES } from "./sample-data";
 import { useLabels } from "./useLabels";
+import { useMerges } from "./useMerges";
 import { useReview } from "./useReview";
 import {
   DEFAULT_REVIEW_EFFORT,
@@ -82,6 +84,12 @@ export function GraphView({
   const review = useReview(repoId, reviewTarget, reviewEffort);
   const handleLabelsCompleted = useCallback(() => setGraphNonce((n) => n + 1), []);
   const labels = useLabels(repoId, handleLabelsCompleted);
+  // Feature merges (DESIGN.md §6.3). Every accept/unmerge/rename changes the
+  // module tier server-side, so it refetches the graph the same way a
+  // finished labeling run does; the suggestions list follows `graphNonce`.
+  const merges = useMerges(repoId, graphNonce, handleLabelsCompleted);
+  const [mergesOpen, setMergesOpen] = useState(false);
+  const [previewIds, setPreviewIds] = useState<string[] | null>(null);
   const [leftWidth, setLeftWidth] = usePanelWidth("graphreview.panel.diff", 288, 240, 560);
   const [rightWidth, setRightWidth] = usePanelWidth("graphreview.panel.files", 320, 260, 720);
 
@@ -209,6 +217,17 @@ export function GraphView({
     [review.findings]
   );
 
+  const selectedMerged = useMemo(
+    () => (selectedNodeId ? merges.data?.merged.find((m) => m.id === selectedNodeId) : undefined),
+    [merges.data, selectedNodeId]
+  );
+  const mergedBusy =
+    merges.busy && selectedNodeId && merges.busy.id === selectedNodeId
+      ? merges.busy.action === "unmerge" || merges.busy.action === "rename" || merges.busy.action === "naming"
+        ? merges.busy.action
+        : null
+      : null;
+
   const selectedFindings = useMemo(
     () =>
       selectedNodeId
@@ -283,6 +302,21 @@ export function GraphView({
             // No labeling control over sample data: those component ids
             // don't exist in Neo4j, so there is nothing to label.
             labels={usingSample ? undefined : labels}
+            previewComponentIds={previewIds ?? undefined}
+            toolbarExtra={
+              usingSample ? undefined : (
+                <MergesControl
+                  merges={merges}
+                  open={mergesOpen}
+                  onToggle={() => setMergesOpen((v) => !v)}
+                  onRegroup={
+                    labels.aiConfigured && labels.domains > 0
+                      ? () => labels.generate({ force: false })
+                      : undefined
+                  }
+                />
+              )
+            }
           />
         ) : (
           <div className="flex h-96 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border bg-canvas">
@@ -319,7 +353,7 @@ export function GraphView({
         />
       </div>
 
-      {selectedNode && (
+      {(selectedNode || (mergesOpen && !usingSample)) && (
         // To the right of the graph rather than the left sidebar: clicking a
         // node shouldn't take the diff controls away, and this keeps the
         // canvas the visual center. `key` forces a fresh fetch/state when
@@ -334,7 +368,19 @@ export function GraphView({
             onResize={setRightWidth}
             label="Resize component panel"
           />
-          <div className="lg:sticky lg:top-4">
+          <div className="space-y-3 lg:sticky lg:top-4">
+            {mergesOpen && !usingSample && (
+              <MergeSuggestionsPanel
+                merges={merges}
+                onPreview={setPreviewIds}
+                onAccepted={(id) => setSelectedNodeId(id)}
+                onClose={() => {
+                  setMergesOpen(false);
+                  setPreviewIds(null);
+                }}
+              />
+            )}
+            {selectedNode && (
             <ComponentFilesPanel
               key={selectedNode.id}
               repoId={repoId}
@@ -346,8 +392,25 @@ export function GraphView({
               sampleData={usingSample}
               localFiles={addedFilesById.get(selectedNode.id)}
               findings={selectedFindings}
+              merged={
+                selectedMerged
+                  ? {
+                      pathPatterns: selectedMerged.pathPatterns,
+                      aiConfigured: merges.data?.aiConfigured ?? false,
+                      busy: mergedBusy,
+                      onRename: (name) => merges.rename(selectedMerged.id, name),
+                      onNameWithAi: () => void merges.nameWithAi(selectedMerged.id),
+                      onUnmerge: async () => {
+                        const ok = await merges.unmerge(selectedMerged.id);
+                        if (ok) setSelectedNodeId(null);
+                        return ok;
+                      },
+                    }
+                  : undefined
+              }
               onClear={clearSelection}
             />
+            )}
           </div>
         </aside>
       )}

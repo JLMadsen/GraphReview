@@ -49,6 +49,7 @@ On the rendering approach:
   than offering an action that cannot work). Its wire types live in
   `label-types.ts`. Labeling is what produces the compound boxes: until it
   has run, no node has a parent and the canvas is flat.
+- Feature merges (DESIGN.md §6.3): `useMerges` (fetch on mount and after every graph refetch, then the accept/reject/reopen/unmerge/rename/name-with-AI actions), `MergeSuggestions.tsx` (the toolbar button with the open count, and the suggestions panel in the right sidebar — hovering a card rings the nodes it would combine) and the merged-module section of `ComponentFilesPanel` (members, Rename, Name with AI, Unmerge). Wire types in `merge-types.ts`. Merged modules render as rounded hexagons (`shape`), and the preview ring uses `outline-*` — neither is owned by any of the three layers below.
 - Three *composing* highlight layers on the canvas, each owning disjoint
   Cytoscape style properties so none can overwrite another: diff impact
   (node `background-color`), selection (`border-*`/`opacity`/`z-index`) and

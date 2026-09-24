@@ -14,6 +14,7 @@ function toRepoRecord(props: Record<string, unknown>): RepoRecord {
     createdAt: props.createdAt as string,
     lastAnalyzedAt: (props.lastAnalyzedAt as string | undefined) ?? undefined,
     lastAnalyzedSha: (props.lastAnalyzedSha as string | undefined) ?? undefined,
+    domainsStale: props.domainsStale === true ? true : undefined,
   };
 }
 
@@ -65,6 +66,14 @@ export async function markRepoAnalyzed(
         r.lastAnalyzedSha = $lastAnalyzedSha
     `,
     { id, lastAnalyzedAt, lastAnalyzedSha }
+  );
+}
+
+/** Sets or clears `Repo.domainsStale` (DESIGN.md §6.3). */
+export async function setRepoDomainsStale(id: string, stale: boolean): Promise<void> {
+  await runWrite(
+    `MATCH (r:Repo {id: $id}) SET r.domainsStale = CASE WHEN $stale THEN true ELSE null END`,
+    { id, stale }
   );
 }
 

@@ -39,6 +39,7 @@ import type { AddressInfo } from "node:net";
 // The two task markers are imported rather than re-typed so the mock can
 // never drift out of sync with the prompts it is pretending to answer.
 import { DESCRIBE_TASK_MARKER, DOMAIN_TASK_MARKER } from "./label";
+import { MERGE_NAME_TASK_MARKER } from "./merge-name";
 
 export const DEFAULT_MOCK_PORT = 4010;
 export const DEFAULT_MOCK_DELAY_MS = 900;
@@ -191,7 +192,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
         ? domainContent(userText)
         : prompt.includes(DESCRIBE_TASK_MARKER)
           ? describeContent(userText)
-          : cannedContent(userText);
+          : prompt.includes(MERGE_NAME_TASK_MARKER)
+            ? mergeNameContent(userText)
+            : cannedContent(userText);
 
     const promptTokens = Math.ceil(prompt.length / 4);
     const completionTokens = Math.ceil(content.length / 4);
@@ -506,6 +509,18 @@ function describeContent(userText: string): { content: string; note: string } {
   }));
   const content = ["```json", JSON.stringify({ modules: described }, null, 2), "```"].join("\n");
   return { content, note: `describe-modules modules=${modules.length}` };
+}
+
+/** Echoes the proposed feature name back, with a recognisable mock description. */
+function mergeNameContent(userText: string): { content: string; note: string } {
+  const proposed = /^Proposed name: (.*)$/m.exec(userText)?.[1]?.trim() || "Feature";
+  const members = (userText.match(/^- .*\*\*$/gm) ?? []).length;
+  const body = {
+    name: proposed,
+    description: `${MOCK_DESCRIPTION_PREFIX}Brings together ${members} folder(s) that implement ${proposed.toLowerCase()}.`,
+  };
+  const content = ["```json", JSON.stringify(body, null, 2), "```"].join("\n");
+  return { content, note: `name-feature "${proposed}"` };
 }
 
 function mockDescriptionFor(module: MockModuleLine): string {

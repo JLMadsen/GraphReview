@@ -57,3 +57,25 @@ The design reasoning is in [`docs/DESIGN.md`](docs/DESIGN.md) (§6 and §16).
 Bringing it back safely means building the accept-or-reject step first: show
 the suggested regrouping, and migrate findings, domains and descriptions only
 when the reviewer accepts it.
+
+## Letting the AI decide merge groups, not just name them
+
+Feature merge suggestions are planned to work like this: free heuristics
+(matching folder names such as `app/map` + `components/map`, plus imports
+between folders) decide *which* folders to merge, and the AI only names
+each group and describes what it does. That keeps suggestions cheap and the
+same from run to run.
+
+A possible refactor later: give the AI the heuristic matches as hints and
+let it decide the grouping itself. That could work better for flat repos
+where folder names say little, at the cost of more tokens and groups that
+vary between runs.
+
+## Trimming the context sent when naming merge groups
+
+For now the AI naming a merge group gets everything that might help: folder
+names and file paths, exported declarations of each file, the imports
+between the folders (with counts), a README excerpt, and route/URL hints
+(e.g. `app/map` serves `/map`). Tokens aren't a concern yet. Once naming
+quality has been seen on real repos, check which of these actually improve
+the names and cut the rest.

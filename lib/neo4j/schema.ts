@@ -33,6 +33,8 @@ const CONSTRAINT_STATEMENTS: string[] = [
    FOR (s:Settings) REQUIRE s.id IS UNIQUE`,
   `CREATE CONSTRAINT ai_provider_id_unique IF NOT EXISTS
    FOR (p:AiProvider) REQUIRE p.id IS UNIQUE`,
+  `CREATE CONSTRAINT merge_suggestion_id_unique IF NOT EXISTS
+   FOR (s:MergeSuggestion) REQUIRE s.id IS UNIQUE`,
   `CREATE CONSTRAINT ref_snapshot_sha_unique IF NOT EXISTS
    FOR (s:RefSnapshot) REQUIRE s.sha IS UNIQUE`,
 ];

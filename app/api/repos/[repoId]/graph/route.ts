@@ -89,6 +89,7 @@ export async function GET(
           ? (childFileTotals.get(c.id) ?? 0)
           : (fileCountById.get(c.id) ?? 0),
       description: c.description,
+      origin: c.origin === "merge" ? "merge" : undefined,
     }));
 
     const edges: GraphEdgeDTO[] = dependsOnResult.records.map((record) => ({

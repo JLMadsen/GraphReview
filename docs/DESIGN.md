@@ -124,14 +124,108 @@ Take a hypothetical bug where `square.ts`'s function doubles its input instead o
 
 That detail comes from the AI finding, not the graph structure: the per-component LLM call (§9) already receives the actual diff hunk for `square.ts`, so a resulting mismatch ("this doubles instead of squares, but the PR says it implements a square function") lands in the `Finding`'s rationale text, naming the file and function explicitly — even though the `Finding` node is attached `ABOUT` the Math component, not a specific file. To make that precision navigable rather than just readable prose, `Finding` gets two additional properties (§7): `filePath` and `lineRange`, populated from the diff hunk the finding was generated from. This costs nothing extra to compute (the LLM call is already scoped to that file's hunk) and lets the UI jump straight to the offending file/lines from a finding, without requiring the graph visualization itself to render at file granularity by default.
 
+### 6.3 Feature merges and splits (decided and built 2026-09-24)
+
+**Problem.** Folder modules follow the repo's *layers*, not its *features*. In a Next.js repo the map feature is `app/map` (pages), `components/map` (UI) and `app/api/map` (API route) — three nodes, and at the default module depth of 2 the API route isn't even its own node: it sits inside one `app/api` module with every other route. The AI domain tier (§6.1) can put the first two in the same box, but they stay two unrelated nodes, and a layer-style prompt tends to group by Frontend/Backend anyway.
+
+**As built** — all five build steps below are in: `lib/jobs/ownership.ts` (who owns which file), `lib/jobs/merge-heuristics.ts` (suggestions), `lib/jobs/module-tier.ts` (the one writer of the module tier, used by analysis and by regroup), `lib/jobs/merges.ts` (accept/reject/unmerge/rename), `lib/jobs/merge-naming.ts` + `lib/ai/merge-name.ts` (AI naming), `lib/neo4j/merge.ts`, the routes under `app/api/repos/[repoId]/merges/`, and in the Graph tab `useMerges.ts`, `MergeSuggestions.tsx` and a merged-module section in `ComponentFilesPanel.tsx`. The pure parts are covered by `npx tsx lib/jobs/smoke-test-merges.ts`. Where the build differs from the plan below, an **As built** note says so. Live-tested on a real 529-file Next.js repo (MultiTool): 26 suggestions, all plausible, including the `app/map` + `components/map` case; accept → AI naming against a real model → unmerge → reopen all worked.
+
+**What a merge is.** A merge turns several folders into **one module node** (e.g. "Map"). A split does the opposite: it moves individual files of one folder into different feature nodes (`lib/ai/review.ts` → Review, `lib/ai/label.ts` → Labeling). Nothing moves on disk; only the module tier changes. This is a real change of module boundaries — deliberately, since the goal is one node per feature, not a box around several.
+
+#### Decisions
+
+| Question | Decision |
+|---|---|
+| How merges happen | **Suggested, the user accepts or rejects.** The *apply* step is separate from what produces suggestions, so automatic mode (auto-accept) or manual mode (the user proposes a merge) can be added later without redesign. |
+| Re-analysis | **Merged nodes win.** Folder modules are built as usual, then files claimed by a merge/split are taken out of them. |
+| What a merged node remembers | **Folders** (a new file in `components/map/` joins Map automatically). Splits remember **files**. |
+| New file in a split folder | Goes to the **leftover** folder module (whatever wasn't split out) and gets a "move to …" suggestion. |
+| Folders serving several features | **Split by file.** |
+| Findings | **Move with their file** to whichever node now owns it. |
+| Where suggestions come from | **Free heuristics** (shared feature names + imports) choose the members; the **AI only names and describes** the group, with rich context. (Letting the AI choose the groups is parked in `docs/ideas.md`.) |
+| When suggestions are computed | **After every analysis**, heuristics only, shown as a badge. The AI runs only when a suggestion is accepted. |
+| Undo | An **Unmerge** button on the merged node restores the folder modules. |
+| Rejected suggestions | Remembered **until the suggestion's score rises clearly** (≥ 1.5× the score when it was rejected). |
+| "Group by" tier above modules | Stays. A merged node **inherits** the domain most of its files were in; the AI Layer grouping shows a "regroup?" hint (a future Louvain grouping would simply recompute). |
+| A merged folder disappears | **Dropped without a warning.** If it looks renamed (see below), suggest adding the new folder. |
+
+#### Data model
+
+Reuses `(:Component)`'s existing `pathPatterns` and `createdBy` — no new label for the node itself:
+
+- **Merged/split module**: `tier: "module"`, `createdBy: "user"` (a user accepted it, so re-analysis never prunes or renames it), new property **`origin: "merge"`**, id `<repoId>:feature:<uuid>` (a random id so renaming never changes it). `pathPatterns` holds folder patterns (`app/map/**`, `app/api/map/**`) and/or exact file paths (`lib/ai/review.ts`). New property **`absorbedModuleIds`**: the folder module ids it replaced, used for findings without a `filePath` and for Unmerge.
+- **Folder modules** are unchanged apart from `origin: "folder"` now being written: `createdBy: "auto"`, id `<repoId>:module:<name>`.
+- **As built, two more properties on merged modules:** `absorbedDescriptions` (JSON, absorbed module id → description — pruning deletes the absorbed folder modules and their curated descriptions with them, so Unmerge writes these back onto the folder modules it restores) and `lostFolders` (JSON, the folders that vanished with the file names they held — the input to rename detection).
+- **`(:MergeSuggestion)`** (new), repo-scoped: `id`, `repoId`, `key` (the sorted member patterns, so the same suggestion is recognised across runs), `kind` (`merge` | `move-file` | `extend` — as built there is no separate `split` kind: a split is a `move-file` into an existing feature), `members` (patterns), `targetComponentId` (for `move-file`/`extend`), `score` (0–1), `reasons` (short strings shown in the UI, e.g. "shared name 'map'", "14 of 16 imports stay inside"), `status` (`open` | `rejected`), `scoreAtRejection`, `updatedAt`. Accepted suggestions are deleted; the merged node is their record.
+
+**Which node owns a file.** Most specific wins (`resolveOwnership` in `lib/jobs/ownership.ts`, called by `writeModuleTier` in `lib/jobs/module-tier.ts` before any module-tier write):
+1. an exact file path in a merged node's `pathPatterns`;
+2. otherwise the **longest** folder pattern of any merged node (`app/api/map/**` beats nothing; it carves those files out of the `app/api` folder module);
+3. otherwise the folder module, as today.
+
+`liveComponentIds` is then computed from the resulting ownership, so a folder module left with no files is pruned exactly like any removed folder today, and a merged node with no matching files left is deleted (its patterns all point at deleted folders). A pattern that matches nothing is dropped from `pathPatterns` on that run. `DEPENDS_ON` aggregation already works from `componentIdByFile`, so edges between features come for free.
+
+**Findings.** After ownership is written: every `Finding` of the repo with a `filePath` gets `componentId` (and its `ABOUT` edge) set to the node that now owns that file. A finding without a `filePath` whose component no longer exists follows `absorbedModuleIds` to the merged node. One set-based Cypher statement for each case, done serially (the §17 deadlock rule applies).
+
+**Domain tier.** A new merged node gets `CHILD_OF` the domain that held most of its files beforehand (by file count). If any merge happened, set `Repo.domainsStale = true`; the Labels control shows "regroup?" until "Generate labels" runs again.
+
+#### Applying a change
+
+Accept and Unmerge only write the merged node (or delete it) and then apply the ownership rules above through the same writer re-analysis uses. One code path owns module membership, so there is no second implementation to drift.
+
+**As built — a synchronous regroup, not an analysis job.** `regroupRepo` rebuilds the folder clusters from the files and import edges already in Neo4j (no checkout, no parsing) and calls `writeModuleTier`, inside the request. It takes well under a second on a 529-file repo because the module-tier writes are batched `UNWIND`s that only touch files whose owner changed. An enqueued analysis would also have been skipped whenever one was already running (`enqueueAnalysis` is idempotent per repo), silently dropping the change.
+
+- **Accept:** create the merged node, named from the feature key ("Map"), regroup. The Graph tab then calls `name-with-ai` if an AI provider is configured (as built: a route call from the UI rather than a job on the `label` queue — it is one model call, and the node is already on screen under its heuristic name while it runs). No AI configured, or an unusable reply → the heuristic name stays.
+- **Accept all** (added after the first build): applies every open suggestion strongest first with **one** regroup at the end (`acceptAllMergeSuggestions`). A suggestion whose members overlap one already applied in the same pass is skipped; the regroup recomputes it, usually as an "Add to …". The Graph tab then names the new modules with AI one at a time (sequential, so a single local model server isn't flooded), showing `done/total`. The button needs two clicks and disarms itself after 4 s. On the 529-file MultiTool repo: 26 suggestions → 26 merged modules, 110 → 69 nodes, 1.4 s.
+- **Unmerge:** delete the merged node, regroup, write the absorbed descriptions back, and mark the suggestion it came from as rejected so it doesn't reappear straight away (it can be reopened). Findings follow their files back.
+
+#### Heuristics (free, deterministic, run at the end of every analysis)
+
+1. **Feature key.** For every folder, strip layer segments (`app`, `src`, `components`, `lib`, `api`, `pages`, `hooks`, `services`, `routes`, `server`, `client`, `features`, `modules`; as built also `actions`, `contexts`, `providers`, `types`, `workers` and a few more — `LAYER_SEGMENTS` in `merge-heuristics.ts`) and skip generic names (`utils`, `common`, `types`, …), Next.js route groups `(group)` and dynamic segments `[id]`; normalise case, `-`/`_` and plurals. What's left is the key: `app/map`, `components/map` and `app/api/map` all become `map`. Folders deeper than the module depth are included, which is what lets `app/api/map` be carved out of `app/api`.
+2. **Merge candidates.** Folders that share a key (none nested in another) make one candidate. Separately, **import-only** candidates: folder B imported *mostly* by folder A (≥ 70 % of B's incoming imports, at least 3 imports), e.g. `components/map` only used by `app/map`. As built, an import-only pair is skipped when the folders are nested or A is already in a shared-name suggestion, and a module *shallower* than the module depth (the root `app/` files) is listed file by file — `app/**` would claim the whole app tree.
+3. **Shared code is excluded.** A folder imported by many other modules (≥ 30 % of them) is shared foundation (`lib/utils`, db clients) and is never pulled into one feature.
+4. **Score** (0–1) = 0.5 × name match (1 if the keys match, else 0) + 0.5 × import cohesion (imports that stay inside the group ÷ all imports touching it). Import-only candidates use their import share in place of the name match. Only suggestions with a score ≥ 0.5 are shown.
+5. **Splits.** For each file of a folder module next to existing merged features, find the feature it imports from / is imported by most. If ≥ 2 files of one folder clearly belong to different features (≥ 60 % of their imports going to that feature), suggest a split. Files with no clear home stay in the leftover folder module — the same place new files land, and the same `move-file` suggestion picks them up later.
+6. **Renames.** When a merged node loses a folder and a new folder appears whose file names match ≥ 70 % of the lost folder's, suggest `extend` (add the new folder to the merged node).
+
+A rejected suggestion with the same `key` reappears only when its score is ≥ 1.5× `scoreAtRejection`; a suggestion whose members change is a different suggestion.
+
+#### AI naming (on accept only)
+
+`nameMergeGroup` in `lib/ai/merge-name.ts` (as built, its own file rather than `label.ts`), same plain-JSON-in-a-fence contract and budget helpers as the domain labeling. Context, deliberately generous for now (trimming it is parked in `docs/ideas.md`): member folder names and file paths; exported declarations of each file (already extracted for review context); the imports between the members, with counts; the README excerpt the domain labeler uses; route/URL hints (`app/map/page.tsx` serves `/map`, `app/api/map/route.ts` serves `/api/map`). Output: `{name, description}`, where the description says what the feature *enables*, not which layer it is.
+
+#### UI
+
+- **Graph toolbar:** a "Merge suggestions N" button next to the Labels control, and a "Groups out of date — regroup" chip when `domainsStale` (it re-runs labeling). Merged modules are drawn as rounded hexagons.
+- **Suggestions panel:** each suggestion shows its members, reasons and score. Hovering it highlights the members on the graph (a preview before anything changes). Accept / Reject; a "Rejected" section allows un-rejecting.
+- **Merged node side panel:** Rename, Unmerge, and the member patterns (read-only at first; editing members is a later addition).
+
+#### API
+
+As built (wire types in `components/graph/merge-types.ts`):
+
+- `GET /api/repos/[repoId]/merges` → `{suggestions, merged, domainsStale, aiConfigured}`; each suggestion carries `memberComponentIds` for the canvas preview.
+- `POST /api/repos/[repoId]/merges` with `{action: "accept-all"}` → `{accepted, skipped, createdComponentIds}`.
+- `POST /api/repos/[repoId]/merges/suggestions/[suggestionId]` with `{action: "accept" | "reject" | "reopen"}`.
+- `POST /api/repos/[repoId]/merges/modules/[componentId]` with `{action: "unmerge"}`, `{action: "rename", name, description?}` or `{action: "name-with-ai"}`.
+
+#### Build order (all done)
+
+1. Data model plus the ownership rules in `persistAnalysis`, findings following their files, domain inheritance, and the Accept/Unmerge API (testable by creating suggestions by hand).
+2. Merge heuristics (feature key, import-only candidates, scoring, rejection memory) plus the badge and panel.
+3. AI naming on accept.
+4. Splits and `move-file` suggestions.
+5. Rename detection (`extend`).
+
 ## 7. Neo4j schema
 
 Single Neo4j database; every node except `Settings` is `repoId`-scoped so multiple repos coexist without needing per-repo databases (revisit only if strict isolation becomes necessary).
 
 **Node labels and key properties:**
 
-- `(:Repo)` — `id`, `name`, `url`/`localPath`, `defaultBranch`, `provider` (`local` | `github`), `createdAt`, `lastAnalyzedAt`, `lastAnalyzedSha`
-- `(:Component)` — `id`, `repoId`, `name`, `description`, `createdBy` (`auto` | `user`), `pathPatterns`, `tier` (`domain` | `module` | ... — see §6.1)
+- `(:Repo)` — `id`, `name`, `url`/`localPath`, `defaultBranch`, `provider` (`local` | `github`), `createdAt`, `lastAnalyzedAt`, `lastAnalyzedSha`. *Planned (§6.3):* `domainsStale`
+- `(:Component)` — `id`, `repoId`, `name`, `description`, `createdBy` (`auto` | `user`), `pathPatterns`, `tier` (`domain` | `module` | ... — see §6.1). *Planned (§6.3):* `origin` (`folder` | `merge`) and `absorbedModuleIds` for merged/split feature modules.
+- *Planned (§6.3):* `(:MergeSuggestion)` — `id`, `repoId`, `key`, `kind`, `members`, `targetComponentId`, `score`, `reasons`, `status`, `scoreAtRejection`, `updatedAt`
 - `(:File)` — `id`, `repoId`, `path`, `language`, `loc`, `lastSeenCommit`
 - `(:PullRequest)` — `id`, `repoId`, `number`, `title`, `description`, `author`, `state`, `baseRef`, `headRef`, `headSha`, `url`, `createdAt`, `updatedAt`
 - `(:RefSnapshot)` — `sha`, `repoId`, `ref`, `message`, `author`, `timestamp` — covers both a PR's base/head and ad-hoc ref-to-ref comparisons

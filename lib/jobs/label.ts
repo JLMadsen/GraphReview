@@ -32,6 +32,7 @@ import {
   linkComponentToRepo,
   listModuleLabelInputs,
   setComponentDescription,
+  setRepoDomainsStale,
   upsertComponent,
 } from "@/lib/neo4j";
 import type { RepoRecord } from "@/lib/neo4j";
@@ -113,7 +114,7 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
  * module names and paths, which is the input the feature is designed around
  * anyway. Never throws.
  */
-async function readReadmeSnippet(repo: RepoRecord, log: JobLogger): Promise<string | undefined> {
+export async function readReadmeSnippet(repo: RepoRecord, log: JobLogger): Promise<string | undefined> {
   let dir: string | undefined;
   try {
     dir = repo.provider === "local" && repo.localPath
@@ -328,6 +329,8 @@ export async function runLabelJob(
     domainsWritten += 1;
     log(`domain "${domain.name}" (${slug}) — ${domain.moduleIds.length} module(s)`);
   }
+  // A fresh domain tier fits the current modules again (DESIGN.md §6.3).
+  if (domainsWritten > 0) await setRepoDomainsStale(repoId, false);
 
   // --- Persist descriptions ---------------------------------------------
   let describedModules = 0;

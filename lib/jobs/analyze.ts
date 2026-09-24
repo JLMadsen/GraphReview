@@ -9,25 +9,18 @@
 // script or test without starting a queue consumer.
 
 import { UnrecoverableError } from "bullmq";
-import { analyzeRepo, DEFAULT_MODULE_DEPTH, dirOf } from "@/lib/analysis";
+import { analyzeRepo, DEFAULT_MODULE_DEPTH } from "@/lib/analysis";
 import type { AnalysisResult } from "@/lib/analysis";
 import {
-  deleteEmptyAutoDomainComponents,
-  getComponentById,
   getRepoById,
-  linkComponentDependency,
-  linkComponentToRepo,
   linkFileImport,
-  linkFileToComponent,
-  listComponentsByRepoId,
   listFilesByRepoId,
   markRepoAnalyzed,
-  deleteComponent,
   deleteFile,
   runWrite,
-  upsertComponent,
   upsertFile,
 } from "@/lib/neo4j";
+import { writeModuleTier } from "./module-tier";
 import type { AnalysisJobResult } from "./queue";
 import { LocalPathOutsideRootError, prepareRepoSource } from "./source";
 
@@ -52,22 +45,6 @@ function fileNodeId(repoId: string, filePath: string): string {
   return `${repoId}:${filePath}`;
 }
 
-function componentNodeId(repoId: string, moduleName: string): string {
-  return `${repoId}:module:${moduleName}`;
-}
-
-/**
- * The folder key a module cluster was derived from, recovered from one of
- * its files. `ModuleCluster.name` is the *display* name (a bare folder name,
- * or the qualified path when two folders would collide), so it can't be used
- * directly as a path pattern.
- */
-function pathPatternFor(filePath: string, depth: number): string {
-  const dir = dirOf(filePath);
-  if (dir === "") return "*";
-  return `${dir.split("/").slice(0, depth).join("/")}/**`;
-}
-
 async function mapWithConcurrency<T>(
   items: readonly T[],
   limit: number,
@@ -79,13 +56,13 @@ async function mapWithConcurrency<T>(
 }
 
 /**
- * Drops the derived edges of a repo's graph before they are rewritten.
+ * Drops the file-level import edges of a repo's graph before they are rewritten.
  *
- * Done as two set-based statements rather than per-node `clearFileImports`
+ * Done as one set-based statement rather than per-node `clearFileImports`
  * calls: re-analysis must also remove edges whose *source* file no longer
- * exists, and one statement per repo is both cheaper and atomic per label.
- * These are the only two raw statements in this module — every node write
- * below goes through the typed repository functions.
+ * exists, and one statement per repo is both cheaper and atomic. This is the
+ * only raw statement in this module — every node write below goes through
+ * the typed repository functions.
  *
  * Note the deliberate trade-off: for the duration of a re-analysis the
  * repo's edges are missing rather than stale. The stale-while-revalidate
@@ -98,63 +75,23 @@ async function clearDerivedEdges(repoId: string): Promise<void> {
     `MATCH (:File {repoId: $repoId})-[rel:IMPORTS]->(:File) DELETE rel`,
     { repoId }
   );
-  await runWrite(
-    `MATCH (:Component {repoId: $repoId})-[rel:DEPENDS_ON]->(:Component) DELETE rel`,
-    { repoId }
-  );
+  // DEPENDS_ON is replaced by writeModuleTier (./module-tier.ts).
 }
 
 /**
- * Removes `File`/auto-created module `Component` nodes that the latest
- * analysis no longer sees (deleted or renamed in the repo). User-created
- * components are never touched.
- *
- * Note what this deliberately does **not** touch: the domain tier.
- * Domains come from the AI labeling pass (lib/jobs/label.ts), not from
- * static analysis, and re-analysis is frequent (it re-runs on every
- * staleness check) — so `listComponentsByRepoId(repoId, "module")` is
- * scoped to the module tier precisely so a refresh can never delete a
- * domain box or a module's `CHILD_OF` edge to one. Modules that are new
- * since the last labeling run simply render ungrouped until the next one.
- *
- * The one domain the prune *does* remove is one left with no children at
- * all: an empty dashed box grouping nothing is noise, not information.
+ * Removes `File` nodes that the latest analysis no longer sees (deleted or
+ * renamed in the repo). Modules left with no files are pruned by
+ * writeModuleTier (./module-tier.ts), which also owns the rule that
+ * re-analysis never touches the domain tier beyond removing empty domains.
  */
-async function pruneRemovedNodes(
+async function pruneRemovedFiles(
   repoId: string,
   liveFileIds: ReadonlySet<string>,
-  liveComponentIds: ReadonlySet<string>,
   log: JobLogger
 ): Promise<void> {
-  const [existingFiles, existingComponents] = await Promise.all([
-    listFilesByRepoId(repoId),
-    listComponentsByRepoId(repoId, "module"),
-  ]);
-
-  const staleFiles = existingFiles.filter((file) => !liveFileIds.has(file.id));
-  const staleComponents = existingComponents.filter(
-    (component) => component.createdBy === "auto" && !liveComponentIds.has(component.id)
-  );
-
-  if (staleFiles.length || staleComponents.length) {
-    log(
-      `pruning ${staleFiles.length} removed file(s) and ${staleComponents.length} empty module(s)`
-    );
-  }
-  await mapWithConcurrency(staleFiles, NEO4J_WRITE_CONCURRENCY, (file) =>
-    deleteFile(file.id)
-  );
-  await mapWithConcurrency(staleComponents, NEO4J_WRITE_CONCURRENCY, (component) =>
-    deleteComponent(component.id)
-  );
-
-  // After the modules are gone, a domain that grouped only those modules has
-  // nothing left under it. Runs last, and only ever affects `createdBy:
-  // 'auto'` domains.
-  const emptyDomains = await deleteEmptyAutoDomainComponents(repoId);
-  if (emptyDomains > 0) {
-    log(`pruned ${emptyDomains} domain component(s) left with no modules`);
-  }
+  const staleFiles = (await listFilesByRepoId(repoId)).filter((file) => !liveFileIds.has(file.id));
+  if (staleFiles.length > 0) log(`pruning ${staleFiles.length} removed file(s)`);
+  await mapWithConcurrency(staleFiles, NEO4J_WRITE_CONCURRENCY, (file) => deleteFile(file.id));
 }
 
 interface PersistCounts {
@@ -162,6 +99,7 @@ interface PersistCounts {
   components: number;
   fileEdges: number;
   componentEdges: number;
+  openSuggestions: number;
 }
 
 /** Writes an {@link AnalysisResult} into Neo4j as the component/file graph. */
@@ -172,19 +110,6 @@ export async function persistAnalysis(
   moduleDepth: number,
   log: JobLogger
 ): Promise<PersistCounts> {
-  // file path -> the component it belongs to, used both for BELONGS_TO and
-  // for aggregating file edges into component edges.
-  const componentIdByFile = new Map<string, string>();
-  const liveComponentIds = new Set<string>();
-
-  for (const cluster of result.modules) {
-    const componentId = componentNodeId(repoId, cluster.name);
-    liveComponentIds.add(componentId);
-    for (const filePath of cluster.filePaths) {
-      componentIdByFile.set(filePath, componentId);
-    }
-  }
-
   const liveFileIds = new Set(
     result.files.map((file) => fileNodeId(repoId, file.file))
   );
@@ -204,39 +129,6 @@ export async function persistAnalysis(
   });
   log(`upserted ${result.files.length} file node(s)`);
 
-  // --- Component nodes (module tier) -----------------------------------
-  await mapWithConcurrency(result.modules, NEO4J_WRITE_CONCURRENCY, async (cluster) => {
-    const componentId = componentNodeId(repoId, cluster.name);
-    // `upsertComponent` fully replaces the node's properties, so anything the
-    // user curated (descriptions live only in Neo4j and are
-    // edited in-app) has to be read back and carried across, or every
-    // re-analysis would silently wipe it. A component the user has taken
-    // ownership of also keeps its name; only its path patterns are refreshed.
-    const existing = await getComponentById(componentId);
-    await upsertComponent({
-      id: componentId,
-      repoId,
-      name: existing?.createdBy === "user" ? existing.name : cluster.name,
-      description: existing?.description,
-      createdBy: existing?.createdBy ?? "auto",
-      pathPatterns: [pathPatternFor(cluster.filePaths[0] ?? "", moduleDepth)],
-      tier: "module",
-    });
-    await linkComponentToRepo(componentId, repoId);
-  });
-  log(`upserted ${result.modules.length} module component(s)`);
-
-  // --- BELONGS_TO -----------------------------------------------------
-  await mapWithConcurrency(
-    result.files,
-    NEO4J_RELATIONSHIP_WRITE_CONCURRENCY,
-    async (file) => {
-      const componentId = componentIdByFile.get(file.file);
-      if (!componentId) return;
-      await linkFileToComponent(fileNodeId(repoId, file.file), componentId);
-    }
-  );
-
   // --- IMPORTS --------------------------------------------------------
   await mapWithConcurrency(
     result.edges,
@@ -251,38 +143,23 @@ export async function persistAnalysis(
   );
   log(`wrote ${result.edges.length} file import edge(s)`);
 
-  // --- DEPENDS_ON (aggregated from the file edges) ---------------------
-  // weight = number of underlying file-level edges between the two
-  // components. Intra-component edges are dropped: a component depending on
-  // itself carries no information in the component graph.
-  const weights = new Map<string, { from: string; to: string; weight: number }>();
-  for (const edge of result.edges) {
-    const from = componentIdByFile.get(edge.from);
-    const to = componentIdByFile.get(edge.to);
-    if (!from || !to || from === to) continue;
-    const key = `${from} -> ${to}`;
-    const existing = weights.get(key);
-    if (existing) existing.weight += 1;
-    else weights.set(key, { from, to, weight: 1 });
-  }
+  // --- Module tier: folder modules, merged feature modules, BELONGS_TO,
+  // DEPENDS_ON, findings and merge suggestions (./module-tier.ts) --------
+  const moduleTier = await writeModuleTier({
+    repoId,
+    filePaths: result.files.map((file) => file.file),
+    edges: result.edges,
+    folderClusters: result.modules,
+    moduleDepth,
+    log,
+  });
 
-  const componentEdges = [...weights.values()];
-  await mapWithConcurrency(
-    componentEdges,
-    NEO4J_RELATIONSHIP_WRITE_CONCURRENCY,
-    async (edge) => {
-      await linkComponentDependency(edge.from, edge.to, { weight: edge.weight });
-    }
-  );
-  log(`wrote ${componentEdges.length} component dependency edge(s)`);
-
-  await pruneRemovedNodes(repoId, liveFileIds, liveComponentIds, log);
+  await pruneRemovedFiles(repoId, liveFileIds, log);
 
   return {
     files: result.files.length,
-    components: result.modules.length,
     fileEdges: result.edges.length,
-    componentEdges: componentEdges.length,
+    ...moduleTier,
   };
 }
 

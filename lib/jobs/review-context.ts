@@ -217,7 +217,7 @@ export function diffIdentifiers(patches: readonly string[]): Set<string> {
 // Assembly
 // ---------------------------------------------------------------------------
 
-async function sourceDir(repo: RepoRecord): Promise<string | null> {
+export async function sourceDir(repo: RepoRecord): Promise<string | null> {
   try {
     const dir =
       repo.provider === "local" && repo.localPath
@@ -229,7 +229,7 @@ async function sourceDir(repo: RepoRecord): Promise<string | null> {
   }
 }
 
-async function readRepoFile(dir: string, relativePath: string): Promise<string | null> {
+export async function readRepoFile(dir: string, relativePath: string): Promise<string | null> {
   const resolved = path.resolve(dir, relativePath);
   // Stored paths come from our own analysis, but never read outside the repo.
   if (resolved !== dir && !resolved.startsWith(dir + path.sep)) return null;

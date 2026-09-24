@@ -61,6 +61,18 @@ export type {
   PhaseResult,
 } from "./label";
 
+export {
+  MERGE_NAME_TASK_MARKER,
+  buildMergeNameSystemPrompt,
+  nameMergeGroup,
+} from "./merge-name";
+export type {
+  MergeNameFile,
+  MergeNameInput,
+  MergeNameOptions,
+  MergeNameResult,
+} from "./merge-name";
+
 export { buildSystemPrompt, buildUserMessage } from "./prompts";
 export type { UserMessageOptions } from "./prompts";
 

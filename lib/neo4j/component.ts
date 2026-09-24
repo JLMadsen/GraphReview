@@ -5,7 +5,7 @@
 import { runRead, runWrite } from "./client";
 import type { ComponentRecord, DependsOnProps } from "./types";
 
-function toComponentRecord(props: Record<string, unknown>): ComponentRecord {
+export function toComponentRecord(props: Record<string, unknown>): ComponentRecord {
   return {
     id: props.id as string,
     repoId: props.repoId as string,
@@ -14,6 +14,10 @@ function toComponentRecord(props: Record<string, unknown>): ComponentRecord {
     createdBy: props.createdBy as ComponentRecord["createdBy"],
     pathPatterns: (props.pathPatterns as string[] | undefined) ?? [],
     tier: props.tier as ComponentRecord["tier"],
+    origin: (props.origin as ComponentRecord["origin"] | undefined) ?? undefined,
+    absorbedModuleIds: (props.absorbedModuleIds as string[] | undefined) ?? undefined,
+    absorbedDescriptions: (props.absorbedDescriptions as string | undefined) ?? undefined,
+    lostFolders: (props.lostFolders as string | undefined) ?? undefined,
   };
 }
 
@@ -31,7 +35,11 @@ export async function upsertComponent(
         c.description = $description,
         c.createdBy = $createdBy,
         c.pathPatterns = $pathPatterns,
-        c.tier = $tier
+        c.tier = $tier,
+        c.origin = $origin,
+        c.absorbedModuleIds = $absorbedModuleIds,
+        c.absorbedDescriptions = $absorbedDescriptions,
+        c.lostFolders = $lostFolders
     RETURN c
     `,
     {
@@ -42,6 +50,10 @@ export async function upsertComponent(
       createdBy: input.createdBy,
       pathPatterns: input.pathPatterns,
       tier: input.tier,
+      origin: input.origin ?? null,
+      absorbedModuleIds: input.absorbedModuleIds ?? null,
+      absorbedDescriptions: input.absorbedDescriptions ?? null,
+      lostFolders: input.lostFolders ?? null,
     }
   );
   return toComponentRecord(result.records[0].get("c").properties);

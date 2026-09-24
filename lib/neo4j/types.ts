@@ -23,11 +23,24 @@ export interface RepoRecord {
   createdAt: string;
   lastAnalyzedAt?: string;
   lastAnalyzedSha?: string;
+  /**
+   * Set when a feature merge/unmerge moved modules between domains after the
+   * last labeling run (DESIGN.md §6.3), so the domain tier may no longer fit.
+   * Cleared by the next labeling run.
+   */
+  domainsStale?: boolean;
 }
 
 export type ComponentCreatedBy = "auto" | "user";
 /** Tier within the hierarchical clustering. */
 export type ComponentTier = "domain" | "module" | "file";
+/**
+ * How a module-tier component came to be (DESIGN.md §6.3): `folder` is the
+ * folder-depth clustering of static analysis, `merge` a feature module the
+ * user accepted from a merge suggestion. Absent on older nodes and on the
+ * domain tier; read as `folder` for modules.
+ */
+export type ComponentOrigin = "folder" | "merge";
 
 export interface ComponentRecord {
   id: string;
@@ -35,8 +48,68 @@ export interface ComponentRecord {
   name: string;
   description?: string;
   createdBy: ComponentCreatedBy;
+  /**
+   * Folder modules: the one `<dir>/**` pattern they were clustered from.
+   * Merged modules: the folders (`<dir>/**`) and exact file paths they own —
+   * the source of truth for their membership.
+   */
   pathPatterns: string[];
   tier: ComponentTier;
+  origin?: ComponentOrigin;
+  /** Merged modules only: the folder module ids the merge replaced. Findings without a `filePath` follow these; Unmerge falls back to them. */
+  absorbedModuleIds?: string[];
+  /**
+   * Merged modules only: the absorbed folder modules' descriptions, as a
+   * JSON object (id → description). Pruning deletes those nodes; Unmerge
+   * writes the descriptions back onto the folder modules it restores.
+   */
+  absorbedDescriptions?: string;
+  /**
+   * Merged modules only: folders that disappeared from the repo, with the
+   * file names they held, as a JSON string (`LostFolder[]`). Used to spot a
+   * rename and suggest adding the new folder back.
+   */
+  lostFolders?: string;
+}
+
+/** One entry of {@link ComponentRecord.lostFolders}. */
+export interface LostFolder {
+  pattern: string;
+  fileNames: string[];
+  lostAt: string;
+}
+
+export type MergeSuggestionKind = "merge" | "extend" | "move-file";
+export type MergeSuggestionStatus = "open" | "rejected";
+
+/**
+ * `(:MergeSuggestion)` — a proposed change to the module tier, computed by
+ * free heuristics after every analysis (DESIGN.md §6.3).
+ *
+ * - `merge`: turn the folders in `members` into one new feature module.
+ * - `extend`: add the folders in `members` to the existing merged module `targetComponentId`.
+ * - `move-file`: move the exact file paths in `members` into `targetComponentId` (a split).
+ */
+export interface MergeSuggestionRecord {
+  /** Derived from `key`, so the same suggestion keeps its id across runs. */
+  id: string;
+  repoId: string;
+  /** Identity across runs: kind, target and the sorted members. */
+  key: string;
+  kind: MergeSuggestionKind;
+  /** `<dir>/**` folder patterns, or exact file paths for `move-file`. */
+  members: string[];
+  targetComponentId?: string;
+  /** Proposed name for a `merge` (the shared feature name, title-cased). */
+  name: string;
+  /** 0–1. */
+  score: number;
+  /** Short human-readable reasons, e.g. "shared name 'map'". */
+  reasons: string[];
+  status: MergeSuggestionStatus;
+  /** The score when the user rejected it; it reopens at ≥ 1.5× this. */
+  scoreAtRejection?: number;
+  updatedAt: string;
 }
 
 export interface FileRecord {

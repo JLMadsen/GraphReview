@@ -13,5 +13,6 @@ export * from "./pullRequest";
 export * from "./refSnapshot";
 export * from "./finding";
 export * from "./label";
+export * from "./merge";
 export * from "./settings";
 export * from "./ai-provider";

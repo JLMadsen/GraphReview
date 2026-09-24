@@ -12,7 +12,18 @@
 // on top of tapping the graph background.
 
 import { useEffect, useMemo, useState } from "react";
-import { Boxes, FileCode2, LoaderCircle, TriangleAlert, X } from "lucide-react";
+import {
+  Boxes,
+  FileCode2,
+  GitMerge,
+  LoaderCircle,
+  Pencil,
+  Sparkles,
+  TriangleAlert,
+  Undo2,
+  X,
+} from "lucide-react";
+import { formatMember } from "./MergeSuggestions";
 import {
   INTENT_VISUALS,
   compareIntent,
@@ -53,7 +64,19 @@ export interface ComponentFilesPanelProps {
    * review, so re-fetching per selection would duplicate a poll.
    */
   findings?: FindingDTO[];
+  /** Present when this node is a merged feature module (DESIGN.md §6.3). */
+  merged?: MergedModuleActions;
   onClear: () => void;
+}
+
+/** What the panel can do with a merged feature module. */
+export interface MergedModuleActions {
+  pathPatterns: string[];
+  aiConfigured: boolean;
+  busy: "unmerge" | "rename" | "naming" | null;
+  onRename: (name: string) => Promise<boolean>;
+  onNameWithAi: () => void;
+  onUnmerge: () => Promise<boolean>;
 }
 
 export function ComponentFilesPanel({
@@ -66,6 +89,7 @@ export function ComponentFilesPanel({
   sampleData,
   localFiles,
   findings,
+  merged,
   onClear,
 }: ComponentFilesPanelProps) {
   const [state, setState] = useState<FetchState>({ status: "loading" });
@@ -184,6 +208,8 @@ export function ComponentFilesPanel({
           {description}
         </p>
       )}
+
+      {merged && <MergedModuleSection name={componentName} actions={merged} />}
 
       {/*
         Compact review findings. Same badge colours/glyphs as the dock below
@@ -326,6 +352,114 @@ export function ComponentFilesPanel({
             ))}
           </ul>
         ))}
+    </div>
+  );
+}
+
+/**
+ * A merged feature module's members and actions. Unmerge asks for a second
+ * click rather than a dialog: it is undoable (the suggestion can be
+ * reopened and accepted again), just not in one step.
+ */
+function MergedModuleSection({ name, actions }: { name: string; actions: MergedModuleActions }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name);
+  const [confirmUnmerge, setConfirmUnmerge] = useState(false);
+  const busy = actions.busy;
+  const button =
+    "flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50";
+
+  return (
+    <div className="border-b border-border px-3 py-2">
+      <p className="flex items-center gap-1.5 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+        <GitMerge className="size-3 text-brand" aria-hidden />
+        Merged feature · {actions.pathPatterns.length} member{actions.pathPatterns.length === 1 ? "" : "s"}
+      </p>
+      <ul className="mt-1 space-y-0.5">
+        {actions.pathPatterns.map((pattern) => (
+          <li key={pattern} className="truncate font-mono text-[11px] text-foreground/90" title={pattern}>
+            {formatMember(pattern)}
+          </li>
+        ))}
+      </ul>
+
+      {editing ? (
+        <form
+          className="mt-2 flex items-center gap-1.5"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            if (await actions.onRename(draft)) setEditing(false);
+          }}
+        >
+          <input
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            autoFocus
+            maxLength={60}
+            className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
+            aria-label="Module name"
+          />
+          <button type="submit" disabled={busy !== null || !draft.trim()} className={button}>
+            {busy === "rename" ? <LoaderCircle className="size-2.5 animate-spin" aria-hidden /> : null}
+            Save
+          </button>
+          <button type="button" onClick={() => setEditing(false)} className={button}>
+            Cancel
+          </button>
+        </form>
+      ) : (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            disabled={busy !== null}
+            onClick={() => {
+              setDraft(name);
+              setEditing(true);
+            }}
+            className={button}
+          >
+            <Pencil className="size-2.5" aria-hidden />
+            Rename
+          </button>
+          {actions.aiConfigured && (
+            <button
+              type="button"
+              disabled={busy !== null}
+              onClick={actions.onNameWithAi}
+              className={button}
+              title="Ask the AI provider for a name and description (one model call)"
+            >
+              {busy === "naming" ? (
+                <LoaderCircle className="size-2.5 animate-spin" aria-hidden />
+              ) : (
+                <Sparkles className="size-2.5 text-brand" aria-hidden />
+              )}
+              {busy === "naming" ? "Naming…" : "Name with AI"}
+            </button>
+          )}
+          <button
+            type="button"
+            disabled={busy !== null}
+            onClick={async () => {
+              if (!confirmUnmerge) {
+                setConfirmUnmerge(true);
+                return;
+              }
+              await actions.onUnmerge();
+            }}
+            onBlur={() => setConfirmUnmerge(false)}
+            className={confirmUnmerge ? `${button} border-destructive/50 text-destructive` : button}
+            title="Split this back into its original folder modules"
+          >
+            {busy === "unmerge" ? (
+              <LoaderCircle className="size-2.5 animate-spin" aria-hidden />
+            ) : (
+              <Undo2 className="size-2.5" aria-hidden />
+            )}
+            {confirmUnmerge ? "Click again to unmerge" : "Unmerge"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
