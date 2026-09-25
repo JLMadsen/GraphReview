@@ -89,8 +89,10 @@ export {
 
 export {
   getRepoBranches,
+  getRepoCommits,
   getRepoPullRequests,
   type BranchesResponse,
+  type CommitsResponse,
   type PullRequestsResponse,
   type RepoAccessUnavailableReason,
 } from "./repo-access";
@@ -147,6 +149,25 @@ export {
   type DiffComponentMatch,
 } from "./diff-components";
 
+export { ChangedFilesError, listTargetChangedFiles } from "./changed-files";
+
+export {
+  applyPrMapGrouping,
+  assemblePrMap,
+  buildHeuristicPrMap,
+  classifyPath,
+  collectPrMapLinks,
+  edgeLabelKey,
+  heuristicPrMapGroups,
+  loadPrMapInput,
+  patchHighlights,
+  type PrMapAiGrouping,
+  type PrMapChangedFile,
+  type PrMapGroup,
+  type PrMapInput,
+  type PrMapLink,
+} from "./pr-map";
+
 export {
   checkReviewFreshness,
   invalidateReviewFreshness,
@@ -157,6 +178,7 @@ export {
 export {
   listLocalBranches,
   listLocalChangedFiles,
+  listLocalCommits,
   listLocalFilePatches,
   localMergeBase,
   resolveLocalRefSha,

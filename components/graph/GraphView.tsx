@@ -13,14 +13,29 @@
 // target drives `useReview` (auto-run + polling), and the resulting findings
 // fan out to three places — marker halos on the canvas, the full dock below
 // it, and the selected component's own panel in the sidebar.
+//
+// Once a diff is selected the canvas slot has two views (DESIGN.md §6.4):
+// **Repo** (the whole component graph, `GraphCanvas`) and **PR** (the PR
+// map, `PrMapCanvas` — only what the diff touches, as cards). Both stay
+// mounted, stacked in one grid cell with the inactive one transparent and
+// `inert`, so Cytoscape keeps its real size, layout and zoom while the PR
+// view is up. (Not `visibility: hidden`: React Flow sets `visibility:
+// visible` inline on its nodes, which pokes straight through it.)
+// Selection is shared: a card selects its component, and "Show in repo" /
+// "Show in PR" move between the two without losing it.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { FlaskConical, GitBranch, LoaderCircle } from "lucide-react";
-import { GraphCanvas } from "./GraphCanvas";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FlaskConical, GitBranch, GitPullRequestArrow, LoaderCircle, Network } from "lucide-react";
+import { cn } from "cn";
+import { GraphCanvas, type GraphCanvasHandle } from "./GraphCanvas";
+import { FileDiffModal } from "./FileDiffModal";
+import { PrMapCanvas } from "./PrMapCanvas";
+import { usePrMap } from "./usePrMap";
+import type { PrMapRequestDTO } from "./pr-map-types";
 import { PanelResizeHandle, usePanelWidth } from "./PanelResizeHandle";
 import { ComponentFilesPanel } from "./ComponentFilesPanel";
 import { MergesControl, MergeSuggestionsPanel } from "./MergeSuggestions";
-import { DiffPanel } from "./DiffPanel";
+import { DiffPanel, type DiffTargetMeta } from "./DiffPanel";
 import { ReviewPanel } from "./ReviewPanel";
 import { buildReviewMarkers } from "./review-visuals";
 import { SAMPLE_EDGES, SAMPLE_NODES } from "./sample-data";
@@ -39,10 +54,19 @@ import type {
   ReviewTargetDTO,
 } from "./types";
 
+type GraphViewMode = "repo" | "pr";
+
+/** The two views share one grid cell; the inactive one stays laid out but can't be seen, clicked or focused. */
+function viewLayerClass(active: boolean): string {
+  return cn("col-start-1 row-start-1 min-w-0", active ? "relative z-10" : "pointer-events-none opacity-0");
+}
+const VIEW_STORAGE_KEY = "graphreview.graph.view";
+
 /** Trimmed shape of `GET /api/repos/[repoId]` — see this repo's task brief. Only the fields this view needs. */
 interface RepoContext {
   name: string;
   defaultBranch?: string;
+  lastAnalyzedSha?: string;
 }
 
 export interface GraphViewProps {
@@ -81,7 +105,9 @@ export function GraphView({
   const [graphNonce, setGraphNonce] = useState(0);
 
   const [reviewEffort, setReviewEffort] = useState<ReviewEffort>(DEFAULT_REVIEW_EFFORT);
-  const review = useReview(repoId, reviewTarget, reviewEffort);
+  /** Whether the selected target reviews itself — open PRs and branch comparisons only (see DiffPanel's `DiffTargetMeta`). */
+  const [autoReview, setAutoReview] = useState(true);
+  const review = useReview(repoId, reviewTarget, reviewEffort, autoReview);
   const handleLabelsCompleted = useCallback(() => setGraphNonce((n) => n + 1), []);
   const labels = useLabels(repoId, handleLabelsCompleted);
   // Feature merges (DESIGN.md §6.3). Every accept/unmerge/rename changes the
@@ -90,6 +116,29 @@ export function GraphView({
   const merges = useMerges(repoId, graphNonce, handleLabelsCompleted);
   const [mergesOpen, setMergesOpen] = useState(false);
   const [previewIds, setPreviewIds] = useState<string[] | null>(null);
+  /** Which view a selected diff opens in — remembered per browser, `pr` by default. With no diff there is only the Repo view. */
+  const [preferredView, setPreferredViewState] = useState<GraphViewMode>("pr");
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
+      if (stored === "repo" || stored === "pr") setPreferredViewState(stored);
+    } catch {
+      /* storage unavailable — keep the default */
+    }
+  }, []);
+  const setPreferredView = useCallback((view: GraphViewMode) => {
+    setPreferredViewState(view);
+    try {
+      window.localStorage.setItem(VIEW_STORAGE_KEY, view);
+    } catch {
+      /* ignored */
+    }
+  }, []);
+  const canvasRef = useRef<GraphCanvasHandle>(null);
+  /** Components to pan to once the Repo view is visible again ("Show in repo"). */
+  const [pendingFocus, setPendingFocus] = useState<string[] | null>(null);
+  /** The file whose diff a PR map chip opened. */
+  const [openFile, setOpenFile] = useState<string | null>(null);
   const [leftWidth, setLeftWidth] = usePanelWidth("graphreview.panel.diff", 288, 240, 560);
   const [rightWidth, setRightWidth] = usePanelWidth("graphreview.panel.files", 320, 260, 720);
 
@@ -150,9 +199,10 @@ export function GraphView({
   }, [repoId, graphNonce]);
 
   const handleDiffResult = useCallback(
-    (result: DiffImpactResponseDTO | null, target: ReviewTargetDTO | null) => {
+    (result: DiffImpactResponseDTO | null, target: ReviewTargetDTO | null, meta: DiffTargetMeta) => {
       setDiffResult(result);
       setReviewTarget(target);
+      setAutoReview(meta.autoReview);
     },
     []
   );
@@ -228,6 +278,54 @@ export function GraphView({
         : null
       : null;
 
+  // The PR map follows the diff selection: the review target when there is
+  // one, the pasted paths otherwise. Keyed on the review's state so the
+  // cards pick up the AI grouping the moment the review job stores it.
+  const prRequest = useMemo<PrMapRequestDTO | null>(() => {
+    if (!diffResult) return null;
+    if (reviewTarget) return reviewTarget;
+    return { filePaths: [...diffResult.touchedFiles, ...diffResult.unmatchedFiles] };
+  }, [diffResult, reviewTarget]);
+  const prMap = usePrMap(repoId, prRequest, review.state);
+  const view: GraphViewMode = prRequest ? preferredView : "repo";
+
+  useEffect(() => {
+    setOpenFile(null);
+  }, [prRequest]);
+
+  useEffect(() => {
+    if (view !== "repo" || !pendingFocus) return;
+    // One frame so the canvas is visible and sized before it pans.
+    const frame = requestAnimationFrame(() => {
+      canvasRef.current?.focus(pendingFocus);
+      setPendingFocus(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [view, pendingFocus]);
+
+  const handleSelectCards = useCallback((componentIds: string[]) => {
+    setSelectedNodeId(componentIds[0] ?? null);
+  }, []);
+
+  const showInRepo = useCallback(
+    (componentIds: string[]) => {
+      if (componentIds.length === 0) return;
+      setSelectedNodeId(componentIds[0]);
+      setPreferredView("repo");
+      setPendingFocus(componentIds);
+    },
+    [setPreferredView]
+  );
+
+  const selectedInPrMap = useMemo(
+    () =>
+      Boolean(
+        selectedNodeId &&
+          prMap.map?.nodes.some((n) => n.role !== "context" && n.componentIds.includes(selectedNodeId))
+      ),
+    [prMap.map, selectedNodeId]
+  );
+
   const selectedFindings = useMemo(
     () =>
       selectedNodeId
@@ -257,6 +355,7 @@ export function GraphView({
           <DiffPanel
             repoId={repoId}
             defaultBranch={repo?.defaultBranch}
+            lastAnalyzedSha={repo?.lastAnalyzedSha}
             initialPrNumber={initialPrNumber}
             initialBaseRef={initialBaseRef}
             initialHeadRef={initialHeadRef}
@@ -290,8 +389,62 @@ export function GraphView({
             </p>
           </div>
         )}
+        {prRequest && (
+          <div
+            className="flex w-fit items-center gap-0.5 rounded-lg bg-muted p-[3px] ring-1 ring-border/60"
+            role="group"
+            aria-label="Graph view"
+          >
+            {(
+              [
+                { value: "repo", label: "Repo", icon: Network, title: "The whole component graph" },
+                { value: "pr", label: "PR", icon: GitPullRequestArrow, title: "Only what this diff touches" },
+              ] as const
+            ).map((opt) => {
+              const active = view === opt.value;
+              const Icon = opt.icon;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setPreferredView(opt.value)}
+                  aria-pressed={active}
+                  title={opt.title}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                    active
+                      ? "bg-elevated text-foreground shadow-sm ring-1 ring-border/60"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <Icon className={cn("size-3.5", active ? "text-brand" : "opacity-70")} />
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="grid">
+        {prRequest && (
+          <div className={viewLayerClass(view === "pr")} inert={view !== "pr"}>
+          <PrMapCanvas
+            map={prMap.map}
+            loading={prMap.loading}
+            error={prMap.error}
+            findings={review.findings}
+            selectedComponentId={selectedNodeId}
+            onSelectComponents={handleSelectCards}
+            onOpenFile={reviewTarget ? setOpenFile : undefined}
+            onShowInRepo={showInRepo}
+            reviewPending={review.state === "queued" || review.state === "running"}
+          />
+          </div>
+        )}
+        <div className={viewLayerClass(view === "repo")} inert={view !== "repo"}>
         {graph ? (
           <GraphCanvas
+            ref={canvasRef}
             nodes={canvasNodes}
             edges={graph.edges}
             touchedComponentIds={diffResult?.touchedComponentIds}
@@ -326,6 +479,17 @@ export function GraphView({
             />
             <p className="text-sm text-muted-foreground">Loading graph…</p>
           </div>
+        )}
+        </div>
+        </div>
+
+        {reviewTarget && (
+          <FileDiffModal
+            repoId={repoId}
+            target={reviewTarget}
+            finding={openFile ? { filePath: openFile } : null}
+            onClose={() => setOpenFile(null)}
+          />
         )}
 
         {/* The review dock — see ReviewPanel's header for why it lives here
@@ -392,6 +556,27 @@ export function GraphView({
               sampleData={usingSample}
               localFiles={addedFilesById.get(selectedNode.id)}
               findings={selectedFindings}
+              headerAction={
+                view === "pr" ? (
+                  <button
+                    type="button"
+                    onClick={() => showInRepo([selectedNode.id])}
+                    className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                    title="Show this component in the repo graph"
+                  >
+                    <Network className="size-3.5" /> Repo
+                  </button>
+                ) : selectedInPrMap ? (
+                  <button
+                    type="button"
+                    onClick={() => setPreferredView("pr")}
+                    className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                    title="Show this component in the PR map"
+                  >
+                    <GitPullRequestArrow className="size-3.5" /> PR
+                  </button>
+                ) : undefined
+              }
               merged={
                 selectedMerged
                   ? {

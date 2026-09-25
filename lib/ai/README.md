@@ -162,6 +162,14 @@ here:
   heuristic buckets, the `[mock] ` prefix, determinism, `MOCK_FAIL` and
   `MOCK_GARBAGE`.
 
+- `pr-map.ts` — `groupPrMap(config, input)`: the PR map's one call per
+  review (DESIGN.md §6.4). Regroups a diff's changed files by their role in
+  the change and names each group plus one verb per edge; the caller only
+  applies verbs to edges the import graph already justifies.
+  `normalizePrMapGrouping` drops unknown paths, files placed twice,
+  duplicate names and labels that aren't a short verb. `TASK: pr-map`
+  marker; covered by `lib/jobs/smoke-test-pr-map.ts`.
+
 ## Not yet built (follow-up work)
 
 - Per-component orchestration (fan out one call per touched component, run

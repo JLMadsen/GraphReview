@@ -11,7 +11,11 @@
 //   1. GET the target's review.
 //   2. `aiConfigured === false`  -> stop. Never POST into an unconfigured
 //      provider; the panel shows the "AI review is off" note instead.
-//   3. `state === "none"`        -> POST once (the automatic run), then poll.
+//   3. `state === "none"`        -> POST once (the automatic run), then poll —
+//      but only when the caller passed `autoRun` (open PRs and branch
+//      comparisons). Merged/closed PRs and commit comparisons are history:
+//      browsing them must not spend tokens per click, so they wait for
+//      `rerun()` (the dock's "Review" button).
 //   4. `state === "completed"`   -> show the stored findings and stop. This
 //      is also what a job that has aged out of its retention window looks
 //      like, so *not* re-POSTing here is what stops a revisit from silently
@@ -107,7 +111,9 @@ function isPending(state: ReviewStateDTO): boolean {
 export function useReview(
   repoId: string,
   target: ReviewTargetDTO | null,
-  effort: ReviewEffort
+  effort: ReviewEffort,
+  /** Whether a never-reviewed target is reviewed automatically. Read when the target loads, like `effort`. */
+  autoRun = true
 ): UseReviewResult {
   const targetKey = target ? reviewTargetKeyOf(target) : null;
   const [snapshot, setSnapshot] = useState<ReviewSnapshot>(IDLE_SNAPSHOT);
@@ -133,6 +139,8 @@ export function useReview(
   // must not restart polling or trigger a run — only `rerun()` does that.
   const effortRef = useRef<ReviewEffort>(effort);
   effortRef.current = effort;
+  const autoRunRef = useRef(autoRun);
+  autoRunRef.current = autoRun;
 
   // Read-only mirror of the snapshot for the visibility listener below, which
   // must know "is a run in flight / is there a completed review on screen"
@@ -271,7 +279,7 @@ export function useReview(
       const shouldPost =
         data.aiConfigured &&
         !postAttempted &&
-        (force || (canPost && data.state === "none"));
+        (force || (canPost && autoRunRef.current && data.state === "none"));
 
       if (shouldPost) {
         postAttempted = true;

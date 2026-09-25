@@ -275,5 +275,15 @@ export function reviewTargetQuery(target: ReviewTargetDTO): string {
 export function reviewTargetLabel(target: ReviewTargetDTO): string {
   return "prNumber" in target
     ? `PR #${target.prNumber}`
-    : `${target.baseRef} → ${target.headRef}`;
+    : `${shortRef(target.baseRef)} → ${shortRef(target.headRef)}`;
+}
+
+/** Whether a ref looks like a commit sha rather than a branch name. */
+export function isShaLike(ref: string): boolean {
+  return /^[0-9a-f]{7,64}$/i.test(ref);
+}
+
+/** A commit sha shortened to 7 characters; branch names unchanged. */
+export function shortRef(ref: string): string {
+  return isShaLike(ref) ? ref.slice(0, 7) : ref;
 }

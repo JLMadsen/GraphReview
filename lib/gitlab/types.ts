@@ -10,6 +10,7 @@
 export type {
   RateLimitInfo,
   Branch,
+  CommitSummary,
   PullRequestListState,
   PullRequestState,
   PullRequestSummary,

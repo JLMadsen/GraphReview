@@ -18,6 +18,7 @@ import { graphql } from "@octokit/graphql";
 import { GitHubApiError, toGitHubApiError } from "./errors";
 import type {
   Branch,
+  CommitSummary,
   GitHubResult,
   LinkedIssue,
   PullRequestDetail,
@@ -105,19 +106,25 @@ async function runPaginated<Item, T>(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   request: any,
   params: Record<string, unknown>,
-  mapItem: (item: Item) => T
+  mapItem: (item: Item) => T,
+  /** Stop paging once this many items are in (the list is still sorted server-side). */
+  maxItems?: number
 ): Promise<GitHubResult<T[]>> {
   try {
     let rateLimit: RateLimitInfo | null = null;
+    let seen = 0;
     const items: Item[] = await octokit.paginate(
       request,
       { per_page: DEFAULT_PER_PAGE, ...params },
-      (response: OctokitResponse<Item[]>) => {
+      (response: OctokitResponse<Item[]>, done: () => void) => {
         rateLimit = extractRateLimit(response.headers as unknown as Record<string, unknown>) ?? rateLimit;
+        seen += response.data.length;
+        if (maxItems !== undefined && seen >= maxItems) done();
         return response.data;
       }
     );
-    return { data: items.map(mapItem), rateLimit };
+    const kept = maxItems !== undefined ? items.slice(0, maxItems) : items;
+    return { data: kept.map(mapItem), rateLimit };
   } catch (err) {
     throw toGitHubApiError(err, endpoint);
   }
@@ -187,7 +194,9 @@ export async function listPullRequests(
   token: string,
   owner: string,
   repo: string,
-  state: PullRequestListState = "open"
+  state: PullRequestListState = "open",
+  /** Most recently updated first; omit for every PR. */
+  limit?: number
 ): Promise<GitHubResult<PullRequestSummary[]>> {
   const octokit = createOctokit(token);
   return runPaginated<
@@ -209,8 +218,39 @@ export async function listPullRequests(
       url: pr.html_url,
       createdAt: pr.created_at,
       updatedAt: pr.updated_at,
+    }),
+    limit
+  );
+}
+
+/** The newest `limit` commits reachable from `ref` (a branch name or sha; omitted = the repo's default branch as GitHub knows it), newest first. One page — `limit` is capped at 100. */
+export async function listCommits(
+  token: string,
+  owner: string,
+  repo: string,
+  ref: string | undefined,
+  limit = 50
+): Promise<GitHubResult<CommitSummary[]>> {
+  const octokit = createOctokit(token);
+  const endpoint = `GET /repos/${owner}/${repo}/commits${ref ? `?sha=${ref}` : ""}`;
+  const { data, rateLimit } = await runRest(endpoint, () =>
+    octokit.rest.repos.listCommits({
+      owner,
+      repo,
+      ...(ref ? { sha: ref } : {}),
+      per_page: Math.min(100, Math.max(1, limit)),
     })
   );
+  return {
+    data: data.map((commit) => ({
+      sha: commit.sha,
+      subject: (commit.commit.message ?? "").split("\n")[0].trim(),
+      author: commit.author?.login ?? commit.commit.author?.name ?? null,
+      date: commit.commit.author?.date ?? commit.commit.committer?.date ?? "",
+      parents: commit.parents.map((parent) => parent.sha),
+    })),
+    rateLimit,
+  };
 }
 
 /** Title, body, base/head SHA, author, state, url for a single PR. */

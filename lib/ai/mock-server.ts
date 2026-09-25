@@ -27,6 +27,11 @@
  *                     mock-generated test data is obvious in the UI and easy
  *                     to delete again.
  *
+ * The PR map call (lib/ai/pr-map.ts, `TASK: pr-map`) is answered from its
+ * `File: <path> (...) card: <name>` lines: the same grouping as the current
+ * cards, each renamed from its folder to a Title Case name, a `[mock] `
+ * description, and the listed links echoed back with the mock verb "feeds".
+ *
  * Special tokens anywhere in the prompt (e.g. in a PR title):
  *   MOCK_FAIL     -> HTTP 500
  *   MOCK_GARBAGE  -> non-JSON prose (exercises the parse-failure path)
@@ -40,6 +45,7 @@ import type { AddressInfo } from "node:net";
 // never drift out of sync with the prompts it is pretending to answer.
 import { DESCRIBE_TASK_MARKER, DOMAIN_TASK_MARKER } from "./label";
 import { MERGE_NAME_TASK_MARKER } from "./merge-name";
+import { PR_MAP_TASK_MARKER } from "./pr-map";
 
 export const DEFAULT_MOCK_PORT = 4010;
 export const DEFAULT_MOCK_DELAY_MS = 900;
@@ -194,7 +200,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
           ? describeContent(userText)
           : prompt.includes(MERGE_NAME_TASK_MARKER)
             ? mergeNameContent(userText)
-            : cannedContent(userText);
+            : prompt.includes(PR_MAP_TASK_MARKER)
+              ? prMapContent(userText)
+              : cannedContent(userText);
 
     const promptTokens = Math.ceil(prompt.length / 4);
     const completionTokens = Math.ceil(content.length / 4);
@@ -521,6 +529,46 @@ function mergeNameContent(userText: string): { content: string; note: string } {
   };
   const content = ["```json", JSON.stringify(body, null, 2), "```"].join("\n");
   return { content, note: `name-feature "${proposed}"` };
+}
+
+/** "src/ffi" → "Ffi", "lib/jobs tests" → "Jobs Tests" — recognisably renamed, still traceable. */
+function mockCardName(card: string): string {
+  const words = card
+    .split(/[\s/_.-]+/)
+    .filter(Boolean)
+    .filter((word, index, all) => index === all.length - 1 || !/^(src|lib|app|packages?|components?)$/i.test(word));
+  const tail = words.slice(-2).map((word) => word.charAt(0).toUpperCase() + word.slice(1));
+  return tail.join(" ") || "Changes";
+}
+
+function prMapContent(userText: string): { content: string; note: string } {
+  const filesByCard = new Map<string, string[]>();
+  for (const match of userText.matchAll(/^File: (.+?) \([^)]*\) card: (.*)$/gm)) {
+    const [, path, card] = match;
+    const list = filesByCard.get(card) ?? [];
+    list.push(path);
+    filesByCard.set(card, list);
+  }
+  const rename = new Map<string, string>();
+  const used = new Set<string>();
+  for (const card of filesByCard.keys()) {
+    let name = mockCardName(card);
+    for (let n = 2; used.has(name.toLowerCase()); n++) name = `${mockCardName(card)} ${n}`;
+    used.add(name.toLowerCase());
+    rename.set(card, name);
+  }
+  const groups = [...filesByCard].map(([card, files]) => ({
+    name: rename.get(card)!,
+    description: `${MOCK_DESCRIPTION_PREFIX}${files.length} changed file${files.length === 1 ? "" : "s"} from ${card}`,
+    files,
+  }));
+  const edges = [...userText.matchAll(/^- (.+?) -> (.+?) \([^)]*\)$/gm)].map(([, from, to]) => ({
+    from: rename.get(from) ?? from,
+    to: rename.get(to) ?? to,
+    label: "feeds",
+  }));
+  const content = ["```json", JSON.stringify({ groups, edges }, null, 2), "```"].join("\n");
+  return { content, note: `pr-map groups=${groups.length} edges=${edges.length}` };
 }
 
 function mockDescriptionFor(module: MockModuleLine): string {

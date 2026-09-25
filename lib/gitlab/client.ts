@@ -22,6 +22,7 @@
 import { GitLabApiError, toGitLabApiError, toGitLabNetworkError } from "./errors";
 import type {
   Branch,
+  CommitSummary,
   GitLabResult,
   LinkedIssue,
   PullRequestDetail,
@@ -108,7 +109,9 @@ async function runPaginated<Item, T>(
   endpoint: string,
   initialUrl: string,
   token: string,
-  mapItem: (item: Item) => T
+  mapItem: (item: Item) => T,
+  /** Stop paging once this many items are in. */
+  maxItems?: number
 ): Promise<GitLabResult<T[]>> {
   const items: T[] = [];
   let rateLimit: RateLimitInfo | null = null;
@@ -117,9 +120,9 @@ async function runPaginated<Item, T>(
     const { data, headers } = await gitlabFetch(endpoint, url, token);
     rateLimit = extractRateLimit(headers) ?? rateLimit;
     for (const item of data as Item[]) items.push(mapItem(item));
-    url = nextLinkFrom(headers);
+    url = maxItems !== undefined && items.length >= maxItems ? null : nextLinkFrom(headers);
   }
-  return { data: items, rateLimit };
+  return { data: maxItems !== undefined ? items.slice(0, maxItems) : items, rateLimit };
 }
 
 // ---------------------------------------------------------------------------
@@ -184,7 +187,8 @@ function mapMrSummary(mr: GitLabMergeRequestListItem): PullRequestSummary {
 async function listMergeRequestsByState(
   token: string,
   projectPath: string,
-  glState: string
+  glState: string,
+  limit?: number
 ): Promise<GitLabResult<PullRequestSummary[]>> {
   const endpoint = "GET /projects/{id}/merge_requests";
   const params = new URLSearchParams({
@@ -194,25 +198,29 @@ async function listMergeRequestsByState(
     sort: "desc",
   });
   const url = `${projectApiBase(projectPath)}/merge_requests?${params}`;
-  return runPaginated<GitLabMergeRequestListItem, PullRequestSummary>(endpoint, url, token, mapMrSummary);
+  return runPaginated<GitLabMergeRequestListItem, PullRequestSummary>(endpoint, url, token, mapMrSummary, limit);
 }
 
 export async function listMergeRequests(
   token: string,
   projectPath: string,
-  state: PullRequestListState = "open"
+  state: PullRequestListState = "open",
+  /** Most recently updated first; omit for every MR. */
+  limit?: number
 ): Promise<GitLabResult<PullRequestSummary[]>> {
-  if (state === "open") return listMergeRequestsByState(token, projectPath, "opened");
-  if (state === "all") return listMergeRequestsByState(token, projectPath, "all");
+  if (state === "open") return listMergeRequestsByState(token, projectPath, "opened", limit);
+  if (state === "all") return listMergeRequestsByState(token, projectPath, "all", limit);
 
   // GitLab's `state=closed` excludes merged MRs — unlike GitHub, where a
   // "closed" PR list includes merged ones — so fetch both and merge to give
   // the app's "Closed" tab the same meaning it has for a GitHub repo.
   const [closed, merged] = await Promise.all([
-    listMergeRequestsByState(token, projectPath, "closed"),
-    listMergeRequestsByState(token, projectPath, "merged"),
+    listMergeRequestsByState(token, projectPath, "closed", limit),
+    listMergeRequestsByState(token, projectPath, "merged", limit),
   ]);
-  const combined = [...closed.data, ...merged.data].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const combined = [...closed.data, ...merged.data]
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, limit);
   return { data: combined, rateLimit: closed.rateLimit ?? merged.rateLimit };
 }
 
@@ -353,6 +361,38 @@ export async function compareRefs(
 // ---------------------------------------------------------------------------
 // Ref SHA resolution
 // ---------------------------------------------------------------------------
+
+interface GitLabCommit {
+  id: string;
+  title: string;
+  author_name: string | null;
+  authored_date: string;
+  parent_ids: string[];
+}
+
+/** The newest `limit` commits reachable from `ref` (omitted = the project's default branch), newest first, via `GET /projects/{id}/repository/commits`. One page — capped at 100. */
+export async function listCommits(
+  token: string,
+  projectPath: string,
+  ref: string | undefined,
+  limit = 50
+): Promise<GitLabResult<CommitSummary[]>> {
+  const endpoint = "GET /projects/{id}/repository/commits";
+  const params = new URLSearchParams({ per_page: String(Math.min(100, Math.max(1, limit))) });
+  if (ref) params.set("ref_name", ref);
+  const url = `${projectApiBase(projectPath)}/repository/commits?${params}`;
+  const { data, headers } = await gitlabFetch(endpoint, url, token);
+  return {
+    data: (data as GitLabCommit[]).map((commit) => ({
+      sha: commit.id,
+      subject: (commit.title ?? "").trim(),
+      author: commit.author_name ?? null,
+      date: commit.authored_date,
+      parents: commit.parent_ids ?? [],
+    })),
+    rateLimit: extractRateLimit(headers),
+  };
+}
 
 /** The commit sha a ref (branch, tag or sha) currently points at, via `GET /projects/{id}/repository/commits/{ref}`. This is what the stale-review check polls, so it stays a single lightweight call. */
 export async function getRefSha(token: string, projectPath: string, ref: string): Promise<GitLabResult<string>> {

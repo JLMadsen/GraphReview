@@ -43,6 +43,11 @@ From the project's background on the data layer:
   `deleteAiProvider` for `(:Settings)-[:HAS_AI_PROVIDER]->(:AiProvider)` and
   also owns the one-time lazy migration off the old single-provider
   `Settings` fields).
+- `pr-map.ts` — the PR map's queries (DESIGN.md §6.4): `listPrMapImports`
+  (every `IMPORTS` edge touching a set of paths, with both owners),
+  `listPrMapComponents`, and the `(:PrMap)` store —
+  `getPrMapGrouping`/`savePrMapGrouping` (the AI grouping only, as JSON,
+  `-[:FOR]->` its `PullRequest`) and `prMapFilesKey`.
 - `index.ts` — barrel re-exporting all of the above.
 - No Neo4j import belongs in a client component. Route handlers and
   `worker/` are the only callers.

@@ -841,6 +841,8 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
 
 export interface GraphCanvasHandle {
   fit(): void;
+  /** Pans/zooms to these components and their direct neighbours. A module hidden inside a collapsed domain resolves to that domain's box. */
+  focus(componentIds: string[]): void;
 }
 
 export interface GraphCanvasProps {
@@ -1014,6 +1016,23 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     useImperativeHandle(ref, () => ({
       fit() {
         cyRef.current?.fit(undefined, 40);
+      },
+      focus(componentIds) {
+        const cy = cyRef.current;
+        if (!cy) return;
+        let targets = cy.collection();
+        for (const id of componentIds) {
+          let el = cy.getElementById(id);
+          if (el.empty()) {
+            const parentId = nodes.find((n) => n.id === id)?.parentId;
+            if (parentId) el = cy.getElementById(parentId);
+          }
+          if (el.nonempty()) targets = targets.union(el);
+        }
+        if (targets.empty()) return;
+        cy.resize();
+        // With the neighbourhood so a single node doesn't fill the screen.
+        cy.animate({ fit: { eles: targets.closedNeighborhood(), padding: 60 }, duration: 300 });
       },
     }));
 
@@ -1333,9 +1352,11 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       });
       // `collapsed`: collapsing/expanding swaps elements in and out, and the
       // ones coming in don't carry this effect's classes. The same goes for
-      // the three effects below.
+      // the three effects below. `nodes`/`edges` likewise: the rebuild effect
+      // replaces every element — e.g. when a PR's added-file nodes arrive a
+      // few seconds after its impact result — and the new ones start bare.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [touchedComponentIds, neighborIds, visibleCategories, ready, hasDiff, collapsed]);
+    }, [touchedComponentIds, neighborIds, visibleCategories, ready, hasDiff, collapsed, nodes, edges]);
 
     // "Added" class for this PR's synthetic new-file nodes — deliberately
     // its own effect rather than folded into the one above: it must survive

@@ -2,6 +2,7 @@
 export {
   listBranches,
   listMergeRequests,
+  listCommits,
   getMergeRequest,
   listMergeRequestFiles,
   compareRefs,
@@ -15,6 +16,7 @@ export type {
   RateLimitInfo,
   GitLabResult,
   Branch,
+  CommitSummary,
   PullRequestListState,
   PullRequestState,
   PullRequestSummary,

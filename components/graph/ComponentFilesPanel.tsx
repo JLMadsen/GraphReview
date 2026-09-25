@@ -66,6 +66,8 @@ export interface ComponentFilesPanelProps {
   findings?: FindingDTO[];
   /** Present when this node is a merged feature module (DESIGN.md §6.3). */
   merged?: MergedModuleActions;
+  /** Rendered in the header before the clear button — GraphView's "Show in PR" / "Show in repo" switch. */
+  headerAction?: React.ReactNode;
   onClear: () => void;
 }
 
@@ -90,6 +92,7 @@ export function ComponentFilesPanel({
   localFiles,
   findings,
   merged,
+  headerAction,
   onClear,
 }: ComponentFilesPanelProps) {
   const [state, setState] = useState<FetchState>({ status: "loading" });
@@ -192,6 +195,7 @@ export function ComponentFilesPanel({
             </span>
           </p>
         </div>
+        {headerAction}
         <button
           type="button"
           onClick={onClear}

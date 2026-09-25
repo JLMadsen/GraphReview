@@ -73,6 +73,19 @@ export type {
   MergeNameResult,
 } from "./merge-name";
 
+export {
+  PR_MAP_TASK_MARKER,
+  buildPrMapSystemPrompt,
+  groupPrMap,
+  normalizePrMapGrouping,
+} from "./pr-map";
+export type {
+  PrMapAiFile,
+  PrMapAiInput,
+  PrMapAiOptions,
+  PrMapAiResult,
+} from "./pr-map";
+
 export { buildSystemPrompt, buildUserMessage } from "./prompts";
 export type { UserMessageOptions } from "./prompts";
 

@@ -6,7 +6,8 @@
 // a few in flight at a time → persist each component's findings the
 // moment it completes (overwriting any previous run's findings for that
 // component), so they stream into the UI → prune findings for components
-// the target no longer touches.
+// the target no longer touches → one more call that groups and names the
+// PR map's cards (DESIGN.md §6.4), best-effort.
 //
 // Kept out of `worker/index.ts` and out of lib/jobs' barrel on purpose, for
 // the same reason as `./analyze.ts`: this is the unit of work (importable
@@ -16,8 +17,8 @@
 
 import { randomUUID } from "node:crypto";
 import { UnrecoverableError } from "bullmq";
-import { DEFAULT_REVIEW_EFFORT, REVIEW_EFFORT_SETTINGS, reviewComponentChange } from "@/lib/ai";
-import type { AiProviderConfig, ReviewInput } from "@/lib/ai";
+import { DEFAULT_REVIEW_EFFORT, REVIEW_EFFORT_SETTINGS, groupPrMap, reviewComponentChange } from "@/lib/ai";
+import type { AiProviderConfig, PrMapAiInput, ReviewInput } from "@/lib/ai";
 import { decrypt } from "@/lib/crypto";
 import { compareRefs, getLinkedIssues, getPullRequest, listPullRequestFiles } from "@/lib/github";
 import type { LinkedIssue, PullRequestDetail } from "@/lib/github";
@@ -32,7 +33,9 @@ import {
   getActiveAiProvider,
   getRepoById,
   linkPullRequestToRepo,
+  prMapFilesKey,
   replaceFindingsForTargetComponent,
+  savePrMapGrouping,
   upsertPullRequest,
 } from "@/lib/neo4j";
 import type { RepoRecord } from "@/lib/neo4j";
@@ -45,6 +48,13 @@ import {
 } from "./diff-components";
 import { resolveGitHubAccess } from "./github-access";
 import { gatherRelatedContext } from "./review-context";
+import {
+  assemblePrMap,
+  collectPrMapLinks,
+  heuristicPrMapGroups,
+  loadPrMapInput,
+  patchHighlights,
+} from "./pr-map";
 import { resolveGitLabAccess } from "./gitlab-access";
 import {
   listLocalFilePatches,
@@ -352,6 +362,118 @@ async function resolveTarget(
 }
 
 // ---------------------------------------------------------------------------
+// The PR map pass
+// ---------------------------------------------------------------------------
+
+interface PrMapPassResult {
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+}
+
+/**
+ * One model call that regroups the changed files by their role in the
+ * change and names the PR map's cards and edges (DESIGN.md §6.4), stored
+ * for the PR map endpoint to apply. Runs after the per-component calls so
+ * their finding summaries can inform the names.
+ *
+ * Never throws: the findings are already persisted and paid for, and the
+ * PR map falls back to its heuristic grouping without this.
+ */
+async function runPrMapPass(args: {
+  repoId: string;
+  targetKey: string;
+  prId?: string;
+  files: LocalFilePatch[];
+  intent: ReviewInput["intent"];
+  summariesByComponent: Map<string, string[]>;
+  aiConfig: AiProviderConfig;
+  tokenBudget: number;
+  log: JobLogger;
+}): Promise<PrMapPassResult> {
+  const { repoId, targetKey, files, log } = args;
+  const spent: PrMapPassResult = { calls: 0, promptTokens: 0, completionTokens: 0 };
+  if (files.length === 0) return spent;
+
+  let aiInput: PrMapAiInput;
+  try {
+    const input = await loadPrMapInput(repoId, files);
+    const map = assemblePrMap(input, collectPrMapLinks(input), heuristicPrMapGroups(input));
+    const nameOf = new Map(map.nodes.map((node) => [node.id, node.name]));
+    const cardOfFile = new Map<string, string>();
+    for (const node of map.nodes) for (const file of node.files) cardOfFile.set(file.path, node.name);
+    const cardOfComponent = (componentId: string): string | undefined =>
+      (
+        map.nodes.find((n) => n.role === "code" && n.componentIds.includes(componentId)) ??
+        map.nodes.find((n) => n.role !== "context" && n.componentIds.includes(componentId))
+      )?.name;
+
+    aiInput = {
+      intent:
+        args.intent.source === "pull_request"
+          ? { title: args.intent.title, body: args.intent.body }
+          : undefined,
+      files: files.map((file) => ({
+        path: file.path,
+        status: file.status,
+        additions: file.additions,
+        deletions: file.deletions,
+        group: cardOfFile.get(file.path) ?? "",
+        highlights: patchHighlights(file.patch),
+      })),
+      groups: map.nodes
+        .filter((node) => node.role !== "context")
+        .map((node) => ({ name: node.name, description: node.description, role: node.role })),
+      context: map.nodes
+        .filter((node) => node.role === "context")
+        .map((node) => ({ name: node.name, description: node.description })),
+      links: map.edges.map((edge) => ({
+        from: nameOf.get(edge.source) ?? edge.source,
+        to: nameOf.get(edge.target) ?? edge.target,
+        label: edge.label,
+        weight: edge.weight,
+      })),
+      summaries: [...args.summariesByComponent].flatMap(([componentId, summaries]) => {
+        const group = cardOfComponent(componentId);
+        return group ? summaries.map((summary) => ({ group, summary })) : [];
+      }),
+    };
+  } catch (error) {
+    log(`PR map: could not load the import graph — ${(error as Error).message}`);
+    return spent;
+  }
+
+  try {
+    const result = await groupPrMap(args.aiConfig, aiInput, { tokenBudget: args.tokenBudget });
+    spent.calls = 1;
+    spent.promptTokens = result.usage.promptTokens;
+    spent.completionTokens = result.usage.completionTokens;
+    if (result.parseFailed) {
+      log("PR map: model output could not be parsed — keeping the heuristic grouping");
+      return spent;
+    }
+    await savePrMapGrouping(
+      {
+        repoId,
+        targetKey,
+        filesKey: prMapFilesKey(files.map((file) => file.path)),
+        groups: result.groups,
+        edgeLabels: result.edgeLabels,
+        model: args.aiConfig.model,
+        createdAt: new Date().toISOString(),
+      },
+      args.prId
+    );
+    log(`PR map: ${result.groups.length} group(s), ${result.edgeLabels.length} edge label(s)`);
+  } catch (error) {
+    // As with a failed component call, it went out and may be billed.
+    spent.calls = Math.max(spent.calls, 1);
+    log(`PR map: failed — ${(error as Error).message}`);
+  }
+  return spent;
+}
+
+// ---------------------------------------------------------------------------
 // The job
 // ---------------------------------------------------------------------------
 
@@ -441,6 +563,8 @@ export async function runReviewJob(
   // finding for a component MERGEs an edge onto the same component node.
   // See NEO4J_RELATIONSHIP_WRITE_CONCURRENCY in ./analyze.ts.
   let writeChain: Promise<unknown> = Promise.resolve();
+  /** A few finding summaries per component, for the PR map pass. */
+  const summariesByComponent = new Map<string, string[]>();
 
   const reviewOne = async (context: ComponentReviewContext): Promise<void> => {
     const paths = match.pathsByComponentId.get(context.id) ?? [];
@@ -483,6 +607,10 @@ export async function runReviewJob(
       progress.calls += result.calls;
       progress.promptTokens += result.usage.promptTokens;
       progress.completionTokens += result.usage.completionTokens;
+      summariesByComponent.set(
+        context.id,
+        result.findings.slice(0, 3).map((finding) => finding.summary)
+      );
 
       findings = result.findings.map((finding) => ({
         id: randomUUID(),
@@ -573,6 +701,25 @@ export async function runReviewJob(
   if (prunedFindings > 0) {
     log(`pruned ${prunedFindings} finding(s) for components no longer touched`);
   }
+
+  // --- Group and name the PR map (DESIGN.md §6.4) -------------------------
+  running.set("__pr-map", "PR map");
+  await publishProgress();
+  const prMapSpent = await runPrMapPass({
+    repoId,
+    targetKey,
+    prId: resolved.prId,
+    files: resolved.files,
+    intent: resolved.intent,
+    summariesByComponent,
+    aiConfig,
+    tokenBudget: effortSettings.tokenBudget,
+    log,
+  });
+  running.delete("__pr-map");
+  progress.calls += prMapSpent.calls;
+  progress.promptTokens += prMapSpent.promptTokens;
+  progress.completionTokens += prMapSpent.completionTokens;
 
   await publishProgress();
 

@@ -501,17 +501,21 @@ export function ReviewPanel({
               onClick={onRerun}
               disabled={!canRerun}
               title={
-                canRerun
-                  ? "Run the intent check again at the selected effort — existing findings are overwritten."
-                  : "A review of this target is already in flight."
+                !canRerun
+                  ? "A review of this target is already in flight."
+                  : state === "none"
+                    ? "Run the intent check at the selected effort."
+                    : "Run the intent check again at the selected effort — existing findings are overwritten."
               }
             >
               {rerunning ? (
                 <LoaderCircle className="animate-spin" aria-hidden />
+              ) : state === "none" ? (
+                <Bot aria-hidden />
               ) : (
                 <RefreshCw aria-hidden />
               )}
-              Re-run review
+              {state === "none" && !rerunning ? "Review" : "Re-run review"}
             </Button>
           )}
         </div>
@@ -833,7 +837,9 @@ export function ReviewPanel({
                 ? "Waiting for the first component to come back…"
                 : state === "failed"
                   ? "The review job failed before it produced any findings."
-                  : "No findings for this diff yet."}
+                  : state === "none" && !rerunning
+                    ? "Not reviewed yet. Reviews start on their own only for open pull requests and branch comparisons — press Review to run one."
+                    : "No findings for this diff yet."}
           </p>
         )
       )}

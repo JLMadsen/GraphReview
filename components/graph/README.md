@@ -27,7 +27,7 @@ On the rendering approach:
   (`cytoscape-elk`, added post-v1 as a fourth "another view" option
   alongside the original three — top-to-bottom layered layout, good for
   reading `DEPENDS_ON` direction).
-- The Graph tab's sidebar panels: diff selection (pick a PR, or two refs)
+- The Graph tab's sidebar panels: diff selection (`DiffPanel` — a PR of any state, two branches, or two commits via `CommitPicker`; it reports a `DiffTargetMeta` with each result saying whether the review may start on its own and whether the diff is historical)
   and, when a node is clicked, that component's file list
   (`ComponentFilesPanel`, backed by
   `GET /api/repos/[repoId]/components/[componentId]/files`) with that
@@ -50,6 +50,7 @@ On the rendering approach:
   `label-types.ts`. Labeling is what produces the compound boxes: until it
   has run, no node has a parent and the canvas is flat.
 - Feature merges (DESIGN.md §6.3): `useMerges` (fetch on mount and after every graph refetch, then the accept/reject/reopen/unmerge/rename/name-with-AI actions), `MergeSuggestions.tsx` (the toolbar button with the open count, and the suggestions panel in the right sidebar — hovering a card rings the nodes it would combine) and the merged-module section of `ComponentFilesPanel` (members, Rename, Name with AI, Unmerge). Wire types in `merge-types.ts`. Merged modules render as rounded hexagons (`shape`), and the preview ring uses `outline-*` — neither is owned by any of the three layers below.
+- The PR map (DESIGN.md §6.4) — the canvas slot's second view once a diff is selected, behind the **Repo | PR** switch in `GraphView`: `usePrMap` (POST `/api/repos/[repoId]/pr-map` for the current selection, refetched on every review state change so the AI grouping appears when the review finishes), `PrMapCanvas.tsx` (React Flow + elkjs, measured-then-laid-out cards, finding markers, shared selection, the "unchanged neighbours" toggle) and `PrMapNode.tsx` (the card: name, description, file chips with status and +/-). Wire types in `pr-map-types.ts`. Both views stay mounted; "Show in repo" uses `GraphCanvasHandle.focus`, and `ComponentFilesPanel`'s `headerAction` carries the Repo/PR jump.
 - Three *composing* highlight layers on the canvas, each owning disjoint
   Cytoscape style properties so none can overwrite another: diff impact
   (node `background-color`), selection (`border-*`/`opacity`/`z-index`) and

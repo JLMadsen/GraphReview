@@ -14,5 +14,6 @@ export * from "./refSnapshot";
 export * from "./finding";
 export * from "./label";
 export * from "./merge";
+export * from "./pr-map";
 export * from "./settings";
 export * from "./ai-provider";

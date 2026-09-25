@@ -8,13 +8,13 @@
 // provider module (github-access.ts, gitlab-access.ts) stays single-purpose
 // and symmetric; this is the one place that fans out across all three.
 
-import { listBranches as listGitHubBranches, listPullRequests } from "@/lib/github";
-import type { Branch, PullRequestListState, PullRequestSummary, RateLimitInfo } from "@/lib/github";
-import { listBranches as listGitLabBranches, listMergeRequests } from "@/lib/gitlab";
+import { listBranches as listGitHubBranches, listCommits as listGitHubCommits, listPullRequests } from "@/lib/github";
+import type { Branch, CommitSummary, PullRequestListState, PullRequestSummary, RateLimitInfo } from "@/lib/github";
+import { listBranches as listGitLabBranches, listCommits as listGitLabCommits, listMergeRequests } from "@/lib/gitlab";
 import type { RepoRecord } from "@/lib/neo4j";
 import { describeGitHubError, resolveGitHubAccess, type GitHubUnavailableReason } from "./github-access";
 import { describeGitLabError, resolveGitLabAccess, type GitLabUnavailableReason } from "./gitlab-access";
-import { listLocalBranches } from "./local-git";
+import { listLocalBranches, listLocalCommits } from "./local-git";
 
 export type RepoAccessUnavailableReason = GitHubUnavailableReason | GitLabUnavailableReason;
 
@@ -34,6 +34,62 @@ export interface BranchesResponse extends RepoListResponse {
 export interface PullRequestsResponse extends RepoListResponse {
   state: PullRequestListState;
   pullRequests: PullRequestSummary[];
+}
+
+export interface CommitsResponse extends RepoListResponse {
+  /** The ref that was listed; `""` for the host's default branch. */
+  ref: string;
+  commits: CommitSummary[];
+}
+
+/**
+ * The newest commits of one branch (or any ref), newest first — the commit
+ * picker behind "compare two commits". Same three-way dispatch and
+ * `linked`/`error` envelope as branches.
+ *
+ * With no `ref`, the *host's* default branch is used (GitHub/GitLab resolve
+ * it when the branch is omitted; locally it's `HEAD`) rather than the
+ * `defaultBranch` stored on the repo, which can be out of date.
+ */
+export async function getRepoCommits(
+  repo: Pick<RepoRecord, "provider" | "url" | "localPath">,
+  ref: string | undefined,
+  limit = 50
+): Promise<CommitsResponse> {
+  const empty = { ref: ref ?? "", commits: [], rateLimit: null };
+  if (repo.provider === "local") {
+    if (!repo.localPath) return { linked: false, reason: "not_linked", ...empty };
+    try {
+      return {
+        linked: true,
+        ref: ref ?? "HEAD",
+        commits: await listLocalCommits(repo.localPath, ref ?? "HEAD", limit),
+        rateLimit: null,
+      };
+    } catch (err) {
+      return { linked: true, error: err instanceof Error ? err.message : String(err), ...empty };
+    }
+  }
+
+  if (repo.provider === "gitlab") {
+    const access = await resolveGitLabAccess(repo);
+    if (!access.ok) return { linked: false, reason: access.reason, ...empty };
+    try {
+      const { data, rateLimit } = await listGitLabCommits(access.token, access.ref.path, ref, limit);
+      return { linked: true, ref: ref ?? "", commits: data, rateLimit };
+    } catch (err) {
+      return { linked: true, error: describeGitLabError(err), ...empty };
+    }
+  }
+
+  const access = await resolveGitHubAccess(repo);
+  if (!access.ok) return { linked: false, reason: access.reason, ...empty };
+  try {
+    const { data, rateLimit } = await listGitHubCommits(access.token, access.ref.owner, access.ref.repo, ref, limit);
+    return { linked: true, ref: ref ?? "", commits: data, rateLimit };
+  } catch (err) {
+    return { linked: true, error: describeGitHubError(err), ...empty };
+  }
 }
 
 /**
@@ -91,7 +147,9 @@ export async function getRepoBranches(
 /** Pull/merge requests are a GitHub-or-GitLab-only concept — a local repo always gets the "not linked" empty state. */
 export async function getRepoPullRequests(
   repo: Pick<RepoRecord, "provider" | "url">,
-  state: PullRequestListState = "open"
+  state: PullRequestListState = "open",
+  /** Most recently updated first; omit for the whole list. */
+  limit?: number
 ): Promise<PullRequestsResponse> {
   if (repo.provider === "gitlab") {
     const access = await resolveGitLabAccess(repo);
@@ -99,7 +157,7 @@ export async function getRepoPullRequests(
       return { linked: false, reason: access.reason, state, pullRequests: [], rateLimit: null };
     }
     try {
-      const { data, rateLimit } = await listMergeRequests(access.token, access.ref.path, state);
+      const { data, rateLimit } = await listMergeRequests(access.token, access.ref.path, state, limit);
       return { linked: true, state, pullRequests: data, rateLimit };
     } catch (err) {
       return { linked: true, error: describeGitLabError(err), state, pullRequests: [], rateLimit: null };
@@ -111,7 +169,7 @@ export async function getRepoPullRequests(
     return { linked: false, reason: access.reason, state, pullRequests: [], rateLimit: null };
   }
   try {
-    const { data, rateLimit } = await listPullRequests(access.token, access.ref.owner, access.ref.repo, state);
+    const { data, rateLimit } = await listPullRequests(access.token, access.ref.owner, access.ref.repo, state, limit);
     return { linked: true, state, pullRequests: data, rateLimit };
   } catch (err) {
     return { linked: true, error: describeGitHubError(err), state, pullRequests: [], rateLimit: null };

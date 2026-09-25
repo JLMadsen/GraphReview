@@ -47,6 +47,18 @@ export interface Branch {
   protected: boolean;
 }
 
+/** One commit of a branch's history, newest first in any list — the Graph tab's commit picker. Shared by GitHub, GitLab and local git. */
+export interface CommitSummary {
+  sha: string;
+  /** First line of the commit message. */
+  subject: string;
+  author: string | null;
+  /** ISO-8601 author date. */
+  date: string;
+  /** Parent shas; the first is the parent on the same branch. Empty for a root commit. */
+  parents: string[];
+}
+
 /** `state` filter accepted by GitHub's `GET /repos/{owner}/{repo}/pulls`. */
 export type PullRequestListState = "open" | "closed" | "all";
 

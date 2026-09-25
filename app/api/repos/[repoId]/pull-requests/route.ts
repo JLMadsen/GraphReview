@@ -1,5 +1,6 @@
-// `GET /api/repos/[repoId]/pull-requests?state=open|closed|all` — the PR
-// list behind the Pull Requests tab.
+// `GET /api/repos/[repoId]/pull-requests?state=open|closed|all[&limit=N]` —
+// the PR list behind the Pull Requests tab, and (with a `limit`, most
+// recently updated first) the Graph tab's PR picker.
 //
 // `state` maps straight onto GitHub's own filter. Merged PRs come back under
 // `closed`/`all`, with lib/github deriving the three-value
@@ -29,7 +30,13 @@ export async function GET(
 ): Promise<NextResponse> {
   const { repoId } = await params;
 
-  const state = parseState(new URL(request.url).searchParams.get("state"));
+  const searchParams = new URL(request.url).searchParams;
+  const state = parseState(searchParams.get("state"));
+  const rawLimit = searchParams.get("limit");
+  const limit = rawLimit === null ? undefined : Number(rawLimit);
+  if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 1000)) {
+    return apiError(`Invalid "limit". Expected an integer from 1 to 1000.`, 400);
+  }
   if (!state) {
     return apiError(
       `Invalid "state" filter. Expected one of: ${LIST_STATES.join(", ")}.`,
@@ -40,7 +47,7 @@ export async function GET(
   const loaded = await loadRepo(repoId);
   if ("response" in loaded) return loaded.response;
 
-  const result = await getRepoPullRequests(loaded.repo, state).catch(
+  const result = await getRepoPullRequests(loaded.repo, state, limit).catch(
     (error: unknown) => ({
       linked: true as const,
       error: errorMessage(error),

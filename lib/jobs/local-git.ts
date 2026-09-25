@@ -9,7 +9,7 @@
 // and `resolveLocalRepoPath` (the containment check) rather than
 // duplicating either.
 
-import type { Branch, PullRequestFile, PullRequestFileStatus } from "@/lib/github";
+import type { Branch, CommitSummary, PullRequestFile, PullRequestFileStatus } from "@/lib/github";
 import { gitIn, resolveLocalRepoPath } from "./source";
 
 /**
@@ -84,6 +84,43 @@ export async function listLocalChangedFiles(
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+/**
+ * The newest `limit` commits reachable from `ref`, newest first — the local
+ * counterpart to the GitHub/GitLab commit lists behind the commit picker.
+ * Fields are NUL/record-separated so any subject text arrives verbatim.
+ */
+export async function listLocalCommits(
+  localPath: string,
+  ref: string,
+  limit = 50
+): Promise<CommitSummary[]> {
+  if (!ref || ref.startsWith("-")) {
+    throw new Error(`"${ref}" is not a valid git ref.`);
+  }
+  const dir = resolveLocalRepoPath(localPath);
+  const output = await gitIn(dir, undefined, LOCAL_GIT_CONFIG).raw([
+    "log",
+    `--max-count=${Math.min(500, Math.max(1, limit))}`,
+    "--format=%H%x00%P%x00%an%x00%aI%x00%s%x1e",
+    ref,
+    "--",
+  ]);
+  return output
+    .split("\x1e")
+    .map((record) => record.trim())
+    .filter(Boolean)
+    .map((record) => {
+      const [sha, parents, author, date, subject] = record.split("\0");
+      return {
+        sha,
+        subject: subject ?? "",
+        author: author || null,
+        date: date ?? "",
+        parents: parents ? parents.split(" ").filter(Boolean) : [],
+      };
+    });
 }
 
 /**

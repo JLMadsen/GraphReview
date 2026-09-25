@@ -42,8 +42,8 @@ type FetchState =
 export interface FileDiffModalProps {
   repoId: string;
   target: ReviewTargetDTO;
-  /** The finding whose file to show, or `null` when the modal is closed. */
-  finding: FindingDTO | null;
+  /** The file to show (a finding, or a bare `{ filePath }` from a PR map chip), or `null` when the modal is closed. */
+  finding: Pick<FindingDTO, "filePath" | "lineRange"> | null;
   onClose: () => void;
 }
 
