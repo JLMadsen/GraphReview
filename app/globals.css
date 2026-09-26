@@ -86,7 +86,7 @@
   --card-foreground: oklch(0.145 0.006 266);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0.006 266);
-  --primary: oklch(0.54 0.2 268);
+  --primary: oklch(0.21 0.006 266);
   --primary-foreground: oklch(0.99 0 0);
   --secondary: oklch(0.97 0.003 266);
   --secondary-foreground: oklch(0.21 0.006 266);
@@ -114,7 +114,12 @@
   --chart-4: oklch(0.63 0.16 320);
   --chart-5: oklch(0.65 0.14 160);
 
-  --radius: 0.625rem;
+  /*
+   * Blueprint look (2026-09-26 redesign): near-square corners everywhere.
+   * The scale below derives from this, so rounded-lg is 3px and rounded-xl
+   * about 4px — cards and panels read as drafted boxes, not soft tiles.
+   */
+  --radius: 0.1875rem;
 
   --sidebar: oklch(0.985 0.003 266);
   --sidebar-foreground: oklch(0.145 0.006 266);
@@ -158,8 +163,12 @@
   --card-foreground: oklch(0.97 0.004 266);
   --popover: oklch(0.225 0.01 266);
   --popover-foreground: oklch(0.97 0.004 266);
-  --primary: oklch(0.62 0.19 268);
-  --primary-foreground: oklch(0.99 0.002 266);
+  /*
+   * Primary actions are a neutral light fill, not indigo: indigo (`--brand`)
+   * is reserved for selection and focus, so it keeps meaning "this one".
+   */
+  --primary: oklch(0.92 0.004 266);
+  --primary-foreground: oklch(0.16 0.008 266);
   --secondary: oklch(0.245 0.01 266);
   --secondary-foreground: oklch(0.97 0.004 266);
   --muted: oklch(0.225 0.009 266);
@@ -202,18 +211,6 @@
   }
   body {
     @apply bg-background text-foreground;
-    /*
-     * A very wide, very faint radial wash from the top of the page. At 4%
-     * alpha it isn't perceivable as a gradient — it just stops the large
-     * dark areas from looking like a dead flat fill.
-     */
-    background-image: radial-gradient(
-      120rem 40rem at 50% -12rem,
-      color-mix(in oklch, var(--brand) 5%, transparent),
-      transparent 70%
-    );
-    background-repeat: no-repeat;
-    background-attachment: fixed;
   }
   html {
     @apply font-sans;
@@ -226,6 +223,20 @@
 }
 
 @layer components {
+  /*
+   * The blueprint canvas: a faint dot grid behind the maps. Fixed to the
+   * element, not the flow viewport, so it reads as paper rather than as
+   * something that pans with the graph.
+   */
+  .bp-grid {
+    background-color: var(--canvas);
+    background-image: radial-gradient(
+      color-mix(in oklch, var(--foreground) 11%, transparent) 1px,
+      transparent 1.2px
+    );
+    background-size: 16px 16px;
+  }
+
   /*
    * Scrollbars. The default light-on-dark Chrome scrollbar is a bright
    * seam down the edge of an otherwise dark app.
@@ -251,4 +262,44 @@
   *::-webkit-scrollbar-thumb:hover {
     background-color: color-mix(in oklch, var(--foreground) 26%, transparent);
   }
+}
+
+/*
+ * Map cards zoomed far out (CardFlow sets data-far and --label-scale): the
+ * description goes, the name and status words grow back to a readable
+ * on-screen size, and a long name wraps rather than being cut off. CardFlow
+ * also measures every card in this look at its largest scale
+ * (.amc-measure-far) and lays out the taller of the two heights, so the
+ * wrapped name always fits. Unlayered on purpose: it has to beat the cards'
+ * own text-size utilities.
+ */
+.cardflow[data-far] .react-flow .amc-desc,
+.cardflow[data-far] .react-flow .amc-count,
+.amc-measure-far .amc-desc,
+.amc-measure-far .amc-count {
+  display: none;
+}
+.cardflow[data-far] .react-flow .amc-name,
+.amc-measure-far .amc-name {
+  font-size: calc(13px * var(--label-scale, 1));
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+.cardflow[data-far] .react-flow .amc-status,
+.cardflow[data-far] .react-flow .amc-status *,
+.amc-measure-far .amc-status,
+.amc-measure-far .amc-status * {
+  font-size: calc(10px * var(--label-scale, 1));
+}
+/* Edge labels can't be enlarged the same way (SVG text) and are unreadable far out. */
+.cardflow[data-far] .react-flow__edge-textwrapper {
+  display: none;
+}
+/*
+ * Map edges keep their width on screen at any zoom: a fitted map is zoomed
+ * well below 1, where a 1.2px line would draw at half a pixel and the routes
+ * would fade into the grid.
+ */
+.cardflow .react-flow__edge-path {
+  vector-effect: non-scaling-stroke;
 }

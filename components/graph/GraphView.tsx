@@ -21,23 +21,28 @@
 // `inert`, so Cytoscape keeps its real size, layout and zoom while the PR
 // view is up. (Not `visibility: hidden`: React Flow sets `visibility:
 // visible` inline on its nodes, which pokes straight through it.)
-// Selection is shared: a card selects its component, and "Show in repo" /
-// "Show in PR" move between the two without losing it.
+// Selection is shared: a card selects its component. Every module link —
+// the explainer's modules and files, chat chips, a finding's component, the
+// component panel, a PR map card's button — opens that module's card on the
+// App map (`showInAppMap`).
 //
 // A third view, **App map** (DESIGN.md §6.5, `AppMapView`), is always
-// available: the whole codebase drawn like the PR map, at an architecture,
-// feature or module level of detail. It is mounted the first time it is
-// opened and stays mounted after, like the other two. Its explainer
-// (`AppMapPanel`) sits in the right column above the component panel, so a
-// module picked from it opens right underneath.
+// available and is the default with no diff selected: the whole codebase
+// drawn like the PR map, at an architecture, feature or module level of
+// detail, carrying the diff's changes and the review's verdicts on its cards.
+// It is mounted the first time it is opened and stays mounted after, like the
+// other two. Its explainer (`AppMapPanel`) sits in the right column above the
+// component panel, so a module picked from it opens right underneath; a
+// component selected anywhere else rings the cards that hold it.
 //
-// Columns, left to right, edge to edge (DESIGN.md §6.6, §6.7): diff
-// selection · the graph with the checklist (1/3) and AI review (2/3) under
-// it · the selected component's panel (when something is selected) · the
-// PR chat, flush against the right edge and sticky, sized to the viewport.
+// Columns, left to right, edge to edge (DESIGN.md §6.6, §6.7): the diff
+// (a picker, then a summary with the checklist folded into it) · the graph
+// with the AI review under it · the right column, flush against the right
+// edge and sticky: the inspector for whatever is selected on top, the chat
+// below — about the diff when one is selected, about the repo otherwise.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FlaskConical, GitBranch, GitPullRequestArrow, LayoutGrid, LoaderCircle, Network } from "lucide-react";
+import { FlaskConical, LayoutGrid, LoaderCircle } from "lucide-react";
 import { cn } from "cn";
 import { GraphCanvas, type GraphCanvasHandle } from "./GraphCanvas";
 import { FileDiffModal } from "./FileDiffModal";
@@ -57,7 +62,8 @@ import { usePrChat } from "./usePrChat";
 import { MergesControl, MergeSuggestionsPanel } from "./MergeSuggestions";
 import { DiffPanel, type DiffTargetMeta } from "./DiffPanel";
 import { ReviewPanel } from "./ReviewPanel";
-import { buildReviewMarkers } from "./review-visuals";
+import { Segmented } from "./Segmented";
+import { buildReviewMarkers, effectiveIntent, worstIntent } from "./review-visuals";
 import { SAMPLE_EDGES, SAMPLE_NODES } from "./sample-data";
 import { useLabels } from "./useLabels";
 import { useMerges } from "./useMerges";
@@ -72,6 +78,7 @@ import type {
   DiffImpactResponseDTO,
   GraphNodeDTO,
   GraphResponseDTO,
+  IntentMatch,
   ReviewTargetDTO,
 } from "./types";
 
@@ -140,7 +147,7 @@ export function GraphView({
   const merges = useMerges(repoId, graphNonce, handleLabelsCompleted);
   const [mergesOpen, setMergesOpen] = useState(false);
   const [previewIds, setPreviewIds] = useState<string[] | null>(null);
-  /** The view last chosen — remembered per browser, `pr` by default. With no diff selected, `pr` falls back to the Repo view. */
+  /** The view last chosen — remembered per browser, `pr` by default. With no diff selected, `pr` falls back to the App map. */
   const [preferredView, setPreferredViewState] = useState<GraphViewMode>("pr");
   const [appLevel, setAppLevelState] = useState<AppMapLevel>("architecture");
   useEffect(() => {
@@ -162,36 +169,31 @@ export function GraphView({
     }
   }, []);
   const canvasRef = useRef<GraphCanvasHandle>(null);
-  /** Components to pan to once the Repo view is visible again ("Show in repo"). */
-  const [pendingFocus, setPendingFocus] = useState<string[] | null>(null);
   /** The file whose diff a PR map chip opened. */
   const [openFile, setOpenFile] = useState<string | null>(null);
-  const [leftWidth, setLeftWidth] = usePanelWidth("graphreview.panel.diff", 288, 240, 560);
-  const [rightWidth, setRightWidth] = usePanelWidth("graphreview.panel.files", 320, 260, 720);
+  const [leftWidth, setLeftWidth] = usePanelWidth("graphreview.panel.diff", 236, 200, 480);
   const [chatWidth, setChatWidth] = usePanelWidth("graphreview.panel.chat", 380, 300, 720);
-  const chatRef = useRef<HTMLElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
 
-  // The chat column sticks under the app's sticky nav and fills the rest of
-  // the viewport. Before the page is scrolled it starts lower (under the
-  // repo header), so its height follows its actual top — otherwise the
-  // input would sit below the fold until the page is scrolled.
+  // On a desktop-sized window the tab exactly fills the viewport under the
+  // app's nav and the repo header, and each column scrolls on its own — the
+  // page itself never does. `--tab-h` is that height; the map takes a fixed
+  // share of it and the review scrolls in the rest (see `--map-h` below).
   useEffect(() => {
-    const el = chatRef.current;
+    const el = rootRef.current;
     if (!el) return;
     let frame = 0;
     const fit = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        const top = Math.max(el.getBoundingClientRect().top, 0);
-        el.style.setProperty("--chat-h", `${Math.max(320, window.innerHeight - top)}px`);
+        const top = el.getBoundingClientRect().top + window.scrollY;
+        el.style.setProperty("--tab-h", `${Math.max(480, window.innerHeight - top)}px`);
       });
     };
     fit();
-    window.addEventListener("scroll", fit, { passive: true });
     window.addEventListener("resize", fit);
     return () => {
       cancelAnimationFrame(frame);
-      window.removeEventListener("scroll", fit);
       window.removeEventListener("resize", fit);
     };
   }, []);
@@ -257,8 +259,10 @@ export function GraphView({
       setDiffResult(result);
       setReviewTarget(target);
       setAutoReview(meta.autoReview);
+      // Opening a PR or a comparison is about that change: show its map.
+      if (result) setPreferredView("pr");
     },
-    []
+    [setPreferredView]
   );
 
   const handleAddedComponents = useCallback((components: AddedComponentDTO[]) => {
@@ -341,7 +345,25 @@ export function GraphView({
     return { filePaths: [...diffResult.touchedFiles, ...diffResult.unmatchedFiles] };
   }, [diffResult, reviewTarget]);
   const prMap = usePrMap(repoId, prRequest, review.state);
-  const view: GraphViewMode = preferredView === "pr" && !prRequest ? "repo" : preferredView;
+  /** The diff's line totals for the summary — the PR map carries per-file +/-. */
+  const lineStats = useMemo(() => {
+    if (!prMap.map) return null;
+    let additions = 0;
+    let deletions = 0;
+    for (const node of prMap.map.nodes) {
+      for (const f of node.files) {
+        additions += f.additions;
+        deletions += f.deletions;
+      }
+    }
+    return { additions, deletions };
+  }, [prMap.map]);
+  // Sample data has no app map (nothing is analyzed), so it always shows Repo.
+  const view: GraphViewMode = usingSample
+    ? "repo"
+    : preferredView === "pr" && !prRequest
+      ? "app"
+      : preferredView;
 
   // --- App map (DESIGN.md §6.5) ---------------------------------------------
   /** Mounted (and fetching) from the first time the view is opened. */
@@ -369,12 +391,35 @@ export function GraphView({
     () => (diffResult ? new Set([...diffResult.touchedFiles, ...diffResult.unmatchedFiles]) : undefined),
     [diffResult]
   );
+  /**
+   * Where every module link goes (a module or file in the explainer, a chat
+   * chip, a finding's component, the component panel, a PR map card): the
+   * App map at module level with that module's card selected, so its
+   * explainer opens. The card, not the old component panel, is the one place
+   * a module is explained.
+   */
+  const showInAppMap = useCallback(
+    (componentId: string) => {
+      setAppLevel("modules");
+      setAppSelection({ kind: "card", id: `mod:${componentId}` });
+      setSelectedNodeId(null);
+      setPreferredView("app");
+    },
+    [setAppLevel, setPreferredView]
+  );
   const selectFileModule = useCallback(
     (path: string) => {
       const owner = appMap.map?.fileOwners[path];
-      if (owner) setSelectedNodeId(owner);
+      if (owner) showInAppMap(owner);
     },
-    [appMap.map]
+    [appMap.map, showInAppMap]
+  );
+  const selectComponentLink = useCallback(
+    (componentId: string | null) => {
+      if (componentId) showInAppMap(componentId);
+      else setSelectedNodeId(null);
+    },
+    [showInAppMap]
   );
   const showAppPanel = view === "app" && appSelection !== null && appMap.map !== null;
 
@@ -382,44 +427,27 @@ export function GraphView({
     setOpenFile(null);
   }, [prRequest]);
 
-  useEffect(() => {
-    if (view !== "repo" || !pendingFocus) return;
-    // One frame so the canvas is visible and sized before it pans.
-    const frame = requestAnimationFrame(() => {
-      canvasRef.current?.focus(pendingFocus);
-      setPendingFocus(null);
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [view, pendingFocus]);
-
   const handleSelectCards = useCallback((componentIds: string[]) => {
     setSelectedNodeId(componentIds[0] ?? null);
   }, []);
 
-  const showInRepo = useCallback(
-    (componentIds: string[]) => {
-      if (componentIds.length === 0) return;
-      setSelectedNodeId(componentIds[0]);
-      setPreferredView("repo");
-      setPendingFocus(componentIds);
-    },
-    [setPreferredView]
-  );
-
-  const selectedInPrMap = useMemo(
-    () =>
-      Boolean(
-        selectedNodeId &&
-          prMap.map?.nodes.some((n) => n.role !== "context" && n.componentIds.includes(selectedNodeId))
-      ),
-    [prMap.map, selectedNodeId]
-  );
 
   const componentNameById = useCallback(
     (id: string) => graph?.nodes.find((n) => n.id === id)?.name,
     [graph]
   );
   const chatChangedFiles = useMemo(() => changedFiles ?? new Set<string>(), [changedFiles]);
+
+  /** Worst verdict per file, for the explainer's file list. */
+  const fileMarkers = useMemo(() => {
+    const map = new Map<string, IntentMatch>();
+    for (const f of review.findings) {
+      if (!f.filePath) continue;
+      const prev = map.get(f.filePath);
+      map.set(f.filePath, prev ? worstIntent(prev, effectiveIntent(f)) : effectiveIntent(f));
+    }
+    return map;
+  }, [review.findings]);
 
   const selectedFindings = useMemo(
     () =>
@@ -429,24 +457,18 @@ export function GraphView({
     [review.findings, selectedNodeId]
   );
 
+  const hasInspector = Boolean(selectedNode || (mergesOpen && !usingSample) || showAppPanel);
+
   return (
     // `data-wide-shell` opts this tab out of the repo shell's `max-w-6xl`
     // cap — see app/repo/[repoId]/layout.tsx for the mechanism and why.
-    <div data-wide-shell className="flex flex-col lg:flex-row">
+    <div ref={rootRef} data-wide-shell className="flex flex-col lg:h-(--tab-h) lg:flex-row lg:overflow-hidden">
       <aside
-        className="relative w-full shrink-0 border-border px-4 pb-4 lg:w-(--panel-w) lg:border-r lg:pb-6"
+        className="relative w-full shrink-0 border-border lg:h-full lg:w-(--panel-w) lg:border-r"
         style={{ "--panel-w": `${leftWidth}px` } as React.CSSProperties}
       >
-        <PanelResizeHandle
-          edge="right"
-          width={leftWidth}
-          onResize={setLeftWidth}
-          label="Resize diff panel"
-        />
-        {/* Sticks alongside a tall canvas instead of scrolling away from it.
-            Diff selection comes first so it's the top of the leftmost
-            column, with the repo card below it. */}
-        <div className="space-y-3 lg:sticky lg:top-4">
+        <PanelResizeHandle edge="right" width={leftWidth} onResize={setLeftWidth} label="Resize diff panel" />
+        <div className="px-4 pb-4 lg:h-full lg:overflow-y-auto lg:pb-6">
           <DiffPanel
             repoId={repoId}
             defaultBranch={repo?.defaultBranch}
@@ -456,80 +478,54 @@ export function GraphView({
             initialHeadRef={initialHeadRef}
             onResult={handleDiffResult}
             onAddedComponents={handleAddedComponents}
-          />
-          {repo && (
-            <div className="rounded-lg bg-card px-3 py-2 ring-1 ring-border">
-              <p className="truncate text-xs font-semibold tracking-tight">
-                {repo.name}
-              </p>
-              {repo.defaultBranch && (
-                <p className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                  <GitBranch className="size-3 shrink-0" aria-hidden />
-                  <span className="truncate font-mono">{repo.defaultBranch}</span>
-                </p>
-              )}
-            </div>
-          )}
+            lineStats={lineStats}
+          >
+            {reviewTarget && <ChecklistPanel repoId={repoId} checklist={checklist} />}
+          </DiffPanel>
         </div>
       </aside>
 
-      <div className="min-w-0 flex-1 space-y-3 px-4 pb-6">
+      <div className="flex min-w-0 flex-1 flex-col gap-3 px-4 pb-4 lg:h-full lg:overflow-hidden">
         {usingSample && (
-          <div className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 text-xs text-warning">
+          <p className="flex items-start gap-2 text-xs text-warning">
             <FlaskConical className="mt-px size-3.5 shrink-0" aria-hidden />
-            <p>
-              <span className="font-medium">Showing sample data</span> — this
-              repo has no analyzed component graph yet
+            <span>
+              <span className="font-medium">Showing sample data</span> — this repo has no analyzed component graph yet
               {loadError ? ` (${loadError})` : ""}.
-            </p>
-          </div>
+            </span>
+          </p>
         )}
         {!usingSample && (
-          <div
-            className="flex w-fit items-center gap-0.5 rounded-lg bg-muted p-[3px] ring-1 ring-border/60"
-            role="group"
-            aria-label="Graph view"
-          >
-            {[
-              { value: "repo" as const, label: "Repo", icon: Network, title: "The whole component graph" },
+          <Segmented
+            label="Graph view"
+            value={view}
+            onChange={setPreferredView}
+            options={[
               {
                 value: "app" as const,
                 label: "App map",
-                icon: LayoutGrid,
                 title: "The whole app as cards — by architecture, feature or module, with explanations",
               },
-              ...(prRequest
-                ? [{ value: "pr" as const, label: "PR", icon: GitPullRequestArrow, title: "Only what this diff touches" }]
-                : []),
-            ].map((opt) => {
-              const active = view === opt.value;
-              const Icon = opt.icon;
-              return (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => setPreferredView(opt.value)}
-                  aria-pressed={active}
-                  title={opt.title}
-                  className={cn(
-                    "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                    active
-                      ? "bg-elevated text-foreground shadow-sm ring-1 ring-border/60"
-                      : "text-muted-foreground hover:text-foreground"
-                  )}
-                >
-                  <Icon className={cn("size-3.5", active ? "text-brand" : "opacity-70")} />
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
+              { value: "repo" as const, label: "Repo", title: "The whole component graph" },
+              ...(prRequest ? [{ value: "pr" as const, label: "PR", title: "Only what this diff touches" }] : []),
+            ]}
+          />
         )}
 
-        <div className="grid">
+        {/* The three views share this one fixed-height cell; each is a flex
+            column whose canvas takes whatever its own toolbar leaves. With a
+            review under it the map section gets a bit over half the tab,
+            without one everything but the view switch. */}
+        <div
+          className="grid shrink-0"
+          style={{
+            height: reviewTarget ? "calc(var(--tab-h, 100vh) * 0.58)" : "calc(var(--tab-h, 100vh) - 3.75rem)",
+          }}
+        >
         {appMounted && !usingSample && (
           <div className={viewLayerClass(view === "app")} inert={view !== "app"}>
             <AppMapView
+              className="flex h-full flex-col"
               map={appMap.map}
               loading={appMap.loading}
               error={appMap.error}
@@ -539,14 +535,15 @@ export function GraphView({
               selection={appSelection}
               onSelect={setAppSelection}
               changedFiles={changedFiles}
-              onSelectModule={setSelectedNodeId}
-              onSelectFile={selectFileModule}
+              findings={review.findings}
+              focusModuleId={selectedNodeId}
             />
           </div>
         )}
         {prRequest && (
           <div className={viewLayerClass(view === "pr")} inert={view !== "pr"}>
           <PrMapCanvas
+            className="flex h-full flex-col"
             map={prMap.map}
             loading={prMap.loading}
             error={prMap.error}
@@ -554,7 +551,7 @@ export function GraphView({
             selectedComponentId={selectedNodeId}
             onSelectComponents={handleSelectCards}
             onOpenFile={reviewTarget ? setOpenFile : undefined}
-            onShowInRepo={showInRepo}
+            onShowInRepo={(ids) => ids[0] && showInAppMap(ids[0])}
             reviewPending={review.state === "queued" || review.state === "running"}
           />
           </div>
@@ -562,6 +559,7 @@ export function GraphView({
         <div className={viewLayerClass(view === "repo")} inert={view !== "repo"}>
         {graph ? (
           <GraphCanvas
+            className="flex h-full flex-col"
             ref={canvasRef}
             nodes={canvasNodes}
             edges={graph.edges}
@@ -590,7 +588,7 @@ export function GraphView({
             }
           />
         ) : (
-          <div className="flex h-96 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border bg-canvas">
+          <div className="bp-grid flex h-96 flex-col items-center justify-center gap-3 rounded-lg border border-border">
             <LoaderCircle
               className="size-5 animate-spin text-muted-foreground"
               aria-hidden
@@ -610,151 +608,135 @@ export function GraphView({
           />
         )}
 
-        {/* Under the graph: the checklist (1/3) next to the review dock
-            (2/3) — see ReviewPanel's header for why the review lives here
-            rather than in a sidebar. Both need a reviewable target, so the
-            Paste-paths flow is untouched. */}
+        {/* Under the graph, full width: the AI review, exceptions first —
+            see ReviewPanel's header for why it lives here rather than in a
+            sidebar. The checklist sits in the diff summary on the left. */}
         {reviewTarget && (
-        <div className="grid items-start gap-3 xl:grid-cols-3">
-        <div className="min-w-0 xl:col-span-1">
-          <ChecklistPanel repoId={repoId} checklist={checklist} />
-        </div>
-        <div className="min-w-0 xl:col-span-2">
-        <ReviewPanel
-          repoId={repoId}
-          target={reviewTarget}
-          status={review.status}
-          state={review.state}
-          progress={review.progress}
-          findings={review.findings}
-          freshness={review.freshness}
-          aiConfigured={review.aiConfigured}
-          notice={review.notice}
-          noticeCode={review.noticeCode}
-          rerunning={review.rerunning}
-          canRerun={review.canRerun}
-          onRerun={review.rerun}
-          selectedComponentId={selectedNodeId}
-          onSelectComponent={handleSelectNode}
-          onSetResolved={review.setResolved}
-          effort={reviewEffort}
-          onEffortChange={setReviewEffort}
-        />
-        </div>
-        </div>
+          <ReviewPanel
+            repoId={repoId}
+            target={reviewTarget}
+            status={review.status}
+            state={review.state}
+            progress={review.progress}
+            findings={review.findings}
+            freshness={review.freshness}
+            aiConfigured={review.aiConfigured}
+            notice={review.notice}
+            noticeCode={review.noticeCode}
+            rerunning={review.rerunning}
+            canRerun={review.canRerun}
+            onRerun={review.rerun}
+            selectedComponentId={selectedNodeId}
+            onSelectComponent={selectComponentLink}
+            onSetResolved={review.setResolved}
+            effort={reviewEffort}
+            onEffortChange={setReviewEffort}
+          />
         )}
       </div>
 
-      {(selectedNode || (mergesOpen && !usingSample) || showAppPanel) && (
-        // To the right of the graph rather than the left sidebar: clicking a
-        // node shouldn't take the diff controls away, and this keeps the
-        // canvas the visual center. `key` forces a fresh fetch/state when
-        // the selection moves to another node.
+      {/* The right column, flush against the right edge, full height: the
+          inspector (whatever is selected) on top, the chat under it. It is
+          always there — with no diff selected the chat answers questions
+          about the repo itself. */}
+      {(!usingSample || hasInspector) && (
         <aside
-          className="relative w-full shrink-0 border-border px-4 pt-4 pb-6 lg:w-(--panel-w) lg:border-l lg:pt-0"
-          style={{ "--panel-w": `${rightWidth}px` } as React.CSSProperties}
-        >
-          <PanelResizeHandle
-            edge="left"
-            width={rightWidth}
-            onResize={setRightWidth}
-            label="Resize component panel"
-          />
-          <div className="space-y-3 lg:sticky lg:top-4">
-            {showAppPanel && (
-              <AppMapPanel
-                map={appMap.map!}
-                selection={appSelection!}
-                changedFiles={changedFiles}
-                onSelect={setAppSelection}
-                onSelectModule={setSelectedNodeId}
-                onSelectFile={selectFileModule}
-              />
-            )}
-            {mergesOpen && !usingSample && (
-              <MergeSuggestionsPanel
-                merges={merges}
-                onPreview={setPreviewIds}
-                onAccepted={(id) => setSelectedNodeId(id)}
-                onClose={() => {
-                  setMergesOpen(false);
-                  setPreviewIds(null);
-                }}
-              />
-            )}
-            {selectedNode && (
-            <ComponentFilesPanel
-              key={selectedNode.id}
-              repoId={repoId}
-              componentId={selectedNode.id}
-              componentName={selectedNode.name}
-              tier={selectedNode.tier}
-              fileCount={selectedNode.fileCount}
-              description={selectedNode.description}
-              sampleData={usingSample}
-              localFiles={addedFilesById.get(selectedNode.id)}
-              findings={selectedFindings}
-              headerAction={
-                view !== "repo" ? (
-                  <button
-                    type="button"
-                    onClick={() => showInRepo([selectedNode.id])}
-                    className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                    title="Show this component in the repo graph"
-                  >
-                    <Network className="size-3.5" /> Repo
-                  </button>
-                ) : selectedInPrMap ? (
-                  <button
-                    type="button"
-                    onClick={() => setPreferredView("pr")}
-                    className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                    title="Show this component in the PR map"
-                  >
-                    <GitPullRequestArrow className="size-3.5" /> PR
-                  </button>
-                ) : undefined
-              }
-              merged={
-                selectedMerged
-                  ? {
-                      pathPatterns: selectedMerged.pathPatterns,
-                      aiConfigured: merges.data?.aiConfigured ?? false,
-                      busy: mergedBusy,
-                      onRename: (name) => merges.rename(selectedMerged.id, name),
-                      onNameWithAi: () => void merges.nameWithAi(selectedMerged.id),
-                      onUnmerge: async () => {
-                        const ok = await merges.unmerge(selectedMerged.id);
-                        if (ok) setSelectedNodeId(null);
-                        return ok;
-                      },
-                    }
-                  : undefined
-              }
-              onClear={clearSelection}
-            />
-            )}
-          </div>
-        </aside>
-      )}
-
-      {/* The PR chat — the last column, flush against the right edge. */}
-      {!usingSample && (
-        <aside
-          ref={chatRef}
-          className="relative w-full shrink-0 border-t border-border bg-card lg:sticky lg:top-[57px] lg:h-(--chat-h) lg:w-(--panel-w) lg:self-start lg:border-t-0 lg:border-l"
+          className="relative flex w-full shrink-0 flex-col border-t border-border bg-card lg:h-full lg:w-(--panel-w) lg:border-t-0 lg:border-l"
           style={{ "--panel-w": `${chatWidth}px` } as React.CSSProperties}
         >
-          <PanelResizeHandle edge="left" width={chatWidth} onResize={setChatWidth} label="Resize chat" />
-          <ChatPanel
-            chat={chat}
-            targetLabel={reviewTarget ? reviewTargetLabel(reviewTarget) : null}
-            focus={selectedNode ? { id: selectedNode.id, name: selectedNode.name } : null}
-            componentName={componentNameById}
-            changedFiles={chatChangedFiles}
-            onSelectComponent={setSelectedNodeId}
-            onOpenFile={reviewTarget ? setOpenFile : undefined}
-          />
+          <PanelResizeHandle edge="left" width={chatWidth} onResize={setChatWidth} label="Resize right column" />
+          {hasInspector && (
+            // `key` on the component panel forces a fresh fetch/state when
+            // the selection moves to another node.
+            <div
+              className={cn(
+                "min-h-0 shrink-0 space-y-3 overflow-y-auto",
+                usingSample ? "flex-1" : "max-h-[58%] border-b border-border"
+              )}
+            >
+              {showAppPanel && (
+                <div className="px-3 py-3">
+                  <AppMapPanel
+                    map={appMap.map!}
+                    selection={appSelection!}
+                    changedFiles={changedFiles}
+                    fileMarkers={fileMarkers}
+                    onSelect={setAppSelection}
+                    onSelectModule={showInAppMap}
+                    onSelectFile={selectFileModule}
+                  />
+                </div>
+              )}
+              {mergesOpen && !usingSample && (
+                <MergeSuggestionsPanel
+                  merges={merges}
+                  onPreview={setPreviewIds}
+                  onAccepted={(id) => setSelectedNodeId(id)}
+                  onClose={() => {
+                    setMergesOpen(false);
+                    setPreviewIds(null);
+                  }}
+                />
+              )}
+              {selectedNode && (
+                <ComponentFilesPanel
+                  key={selectedNode.id}
+                  repoId={repoId}
+                  componentId={selectedNode.id}
+                  componentName={selectedNode.name}
+                  tier={selectedNode.tier}
+                  fileCount={selectedNode.fileCount}
+                  description={selectedNode.description}
+                  sampleData={usingSample}
+                  localFiles={addedFilesById.get(selectedNode.id)}
+                  findings={selectedFindings}
+                  headerAction={
+                    !usingSample ? (
+                      <button
+                        type="button"
+                        onClick={() => showInAppMap(selectedNode.id)}
+                        className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                        title="Show this module's card on the app map"
+                      >
+                        <LayoutGrid className="size-3.5" /> App map
+                      </button>
+                    ) : undefined
+                  }
+                  merged={
+                    selectedMerged
+                      ? {
+                          pathPatterns: selectedMerged.pathPatterns,
+                          aiConfigured: merges.data?.aiConfigured ?? false,
+                          busy: mergedBusy,
+                          onRename: (name) => merges.rename(selectedMerged.id, name),
+                          onNameWithAi: () => void merges.nameWithAi(selectedMerged.id),
+                          onUnmerge: async () => {
+                            const ok = await merges.unmerge(selectedMerged.id);
+                            if (ok) setSelectedNodeId(null);
+                            return ok;
+                          },
+                        }
+                      : undefined
+                  }
+                  onClear={clearSelection}
+                />
+              )}
+            </div>
+          )}
+          {!usingSample && (
+            <div className="min-h-0 flex-1">
+              <ChatPanel
+                chat={chat}
+                targetLabel={reviewTarget ? reviewTargetLabel(reviewTarget) : null}
+                repoName={repo?.name}
+                focus={selectedNode ? { id: selectedNode.id, name: selectedNode.name } : null}
+                componentName={componentNameById}
+                changedFiles={chatChangedFiles}
+                onSelectComponent={showInAppMap}
+                onOpenFile={reviewTarget ? setOpenFile : undefined}
+              />
+            </div>
+          )}
         </aside>
       )}
     </div>

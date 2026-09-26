@@ -5,26 +5,38 @@
 // Features (capabilities across folders) and Modules — on the shared
 // `CardFlow` canvas. The toolbar switches levels, searches cards and files,
 // and runs the on-demand AI pass that regroups and explains the current
-// level. The explainer for a selected card or connection lives in GraphView's
+// level. With a diff selected, cards show what it changed and — once the
+// review has run — the worst verdict of their findings; a component selected
+// elsewhere (chat chip, review dock, PR map) rings the cards that hold it.
+// The explainer for a selected card or connection lives in GraphView's
 // right column (`AppMapPanel`), so the canvas keeps its width.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { LoaderCircle, Search, Sparkles, TriangleAlert, X } from "lucide-react";
+import { LoaderCircle, Search, TriangleAlert, X } from "lucide-react";
 import { cn } from "cn";
 import { APP_CARD_WIDTH, AppMapCard } from "./AppMapCard";
+import { Segmented } from "./Segmented";
+import { Spark } from "./Spark";
 import { CardFlow, DEFAULT_ELK_OPTIONS, linkId, type CardFlowLink } from "./CardFlow";
+import type { PrCardMarker } from "./PrMapNode";
+import { effectiveIntent, worstIntent } from "./review-visuals";
+import type { FindingDTO, IntentMatch } from "./types";
 import type { AppMapSelection } from "./AppMapPanel";
 import type { UseAppMapJobResult } from "./useAppMap";
 import {
   APP_LAYERS,
   APP_LAYER_ORDER,
   APP_MAP_LEVELS,
+  layerTint,
   type AppMapLevel,
   type AppMapResponseDTO,
 } from "./app-map-types";
 import { formatAgo } from "./label-types";
 
-const ELK_OPTIONS = { ...DEFAULT_ELK_OPTIONS, "elk.aspectRatio": "2.2" };
+// Cards are compact now, so a squarer layout fills the canvas instead of
+// leaving a thin strip across its middle.
+const HIGHLIGHT_STORAGE_KEY = "graphreview.appmap.highlight";
+const ELK_OPTIONS = { ...DEFAULT_ELK_OPTIONS, "elk.aspectRatio": "1.5" };
 /** Connections drawn by default, per card — beyond that only the strongest show (plus the selected card's). */
 const EDGES_PER_CARD = 1.5;
 const MIN_EDGE_BUDGET = 16;
@@ -39,8 +51,10 @@ export interface AppMapViewProps {
   selection: AppMapSelection | null;
   onSelect: (selection: AppMapSelection | null) => void;
   changedFiles?: ReadonlySet<string>;
-  onSelectModule: (moduleId: string) => void;
-  onSelectFile: (path: string) => void;
+  /** The current review's findings — rolled up onto the cards holding their files. */
+  findings?: FindingDTO[];
+  /** The component selected elsewhere; the cards holding it are ringed. */
+  focusModuleId?: string | null;
   className?: string;
 }
 
@@ -54,15 +68,31 @@ export function AppMapView({
   selection,
   onSelect,
   changedFiles,
-  onSelectModule,
-  onSelectFile,
+  findings,
+  focusModuleId,
   className,
 }: AppMapViewProps) {
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [allEdges, setAllEdges] = useState(false);
-
-  useEffect(() => setExpanded(new Set()), [level]);
+  // With a diff selected, changed cards stand out and the rest fade; this
+  // turns that off to see the whole map normally. Remembered per browser.
+  const [highlight, setHighlightState] = useState(true);
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(HIGHLIGHT_STORAGE_KEY) === "off") setHighlightState(false);
+    } catch {
+      /* keep the default */
+    }
+  }, []);
+  const setHighlight = useCallback((on: boolean) => {
+    setHighlightState(on);
+    try {
+      window.localStorage.setItem(HIGHLIGHT_STORAGE_KEY, on ? "on" : "off");
+    } catch {
+      /* ignored */
+    }
+  }, []);
+  const hasDiff = Boolean(changedFiles && changedFiles.size > 0);
 
   const nodes = useMemo(() => map?.nodes ?? [], [map]);
   const cardIds = useMemo(() => nodes.map((n) => n.id), [nodes]);
@@ -87,10 +117,44 @@ export function AppMapView({
     );
   }, [nodes, query]);
 
+  // Every card holding the focused component — on the architecture level a
+  // module can straddle several layers.
+  const focused = useMemo(
+    () =>
+      new Set(focusModuleId ? nodes.filter((n) => n.modules.some((m) => m.id === focusModuleId)).map((n) => n.id) : []),
+    [nodes, focusModuleId]
+  );
+
+  // Findings: one marker per card — the PR map's rule. A finding lands on the
+  // card holding its file, else on the card holding most of its component.
+  // (Per-file verdicts are listed in the explainer, not on the card.)
+  const cardMarkers = useMemo(() => {
+    const cardMarkers = new Map<string, PrCardMarker>();
+    if (!findings || findings.length === 0) return cardMarkers;
+    const cardOfFile = new Map<string, string>();
+    for (const node of nodes) for (const file of node.files) cardOfFile.set(file, node.id);
+    const cardOfComponent = (componentId: string): string | undefined => {
+      let best: { id: string; files: number } | undefined;
+      for (const node of nodes) {
+        const files = node.modules.find((m) => m.id === componentId)?.files ?? 0;
+        if (files > 0 && (!best || files > best.files)) best = { id: node.id, files };
+      }
+      return best?.id;
+    };
+    for (const finding of findings) {
+      const intent: IntentMatch = effectiveIntent(finding);
+      const cardId = (finding.filePath && cardOfFile.get(finding.filePath)) || cardOfComponent(finding.componentId);
+      if (!cardId) continue;
+      const prev = cardMarkers.get(cardId);
+      cardMarkers.set(cardId, { worst: prev ? worstIntent(prev.worst, intent) : intent, count: (prev?.count ?? 0) + 1 });
+    }
+    return cardMarkers;
+  }, [nodes, findings]);
+
   const highlighted = useMemo(() => {
     if (selection?.kind === "card") return new Set([selection.id]);
-    return matches ?? new Set<string>();
-  }, [selection, matches]);
+    return matches ?? focused;
+  }, [selection, matches, focused]);
   const selectedLink = selection?.kind === "edge" ? linkId(selection) : null;
   const links = useMemo(() => {
     if (strongLinks.length === allLinks.length) return strongLinks;
@@ -102,15 +166,6 @@ export function AppMapView({
     return extra.length > 0 ? [...strongLinks, ...extra] : strongLinks;
   }, [strongLinks, allLinks, selection, selectedLink]);
 
-  const toggleExpand = useCallback((id: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
   const renderCard = useCallback(
     (id: string) => {
       const node = nodes.find((n) => n.id === id);
@@ -120,27 +175,27 @@ export function AppMapView({
           node={node}
           level={level}
           selected={selection?.kind === "card" && selection.id === id}
+          focused={focused.has(id)}
           dimmed={Boolean(matches) && !matches!.has(id)}
-          expanded={expanded.has(id)}
           changedFiles={changedFiles}
-          onToggleExpand={() => toggleExpand(id)}
-          onSelectModule={onSelectModule}
-          onSelectFile={onSelectFile}
+          marker={cardMarkers.get(id)}
+          highlightChanges={highlight}
         />
       );
     },
-    [nodes, level, selection, matches, expanded, changedFiles, toggleExpand, onSelectModule, onSelectFile]
+    [nodes, level, selection, focused, matches, changedFiles, cardMarkers, highlight]
   );
 
   const layoutKey = useMemo(
     () =>
       JSON.stringify([
         level,
-        nodes.map((n) => [n.id, n.name, n.description, n.files.length, n.keyFiles.length, expanded.has(n.id), Boolean(n.explanation)]),
+        nodes.map((n) => [n.id, n.name, n.description, n.files.length, n.modules.length]),
         strongLinks.map((e) => [e.source, e.target]),
-        changedFiles?.size ?? 0,
+        // The status row (changed count, verdict) adds a line to a card.
+        nodes.map((n) => Boolean(changedFiles && n.files.some((f) => changedFiles.has(f))) || cardMarkers.has(n.id)),
       ]),
-    [level, nodes, strongLinks, expanded, changedFiles]
+    [level, nodes, strongLinks, changedFiles, cardMarkers]
   );
 
   const presentLayers = useMemo(() => {
@@ -148,33 +203,27 @@ export function AppMapView({
     return APP_LAYER_ORDER.filter((l) => seen.has(l));
   }, [nodes]);
 
-  const touchedCards = changedFiles && changedFiles.size > 0 ? nodes.filter((n) => n.files.some((f) => changedFiles.has(f))).length : 0;
 
   return (
     <div className={className}>
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <div className="flex w-fit items-center gap-0.5 rounded-lg bg-muted p-[3px] ring-1 ring-border/60" role="group" aria-label="Level of detail">
-          {APP_MAP_LEVELS.map((opt) => {
-            const active = level === opt.value;
-            const generated = job.status?.generated[opt.value];
-            return (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => onLevelChange(opt.value)}
-                aria-pressed={active}
-                title={opt.title}
-                className={cn(
-                  "flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                  active ? "bg-elevated text-foreground shadow-sm ring-1 ring-border/60" : "text-muted-foreground hover:text-foreground"
-                )}
-              >
+        <Segmented
+          label="Level of detail"
+          value={level}
+          onChange={onLevelChange}
+          options={APP_MAP_LEVELS.map((opt) => ({
+            value: opt.value,
+            title: job.status?.generated[opt.value] ? `${opt.title} — described by the model` : opt.title,
+            label: job.status?.generated[opt.value] ? (
+              <>
                 {opt.label}
-                {generated && <Sparkles className="size-3 text-brand" aria-label="Explained by AI" />}
-              </button>
-            );
-          })}
-        </div>
+                <Spark />
+              </>
+            ) : (
+              opt.label
+            ),
+          }))}
+        />
 
         <label className="relative flex items-center">
           <Search className="pointer-events-none absolute left-2 size-3.5 text-muted-foreground" aria-hidden />
@@ -182,7 +231,7 @@ export function AppMapView({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Find a card or file…"
-            className="h-7 w-48 rounded-md bg-card pr-6 pl-7 text-xs ring-1 ring-border outline-none placeholder:text-muted-foreground focus:ring-brand"
+            className="h-[26px] w-48 rounded-md border border-border bg-transparent pr-6 pl-7 text-xs outline-none placeholder:text-muted-foreground focus:border-brand"
           />
           {query && (
             <button type="button" onClick={() => setQuery("")} className="absolute right-1.5 text-muted-foreground hover:text-foreground" aria-label="Clear search">
@@ -191,6 +240,24 @@ export function AppMapView({
           )}
         </label>
         {matches && <span className="text-[11px] text-muted-foreground">{matches.size} match{matches.size === 1 ? "" : "es"}</span>}
+
+        {hasDiff && (
+          <button
+            type="button"
+            onClick={() => setHighlight(!highlight)}
+            aria-pressed={highlight}
+            className={cn(
+              "flex h-[26px] items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors",
+              highlight
+                ? "border-warning/50 text-warning hover:bg-warning/10"
+                : "border-border text-muted-foreground hover:text-foreground"
+            )}
+            title={highlight ? "Show every card normally" : "Make the diff's cards stand out and fade the rest"}
+          >
+            <span className={cn("size-2 rounded-sm", highlight ? "bg-warning" : "border border-muted-foreground")} aria-hidden />
+            Highlight changes
+          </button>
+        )}
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {map && <SourceNote map={map} />}
@@ -203,7 +270,7 @@ export function AppMapView({
         <p className="mb-2 flex items-start gap-1.5 text-[11px] text-warning">
           <TriangleAlert className="mt-px size-3.5 shrink-0" aria-hidden />
           {job.notice ??
-            `${map!.newFiles} file${map!.newFiles === 1 ? " isn't" : "s aren't"} in the AI grouping (added since, or skipped by the model) — placed by the heuristic. Re-run to include ${map!.newFiles === 1 ? "it" : "them"}.`}
+            `${map!.newFiles} file${map!.newFiles === 1 ? " isn't" : "s aren't"} in the model's grouping (added since, or skipped) — placed by the heuristic. Describe again to include ${map!.newFiles === 1 ? "it" : "them"}.`}
         </p>
       )}
 
@@ -246,29 +313,29 @@ export function AppMapView({
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
         {presentLayers.map((layer) => (
           <span key={layer} className="flex items-center gap-1" title={APP_LAYERS[layer].blurb}>
-            <span className="size-2 rounded-full" style={{ backgroundColor: APP_LAYERS[layer].color }} />
+            <span className="h-2.5 w-[3px] rounded-sm" style={{ backgroundColor: layerTint(layer) }} />
             {APP_LAYERS[layer].name}
           </span>
         ))}
         {map && (
-          <span className="ml-auto">
-            {map.totalFiles} files · {map.nodes.length} cards ·{" "}
+          <span className="ml-auto font-mono">
+            {map.nodes.length} cards ·{" "}
             {strongLinks.length < allLinks.length || allEdges ? (
               <button
                 type="button"
                 onClick={() => setAllEdges((v) => !v)}
                 className="underline-offset-2 hover:text-foreground hover:underline"
-                title="Busy maps draw only their strongest connections, plus every connection of the selected card"
+                title={
+                  allEdges
+                    ? "Show only the strongest connections"
+                    : "Busy maps draw only their strongest connections, plus every connection of the selected card. Show all"
+                }
               >
-                {allEdges
-                  ? `all ${allLinks.length} connections (show strongest only)`
-                  : `${strongLinks.length} strongest of ${allLinks.length} connections (show all)`}
+                {allEdges ? `${allLinks.length} links` : `${strongLinks.length}/${allLinks.length} links`}
               </button>
             ) : (
-              `${allLinks.length} connections`
+              `${allLinks.length} links`
             )}
-            {touchedCards > 0 && <span className="text-warning"> · diff touches {touchedCards}</span>}
-            {" · "}click a card or an arrow to have it explained
           </span>
         )}
       </div>
@@ -280,19 +347,17 @@ function SourceNote({ map }: { map: AppMapResponseDTO }) {
   if (map.source === "ai") {
     return (
       <span
-        className="flex items-center gap-1 rounded-full bg-brand-muted px-2 py-0.5 text-[11px] font-medium text-brand"
-        title={map.model ? `Grouped and explained by ${map.model}` : "Grouped and explained by AI"}
+        className="flex items-center gap-1 text-[11px] text-muted-foreground"
+        title={map.model ? `Grouped and described by ${map.model}` : "Grouped and described by the model"}
       >
-        <Sparkles className="size-3" aria-hidden /> AI · {formatAgo(map.generatedAt) || "explained"}
+        <Spark /> described {formatAgo(map.generatedAt)}
       </span>
     );
   }
-  const how =
-    map.level === "architecture"
-      ? "Layers guessed from paths"
-      : map.level === "features"
-        ? "Features guessed from shared names"
-        : "Modules from the analysis";
+  // Modules are what the analysis found — nothing to say. The other two
+  // levels are guesses until the model has grouped them, which is worth saying.
+  if (map.level === "modules") return null;
+  const how = map.level === "architecture" ? "Layers guessed from paths" : "Features guessed from shared names";
   return <span className="text-[11px] text-muted-foreground">{how}</span>;
 }
 
@@ -302,7 +367,7 @@ function AiButton({ job, level }: { job: UseAppMapJobResult; level: AppMapLevel 
   if (!status.aiConfigured) {
     return (
       <a href="/settings" className="text-[11px] text-muted-foreground underline-offset-2 hover:underline">
-        Configure AI to explain this map
+        Set up a model to describe this map
       </a>
     );
   }
@@ -319,7 +384,7 @@ function AiButton({ job, level }: { job: UseAppMapJobResult; level: AppMapLevel 
     const tokens = p ? p.promptTokens + p.completionTokens : 0;
     return (
       <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
-        <LoaderCircle className="size-3.5 animate-spin text-brand" aria-hidden />
+        <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
         {status.level && status.level !== level ? `${status.level}: ` : ""}
         {phase}
         {p && p.calls > 0 && (
@@ -328,7 +393,7 @@ function AiButton({ job, level }: { job: UseAppMapJobResult; level: AppMapLevel 
             {tokens > 0 ? ` · ${tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : tokens} tokens` : ""}
           </span>
         )}
-        <button type="button" onClick={job.cancel} className="rounded px-1.5 py-0.5 ring-1 ring-border hover:bg-secondary">
+        <button type="button" onClick={job.cancel} className="rounded-sm border border-border px-1.5 py-0.5 hover:bg-secondary">
           Cancel
         </button>
       </span>
@@ -339,15 +404,15 @@ function AiButton({ job, level }: { job: UseAppMapJobResult; level: AppMapLevel 
     <button
       type="button"
       onClick={() => job.generate(level)}
-      className="flex items-center gap-1.5 rounded-md bg-brand px-2.5 py-1 text-xs font-medium text-brand-foreground shadow-sm transition-opacity hover:opacity-90"
+      className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-secondary"
       title={
         level === "modules"
-          ? "Explain every module and its connections (a few model calls per 4 modules)"
-          : `Let the model ${level === "features" ? "group the files into features" : "correct the layer of each file"} and explain every card and connection`
+          ? "Have the model describe every module and its connections (a few model calls per 4 modules)"
+          : `Have the model ${level === "features" ? "group the files into features" : "correct the layer of each file"} and describe every card and connection`
       }
     >
-      <Sparkles className="size-3.5" />
-      {generated ? "Re-explain" : "Explain with AI"}
+      <Spark className="text-[11px]" />
+      {generated ? "Describe again" : level === "features" ? "Group features" : level === "architecture" ? "Describe layers" : "Describe modules"}
     </button>
   );
 }

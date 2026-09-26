@@ -13,16 +13,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  Boxes,
   FileCode2,
   GitMerge,
   LoaderCircle,
   Pencil,
-  Sparkles,
   TriangleAlert,
   Undo2,
   X,
 } from "lucide-react";
+import { Spark } from "./Spark";
 import { formatMember } from "./MergeSuggestions";
 import {
   INTENT_VISUALS,
@@ -176,16 +175,16 @@ export function ComponentFilesPanel({
   const count = state.status === "loaded" ? files.length : fileCount;
 
   return (
-    <div className="overflow-hidden rounded-xl bg-card ring-1 ring-border">
+    <div className="border-b border-border pb-1">
       <div className="flex items-start gap-2 border-b border-border px-3 py-2.5">
-        <Boxes className="mt-0.5 size-4 shrink-0 text-brand" aria-hidden />
+
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold tracking-tight" title={componentName}>
+          <p className="truncate text-sm font-medium" title={componentName}>
             {componentName}
           </p>
           <p className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
             {tier && (
-              <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px] tracking-wide uppercase">
+              <span className="font-mono">
                 {tier}
               </span>
             )}
@@ -224,8 +223,8 @@ export function ComponentFilesPanel({
       */}
       {sortedFindings.length > 0 && (
         <div className="border-b border-border bg-background/40">
-          <p className="px-3 pt-2 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
-            AI review · {sortedFindings.length} finding
+          <p className="px-3 pt-2 text-[11px] font-medium text-muted-foreground">
+            Review · {sortedFindings.length} finding
             {sortedFindings.length === 1 ? "" : "s"}
           </p>
           <ul className="max-h-[26vh] divide-y divide-border/60 overflow-y-auto">
@@ -375,8 +374,8 @@ function MergedModuleSection({ name, actions }: { name: string; actions: MergedM
 
   return (
     <div className="border-b border-border px-3 py-2">
-      <p className="flex items-center gap-1.5 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
-        <GitMerge className="size-3 text-brand" aria-hidden />
+      <p className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+        <GitMerge className="size-3" aria-hidden />
         Merged feature · {actions.pathPatterns.length} member{actions.pathPatterns.length === 1 ? "" : "s"}
       </p>
       <ul className="mt-1 space-y-0.5">
@@ -431,14 +430,14 @@ function MergedModuleSection({ name, actions }: { name: string; actions: MergedM
               disabled={busy !== null}
               onClick={actions.onNameWithAi}
               className={button}
-              title="Ask the AI provider for a name and description (one model call)"
+              title="Have the model suggest a name and description (one model call)"
             >
               {busy === "naming" ? (
                 <LoaderCircle className="size-2.5 animate-spin" aria-hidden />
               ) : (
-                <Sparkles className="size-2.5 text-brand" aria-hidden />
+                <Spark />
               )}
-              {busy === "naming" ? "Naming…" : "Name with AI"}
+              {busy === "naming" ? "Naming…" : "Suggest a name"}
             </button>
           )}
           <button

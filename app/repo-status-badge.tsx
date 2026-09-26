@@ -107,13 +107,53 @@ export function RepoStatusBadge({
   }
 }
 
+/**
+ * The same status as plain text with a status dot — the repo detail header's
+ * quieter form of `RepoStatusBadge` (the repo list keeps the badge).
+ */
+export function RepoStatusText({
+  status,
+  lastAnalyzedSha,
+  repoId,
+}: {
+  status: RepoStatus;
+  lastAnalyzedSha?: string;
+  repoId?: string;
+}) {
+  const working = status === "analyzing" || status === "stale";
+  const [dot, text, label] =
+    status === "analyzing"
+      ? ["bg-warning animate-pulse", "text-warning", "Analyzing"]
+      : status === "stale"
+        ? ["bg-warning animate-pulse", "text-warning", "Refreshing"]
+        : status === "error"
+          ? ["bg-destructive", "text-destructive", "Analysis failed"]
+          : ["bg-success", "text-muted-foreground", "Up to date"];
+  const sha = shortSha(lastAnalyzedSha);
+  const content = (
+    <span className={`flex cursor-default items-center gap-1.5 text-xs ${text}`}>
+      <span className={`size-1.5 rounded-full ${dot}`} aria-hidden />
+      {label}
+      {status === "up_to_date" && sha ? <span className="font-mono text-[11px]">{sha}</span> : null}
+    </span>
+  );
+  if (working && repoId) {
+    return (
+      <StatusLogHover repoId={repoId} label="Analysis job log">
+        {content}
+      </StatusLogHover>
+    );
+  }
+  return content;
+}
+
 const PROVIDER_ICONS: Record<RepoProvider, LucideIcon> = {
   local: HardDrive,
   github: Github,
   gitlab: Gitlab,
 };
 
-const PROVIDER_LABELS: Record<RepoProvider, string> = {
+export const PROVIDER_NAMES: Record<RepoProvider, string> = {
   local: "Local",
   github: "GitHub",
   gitlab: "GitLab",
@@ -132,7 +172,7 @@ export function ProviderBadge({ provider }: { provider: RepoProvider }) {
       className="gap-1.5 border-border bg-secondary/60 font-medium text-muted-foreground"
     >
       <Icon aria-hidden />
-      {PROVIDER_LABELS[provider]}
+      {PROVIDER_NAMES[provider]}
     </Badge>
   );
 }

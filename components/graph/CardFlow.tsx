@@ -10,7 +10,11 @@
 //
 // Layout is two-pass. Card heights depend on their content, so every card is
 // first rendered offscreen at the fixed card width and measured, then ELK
-// places the measured boxes, then React Flow draws them there. Cards are not
+// places the measured boxes — and routes the edges between them, orthogonally,
+// each in its own lane and attached at its own point along the card's side —
+// then React Flow draws the cards there and the edges along ELK's routes
+// (`RoutedEdge`). Left to React Flow, every edge would be a bezier from the
+// single midpoint of each card's side, and a busy map turns into a knot. Cards are not
 // draggable: the layout is the point, and a dragged card would be thrown
 // away by the next refresh anyway. The caller passes `layoutKey` — anything
 // that changes a card's size or the edge set — and only a new key re-runs
@@ -18,28 +22,69 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  BaseEdge,
   Controls,
   Handle,
   MarkerType,
   Position,
   ReactFlow,
   ReactFlowProvider,
+  getSmoothStepPath,
   getViewportForBounds,
   useReactFlow,
+  useStore,
   type Edge,
+  type EdgeProps,
   type Node,
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { cn } from "cn";
+
+/** Below this zoom a card's small text is unreadable, so cards switch to their far-zoom look. */
+const FAR_ZOOM = 0.72;
+/**
+ * The largest `--label-scale` ever applied. Cards are also measured at this
+ * scale in their far-zoom look, and the layout reserves the taller of the two
+ * heights — so a zoomed-out card can wrap its name onto several lines and
+ * still never outgrow its box.
+ */
+const MAX_LABEL_SCALE = 2.1;
+
+/**
+ * Publishes the zoom to the canvas element for the cards' far-zoom CSS
+ * (`.cardflow[data-far] .amc-*` in app/globals.css): `data-far` when zoomed
+ * out past `FAR_ZOOM`, and `--label-scale` — how much to enlarge a label so
+ * it lands at about its normal on-screen size (capped, so long names still
+ * fit a card).
+ */
+function ZoomPublisher({ target }: { target: React.RefObject<HTMLDivElement | null> }) {
+  const zoom = useStore((state) => state.transform[2]);
+  useEffect(() => {
+    const el = target.current;
+    if (!el) return;
+    const far = zoom < FAR_ZOOM;
+    el.toggleAttribute("data-far", far);
+    el.style.setProperty("--label-scale", String(Math.min(MAX_LABEL_SCALE, 0.9 / zoom)));
+  }, [zoom, target]);
+  return null;
+}
 
 // Concrete colours rather than CSS variables: React Flow writes the arrow
 // marker colour into SVG attributes, where `var(...)` doesn't resolve. Both
 // read on the light and the dark canvas.
-const EDGE_COLOR = "#8a93a6";
+const EDGE_COLOR = "#5d6474";
 const EDGE_ACTIVE_COLOR = "#6d72f0";
 const MIN_ZOOM = 0.1;
 
-type ElkApi = { layout: (graph: unknown) => Promise<{ children?: Array<{ id: string; x?: number; y?: number }> }> };
+type Point = { x: number; y: number };
+type ElkSection = { startPoint: Point; endPoint: Point; bendPoints?: Point[] };
+type ElkApi = {
+  layout: (graph: unknown) => Promise<{
+    children?: Array<{ id: string; x?: number; y?: number }>;
+    edges?: Array<{ id: string; sections?: ElkSection[] }>;
+  }>;
+};
 let elkPromise: Promise<ElkApi> | null = null;
 /** elkjs is ~1.5 MB — loaded on first layout, not with the Graph tab. */
 function getElk(): Promise<ElkApi> {
@@ -61,6 +106,14 @@ export const DEFAULT_ELK_OPTIONS: Record<string, string> = {
   "elk.spacing.componentComponent": "56",
   "elk.aspectRatio": "1.8",
   "elk.padding": "[top=24,left=24,bottom=24,right=24]",
+  // Edges are routed by ELK too (see RoutedEdge): right angles, one lane per
+  // edge between layers, kept clear of the cards.
+  "elk.edgeRouting": "ORTHOGONAL",
+  "elk.spacing.edgeEdge": "12",
+  "elk.spacing.edgeNode": "24",
+  "elk.layered.spacing.edgeEdgeBetweenLayers": "12",
+  "elk.layered.spacing.edgeNodeBetweenLayers": "24",
+  "elk.layered.unnecessaryBendpoints": "false",
 };
 
 export interface CardFlowLink {
@@ -90,6 +143,91 @@ function CardNode({ data }: NodeProps<Node<CardData>>) {
 }
 
 const NODE_TYPES = { card: CardNode };
+
+/** An orthogonal polyline with its corners rounded (radius shrinks on short legs). */
+function roundedPath(points: Point[], radius = 10): string {
+  if (points.length < 2) return "";
+  let d = `M ${points[0].x},${points[0].y}`;
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = points[i - 1];
+    const cur = points[i];
+    const next = points[i + 1];
+    const d1 = Math.hypot(cur.x - prev.x, cur.y - prev.y);
+    const d2 = Math.hypot(next.x - cur.x, next.y - cur.y);
+    const r = Math.min(radius, d1 / 2, d2 / 2);
+    if (r < 0.5) {
+      d += ` L ${cur.x},${cur.y}`;
+      continue;
+    }
+    const before = { x: cur.x - ((cur.x - prev.x) / d1) * r, y: cur.y - ((cur.y - prev.y) / d1) * r };
+    const after = { x: cur.x + ((next.x - cur.x) / d2) * r, y: cur.y + ((next.y - cur.y) / d2) * r };
+    d += ` L ${before.x},${before.y} Q ${cur.x},${cur.y} ${after.x},${after.y}`;
+  }
+  const last = points[points.length - 1];
+  return `${d} L ${last.x},${last.y}`;
+}
+
+/** Where a route's label goes: the middle of its longest leg. */
+function labelPoint(points: Point[]): Point {
+  let best = { x: points[0].x, y: points[0].y };
+  let length = -1;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const l = Math.hypot(b.x - a.x, b.y - a.y);
+    if (l > length) {
+      length = l;
+      best = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    }
+  }
+  return best;
+}
+
+type RoutedEdgeData = { points?: Point[] };
+
+/**
+ * Draws an edge along the route ELK computed for it. An edge ELK didn't lay
+ * out (a weak connection added when its card is selected) falls back to a
+ * smooth-step path between the card sides — the same right-angled language.
+ */
+function RoutedEdge(props: EdgeProps<Edge<RoutedEdgeData>>) {
+  const { data, markerEnd, style, label, labelStyle, labelBgStyle, labelBgPadding, labelBgBorderRadius, interactionWidth } = props;
+  let path: string;
+  let labelX: number;
+  let labelY: number;
+  if (data?.points && data.points.length >= 2) {
+    path = roundedPath(data.points);
+    ({ x: labelX, y: labelY } = labelPoint(data.points));
+  } else {
+    [path, labelX, labelY] = getSmoothStepPath({
+      sourceX: props.sourceX,
+      sourceY: props.sourceY,
+      sourcePosition: props.sourcePosition,
+      targetX: props.targetX,
+      targetY: props.targetY,
+      targetPosition: props.targetPosition,
+      borderRadius: 10,
+    });
+  }
+  return (
+    <BaseEdge
+      path={path}
+      markerEnd={markerEnd}
+      style={style}
+      label={label}
+      labelX={labelX}
+      labelY={labelY}
+      labelStyle={labelStyle}
+      labelShowBg
+      labelBgStyle={labelBgStyle}
+      labelBgPadding={labelBgPadding}
+      labelBgBorderRadius={labelBgBorderRadius}
+      interactionWidth={interactionWidth}
+    />
+  );
+}
+
+const EDGE_TYPES = { routed: RoutedEdge };
 
 export interface CardFlowProps {
   cardIds: string[];
@@ -141,7 +279,10 @@ function CardFlowInner({
   const { setViewport } = useReactFlow();
   const paneRef = useRef<HTMLDivElement | null>(null);
   const measureRefs = useRef(new Map<string, HTMLDivElement>());
+  const measureFarRefs = useRef(new Map<string, HTMLDivElement>());
   const [positions, setPositions] = useState<Map<string, { x: number; y: number; width: number; height: number }> | null>(null);
+  /** ELK's route per link (`linkId`) for the links that were part of the last layout. */
+  const [routes, setRoutes] = useState<Map<string, Point[]>>(new Map());
   const layoutRun = useRef(0);
 
   useLayoutEffect(() => {
@@ -153,8 +294,11 @@ function CardFlowInner({
     const children = cardIds.map((id) => ({
       id,
       width: cardWidth,
-      height: Math.ceil(measureRefs.current.get(id)?.offsetHeight ?? 120),
+      height: Math.ceil(
+        Math.max(measureRefs.current.get(id)?.offsetHeight ?? 120, measureFarRefs.current.get(id)?.offsetHeight ?? 0)
+      ),
     }));
+    const laidOut = links.map(linkId);
     const graph = {
       id: "root",
       layoutOptions: elkOptions,
@@ -166,6 +310,14 @@ function CardFlowInner({
       .then((result) => {
         if (run !== layoutRun.current) return;
         const size = new Map(children.map((c) => [c.id, c]));
+        const nextRoutes = new Map<string, Point[]>();
+        for (const edge of result.edges ?? []) {
+          const section = edge.sections?.[0];
+          const index = Number(edge.id.slice(1));
+          if (!section || !Number.isInteger(index) || !laidOut[index]) continue;
+          nextRoutes.set(laidOut[index], [section.startPoint, ...(section.bendPoints ?? []), section.endPoint]);
+        }
+        setRoutes(nextRoutes);
         setPositions(
           new Map(
             (result.children ?? []).map((c) => [
@@ -178,6 +330,7 @@ function CardFlowInner({
       .catch((err: unknown) => {
         console.error("Card map layout failed:", err);
         if (run !== layoutRun.current) return;
+        setRoutes(new Map());
         // A plain column is still readable.
         let y = 0;
         setPositions(
@@ -255,7 +408,7 @@ function CardFlowInner({
     [positions, cardIds, renderCard]
   );
 
-  const edges = useMemo<Edge[]>(
+  const edges = useMemo<Edge<RoutedEdgeData>[]>(
     () =>
       links.map((link) => {
         const id = linkId(link);
@@ -265,6 +418,10 @@ function CardFlowInner({
         const labelled = active || links.length <= alwaysLabelEdges;
         return {
           id,
+          type: "routed",
+          data: { points: routes.get(id) },
+          // Lit edges draw over the rest where lanes cross.
+          zIndex: active ? 1 : 0,
           source: link.source,
           target: link.target,
           label: labelled ? (link.weight > 1 ? `${link.label} ×${link.weight}` : link.label) : undefined,
@@ -283,10 +440,10 @@ function CardFlowInner({
           labelStyle: { fill: "var(--muted-foreground)", fontSize: 11, opacity: dimmed ? 0.4 : 1 },
           labelBgStyle: { fill: "var(--canvas)" },
           labelBgPadding: [5, 2] as [number, number],
-          labelBgBorderRadius: 4,
+          labelBgBorderRadius: 2,
         };
       }),
-    [links, highlighted, selectedLink, alwaysLabelEdges, onLinkClick]
+    [links, routes, highlighted, selectedLink, alwaysLabelEdges, onLinkClick]
   );
 
   const linkById = useMemo(() => new Map(links.map((l) => [linkId(l), l])), [links]);
@@ -294,7 +451,7 @@ function CardFlowInner({
   return (
     <div
       ref={paneRef}
-      className={className ?? "relative h-[min(68vh,680px)] min-h-[440px] overflow-hidden rounded-xl bg-canvas ring-1 ring-border"}
+      className={cn("cardflow", className ?? "bp-grid relative min-h-[220px] flex-1 overflow-hidden rounded-lg border border-border")}
       style={
         {
           // The un-suffixed names: React Flow re-declares the `-default`
@@ -313,6 +470,7 @@ function CardFlowInner({
         nodes={nodes}
         edges={edges}
         nodeTypes={NODE_TYPES}
+        edgeTypes={EDGE_TYPES}
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable={false}
@@ -331,9 +489,11 @@ function CardFlowInner({
         onPaneClick={onPaneClick}
       >
         <Controls showInteractive={false} position="bottom-right" />
+        <ZoomPublisher target={paneRef} />
       </ReactFlow>
 
-      {/* Offscreen measuring pass — same card, same width, never seen. */}
+      {/* Offscreen measuring pass — same card, same width, never seen: once
+          as drawn close up, once in the far-zoom look at its largest scale. */}
       <div aria-hidden inert className="pointer-events-none invisible absolute top-0 left-[-10000px]">
         {cardIds.map((id) => (
           <div
@@ -341,6 +501,24 @@ function CardFlowInner({
             ref={(el) => {
               if (el) measureRefs.current.set(id, el);
               else measureRefs.current.delete(id);
+            }}
+          >
+            {renderCard(id)}
+          </div>
+        ))}
+      </div>
+      <div
+        aria-hidden
+        inert
+        className="amc-measure-far pointer-events-none invisible absolute top-0 left-[-20000px]"
+        style={{ "--label-scale": MAX_LABEL_SCALE } as React.CSSProperties}
+      >
+        {cardIds.map((id) => (
+          <div
+            key={id}
+            ref={(el) => {
+              if (el) measureFarRefs.current.set(id, el);
+              else measureFarRefs.current.delete(id);
             }}
           >
             {renderCard(id)}

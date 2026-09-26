@@ -46,7 +46,7 @@ import type { AddressInfo } from "node:net";
 import { DESCRIBE_TASK_MARKER, DOMAIN_TASK_MARKER } from "./label";
 import { MERGE_NAME_TASK_MARKER } from "./merge-name";
 import { CHECKLIST_TASK_MARKER } from "./checklist";
-import { PR_CHAT_TASK_MARKER } from "./pr-chat";
+import { PR_CHAT_TASK_MARKER, REPO_CHAT_SCOPE_MARKER } from "./pr-chat";
 import { PR_MAP_TASK_MARKER } from "./pr-map";
 import { APP_EXPLAIN_TASK_MARKER, APP_FEATURES_TASK_MARKER, APP_LAYERS_TASK_MARKER } from "./app-map";
 
@@ -214,7 +214,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
                     : prompt.includes(CHECKLIST_TASK_MARKER)
                       ? checklistContent(userText)
                       : prompt.includes(PR_CHAT_TASK_MARKER)
-                        ? prChatContent(userText)
+                        ? prompt.includes(REPO_CHAT_SCOPE_MARKER)
+                          ? repoChatContent(userText)
+                          : prChatContent(userText)
                         : cannedContent(userText);
 
     const promptTokens = Math.ceil(prompt.length / 4);
@@ -555,6 +557,18 @@ function prChatContent(userText: string): { content: string; note: string } {
   const answer = `${MOCK_DESCRIPTION_PREFIX}I looked at the changed files; the first one is \`${firstFile}\`.`;
   const content = ["```json", JSON.stringify({ answer }), "```"].join("\n");
   return { content, note: "pr-chat answer" };
+}
+
+/** Repo-wide chat. First turn: list the components. After the result: answer, naming the first one. */
+function repoChatContent(userText: string): { content: string; note: string } {
+  if (!userText.includes("Result of list_components")) {
+    const content = ["```json", JSON.stringify({ tool: "list_components", args: {} }), "```"].join("\n");
+    return { content, note: "repo-chat tool" };
+  }
+  const first = /Result of list_components:\n```\n- ([^\n(]+)/.exec(userText)?.[1]?.trim() ?? "(none)";
+  const answer = `${MOCK_DESCRIPTION_PREFIX}I looked at the components; the first one is ${first}.`;
+  const content = ["```json", JSON.stringify({ answer }), "```"].join("\n");
+  return { content, note: "repo-chat answer" };
 }
 
 /** Echoes the proposed feature name back, with a recognisable mock description. */

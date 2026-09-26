@@ -1,12 +1,19 @@
 "use client";
 
-// The PR chat column (DESIGN.md §6.7), all the way to the right of the
-// Graph tab. Ties the conversation to the graph both ways:
+// The chat (DESIGN.md §6.7), at the bottom of the Graph tab's right column.
+// With a PR or ref comparison selected it is about that change; with none it
+// is about the repo itself — how it's put together, where something lives.
+// Ties the conversation to the graph both ways:
 //
 // - the component selected in the graph is sent along as the question's
 //   focus (a dismissable chip above the input);
 // - every component an answer's lookups touched becomes a chip that selects
 //   it in the graph, and file paths in an answer open that file's diff.
+//
+// It reads as a Q&A log, not a chatbot: each question is a bold line, the
+// answer plain prose under it (bold in an answer is dropped — models love
+// bold lead-ins), file paths are underlined links, and what the answer
+// looked at goes on one quiet mono line.
 //
 // Answers are rendered from a small Markdown subset (paragraphs, lists,
 // headings, code blocks, inline code, bold) — enough for review answers,
@@ -18,8 +25,6 @@ import {
   ChevronRight,
   CircleStop,
   LoaderCircle,
-  MessageSquare,
-  Search,
   SendHorizontal,
   Trash2,
   TriangleAlert,
@@ -35,10 +40,17 @@ const SUGGESTIONS = [
   "Is the most serious review finding right?",
 ];
 
+const REPO_SUGGESTIONS = [
+  "How is this app put together, in a few sentences?",
+  "Where would I start to change how reviews are run?",
+  "Which parts are most tangled up with each other?",
+];
+
 export interface ChatPanelProps {
   chat: UsePrChatResult;
-  /** `null` when nothing reviewable is selected (no PR / refs). */
+  /** `null` when nothing reviewable is selected (no PR / refs) — the chat is then about the repo. */
   targetLabel: string | null;
+  repoName?: string;
   focus: { id: string; name: string } | null;
   componentName: (id: string) => string | undefined;
   changedFiles: ReadonlySet<string>;
@@ -49,6 +61,7 @@ export interface ChatPanelProps {
 export function ChatPanel({
   chat,
   targetLabel,
+  repoName,
   focus,
   componentName,
   changedFiles,
@@ -83,16 +96,16 @@ export function ChatPanel({
   };
 
   const inlineRenderer = (text: string) => renderInline(text, changedFiles, onOpenFile);
+  const aboutRepo = targetLabel === null;
 
   return (
-    <div className="flex h-full min-h-[28rem] flex-col">
-      <header className="flex items-center gap-2 border-b border-border px-3 py-2.5">
-        <MessageSquare className="size-4 shrink-0 text-brand" aria-hidden />
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold tracking-tight">Ask about this change</p>
-          <p className="truncate text-[11px] text-muted-foreground">{targetLabel ?? "No PR selected"}</p>
-        </div>
-        {targetLabel && chat.messages.length > 0 && (
+    <div className="flex h-full min-h-64 flex-col">
+      <header className="flex items-baseline gap-2 border-b border-border px-3 py-2">
+        <p className="min-w-0 flex-1 truncate text-sm font-medium">
+          {aboutRepo ? `Ask about ${repoName ?? "this repo"}` : "Ask about this change"}
+        </p>
+        <p className="shrink-0 truncate font-mono text-[11px] text-muted-foreground">{targetLabel ?? "whole repo"}</p>
+        {chat.messages.length > 0 && (
           <button
             type="button"
             onClick={() => {
@@ -116,20 +129,18 @@ export function ChatPanel({
         )}
       </header>
 
-      <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3">
-        {!targetLabel ? (
-          <p className="text-xs text-muted-foreground">
-            Pick a pull request or compare two refs in the left column, then ask anything about the change — what it
-            does, what it could break, whether a finding holds up.
-          </p>
-        ) : chat.loading ? (
+      <div
+        ref={scrollRef}
+        className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3 [&>*:first-child]:border-t-0 [&>*:first-child]:pt-0"
+      >
+        {chat.loading ? (
           <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <LoaderCircle className="size-3.5 animate-spin" /> Loading the conversation…
           </p>
         ) : (
           <>
             {!chat.aiConfigured && (
-              <p className="flex items-start gap-1.5 rounded-lg bg-warning/10 px-2.5 py-2 text-[11px] text-warning">
+              <p className="flex items-start gap-1.5 text-[11px] text-warning">
                 <TriangleAlert className="mt-px size-3 shrink-0" />
                 <span>
                   The chat needs an AI provider —{" "}
@@ -143,19 +154,31 @@ export function ChatPanel({
             {chat.messages.length === 0 && !busy && chat.aiConfigured && (
               <div className="space-y-1.5">
                 <p className="text-[11px] text-muted-foreground">
-                  The assistant can read the diff, files at the PR&apos;s head, the component graph and the review&apos;s
-                  findings before it answers. Try:
+                  {aboutRepo ? (
+                    <>
+                      No diff selected, so this is about the repo: the assistant can read its files, search the code and
+                      look up the component graph before it answers. Pick a PR on the left to ask about a change. Try:
+                    </>
+                  ) : (
+                    <>
+                      The assistant can read the diff, files at the PR&apos;s head, the component graph and the
+                      review&apos;s findings before it answers. Try:
+                    </>
+                  )}
                 </p>
-                {SUGGESTIONS.map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => submit(s)}
-                    className="block w-full rounded-lg border border-border px-2.5 py-1.5 text-left text-xs text-foreground/90 hover:bg-secondary"
-                  >
-                    {s}
-                  </button>
-                ))}
+                <ul className="divide-y divide-border/70 border-y border-border/70">
+                  {(aboutRepo ? REPO_SUGGESTIONS : SUGGESTIONS).map((s) => (
+                    <li key={s}>
+                      <button
+                        type="button"
+                        onClick={() => submit(s)}
+                        className="block w-full px-1 py-1.5 text-left text-xs text-foreground/90 hover:bg-secondary"
+                      >
+                        {s}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
             {chat.messages.map((message, index) => {
@@ -186,92 +209,91 @@ export function ChatPanel({
                 )}
                 <Steps steps={chat.pending.steps} open />
                 <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                  <LoaderCircle className="size-3 animate-spin text-brand" />
+                  <LoaderCircle className="size-3 animate-spin" />
                   {chat.pending.steps.length === 0 ? "Thinking…" : "Looking things up…"}
                 </p>
               </div>
             )}
             {chat.error && (
-              <p className="rounded-lg bg-destructive/10 px-2.5 py-2 text-[11px] text-destructive">{chat.error}</p>
+              <p className="text-[11px] text-destructive">{chat.error}</p>
             )}
           </>
         )}
       </div>
 
-      {targetLabel && (
-        <form
-          className="border-t border-border px-3 py-2.5"
-          onSubmit={(e) => {
-            e.preventDefault();
-            submit(draft);
-          }}
-        >
-          {focus && useFocus && (
-            <p className="mb-1.5 flex items-center gap-1">
-              <span className="inline-flex max-w-full items-center gap-1 rounded-full bg-brand/10 px-2 py-0.5 text-[10px] text-foreground">
-                <span className="text-muted-foreground">About</span>
-                <span className="truncate font-medium">{focus.name}</span>
-                <button
-                  type="button"
-                  onClick={() => setUseFocus(false)}
-                  className="rounded-full text-muted-foreground hover:text-foreground"
-                  aria-label="Don't send the selected component"
-                >
-                  <X className="size-2.5" />
-                </button>
-              </span>
-            </p>
-          )}
-          <div className="flex items-end gap-1.5">
-            <textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  submit(draft);
-                }
-              }}
-              rows={2}
-              disabled={!chat.aiConfigured}
-              placeholder={chat.aiConfigured ? "Ask about this change…  (Enter to send)" : "Set up an AI provider first"}
-              className="min-h-9 flex-1 resize-none rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs outline-none focus:ring-1 focus:ring-brand disabled:opacity-60"
-              aria-label="Question"
-            />
-            {busy ? (
+      <form
+        className="border-t border-border px-3 py-2.5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit(draft);
+        }}
+      >
+        {focus && useFocus && (
+          <p className="mb-1.5 flex items-center gap-1">
+            <span className="inline-flex max-w-full items-center gap-1 rounded-sm border border-border px-1.5 py-0.5 text-[11px] text-foreground">
+              <span className="text-muted-foreground">About</span>
+              <span className="truncate font-medium">{focus.name}</span>
               <button
                 type="button"
-                onClick={chat.stop}
-                className="rounded-lg border border-border p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"
-                title="Stop"
-                aria-label="Stop"
+                onClick={() => setUseFocus(false)}
+                className="rounded-full text-muted-foreground hover:text-foreground"
+                aria-label="Don't send the selected component"
               >
-                <CircleStop className="size-4" />
+                <X className="size-2.5" />
               </button>
-            ) : (
-              <button
-                type="submit"
-                disabled={!draft.trim() || !chat.aiConfigured}
-                className="rounded-lg bg-brand p-2 text-white disabled:opacity-40"
-                title="Send"
-                aria-label="Send"
-              >
-                <SendHorizontal className="size-4" />
-              </button>
-            )}
-          </div>
-        </form>
-      )}
+            </span>
+          </p>
+        )}
+        <div className="flex items-end gap-1.5">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                submit(draft);
+              }
+            }}
+            rows={2}
+            disabled={!chat.aiConfigured}
+            placeholder={
+              chat.aiConfigured
+                ? `${aboutRepo ? "Ask about the repo" : "Ask about this change"}…  (Enter to send)`
+                : "Set up an AI provider first"
+            }
+            className="min-h-9 flex-1 resize-none rounded-md border border-border bg-background px-2.5 py-1.5 text-xs outline-none focus:border-brand disabled:opacity-60"
+            aria-label="Question"
+          />
+          {busy ? (
+            <button
+              type="button"
+              onClick={chat.stop}
+              className="rounded-md border border-border p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"
+              title="Stop"
+              aria-label="Stop"
+            >
+              <CircleStop className="size-4" />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={!draft.trim() || !chat.aiConfigured}
+              className="rounded-md bg-primary p-2 text-primary-foreground disabled:opacity-30"
+              title="Send"
+              aria-label="Send"
+            >
+              <SendHorizontal className="size-4" />
+            </button>
+          )}
+        </div>
+      </form>
+
     </div>
   );
 }
 
 function UserBubble({ text }: { text: string }) {
-  return (
-    <div className="flex justify-end">
-      <p className="max-w-[90%] rounded-2xl rounded-br-sm bg-brand/15 px-3 py-1.5 text-xs whitespace-pre-wrap">{text}</p>
-    </div>
-  );
+  return <p className="border-t border-border/70 pt-3 text-[13px] leading-snug font-medium whitespace-pre-wrap">{text}</p>;
 }
 
 function Steps({ steps, open: initiallyOpen = false }: { steps: ChatStepDTO[]; open?: boolean }) {
@@ -281,8 +303,7 @@ function Steps({ steps, open: initiallyOpen = false }: { steps: ChatStepDTO[]; o
     <div className="text-[11px] text-muted-foreground">
       <button type="button" onClick={() => setOpen((v) => !v)} className="flex items-center gap-1 hover:text-foreground">
         {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
-        <Search className="size-3" />
-        {steps.length} lookup{steps.length === 1 ? "" : "s"}
+        looked at {steps.length} thing{steps.length === 1 ? "" : "s"}
       </button>
       {open && (
         <ul className="mt-1 ml-4 space-y-0.5 border-l border-border pl-2">
@@ -310,29 +331,33 @@ function Message({
 }) {
   if (message.role === "user") return <UserBubble text={message.content} />;
   if (message.error) {
-    return <p className="rounded-lg bg-destructive/10 px-2.5 py-2 text-[11px] text-destructive">{message.content}</p>;
+    return <p className="text-[11px] text-destructive">{message.content}</p>;
   }
   const chips = message.componentIds
     .map((id) => ({ id, name: componentName(id) }))
     .filter((c): c is { id: string; name: string } => Boolean(c.name));
   return (
     <div className="space-y-1.5">
-      <Steps steps={message.steps} />
-      <div className="space-y-1.5 text-xs leading-relaxed">{renderMarkdown(message.content, inline)}</div>
-      {chips.length > 0 && (
-        <p className="flex flex-wrap gap-1">
-          {chips.slice(0, 8).map((chip) => (
-            <button
-              key={chip.id}
-              type="button"
-              onClick={() => onSelectComponent(chip.id)}
-              className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground hover:border-brand/50 hover:text-foreground"
-              title="Select in the graph"
-            >
-              {chip.name}
-            </button>
-          ))}
-        </p>
+      <div className="space-y-1.5 text-xs leading-relaxed text-foreground/90">{renderMarkdown(message.content, inline)}</div>
+      {(message.steps.length > 0 || chips.length > 0) && (
+        <div className="text-[11px] text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+            <Steps steps={message.steps} />
+            {chips.slice(0, 8).map((chip, i) => (
+              <span key={chip.id} className="flex items-center gap-1.5">
+                {(i > 0 || message.steps.length > 0) && <span aria-hidden>·</span>}
+                <button
+                  type="button"
+                  onClick={() => onSelectComponent(chip.id)}
+                  className="underline-offset-2 hover:text-foreground hover:underline"
+                  title="Select in the graph"
+                >
+                  {chip.name}
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -363,19 +388,20 @@ function renderInline(text: string, changedFiles: ReadonlySet<string>, onOpenFil
             key={key++}
             type="button"
             onClick={() => onOpenFile!(file)}
-            className="rounded bg-brand/10 px-1 font-mono text-[11px] text-brand hover:underline"
+            className="font-mono text-[11px] text-foreground underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-foreground"
             title="Open this file's diff"
           >
             {match[1]}
           </button>
         ) : (
-          <code key={key++} className="rounded bg-secondary px-1 font-mono text-[11px]">
+          <code key={key++} className="font-mono text-[11px] text-foreground">
             {match[1]}
           </code>
         )
       );
     } else {
-      parts.push(<strong key={key++}>{match[2]}</strong>);
+      // Bold is dropped on purpose: answers read as prose, not slide bullets.
+      parts.push(<span key={key++}>{match[2]}</span>);
     }
     last = match.index! + match[0].length;
   }
@@ -396,7 +422,7 @@ function renderMarkdown(source: string, inline: (text: string) => ReactNode): Re
       while (i < lines.length && !lines[i].trim().startsWith("```")) code.push(lines[i++]);
       i++;
       out.push(
-        <pre key={key++} className="overflow-x-auto rounded-lg bg-background px-2.5 py-2 font-mono text-[11px] ring-1 ring-border">
+        <pre key={key++} className="overflow-x-auto rounded-md border border-border bg-background px-2.5 py-2 font-mono text-[11px]">
           {code.join("\n")}
         </pre>
       );
@@ -422,7 +448,7 @@ function renderMarkdown(source: string, inline: (text: string) => ReactNode): Re
     const heading = /^#{1,4}\s+(.*)$/.exec(line);
     if (heading) {
       out.push(
-        <p key={key++} className="font-semibold">
+        <p key={key++} className="font-medium">
           {inline(heading[1])}
         </p>
       );

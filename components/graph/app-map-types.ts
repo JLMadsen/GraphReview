@@ -47,7 +47,16 @@ export const APP_LAYERS: Record<AppLayerId, AppLayerInfo> = {
   tests: { name: "Tests & tooling", blurb: "Tests, fixtures and smoke scripts", color: "#8b5cf6" },
 };
 
-export const APP_LAYER_ORDER: AppLayerId[] = ["ui", "server", "logic", "data", "integrations", "infrastructure", "tests"];
+/**
+ * A layer's colour as the UI draws it: pulled most of the way toward the
+ * canvas, so layers stay tellable apart while diff and verdict colours —
+ * drawn at full strength — always win the contrast.
+ */
+export function layerTint(layer: AppLayerId): string {
+  return `color-mix(in oklab, ${APP_LAYERS[layer].color} 52%, #262a33)`;
+}
+
+export const APP_LAYER_ORDER: AppLayerId[] =["ui", "server", "logic", "data", "integrations", "infrastructure", "tests"];
 
 export function isAppLayerId(value: unknown): value is AppLayerId {
   return typeof value === "string" && value in APP_LAYERS;

@@ -13,6 +13,11 @@
 // Nothing here writes to the repo, runs code, or reaches outside the repo's
 // own host (GitHub/GitLab/local checkout).
 //
+// With no target, the same turn runs the repo-wide chat (the Graph tab with
+// no diff selected): one thread per repo, a repo summary instead of a change
+// summary, files read at the analyzed commit, and only the tools that don't
+// need a diff — plus `list_components`.
+//
 // Kept out of lib/jobs' barrel: it pulls in lib/ai.
 
 import { runPrChat, type PrChatStep, type PrChatTool, type PrChatToolOutput } from "@/lib/ai";
@@ -30,6 +35,9 @@ import { loadAiConfigOrNull } from "./merge-naming";
 import { loadPrContext, readFileAtCommit, searchCode } from "./pr-context";
 import type { ResolvedTarget } from "./review";
 import { reviewTargetKey, type ReviewTarget } from "./review-queue";
+
+/** The thread key of the repo-wide chat — review target keys are `pr:…` / `refs:…`, so it can't collide. */
+export const REPO_CHAT_THREAD_KEY = "repo";
 
 /** How many earlier messages go back to the model as history. */
 const HISTORY_MESSAGES = 12;
@@ -62,9 +70,29 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
   },
 ];
 
+const REPO_TOOL_NAMES = new Set(["read_file", "search_code", "get_component"]);
+
+export const REPO_CHAT_TOOLS: PrChatTool[] = [
+  {
+    name: "list_components",
+    args: "{}",
+    description: "every module of the repo graph with its file count and one-line description",
+  },
+  ...PR_CHAT_TOOLS.filter((t) => REPO_TOOL_NAMES.has(t.name)).map((t) =>
+    t.name === "read_file"
+      ? {
+          ...t,
+          args: '{"path":"<file>","start":1,"end":200}',
+          description: `a file's lines at the analyzed commit; up to ${READ_FILE_MAX_LINES} lines per call`,
+        }
+      : t
+  ),
+];
+
 interface ToolContext {
   repo: RepoRecord;
-  ctx: ResolvedTarget;
+  /** The change being discussed — `null` in the repo-wide chat. */
+  ctx: ResolvedTarget | null;
   components: ComponentRecord[];
   ownerByFile: Map<string, string>;
   findings: FindingWithComponent[];
@@ -113,24 +141,51 @@ function findComponent(tc: ToolContext, query: string): ComponentRecord | undefi
   );
 }
 
+/** What the repo-wide chat says to a tool that needs a diff. */
+const NO_CHANGE: PrChatToolOutput = {
+  text: "No change is selected — this conversation is about the repo as a whole. Use read_file, search_code or get_component.",
+  summary: "no change selected",
+};
+
+/** The file-count of each component, from the file → owner map. */
+function fileCounts(tc: ToolContext): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const owner of tc.ownerByFile.values()) counts.set(owner, (counts.get(owner) ?? 0) + 1);
+  return counts;
+}
+
 async function runTool(tc: ToolContext, name: string, args: Record<string, unknown>): Promise<PrChatToolOutput> {
+  const ctx = tc.ctx;
+  if (!ctx && (name === "list_changed_files" || name === "get_diff" || name === "get_findings")) return NO_CHANGE;
   switch (name) {
+    case "list_components": {
+      const counts = fileCounts(tc);
+      const modules = tc.components.filter((c) => c.tier === "module").sort((a, b) => a.name.localeCompare(b.name));
+      return {
+        text:
+          modules
+            .map((c) => `- ${c.name} (${counts.get(c.id) ?? 0} files)${c.description ? `: ${c.description}` : ""}`)
+            .join("\n") || "(no components — the repo hasn't been analyzed)",
+        summary: `listed ${modules.length} component(s)`,
+      };
+    }
+
     case "list_changed_files": {
-      const lines = tc.ctx.files.map((f) => {
+      const lines = ctx!.files.map((f) => {
         const owner = tc.ownerByFile.get(f.path);
         return `${f.path} (${f.status}, +${f.additions}/-${f.deletions}) — ${owner ? componentName(tc, owner) : "new/unanalyzed"}`;
       });
       return {
         text: lines.join("\n") || "(no changed files)",
-        summary: `listed ${tc.ctx.files.length} changed file(s)`,
-        componentIds: [...new Set(tc.ctx.files.map((f) => tc.ownerByFile.get(f.path)).filter((id): id is string => !!id))],
+        summary: `listed ${ctx!.files.length} changed file(s)`,
+        componentIds: [...new Set(ctx!.files.map((f) => tc.ownerByFile.get(f.path)).filter((id): id is string => !!id))],
       };
     }
 
     case "get_diff": {
       const path = arg(args, ...PATH_KEYS).replace(/^\/+/, "");
       if (!path) return missing(name);
-      const file = tc.ctx.files.find((f) => f.path === path) ?? tc.ctx.files.find((f) => f.path.endsWith(`/${path}`));
+      const file = ctx!.files.find((f) => f.path === path) ?? ctx!.files.find((f) => f.path.endsWith(`/${path}`));
       if (!file) return { text: `"${path}" is not one of the changed files. Use list_changed_files.`, summary: `no diff for ${path}` };
       const owner = tc.ownerByFile.get(file.path);
       return {
@@ -144,8 +199,8 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
     case "read_file": {
       const path = arg(args, ...PATH_KEYS).replace(/:\d+(-\d+)?$/, "");
       if (!path) return missing(name);
-      const ref = str(args.ref) === "base" ? "base" : "head";
-      const sha = ref === "base" ? tc.ctx.reviewed.baseSha : tc.ctx.reviewed.headSha;
+      const ref = ctx ? (str(args.ref) === "base" ? "base" : "head") : "the analyzed commit";
+      const sha = !ctx ? tc.repo.lastAnalyzedSha : ref === "base" ? ctx.reviewed.baseSha : ctx.reviewed.headSha;
       const found = await readFileAtCommit(tc.repo, sha, path);
       if (!found) return { text: `Could not read "${path}" at ${ref}.`, summary: `could not read ${path}` };
       const all = found.text.split(/\r?\n/);
@@ -156,7 +211,11 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
         .map((line, i) => `${String(start + i).padStart(5)}  ${line}`)
         .join("\n");
       const note =
-        found.source === "default-branch" ? " (from the default branch — the PR head could not be read)" : "";
+        found.source === "default-branch"
+          ? ctx
+            ? " (from the default branch — the PR head could not be read)"
+            : " (from the default branch checkout)"
+          : "";
       const owner = tc.ownerByFile.get(path);
       return {
         text: `${path} lines ${start}-${end} of ${all.length} at ${ref}${note}\n${body}`,
@@ -170,14 +229,18 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
       const query = arg(args, "query", "q", "text", "symbol", "pattern", "term", "search");
       if (!query) return missing(name);
       if (query.length < 2) return { text: "Give a longer query.", summary: "search skipped" };
-      const { hits, source } = await searchCode(tc.repo, tc.ctx.reviewed.headSha, query);
+      const { hits, source } = await searchCode(tc.repo, ctx ? ctx.reviewed.headSha : tc.repo.lastAnalyzedSha, query);
       const ids = new Set<string>();
       const lines = hits.map((h) => {
         const owner = tc.ownerByFile.get(h.path);
         if (owner) ids.add(owner);
         return `${h.path}:${h.line} [${componentName(tc, owner)}] ${h.text}`;
       });
-      const where = source === "commit" ? "at the PR's head" : "in the default branch (the PR's own changes are in the diffs)";
+      const where = !ctx
+        ? "in the repo"
+        : source === "commit"
+          ? "at the PR's head"
+          : "in the default branch (the PR's own changes are in the diffs)";
       return {
         text: hits.length ? `${hits.length} hit(s) ${where}:\n${lines.join("\n")}` : `No hits for "${query}" ${where}.`,
         summary: `searched for "${query}" (${hits.length} hit${hits.length === 1 ? "" : "s"})`,
@@ -204,13 +267,13 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
       const files = ((row?.get("files") as string[]) ?? []).sort();
       const deps = (row?.get("deps") as string[]) ?? [];
       const users = (row?.get("users") as string[]) ?? [];
-      const changed = files.filter((f) => tc.ctx.files.some((c) => c.path === f));
+      const changed = ctx ? files.filter((f) => ctx.files.some((c) => c.path === f)) : null;
       return {
         text: [
           `Component: ${component.name}${component.origin === "merge" ? " (merged feature)" : ""}`,
           `Description: ${component.description ?? "(none)"}`,
           `Files (${files.length}): ${files.slice(0, 40).join(", ")}${files.length > 40 ? ", …" : ""}`,
-          `Changed in this PR: ${changed.join(", ") || "(none)"}`,
+          ...(changed ? [`Changed in this PR: ${changed.join(", ") || "(none)"}`] : []),
           `Depends on: ${deps.join(", ") || "(nothing)"}`,
           `Depended on by: ${users.join(", ") || "(nothing)"}`,
         ].join("\n"),
@@ -242,8 +305,30 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
   }
 }
 
+/** The system-message summary of the repo, for the repo-wide chat: what it is and its modules. */
+function renderRepoContext(tc: ToolContext): string {
+  const { repo } = tc;
+  const counts = fileCounts(tc);
+  const modules = tc.components
+    .filter((c) => c.tier === "module")
+    .sort((a, b) => (counts.get(b.id) ?? 0) - (counts.get(a.id) ?? 0));
+  const domains = tc.components.filter((c) => c.tier === "domain");
+  const lines = [
+    `Repository: ${repo.name}${repo.defaultBranch ? ` (default branch ${repo.defaultBranch})` : ""}`,
+    repo.lastAnalyzedSha ? `Analyzed at commit ${repo.lastAnalyzedSha.slice(0, 7)}; ${tc.ownerByFile.size} files.` : "Not analyzed yet.",
+  ];
+  if (domains.length > 0) lines.push(`Areas: ${domains.map((d) => d.name).join(", ")}`);
+  lines.push("", `Modules, largest first (${modules.length}):`);
+  for (const c of modules.slice(0, CONTEXT_MAX_FILES)) {
+    lines.push(`- ${c.name} (${counts.get(c.id) ?? 0} files)${c.description ? `: ${c.description}` : ""}`);
+  }
+  if (modules.length > CONTEXT_MAX_FILES) lines.push(`- … ${modules.length - CONTEXT_MAX_FILES} more (use list_components)`);
+  return lines.join("\n");
+}
+
 /** The system-message summary of the change: intent, files, the review's verdicts. */
 function renderContext(tc: ToolContext): string {
+  if (!tc.ctx) return renderRepoContext(tc);
   const { intent, files } = tc.ctx;
   const lines: string[] = [];
   if (intent.source === "pull_request") {
@@ -285,7 +370,8 @@ export type ChatEvent =
  */
 export async function runChatTurn(args: {
   repo: RepoRecord;
-  target: ReviewTarget;
+  /** `null` for the repo-wide chat. */
+  target: ReviewTarget | null;
   question: string;
   focusComponentId?: string;
   onEvent: (event: ChatEvent) => void | Promise<void>;
@@ -293,18 +379,18 @@ export async function runChatTurn(args: {
   log?: JobLogger;
 }): Promise<ChatMessageRecord> {
   const { repo, target, question, focusComponentId, onEvent } = args;
-  const targetKey = reviewTargetKey(target);
+  const targetKey = target ? reviewTargetKey(target) : REPO_CHAT_THREAD_KEY;
   const config = await loadAiConfigOrNull();
   if (!config) throw new Error("No AI provider is configured — set one in Settings.");
 
   const [ctx, components, ownerByFile, findings, previous] = await Promise.all([
-    loadPrContext(repo, target, args.log),
+    target ? loadPrContext(repo, target, args.log) : Promise.resolve(null),
     listComponentsByRepoId(repo.id),
     getFileOwnerMap(repo.id),
-    listFindingsByTargetKey(repo.id, targetKey),
+    target ? listFindingsByTargetKey(repo.id, targetKey) : Promise.resolve([]),
     listChatMessages(repo.id, targetKey),
   ]);
-  const headSha = ctx.reviewed.headSha;
+  const headSha = ctx ? ctx.reviewed.headSha : repo.lastAnalyzedSha;
   const tc: ToolContext = { repo, ctx, components, ownerByFile, findings };
 
   const userMessage = await addChatMessage({
@@ -330,7 +416,8 @@ export async function runChatTurn(args: {
         history,
         question,
         focus: focusComponentId ? componentName(tc, focusComponentId) : undefined,
-        tools: PR_CHAT_TOOLS,
+        tools: ctx ? PR_CHAT_TOOLS : REPO_CHAT_TOOLS,
+        scope: ctx ? "change" : "repo",
       },
       (name, toolArgs) => runTool(tc, name, toolArgs),
       { signal: args.signal, onStep: (step) => onEvent({ type: "step", step }) }

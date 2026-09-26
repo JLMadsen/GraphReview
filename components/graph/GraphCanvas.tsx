@@ -1231,13 +1231,28 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       // sidebar collapsing, or the window resizing) — without this, the
       // canvas keeps stale pixel dimensions and the graph can overflow or
       // letterbox inside its now-differently-sized container.
+      // It also refits: the Graph tab resizes this canvas on its own (the map
+      // section shrinks once a PR is picked and the review needs room), and
+      // a graph fitted to the old size would spill out of the new one — the
+      // same rule as the card maps, which refit when their pane resizes.
+      let lastSize = "";
+      let refitFrame = 0;
       const resizeObserver = new ResizeObserver(() => {
         cy.resize();
+        const el = containerRef.current;
+        const size = el ? `${el.clientWidth}x${el.clientHeight}` : "";
+        if (!el || size === lastSize || el.clientWidth === 0 || el.clientHeight === 0) return;
+        const first = lastSize === "";
+        lastSize = size;
+        if (first) return;
+        cancelAnimationFrame(refitFrame);
+        refitFrame = requestAnimationFrame(() => cy.fit(undefined, 32));
       });
       resizeObserver.observe(containerRef.current);
 
       return () => {
         resizeObserver.disconnect();
+        cancelAnimationFrame(refitFrame);
         cy.removeListener("mouseover", "node", handleMouseOver);
         cy.removeListener("mouseout", "node", handleMouseOut);
         cy.removeListener("position", "node", handlePosition);
@@ -1696,11 +1711,12 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           </div>
         </div>
 
-        <div className="relative overflow-hidden rounded-xl bg-canvas ring-1 ring-border">
-          <div
-            ref={containerRef}
-            className="h-[min(68vh,680px)] min-h-[440px] w-full"
-          />
+        {/* Fills the rest of the view's height (GraphView sizes the view);
+            Cytoscape's container is pinned to it with an inline style:
+            Cytoscape injects position: relative for its container class,
+            which would beat a Tailwind "absolute". */}
+        <div className="relative min-h-[220px] flex-1 overflow-hidden rounded-xl bg-canvas ring-1 ring-border">
+          <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
 
           {/*
             Scale readout. Costs nothing (both numbers are already props) and

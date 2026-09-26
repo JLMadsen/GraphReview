@@ -6,7 +6,7 @@
 // the React Flow node — so it takes plain props and knows nothing about
 // React Flow itself (the handles are added by the node wrapper).
 
-import { ChevronDown, ChevronUp, Network } from "lucide-react";
+import { ChevronDown, ChevronUp, LayoutGrid } from "lucide-react";
 import { cn } from "cn";
 import { INTENT_VISUALS } from "./review-visuals";
 import type { PrMapFileDTO, PrMapNodeDTO, PrMapRole } from "./pr-map-types";
@@ -55,6 +55,33 @@ export interface PrCardMarker {
   count: number;
 }
 
+/** A card's worst review verdict and finding count — shared by the PR map and the app map. Glyph + count, no pill: status is loud colour on a quiet card. */
+export function CardMarkerBadge({ marker, className }: { marker: PrCardMarker; className?: string }) {
+  const visual = INTENT_VISUALS[marker.worst];
+  const Icon = visual.icon;
+  return (
+    <span
+      className={cn("flex shrink-0 items-center gap-0.5 font-mono text-[11px] font-medium", className)}
+      style={{ color: visual.text }}
+      title={`${visual.label} — ${marker.count} finding${marker.count === 1 ? "" : "s"}`}
+    >
+      <Icon className="size-[1.1em]" />
+      {marker.count}
+    </span>
+  );
+}
+
+/** A file's worst verdict as its glyph in the verdict colour — the file-row counterpart of `CardMarkerBadge`. */
+export function IntentGlyph({ intent }: { intent: IntentMatch }) {
+  const visual = INTENT_VISUALS[intent];
+  const Icon = visual.icon;
+  return (
+    <span className="shrink-0" style={{ color: visual.text }} title={`Worst finding: ${visual.label}`}>
+      <Icon className="size-3" />
+    </span>
+  );
+}
+
 export interface PrMapCardProps {
   node: PrMapNodeDTO;
   selected?: boolean;
@@ -82,39 +109,23 @@ export function PrMapCard({
   const hidden = node.files.length - PR_CARD_FILE_LIMIT;
   const files = expanded || hidden <= 0 ? node.files : node.files.slice(0, PR_CARD_FILE_LIMIT);
   const tag = ROLE_TAGS[node.role];
-  const visual = marker ? INTENT_VISUALS[marker.worst] : null;
-  const MarkerIcon = visual?.icon;
-
   return (
     <div
       style={{ width: PR_CARD_WIDTH }}
       className={cn(
-        "rounded-xl px-3 pt-2.5 pb-3 text-left transition-shadow",
-        context
-          ? "border border-dashed border-border bg-card/40 opacity-70"
-          : "bg-card shadow-sm ring-1 ring-border",
-        selected && "ring-2 ring-brand opacity-100"
+        "rounded-lg border px-3 pt-2.5 pb-2.5 text-left transition-colors",
+        context ? "border-dashed border-border bg-card/40 opacity-70" : "border-foreground/14 bg-card",
+        selected && "border-brand opacity-100 ring-1 ring-brand"
       )}
     >
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           {tag && (
-            <p className="mb-0.5 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
-              {tag}
-            </p>
+            <p className="mb-0.5 font-mono text-[11px] text-muted-foreground lowercase">{tag}</p>
           )}
-          <p className="text-[13px] leading-snug font-semibold tracking-tight">{node.name}</p>
+          <p className="amc-name text-[13px] leading-snug font-medium">{node.name}</p>
         </div>
-        {visual && MarkerIcon && (
-          <span
-            className="mt-0.5 flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ring-1"
-            style={{ color: visual.text, boxShadow: `inset 0 0 0 1px ${visual.color}66` }}
-            title={`${visual.label} — ${marker!.count} finding${marker!.count === 1 ? "" : "s"}`}
-          >
-            <MarkerIcon className="size-3" />
-            {marker!.count}
-          </span>
-        )}
+        {marker && <CardMarkerBadge marker={marker} className="mt-0.5" />}
         {onShowInRepo && (
           <button
             type="button"
@@ -123,33 +134,29 @@ export function PrMapCard({
               onShowInRepo();
             }}
             className="nodrag -mr-1 shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-            title="Show in repo graph"
-            aria-label={`Show ${node.name} in the repo graph`}
+            title="Show on the app map"
+            aria-label={`Show ${node.name} on the app map`}
           >
-            <Network className="size-3.5" />
+            <LayoutGrid className="size-3.5" />
           </button>
         )}
       </div>
 
       {node.description && (
-        <p className="mt-1 line-clamp-3 text-[11px] leading-snug text-muted-foreground">
+        <p className="amc-desc mt-1 text-[11px] leading-snug text-muted-foreground">
           {node.description}
         </p>
       )}
 
       {files.length > 0 && (
-        <ul className="mt-2 space-y-1">
+        <ul className="mt-2 border-t border-border/70 pt-1">
           {files.map((file) => {
             const badge = STATUS_BADGES[file.status] ?? STATUS_BADGES.changed;
             const intent = fileMarkers?.get(file.path);
             const content = (
               <>
                 {intent && (
-                  <span
-                    className="size-1.5 shrink-0 rounded-full"
-                    style={{ backgroundColor: INTENT_VISUALS[intent].color }}
-                    title={`Worst finding: ${INTENT_VISUALS[intent].label}`}
-                  />
+                  <IntentGlyph intent={intent} />
                 )}
                 <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
                   {labels.get(file.path)}
@@ -177,14 +184,14 @@ export function PrMapCard({
                       e.stopPropagation();
                       onOpenFile(file.path);
                     }}
-                    className="nodrag flex w-full items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-left ring-1 ring-border/60 transition-colors hover:bg-secondary hover:ring-border"
+                    className="nodrag -mx-1 flex w-[calc(100%+0.5rem)] items-center gap-1.5 rounded-sm px-1 py-0.5 text-left transition-colors hover:bg-secondary"
                     title={`${file.path} — view diff`}
                   >
                     {content}
                   </button>
                 ) : (
                   <div
-                    className="flex w-full items-center gap-1.5 rounded-md bg-muted px-2 py-1 ring-1 ring-border/60"
+                    className="flex w-full items-center gap-1.5 py-0.5"
                     title={file.path}
                   >
                     {content}

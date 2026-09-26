@@ -3,7 +3,7 @@ import { TriangleAlert } from "lucide-react";
 import { getRepoDto } from "@/lib/jobs";
 import type { RepoDto } from "@/lib/jobs";
 import { getRepoById } from "@/lib/neo4j";
-import { ProviderBadge, RepoStatusBadge, providerIcon } from "@/app/repo-status-badge";
+import { PROVIDER_NAMES, RepoStatusText, providerIcon } from "@/app/repo-status-badge";
 
 /**
  * Repo detail shell.
@@ -88,13 +88,12 @@ export default async function RepoDetailLayout({
           ) : null}
         </div>
         {repo ? (
-          <div className="flex shrink-0 items-center gap-2">
-            <ProviderBadge provider={repo.provider} />
-            <RepoStatusBadge
-              status={repo.status}
-              lastAnalyzedSha={repo.lastAnalyzedSha}
-              repoId={repo.id}
-            />
+          <div className="flex shrink-0 items-center gap-4">
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <SourceIcon className="size-3.5 opacity-70" aria-hidden />
+              {PROVIDER_NAMES[repo.provider]}
+            </span>
+            <RepoStatusText status={repo.status} lastAnalyzedSha={repo.lastAnalyzedSha} repoId={repo.id} />
           </div>
         ) : null}
       </div>

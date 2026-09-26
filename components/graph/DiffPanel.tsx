@@ -6,27 +6,22 @@
 // `POST /api/repos/[repoId]/diff-impact` and reports the result up to
 // GraphView, which feeds it to GraphCanvas for touched-node highlighting.
 //
+// Once a check succeeds the picker folds away into a summary — what was
+// picked, its size, and whatever GraphView slots in under it (the
+// checklist). "Change" drops the diff altogether and brings back the plain
+// picker: a picker is used once, a summary is read the whole time.
+//
 // History (merged/closed PRs, commit comparisons) is browsable without cost:
 // every result carries a `DiffTargetMeta` saying whether the AI review should
 // start on its own — only for open PRs and branch comparisons — and whether
 // the diff is older than the analyzed graph it is mapped onto.
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  ChevronDown,
-  GitCommitHorizontal,
-  GitCompare,
-  GitPullRequest,
-  History,
-  Info,
-  LoaderCircle,
-  Target,
-  TriangleAlert,
-} from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { ChevronDown, History, LoaderCircle, TriangleAlert } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { cn } from "cn";
 import { evictClosedAddedCache, readAddedCache, writeAddedCache } from "./added-cache";
+import { Segmented } from "./Segmented";
 import { isShaLike, shortRef } from "./types";
 import type {
   AddedComponentDTO,
@@ -67,14 +62,10 @@ type Mode = "pr" | "refs" | "commits" | "paths";
 // "Paths" (paste changed file paths) is hidden from the mode switcher for
 // now — the handling code below still supports it, it's just not reachable
 // from the UI.
-const MODES: Array<{
-  value: Mode;
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
-}> = [
-  { value: "pr", label: "PR", icon: GitPullRequest },
-  { value: "refs", label: "Branches", icon: GitCompare },
-  { value: "commits", label: "Commits", icon: GitCommitHorizontal },
+const MODES: Array<{ value: Mode; label: string }> = [
+  { value: "pr", label: "PR" },
+  { value: "refs", label: "Branches" },
+  { value: "commits", label: "Commits" },
 ];
 
 type PrFilter = "open" | "merged" | "closed" | "all";
@@ -85,7 +76,7 @@ const PR_FILTERS: Array<{ value: PrFilter; label: string }> = [
   { value: "all", label: "All" },
 ];
 const PR_FILTER_STORAGE_KEY = "graphreview.diff.prFilter";
-/** The PR picker lists this many most-recently-updated PRs; older ones are reached by number. */
+/** The PR picker lists this many most-recently-updated PRs (an older one can still be opened by its `?pr=` URL). */
 const PR_LIST_LIMIT = 100;
 const COMMIT_LIST_LIMIT = 100;
 
@@ -213,7 +204,7 @@ function FieldLabel({
   return (
     <label
       htmlFor={htmlFor}
-      className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase"
+      className="text-[11px] font-medium text-muted-foreground"
     >
       {children}
     </label>
@@ -251,6 +242,12 @@ export interface DiffPanelProps {
    * no stable identity to cache these against, so they're never labeled.
    */
   onAddedComponents: (components: AddedComponentDTO[]) => void;
+  /** Line totals of the checked diff, once known (from the PR map) — shown in the summary. */
+  lineStats?: { additions: number; deletions: number } | null;
+  /** The review's verdict, shown large under the diff's own lines once a check succeeds. */
+  headline?: React.ReactNode;
+  /** Rendered inside the summary, right under the verdict (the checklist). */
+  children?: React.ReactNode;
 }
 
 const NO_META: DiffTargetMeta = { autoReview: false, historical: false };
@@ -264,6 +261,9 @@ export function DiffPanel({
   initialHeadRef,
   onResult,
   onAddedComponents,
+  lineStats,
+  headline,
+  children,
 }: DiffPanelProps) {
   const initialRefsMode = !initialPrNumber && Boolean(initialBaseRef && initialHeadRef);
   // Two shas in the URL are a commit comparison — open the picker for it.
@@ -304,6 +304,10 @@ export function DiffPanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<DiffImpactResponseDTO | null>(null);
+  /** What the current result is a check of, for the summary's title. */
+  const [checked, setChecked] = useState<DiffImpactRequestDTO | null>(null);
+  /** The picker is open — always before the first result, and after "Change". */
+  const [picking, setPicking] = useState(true);
   /** Local copy of whatever was last reported via `onAddedComponents`, for this panel's own "Added" list below. */
   const [addedComponents, setAddedComponents] = useState<AddedComponentDTO[]>([]);
 
@@ -439,8 +443,12 @@ export function DiffPanel({
 
   /** `[base, head]` for the picked pair: the older commit is always the base, so the three-dot diff is never silently empty. */
   function orderedPick(): [string, string] | null {
-    if (pickedCommits.length !== 2) return null;
-    const [a, b] = pickedCommits;
+    return orderPair(pickedCommits);
+  }
+
+  function orderPair(picked: string[]): [string, string] | null {
+    if (picked.length !== 2) return null;
+    const [a, b] = picked;
     const ia = commitIndex(a);
     const ib = commitIndex(b);
     if (ia === -1 || ib === -1) return [a, b];
@@ -449,10 +457,16 @@ export function DiffPanel({
 
   function togglePick(sha: string) {
     setError(null);
-    setPickedCommits((prev) => {
-      if (prev.some((p) => sameCommit(sha, p))) return prev.filter((p) => !sameCommit(sha, p));
-      return prev.length < 2 ? [...prev, sha] : [prev[1], sha];
-    });
+    const prev = pickedCommits;
+    const next = prev.some((p) => sameCommit(sha, p))
+      ? prev.filter((p) => !sameCommit(sha, p))
+      : prev.length < 2
+        ? [...prev, sha]
+        : [prev[1], sha];
+    setPickedCommits(next);
+    // The second pick loads the comparison — no button to press.
+    const pair = orderPair(next);
+    if (pair) void runCheck({ baseRef: pair[0], headRef: pair[1] });
   }
 
   /** How the target a check is about should be treated — see `DiffTargetMeta`. */
@@ -549,6 +563,8 @@ export function DiffPanel({
       }
       const meta = metaFor(body);
       setResult(json);
+      setChecked(body);
+      setPicking(false);
       setResultMeta(meta);
       syncUrl(body);
       // Only a *successful* impact check can start a review, so a
@@ -568,6 +584,26 @@ export function DiffPanel({
       reportAddedComponents([]);
     } finally {
       setLoading(false);
+    }
+  }
+
+  /** Drops the current diff entirely — the page goes back to its no-diff state, and the URL loses its `?pr=` / `?base=&head=`. */
+  function clearDiff() {
+    setResult(null);
+    setChecked(null);
+    setResultMeta(NO_META);
+    setError(null);
+    setPrNumber("");
+    setPickedCommits([]);
+    setPicking(true);
+    onResult(null, null, NO_META);
+    reportAddedComponents([]);
+    try {
+      const url = new URL(window.location.href);
+      for (const key of ["pr", "base", "head"]) url.searchParams.delete(key);
+      window.history.replaceState(window.history.state, "", url);
+    } catch {
+      /* URL sync is a convenience */
     }
   }
 
@@ -627,110 +663,95 @@ export function DiffPanel({
     }
   }
 
+  if (result && checked && !picking) {
+    return (
+      <DiffSummary
+        result={result}
+        checked={checked}
+        meta={resultMeta}
+        lastAnalyzedSha={lastAnalyzedSha}
+        prTitle={
+          "prNumber" in checked && prListState.status === "loaded"
+            ? prListState.items.find((pr) => pr.number === checked.prNumber)?.title
+            : undefined
+        }
+        lineStats={lineStats}
+        addedComponents={addedComponents}
+        loading={loading}
+        onChange={clearDiff}
+        headline={headline}
+      >
+        {children}
+      </DiffSummary>
+    );
+  }
+
   return (
-    <div className="space-y-4">
-      <div>
-        <h2 className="flex items-center gap-2 text-sm font-semibold tracking-tight">
-          <Target className="size-4 text-brand" aria-hidden />
-          Diff selection
-        </h2>
-        <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-          Pick a pull request (open or old), or compare two branches or two
-          commits, to see which components are touched.
-        </p>
+    <div className="space-y-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <h2 className="text-sm font-medium">Pick a diff</h2>
+        {result && checked && (
+          <button
+            type="button"
+            onClick={() => setPicking(false)}
+            className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          >
+            Cancel
+          </button>
+        )}
       </div>
 
-      <div
-        className="flex items-center gap-0.5 rounded-lg bg-muted p-[3px] ring-1 ring-border/60"
-        role="group"
-        aria-label="Diff source"
-      >
-        {MODES.map((m) => {
-          const Icon = m.icon;
-          const active = mode === m.value;
-          return (
-            <button
-              key={m.value}
-              type="button"
-              onClick={() => {
-                setMode(m.value);
-                setError(null);
-              }}
-              className={cn(
-                "flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
-                active
-                  ? "bg-elevated text-foreground shadow-sm ring-1 ring-border/60"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-              aria-pressed={active}
-            >
-              <Icon
-                className={cn("size-3.5", active ? "text-brand" : "opacity-70")}
-              />
-              {m.label}
-            </button>
-          );
-        })}
-      </div>
+      <Segmented
+        label="Diff source"
+        className="w-full"
+        value={mode}
+        onChange={(value) => {
+          setMode(value);
+          setError(null);
+        }}
+        options={MODES}
+      />
 
       <form onSubmit={handleSubmit} className="space-y-3">
         {mode === "pr" &&
           (prListState.status === "loaded" ? (
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <FieldLabel htmlFor="pr-number">Pull request</FieldLabel>
-                <div className="flex items-center gap-0.5" role="group" aria-label="Pull request state">
-                  {PR_FILTERS.map((f) => (
-                    <button
-                      key={f.value}
-                      type="button"
-                      onClick={() => setPrFilter(f.value)}
-                      aria-pressed={prFilter === f.value}
-                      className={cn(
-                        "rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
-                        prFilter === f.value
-                          ? "bg-secondary text-foreground"
-                          : "text-muted-foreground hover:text-foreground"
-                      )}
-                    >
-                      {f.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex gap-1.5">
-                <div className="min-w-0 flex-1">
-                  <SelectShell>
-                    <select
-                      id="pr-number"
-                      value={visiblePrs.some((pr) => String(pr.number) === prNumber) ? prNumber : ""}
-                      onChange={(e) => setPrNumber(e.target.value)}
-                      className={SELECT_CLASSNAME}
-                    >
+              <label htmlFor="pr-number" className="sr-only">
+                Pull request
+              </label>
+              <Segmented
+                label="Pull request state"
+                size="xs"
+                className="w-full"
+                value={prFilter}
+                onChange={setPrFilter}
+                options={PR_FILTERS}
+              />
+              <SelectShell>
+                <select
+                  id="pr-number"
+                  value={visiblePrs.some((pr) => String(pr.number) === prNumber) ? prNumber : ""}
+                  onChange={(e) => {
+                    // Picking is loading: no separate button to press.
+                    setPrNumber(e.target.value);
+                    if (e.target.value) void runCheck({ prNumber: Number(e.target.value) });
+                  }}
+                  disabled={visiblePrs.length === 0}
+                  className={SELECT_CLASSNAME}
+                >
                       <option value="" disabled>
                         {visiblePrs.length > 0
                           ? "Select a pull request…"
                           : `No ${prFilter === "all" ? "" : `${prFilter} `}pull requests`}
                       </option>
-                      {visiblePrs.map((pr) => (
-                        <option key={pr.number} value={String(pr.number)}>
-                          #{pr.number}
-                          {pr.state !== "open" ? ` · ${pr.state}` : ""} — {pr.title}
-                        </option>
-                      ))}
-                    </select>
-                  </SelectShell>
-                </div>
-                <Input
-                  aria-label="Pull request number"
-                  inputMode="numeric"
-                  placeholder="#"
-                  title={`Any PR number — the list shows the ${PR_LIST_LIMIT} most recently updated`}
-                  value={prNumber}
-                  onChange={(e) => setPrNumber(e.target.value.replace(/^#/, ""))}
-                  className="w-16 shrink-0 font-mono"
-                />
-              </div>
+                  {visiblePrs.map((pr) => (
+                    <option key={pr.number} value={String(pr.number)}>
+                      #{pr.number}
+                      {pr.state !== "open" ? ` · ${pr.state}` : ""} — {pr.title}
+                    </option>
+                  ))}
+                </select>
+              </SelectShell>
             </div>
           ) : (
             <div className="space-y-1.5">
@@ -738,7 +759,7 @@ export function DiffPanel({
               <Input
                 id="pr-number"
                 inputMode="numeric"
-                placeholder="e.g. 128"
+                placeholder="128, then Enter"
                 value={prNumber}
                 onChange={(e) => setPrNumber(e.target.value)}
               />
@@ -754,7 +775,12 @@ export function DiffPanel({
                   <select
                     id="base-ref"
                     value={baseRef}
-                    onChange={(e) => setBaseRef(e.target.value)}
+                    onChange={(e) => {
+                      setBaseRef(e.target.value);
+                      if (e.target.value && headRef && e.target.value !== headRef) {
+                        void runCheck({ baseRef: e.target.value, headRef });
+                      }
+                    }}
                     className={SELECT_CLASSNAME}
                   >
                     {baseRef &&
@@ -790,7 +816,12 @@ export function DiffPanel({
                   <select
                     id="head-ref"
                     value={headRef}
-                    onChange={(e) => setHeadRef(e.target.value)}
+                    onChange={(e) => {
+                      setHeadRef(e.target.value);
+                      if (e.target.value && baseRef && e.target.value !== baseRef) {
+                        void runCheck({ baseRef, headRef: e.target.value });
+                      }
+                    }}
                     className={SELECT_CLASSNAME}
                   >
                     <option value="" disabled>
@@ -850,102 +881,149 @@ export function DiffPanel({
           </div>
         )}
 
-        <Button type="submit" size="sm" className="w-full" disabled={loading}>
-          {loading ? (
-            <>
-              <LoaderCircle className="animate-spin" aria-hidden />
-              Checking…
-            </>
-          ) : (
-            <>
-              <Target aria-hidden />
-              Check impact
-            </>
-          )}
-        </Button>
+        {/* No visible button: picking from a list loads it, and Enter in a
+            typed field submits through this one. */}
+        <button type="submit" className="sr-only" tabIndex={-1}>
+          Load
+        </button>
+        {loading && (
+          <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <LoaderCircle className="size-3 animate-spin" aria-hidden />
+            Loading…
+          </p>
+        )}
       </form>
 
       {error && (
-        <p className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
+        <p className="flex items-start gap-2 text-xs text-destructive">
           <TriangleAlert className="mt-px size-3.5 shrink-0" aria-hidden />
           <span>{error}</span>
         </p>
       )}
 
-      {result && (
-        <div className="overflow-hidden rounded-xl bg-card ring-1 ring-border">
-          {resultMeta.historical && (
-            <p className="flex items-start gap-1.5 border-b border-border bg-muted/40 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-              <Info className="mt-px size-3 shrink-0" aria-hidden />
-              <span>
-                Mapped onto the graph analyzed at{" "}
-                <span className="font-mono">{lastAnalyzedSha ? shortRef(lastAnalyzedSha) : "the latest analysis"}</span>
-                {" "}— files moved or deleted since then show as unmatched.
-              </span>
-            </p>
-          )}
-          <div className="grid grid-cols-2 divide-x divide-border">
-            <div className="px-3 py-2.5">
-              <p className="font-mono text-lg leading-none font-semibold tracking-tight">
-                {result.touchedFiles.length}
-              </p>
-              <p className="mt-1.5 text-[11px] text-muted-foreground">
-                touched file{result.touchedFiles.length === 1 ? "" : "s"}
-              </p>
-            </div>
-            <div className="px-3 py-2.5">
-              <p className="font-mono text-lg leading-none font-semibold tracking-tight text-warning">
-                {result.touchedComponentIds.length}
-              </p>
-              <p className="mt-1.5 text-[11px] text-muted-foreground">
-                touched component
-                {result.touchedComponentIds.length === 1 ? "" : "s"}
-              </p>
-            </div>
-          </div>
-          {result.unmatchedFiles.length > 0 && (
-            <div className="border-t border-border px-3 py-2.5">
-              <p className="text-[11px] font-medium text-muted-foreground">
-                Unmatched ({result.unmatchedFiles.length})
-                {addedComponents.length > 0 && " — shown in green on the graph"}
-              </p>
-              <ul className="mt-1.5 max-h-32 space-y-0.5 overflow-y-auto font-mono text-[11px] text-muted-foreground/80">
-                {result.unmatchedFiles.map((f) => (
-                  <li key={f} className="truncate" title={f}>
-                    {f}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {addedComponents.length > 0 && (
-            <div className="border-t border-border px-3 py-2.5">
-              <p className="text-[11px] font-medium text-muted-foreground">
-                Added ({addedComponents.length})
-              </p>
-              <ul className="mt-1.5 max-h-40 space-y-1.5 overflow-y-auto">
-                {addedComponents.map((c) => (
-                  <li key={c.id} className="text-[11px]">
-                    <p className="flex items-center gap-1.5">
-                      <span className="size-1.5 shrink-0 rounded-full bg-[#22c55e]" aria-hidden />
-                      <span className="truncate font-medium" title={c.name}>
-                        {c.name}
-                      </span>
-                      <span className="shrink-0 text-muted-foreground">
-                        {c.fileCount} file{c.fileCount === 1 ? "" : "s"}
-                      </span>
-                    </p>
-                    {c.description && (
-                      <p className="mt-0.5 pl-3 leading-relaxed text-muted-foreground/80">
-                        {c.description}
-                      </p>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+    </div>
+  );
+}
+
+/** The folded-away picker: what was checked, how big it is, and what isn't on the map. */
+function DiffSummary({
+  result,
+  checked,
+  meta,
+  lastAnalyzedSha,
+  prTitle,
+  lineStats,
+  addedComponents,
+  loading,
+  onChange,
+  headline,
+  children,
+}: {
+  result: DiffImpactResponseDTO;
+  checked: DiffImpactRequestDTO;
+  meta: DiffTargetMeta;
+  lastAnalyzedSha?: string;
+  prTitle?: string;
+  lineStats?: { additions: number; deletions: number } | null;
+  addedComponents: AddedComponentDTO[];
+  loading: boolean;
+  onChange: () => void;
+  headline?: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  const kind = "prNumber" in checked ? "Pull request" : "baseRef" in checked ? (isShaLike(checked.headRef) ? "Commits" : "Branches") : "Files";
+  // One file count for the whole page: every file in the diff, on the map or not.
+  const files = result.touchedFiles.length + result.unmatchedFiles.length;
+  const offMap = result.unmatchedFiles.length;
+
+  return (
+    <div className="text-xs">
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="text-[11px] text-muted-foreground">{kind}</p>
+        <button
+          type="button"
+          onClick={onChange}
+          className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+        >
+          Change
+        </button>
+      </div>
+      <p className="mt-1 text-[13px] leading-snug font-medium">
+        {"prNumber" in checked ? (
+          <>
+            <span className="font-mono text-muted-foreground">#{checked.prNumber}</span> {prTitle ?? ""}
+          </>
+        ) : "baseRef" in checked ? (
+          <span className="font-mono text-xs">
+            {shortRef(checked.baseRef)} <span className="text-muted-foreground">→</span> {shortRef(checked.headRef)}
+          </span>
+        ) : (
+          "Pasted paths"
+        )}
+      </p>
+      <p className="mt-1.5 flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+        {lineStats && (
+          <>
+            <span className="text-success">+{lineStats.additions}</span>
+            <span className="text-destructive">−{lineStats.deletions}</span>
+          </>
+        )}
+        {loading && <LoaderCircle className="size-3 animate-spin" aria-label="Checking" />}
+      </p>
+      <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+        {files} file{files === 1 ? "" : "s"} · {result.touchedComponentIds.length} component
+        {result.touchedComponentIds.length === 1 ? "" : "s"}
+      </p>
+      {meta.historical && (
+        <p className="mt-1.5 text-[11px] leading-snug text-muted-foreground">
+          History, mapped onto the graph at{" "}
+          <span className="font-mono">{lastAnalyzedSha ? shortRef(lastAnalyzedSha) : "the latest analysis"}</span>.
+        </p>
+      )}
+
+      {(headline || children) && (
+        <div className="mt-3 border-t border-border pt-3">
+          {headline}
+          {children}
         </div>
+      )}
+
+      {offMap > 0 && (
+        <section className="mt-3 border-t border-border pt-2.5">
+          <p className="flex items-center gap-1 text-[11px]">
+            <span className="text-muted-foreground">Not on the map</span>
+            <span className="ml-auto font-mono text-muted-foreground">
+              {offMap} file{offMap === 1 ? "" : "s"}
+              {addedComponents.length > 0 && <span className="text-success"> · {addedComponents.length} new</span>}
+            </span>
+          </p>
+          <p className="mt-1.5 text-[11px] leading-snug text-muted-foreground">
+            {meta.historical ? "Added, moved or deleted since the analysis." : "Added by this diff — they join the map at the next analysis."}
+            {addedComponents.length > 0 && " The Repo view shows them as green components."}
+          </p>
+          {addedComponents.length > 0 && (
+            <ul className="mt-2 space-y-1.5">
+              {addedComponents.map((c) => (
+                <li key={c.id} className="text-[11px]">
+                  <p className="flex items-baseline gap-1.5">
+                    <span className="truncate font-medium text-success" title={c.name}>
+                      {c.name}
+                    </span>
+                    <span className="shrink-0 font-mono text-muted-foreground">{c.fileCount}</span>
+                  </p>
+                  {c.description && <p className="leading-snug text-muted-foreground">{c.description}</p>}
+                </li>
+              ))}
+            </ul>
+          )}
+          <ul className="mt-2 max-h-40 space-y-0.5 overflow-y-auto font-mono text-[11px] text-muted-foreground">
+            {result.unmatchedFiles.map((f) => (
+              <li key={f} className="truncate" title={f}>
+                {f}
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
     </div>
   );
@@ -989,7 +1067,7 @@ function CommitPicker({
   }
   if (state.status === "fallback") {
     return (
-      <p className="rounded-lg border border-border bg-muted/40 px-2.5 py-2 text-xs text-muted-foreground">
+      <p className="text-xs text-muted-foreground">
         Couldn&apos;t list this repo&apos;s commits (not linked, or the request failed). Use{" "}
         <span className="font-medium text-foreground">Branches</span> with commit shas instead.
       </p>
@@ -1007,9 +1085,7 @@ function CommitPicker({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-          Commits on the default branch
-        </span>
+        <span className="text-[11px] font-medium text-muted-foreground">Commits on the default branch</span>
         {analyzedIndex > 0 && (
           <button
             type="button"
@@ -1040,7 +1116,7 @@ function CommitPicker({
         )}
       </p>
 
-      <ul className="max-h-72 divide-y divide-border/60 overflow-y-auto rounded-lg ring-1 ring-border">
+      <ul className="max-h-72 divide-y divide-border/60 overflow-y-auto border-y border-border">
         {commits.map((commit, index) => {
           const selected = isPicked(commit.sha);
           const parent = commit.parents[0];
@@ -1062,14 +1138,12 @@ function CommitPicker({
                 />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-xs">{commit.subject || "(no message)"}</span>
-                  <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                  <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
                     <span className="font-mono">{commit.sha.slice(0, 7)}</span>
                     <span>{relativeDate(commit.date)}</span>
                     {commit.author && <span className="truncate">{commit.author}</span>}
                     {index === analyzedIndex && (
-                      <span className="rounded bg-secondary px-1 text-[9px] font-medium text-foreground uppercase">
-                        analyzed
-                      </span>
+                      <span className="text-foreground">analyzed</span>
                     )}
                   </span>
                 </span>
@@ -1078,7 +1152,7 @@ function CommitPicker({
                 <button
                   type="button"
                   onClick={() => onCompare(parent, commit.sha)}
-                  className="shrink-0 px-2 text-[10px] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100"
+                  className="shrink-0 px-2 text-[11px] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100"
                   title="What this commit changed (compare with its parent)"
                 >
                   Only this

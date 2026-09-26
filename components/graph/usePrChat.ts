@@ -1,7 +1,8 @@
 "use client";
 
-// Client state for the PR chat (DESIGN.md §6.7): the stored thread for the
-// current review target, and sending a question. The answer streams back
+// Client state for the chat (DESIGN.md §6.7): the stored thread for the
+// current review target — or, with no target, the repo's own thread — and
+// sending a question. The answer streams back
 // as NDJSON — the question, then one line per lookup the model makes, then
 // the answer — so the column can show "read app/map/page.tsx" while a slow
 // model is still working.
@@ -27,13 +28,18 @@ export interface UsePrChatResult {
   clear(): Promise<void>;
 }
 
+/** The query string naming a thread: the review target's, or the repo-wide one. */
+function threadQuery(target: ReviewTargetDTO | null): string {
+  return target ? reviewTargetQuery(target) : "scope=repo";
+}
+
 export function usePrChat(repoId: string, target: ReviewTargetDTO | null): UsePrChatResult {
   const [thread, setThread] = useState<ChatThreadDTO | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingTurn | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const targetKey = target ? reviewTargetKeyOf(target) : null;
+  const targetKey = target ? reviewTargetKeyOf(target) : "repo";
   const base = `/api/repos/${encodeURIComponent(repoId)}/chat`;
 
   useEffect(() => {
@@ -41,10 +47,9 @@ export function usePrChat(repoId: string, target: ReviewTargetDTO | null): UsePr
     setError(null);
     setPending(null);
     abortRef.current?.abort();
-    if (!target) return;
     let cancelled = false;
     setLoading(true);
-    fetch(`${base}?${reviewTargetQuery(target)}`)
+    fetch(`${base}?${threadQuery(target)}`)
       .then(async (res) => {
         const json = (await res.json().catch(() => null)) as (ChatThreadDTO & { error?: string }) | null;
         if (!res.ok || !json) throw new Error(json?.error ?? `Chat request failed (${res.status}).`);
@@ -67,7 +72,7 @@ export function usePrChat(repoId: string, target: ReviewTargetDTO | null): UsePr
 
   const send = useCallback(
     async (question: string, focusComponentId?: string) => {
-      if (!target || !question.trim()) return;
+      if (!question.trim()) return;
       const controller = new AbortController();
       abortRef.current = controller;
       setPending({ question, steps: [] });
@@ -78,7 +83,9 @@ export function usePrChat(repoId: string, target: ReviewTargetDTO | null): UsePr
         const res = await fetch(base, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target, message: question, focusComponentId }),
+          body: JSON.stringify(
+            target ? { target, message: question, focusComponentId } : { scope: "repo", message: question, focusComponentId }
+          ),
           signal: controller.signal,
         });
         if (!res.ok || !res.body) {
@@ -118,9 +125,8 @@ export function usePrChat(repoId: string, target: ReviewTargetDTO | null): UsePr
   const stop = useCallback(() => abortRef.current?.abort(), []);
 
   const clear = useCallback(async () => {
-    if (!target) return;
     try {
-      const res = await fetch(`${base}?${reviewTargetQuery(target)}`, { method: "DELETE" });
+      const res = await fetch(`${base}?${threadQuery(target)}`, { method: "DELETE" });
       if (!res.ok) throw new Error(`Could not clear the chat (${res.status}).`);
       setThread((t) => (t ? { ...t, messages: [] } : t));
     } catch (err) {

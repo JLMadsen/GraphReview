@@ -17,10 +17,11 @@
 // be thrown away by the next refresh anyway.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Eye, EyeOff, LoaderCircle, Sparkles, TriangleAlert } from "lucide-react";
+import { Eye, EyeOff, LoaderCircle, TriangleAlert } from "lucide-react";
 import { cn } from "cn";
 import { CardFlow, type CardFlowLink } from "./CardFlow";
 import { PR_CARD_WIDTH, PrMapCard, type PrCardMarker, type PrMapCardProps } from "./PrMapNode";
+import { Spark } from "./Spark";
 import { effectiveIntent, worstIntent } from "./review-visuals";
 import type { PrMapNodeDTO, PrMapResponseDTO } from "./pr-map-types";
 import type { FindingDTO, IntentMatch } from "./types";
@@ -173,26 +174,17 @@ export function PrMapCanvas({
   }, [links, cards]);
 
   // --- Summary -----------------------------------------------------------
-  const changedFiles = map?.nodes.reduce((n, node) => n + node.files.length, 0) ?? 0;
+  // File and line totals live in the diff summary (left column) — saying
+  // them again here is how the page ended up with four disagreeing counts.
   const groups = map?.nodes.filter((n) => n.role !== "context").length ?? 0;
-  const additions = map?.nodes.reduce((n, node) => n + node.files.reduce((m, f) => m + f.additions, 0), 0) ?? 0;
-  const deletions = map?.nodes.reduce((n, node) => n + node.files.reduce((m, f) => m + f.deletions, 0), 0) ?? 0;
 
   return (
     <div className={className}>
-      <div className="mb-3 flex min-h-8 flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <div className="mb-3 flex min-h-[26px] flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
           {map && (
-            <span>
-              <span className="font-medium text-foreground">{changedFiles}</span> changed file
-              {changedFiles === 1 ? "" : "s"} in{" "}
-              <span className="font-medium text-foreground">{groups}</span> group{groups === 1 ? "" : "s"}
-              {(additions > 0 || deletions > 0) && (
-                <span className="ml-2 font-mono">
-                  <span className="text-success">+{additions}</span>{" "}
-                  <span className="text-destructive">−{deletions}</span>
-                </span>
-              )}
+            <span className="font-mono text-[11px]">
+              {groups} group{groups === 1 ? "" : "s"}
             </span>
           )}
           {map && <SourceNote map={map} reviewPending={reviewPending} />}
@@ -204,10 +196,10 @@ export function PrMapCanvas({
             onClick={() => setShowContext((v) => !v)}
             aria-pressed={showContext}
             className={cn(
-              "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
+              "flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
               showContext
-                ? "border-border bg-card text-foreground hover:bg-secondary"
-                : "border-transparent bg-muted text-muted-foreground"
+                ? "border-foreground/25 bg-secondary text-foreground"
+                : "border-border text-muted-foreground hover:text-foreground"
             )}
             title="Untouched modules the changed code imports or is imported by"
           >
@@ -269,20 +261,20 @@ function SourceNote({ map, reviewPending }: { map: PrMapResponseDTO; reviewPendi
   if (map.source === "ai") {
     return (
       <span
-        className="flex items-center gap-1 rounded-full bg-brand-muted px-2 py-0.5 text-[11px] font-medium text-brand"
-        title={map.model ? `Grouped and named by ${map.model}` : "Grouped and named by the AI review"}
+        className="flex items-center gap-1 text-[11px]"
+        title={map.model ? `Grouped and named by ${map.model}` : "Grouped and named by the review"}
       >
-        <Sparkles className="size-3" aria-hidden /> AI grouping
+        <Spark /> grouped by review
       </span>
     );
   }
   if (reviewPending) {
-    return <span className="text-[11px]">Grouped by module — AI names arrive when the review finishes</span>;
+    return <span className="text-[11px]">Grouped by module — names arrive when the review finishes</span>;
   }
   if (map.aiOutdated) {
     return (
       <span className="text-[11px] text-warning">
-        Files changed since the AI grouping — re-run the review to refresh it
+        Files changed since the review grouped them — re-run the review to refresh it
       </span>
     );
   }

@@ -4,7 +4,14 @@
  *
  *   npx tsx lib/jobs/smoke-test-chat-checklist.ts
  */
-import { answerChecklist, parsePrChatReply, runPrChat, PR_CHAT_MAX_STEPS } from "@/lib/ai";
+import {
+  answerChecklist,
+  buildPrChatSystemPrompt,
+  parsePrChatReply,
+  runPrChat,
+  PR_CHAT_MAX_STEPS,
+  REPO_CHAT_SCOPE_MARKER,
+} from "@/lib/ai";
 import type { ChatMessage, ChatCompletionResult } from "@/lib/ai";
 import { matchesPathPattern } from "./checklist";
 
@@ -38,6 +45,12 @@ async function main(): Promise<void> {
   check("answer", answer.kind === "answer" && answer.answer === "It adds `x`.");
   const flat = parsePrChatReply(fence({ tool: "get_diff", path: "a.ts" }));
   check("args next to tool", flat.kind === "tool" && flat.args.path === "a.ts", JSON.stringify(flat));
+
+  console.log("repo-wide scope");
+  const repoPrompt = buildPrChatSystemPrompt({ context: "Repository: x", tools: [], scope: "repo" });
+  const changePrompt = buildPrChatSystemPrompt({ context: "Title: y", tools: [] });
+  check("repo prompt is marked and headed", repoPrompt.includes(REPO_CHAT_SCOPE_MARKER) && repoPrompt.includes("## The repo"));
+  check("change prompt is not", !changePrompt.includes(REPO_CHAT_SCOPE_MARKER) && changePrompt.includes("## The change"));
   const named = parsePrChatReply(fence({ tool: "search_code", arguments: { query: "foo" } }));
   check("args under 'arguments'", named.kind === "tool" && named.args.query === "foo");
   const asString = parsePrChatReply(fence({ tool: "read_file", args: '{"path":"b.ts"}' }));

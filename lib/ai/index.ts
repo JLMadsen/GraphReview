@@ -104,6 +104,7 @@ export type {
 export {
   PR_CHAT_MAX_STEPS,
   PR_CHAT_TASK_MARKER,
+  REPO_CHAT_SCOPE_MARKER,
   PR_CHAT_TOKEN_BUDGET,
   buildPrChatSystemPrompt,
   parsePrChatReply,
