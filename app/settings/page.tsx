@@ -1,5 +1,7 @@
 import { getActiveAiProviderId, getSettings, listAiProviders } from "@/lib/neo4j";
 import { SettingsForm } from "./settings-form";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ChecklistEditor } from "@/components/graph/ChecklistEditor";
 
 /**
  * Settings.
@@ -77,6 +79,22 @@ export default async function SettingsPage() {
         }))}
         initialActiveProviderId={activeProviderId}
       />
+
+      {/* The PR prerequisite checklist's defaults (DESIGN.md §6.6). Each
+          repo can switch these off or add its own from the checklist card
+          in its Graph tab. */}
+      <Card className="[--card-spacing:--spacing(5)]">
+        <CardHeader>
+          <CardTitle className="text-sm font-semibold tracking-tight">PR checklist</CardTitle>
+          <CardDescription className="text-[13px] leading-relaxed">
+            Checks shown under the graph for every pull request or ref comparison. AI questions are answered
+            once per commit, after the AI review finishes. A failing check is only a badge.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ChecklistEditor />
+        </CardContent>
+      </Card>
     </div>
   );
 }

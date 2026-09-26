@@ -148,3 +148,23 @@ export interface LinkedIssue {
   state: string;
   url: string;
 }
+
+/**
+ * The CI state of one commit, as the prerequisite checklist reads it. Shared
+ * with lib/gitlab (a pipeline is mapped onto the same shape).
+ *
+ * `none` means the host knows of no checks at all for the commit — which is
+ * not the same as passing.
+ */
+export type CiState = "success" | "failure" | "pending" | "none";
+
+export interface CiCheck {
+  name: string;
+  state: CiState;
+  url?: string;
+}
+
+export interface CiStatus {
+  state: CiState;
+  checks: CiCheck[];
+}

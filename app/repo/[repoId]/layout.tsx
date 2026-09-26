@@ -65,8 +65,11 @@ export default async function RepoDetailLayout({
     // rendered tab marks itself wide with `data-wide-shell` — `:has()` lets
     // this shared shell respond to which child route is inside it. See
     // `components/graph/GraphView.tsx` for the only element that sets it.
-    <div className="mx-auto w-full max-w-6xl px-6 py-4 has-[[data-wide-shell]]:max-w-[2000px]">
-      <div className="mb-3 flex flex-wrap items-start justify-between gap-4">
+    // The Graph tab also drops the shell's side padding and bottom padding:
+    // its columns run edge to edge (the chat column sits flush against the
+    // right edge), and each column pads itself. The header keeps its inset.
+    <div className="group/shell mx-auto w-full max-w-6xl px-6 py-4 has-[[data-wide-shell]]:max-w-none has-[[data-wide-shell]]:px-0 has-[[data-wide-shell]]:pb-0">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-4 group-has-[[data-wide-shell]]/shell:px-4">
         <div className="min-w-0">
           <h1 className="text-xl leading-tight font-semibold tracking-[-0.02em]">
             {repo?.name ?? repoId}

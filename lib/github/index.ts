@@ -9,6 +9,9 @@ export {
   compareRefs,
   getRefSha,
   getLinkedIssues,
+  getCommitCiStatus,
+  getFileAtRef,
+  combineCiStates,
 } from "./client";
 
 export { GitHubApiError, toGitHubApiError } from "./errors";
@@ -27,4 +30,7 @@ export type {
   PullRequestFile,
   RefComparison,
   LinkedIssue,
+  CiState,
+  CiCheck,
+  CiStatus,
 } from "./types";

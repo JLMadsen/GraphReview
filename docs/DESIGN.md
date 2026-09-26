@@ -254,6 +254,97 @@ Both stay mounted (stacked in one grid cell, the inactive one transparent and `i
 
 Covered by `npx tsx lib/jobs/smoke-test-pr-map.ts` (builder, normalisation, and the real client against the mock server, which answers `TASK: pr-map` by renaming the heuristic cards).
 
+### 6.5 The app map — the whole codebase as cards, at three levels (built 2026-09-26)
+
+**Problem.** The PR map (§6.4) turned out to be the most readable picture in the app, but it only exists for a diff. The Repo graph shows the whole codebase, yet at 50–150 module nodes with every import drawn it says *where* code is, not *what the app is made of* or *how the parts work together*.
+
+**What it is.** A third view behind the Graph tab's switch, always available: **Repo | App map | PR** (PR only while a diff is selected). It draws the whole analyzed codebase on the PR map's canvas (cards of files, labelled edges, left-to-right ELK layout) at one of three **levels of detail**:
+- **Architecture** — one card per layer from a fixed palette: UI, Server & API, Logic, Data & storage, Integrations, Infrastructure, Tests & tooling (`APP_LAYERS` in `components/graph/app-map-types.ts`). Chips are the modules contributing files to the layer.
+- **Features** — one card per capability, across every folder that implements it: "GitLab" = `lib/gitlab/` + `lib/jobs/gitlab-access.ts`. Chips are files (key files first); a bar shows which layers the feature spans.
+- **Modules** — one card per analyzed module (the Repo graph's nodes), coloured by dominant layer.
+
+Every card is coloured by layer (a stripe; per-file dots on multi-layer cards). Selecting a card or an arrow opens the **explainer** (`AppMapPanel`, right column): the AI explanation ("How it works"), "Start here" key files with their role, the layers it spans, every connection in and out with its verb and one-sentence explanation, its modules and all its files. A connection shows the file-level imports behind it. Modules and files open the usual component panel underneath. With a diff selected, cards and chips holding changed files are marked ("3 changed"). A search box dims cards that match neither by name nor by file path. Busy maps draw only their strongest connections (about 1.5 per card, at least 16) plus every connection of the selected card; the layout is computed from the strong set, so clicking never reshuffles cards. A footer toggle shows all.
+
+#### Heuristic first, AI on demand
+
+The map is free and instant without a model (`lib/jobs/app-map.ts`, pure apart from `loadAppMapInput`, which reads every file, its owner and every `IMPORTS` edge):
+- **Layers** — `classifyLayer(path)`: tests → infrastructure (CI, Docker, `worker/`, `*-queue`) → server (`app/**/route.ts`, `actions.ts`, `api/`, `routes/` …) → UI by extension (`.tsx/.vue/…`) → data (`db`, `neo4j`, `prisma`, `schema`, `migrations` … anywhere in the path) → integrations (`github`, `gitlab`, `ai`, `stripe`, `webhook`, `adapters` …) → UI by folder or `useX` hooks → logic.
+- **Features** — each file gets one key: its stem's feature-word compound shared with another file (`pr-map-types`, `PrMapCanvas` → "prmap"), else its most widely shared stem word (`gitlab-access` → "gitlab", `ReviewPanel` → "review"; a word that is only ever one file name repeated across folders, `resolve.ts` × 6, is a convention and skipped), else the deepest folder whose name or a word of it appears elsewhere (`…/review/route.ts` → "review", `diff-impact/` → "diff"), else the outermost feature-like folder, else the owning module. One-file features fold into their module's usual feature, and while there are more than 16, the least feature-like group (module/folder fallbacks first, groups spanning several top-level folders last) folds into the feature its files import from or are imported by most.
+- **Modules** — the analysis's own.
+- **Edges** — always aggregated from file-level imports between cards (`assembleAppMap`), with up to three sample imports each. Heuristic key files are the files most imported from other cards.
+
+**"Explain with AI"** (toolbar button, per level, never automatic — same reasoning as labeling, §9.2) runs an `app-map` BullMQ job (`lib/jobs/app-map-queue.ts`, `lib/jobs/app-map-job.ts`, `attempts: 1`, one run per repo, cooperative cancel like the label queue):
+1. **grouping** (`lib/ai/app-map.ts`) — *features*: one call over the whole file tree (per folder: owning module and description, file names, top-level declaration names read from the checkout) returns features whose members are folder prefixes or file paths, the longest match winning, so `lib/jobs/` can be "Background Jobs" while `lib/jobs/gitlab-access.ts` is "GitLab". *Architecture*: the same tree with each file's heuristic layer in brackets; the model returns a description per layer and **only the corrections** (`moves`), so the path heuristic stays the deterministic base. *Modules*: nothing to group.
+2. **explaining** — the cards are assembled exactly as the read path does, then explained a few per call (1 layer, 2 features or 4 modules): per card its files with declarations, modules, layers and its outgoing/incoming connections with sample imports; back come a description, a 3–5 sentence explanation, up to 5 key files with roles, and a verb + sentence per outgoing connection. Normalisation drops unknown paths, members, cards and connections — the model can name and explain an edge, never invent one.
+3. **saving** — one `(:AppMap)` node per repo and level.
+
+Grouping calls get a 16k-token budget (`APP_MAP_TOKEN_BUDGET`), fitted by dropping declarations and files per folder. An unusable feature grouping falls back to explaining the heuristic features; a failed explain batch is logged and skipped.
+
+#### Storage and freshness
+
+`(:AppMap)` stores only naming, membership rules and prose; cards, files, edges and counts are re-derived from the current graph on every read, like `(:PrMap)`. A file added after a features run lands on its card when it sits under a member folder; otherwise the heuristic places it and the view says how many files aren't in the AI grouping. A stored architecture run also colours every other level (a feature's layer bar follows the AI's corrections).
+
+#### API
+
+- `GET /api/repos/[repoId]/app-map?level=architecture|features|modules` → `{level, nodes, edges, source: "heuristic"|"ai", model?, generatedAt?, newFiles?, totalFiles, fileOwners}` (wire types in `components/graph/app-map-types.ts`). Read-only, no model calls.
+- `POST /api/repos/[repoId]/app-map/job {level}` → `{jobId, enqueued}` (400 `ai_not_configured`, 503 `queue_unavailable`); `GET` → `{state, level?, progress?: {level, phase: grouping|explaining|saving, done, total, calls, promptTokens, completionTokens}, error?, finishedAt?, aiConfigured, generated: {<level>: {generatedAt, model}}}` (`?logs=1` adds the job log); `DELETE` cancels.
+
+#### Rendering
+
+`CardFlow.tsx` is the PR map's canvas extracted for both maps: React Flow + elkjs, cards measured offscreen then laid out, not draggable, refit when the layout changes **or the pane is resized** (so opening the explainer or resizing the window never leaves the map small in a corner). `PrMapCanvas` renders through it unchanged. The App map view mounts the first time it is opened and stays mounted, like the other two views.
+
+Covered by `npx tsx lib/jobs/smoke-test-app-map.ts` (layer classification, the GitLab/Review cross-folder features, member matching, assembly at all three levels, stored runs applied, normalisation, and all three calls against the mock server, which answers `TASK: app-map-features` / `-layers` / `-explain`). **Not yet run live** against Neo4j/Redis or a real model — verified with the real analyzer's output for this repo served to the UI through a stubbed fetch.
+
+### 6.6 The PR prerequisite checklist (built 2026-09-26)
+
+A card under the graph, left of the AI review (1/3 : 2/3 of the middle column), listing checks a change should meet before it's approved. **A failing check is only a badge** — GraphReview gates nothing and posts nothing.
+
+**Where items are defined: GraphReview's own settings, never the reviewed repo.** Global defaults (Settings → PR checklist) apply to every repo; each repo can switch a default off or add items of its own (the gear on the card). Stored as `(:ChecklistItem {scope: "global" | <repoId>})` plus `Repo.disabledChecklistItemIds`. Six defaults are seeded once (`ensureDefaultChecklist`, guarded by `(:ChecklistMeta {id:"global"})`) — edits and deletions after that stick.
+
+| kind | passes when | notes |
+|---|---|---|
+| `ci` | the head commit's CI succeeded | GitHub check runs + commit statuses, GitLab's latest pipeline + its jobs (`getCommitCiStatus` in both clients). Local repos: *doesn't apply*. Polled every 30 s while pending. GraphReview never runs code itself. |
+| `description` | the PR description has ≥ N characters | ref comparisons: *doesn't apply* |
+| `linked-issue` | the PR closes/links an issue | ref comparisons: *doesn't apply* |
+| `max-files` / `max-lines` | ≤ N files / changed lines | |
+| `protected-paths` | none of the patterns is touched | `dir/**`, `*.ext`, `prefix*`, exact paths; touching one fails as "needs extra care" |
+| `ai` | the model answers the question `pass` | see below |
+
+**Evaluation** (`lib/jobs/checklist.ts`) reads the target through the review's own `resolveTarget` (exported from `review.ts`, wrapped in a 60 s per-target cache in `lib/jobs/pr-context.ts`), so the checklist, the chat and the review all see a target the same way. Deterministic items are computed on every read and never stored.
+
+**AI items** are answered **about the whole PR in one model call** (`lib/ai/checklist.ts`, marker `TASK: pr-checklist`): intent, changed-file list, as much diff as fits a 14k-token budget, and the review's finding summaries. Answers are `pass | fail | unknown` with a rationale, stored as `(:ChecklistAnswer)` per (repo, target, item) and stamped with the head sha — a push turns them back into *pending* rather than leaving them wrong. The card runs them **automatically once per head commit, after the AI review finishes** (so they can use its findings and don't compete with it); targets that don't auto-review (a merged PR) wait for the "Run AI checks" button.
+
+API: `GET /api/repos/[repoId]/checklist?prNumber=|baseRef=&headRef=[&fresh=1]`, `POST …/checklist {target, action:"run-ai"}`, `POST …/checklist/overrides {itemId, disabled}`, `GET|POST /api/checklist/items[?repoId=]`, `PATCH|DELETE /api/checklist/items/[itemId]`. Wire types in `components/graph/checklist-types.ts`.
+
+Live-tested on MultiTool (a local repo, ref comparison, real Gemini model): CI/description/linked-issue correctly *doesn't apply*, line count exact, both AI questions answered with concrete rationales (~14k prompt tokens).
+
+**Known limitation:** AI questions are asked for ref comparisons too, where a question about the description can only fail or be unknown. A per-item "PRs only" switch would fix that.
+
+### 6.7 The PR chat (built 2026-09-26)
+
+The last column of the Graph tab, flush against the right edge and sticky under the app's nav (its height follows its real top so the input is always on screen; width resizable). One conversation **per review target**, stored as `(:ChatMessage)` nodes (`lib/neo4j/chat.ts`) with the head sha each message was about — the column marks where the change moved on since. Chats are for the local single user; there is no sharing.
+
+**What it's for**, as decided: explain a change, trace its impact ("what else uses this?"), challenge a finding. So the model gets **read-only lookups** (`lib/jobs/pr-chat.ts`), never shell access or writes:
+
+| tool | what it returns |
+|---|---|
+| `list_changed_files` | the diff's files with +/- and their component |
+| `get_diff` | one changed file's patch |
+| `read_file` | up to 250 lines of a file at the PR's head (or base) — `git show` for local repos, the contents API for GitHub/GitLab, the default-branch checkout as a labelled fallback |
+| `search_code` | fixed-string search with each hit's component — `git grep` at the head commit for local repos, the default-branch checkout otherwise (labelled) |
+| `get_component` | a component's description, files, dependencies and dependents |
+| `get_findings` | the AI review's findings, optionally for one component |
+
+**The agent loop** (`lib/ai/pr-chat.ts`, marker `TASK: pr-chat`) uses the same plain-prompted JSON as every other AI call — each reply is one fenced block, `{"tool", "args"}` or `{"answer"}` — rather than provider-native tool calling: one code path for hosted APIs and local model servers alike. At most 8 lookups per question, then it must answer. The PR summary (intent, files, review verdicts) is in the system message, which budget trimming never drops; older turns go first (24k-token budget). Argument parsing is deliberately forgiving (`args`/`arguments`/`parameters`/`input`, a JSON string, or keys next to `"tool"`) — the first live test with Gemini Flash Lite sent every call's arguments outside `args`, and each lookup silently came back empty until this was fixed.
+
+**Tied to the graph both ways:** the component selected in the graph is sent as the question's focus (a dismissable "About …" chip); components an answer's lookups touched become chips that select them in the graph, and changed-file paths in an answer open that file's diff.
+
+`POST /api/repos/[repoId]/chat {target, message, focusComponentId?}` streams NDJSON — the stored question, one line per lookup as it happens, then the stored answer (a failed turn is stored as an error message) — so the column shows "read the diff of …" while a slow model works. `GET …/chat?target` returns the thread plus the target's current head; `DELETE …/chat?target` clears it. Wire types in `components/graph/chat-types.ts`.
+
+Live-tested on MultiTool with a real model: "What does the commute feature do, and which other parts of the app use the new commute API route?" → `get_diff app/api/commute/route.ts`, `search_code "/api/commute"` → a grounded answer naming `components/map/commute_dialog.tsx` (~4.4k tokens).
+
+**Not built:** answers are not streamed token by token (lookups are; the answer arrives whole); no provider-native tool calling.
+
 ## 7. Neo4j schema
 
 Single Neo4j database; every node except `Settings` is `repoId`-scoped so multiple repos coexist without needing per-repo databases (revisit only if strict isolation becomes necessary).
@@ -267,6 +358,7 @@ Single Neo4j database; every node except `Settings` is `repoId`-scoped so multip
 - `(:PullRequest)` — `id`, `repoId`, `number`, `title`, `description`, `author`, `state`, `baseRef`, `headRef`, `headSha`, `url`, `createdAt`, `updatedAt`
 - `(:RefSnapshot)` — `sha`, `repoId`, `ref`, `message`, `author`, `timestamp` — covers both a PR's base/head and ad-hoc ref-to-ref comparisons
 - `(:Finding)` — `id`, `repoId`, `prId` (nullable), **`targetKey`** (what was reviewed: `pr:<number>` or `refs:<baseRef>...<headRef>` — added so ref-comparison reviews, which have no `PullRequest` node, can be stored and replaced), `componentId`, `filePath`, `lineRange`, `summary`, `intentMatch` (`match` | `partial` | `mismatch` | `unknown`), `confidence`, `rationale`, `model`, `createdAt`, **`reviewedBaseSha`, `reviewedHeadSha`, `reviewedAt`** (as built — the exact commits the review actually covered, captured at review time so staleness can be detected later even after the BullMQ job record has aged out; see §10's "As built") — `filePath`/`lineRange` are populated from the diff hunk the finding was generated from (§6.2, §9), so a finding attached to a component can still be navigated to the exact file/lines it's about. Findings are **overwritten**, not versioned, when a PR's head SHA changes — see §10.
+- `(:AppMap)` — **as built (§6.5)**: `id` (`<repoId>:appmap:<level>`), `repoId`, `level`, `groupsJson`, `edgesJson`, `model`, `createdAt` — one level's AI grouping and explanations of the app map
 - `(:PrMap)` — **as built (§6.4)**: `id` (`<repoId>:prmap:<targetKey>`), `repoId`, `targetKey`, `filesKey` (the sorted changed paths the grouping covers), `groupsJson`, `edgeLabelsJson`, `model`, `createdAt` — the review job's AI grouping of one target's PR map
 - `(:Settings {id: "global"})` — a singleton, not `repoId`-scoped, since GitHub PAT and AI provider config are shared instance-wide under decision #6. Credential fields are stored encrypted — see §11. `activeAiProviderId` points at whichever `AiProvider` node (below) is currently in use.
 - `(:AiProvider)` — **as built (beyond the original single-provider design)**: `id`, `name`, `baseUrl`, `apiKeyEncrypted`, `model`, `createdAt`. Decision #8 fixes the *shape* of a provider (generic OpenAI-compatible base URL/key/model, no per-vendor fields) but says nothing about how many can be saved at once; in practice, switching between e.g. a local model server and a hosted one by re-typing a base URL/key every time was annoying enough to warrant more than one, so this is a list of saved providers rather than three properties directly on `Settings`. Exactly one is "active" at a time (`Settings.activeAiProviderId`), and only the active provider's config is used for reviews/labeling. A one-time lazy migration (`lib/neo4j/ai-provider.ts`) converts an existing single-provider `Settings` node (its old `aiBaseUrl`/`aiApiKeyEncrypted`/`aiModel` properties) into the first saved, auto-activated `AiProvider` node, so nobody who already had a provider configured has to re-enter it.

@@ -1,7 +1,8 @@
 "use client";
 
 // The Graph tab's PR view (DESIGN.md §6.4): the PR map drawn as cards with
-// labelled edges, laid out left-to-right by ELK and rendered with React Flow.
+// labelled edges, laid out left-to-right by ELK and rendered with React Flow
+// through the shared `CardFlow` canvas (also used by the app map).
 //
 // Why not the Cytoscape canvas: a card here holds a list of clickable file
 // chips, which is HTML, and Cytoscape draws to a <canvas>. The map is small
@@ -15,75 +16,14 @@
 // Nodes are not draggable: the layout is the point, and a dragged card would
 // be thrown away by the next refresh anyway.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  Controls,
-  Handle,
-  MarkerType,
-  Position,
-  ReactFlow,
-  ReactFlowProvider,
-  getViewportForBounds,
-  useReactFlow,
-  type Edge,
-  type Node,
-  type NodeProps,
-} from "@xyflow/react";
-import "@xyflow/react/dist/style.css";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Eye, EyeOff, LoaderCircle, Sparkles, TriangleAlert } from "lucide-react";
 import { cn } from "cn";
+import { CardFlow, type CardFlowLink } from "./CardFlow";
 import { PR_CARD_WIDTH, PrMapCard, type PrCardMarker, type PrMapCardProps } from "./PrMapNode";
 import { effectiveIntent, worstIntent } from "./review-visuals";
 import type { PrMapNodeDTO, PrMapResponseDTO } from "./pr-map-types";
 import type { FindingDTO, IntentMatch } from "./types";
-
-// Concrete colours rather than CSS variables: React Flow writes the arrow
-// marker colour into SVG attributes, where `var(...)` doesn't resolve. Both
-// read on the light and the dark canvas.
-const EDGE_COLOR = "#8a93a6";
-const EDGE_ACTIVE_COLOR = "#6d72f0";
-/** Above this many edges, labels only show on the selected card's edges — otherwise "imports ×3" everywhere buries the cards. */
-const ALWAYS_LABEL_EDGES = 12;
-const MIN_ZOOM = 0.2;
-
-type ElkApi = { layout: (graph: unknown) => Promise<{ children?: Array<{ id: string; x?: number; y?: number }> }> };
-let elkPromise: Promise<ElkApi> | null = null;
-/** elkjs is ~1.5 MB — loaded on first layout, not with the Graph tab. */
-function getElk(): Promise<ElkApi> {
-  elkPromise ??= import("elkjs/lib/elk.bundled.js").then((mod) => {
-    const ELK = (mod.default ?? mod) as unknown as new () => ElkApi;
-    return new ELK();
-  });
-  return elkPromise;
-}
-
-const ELK_OPTIONS: Record<string, string> = {
-  "elk.algorithm": "layered",
-  "elk.direction": "RIGHT",
-  "elk.layered.spacing.nodeNodeBetweenLayers": "120",
-  "elk.spacing.nodeNode": "36",
-  "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
-  "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
-  "elk.separateConnectedComponents": "true",
-  "elk.spacing.componentComponent": "56",
-  "elk.aspectRatio": "1.8",
-  "elk.padding": "[top=24,left=24,bottom=24,right=24]",
-};
-
-type CardData = { card: PrMapCardProps };
-
-function PrCardNode({ data }: NodeProps<Node<CardData>>) {
-  const hidden = { opacity: 0, pointerEvents: "none" as const, border: 0, width: 1, height: 1 };
-  return (
-    <>
-      <Handle type="target" position={Position.Left} isConnectable={false} style={hidden} />
-      <PrMapCard {...data.card} />
-      <Handle type="source" position={Position.Right} isConnectable={false} style={hidden} />
-    </>
-  );
-}
-
-const NODE_TYPES = { prCard: PrCardNode };
 
 export interface PrMapCanvasProps {
   map: PrMapResponseDTO | null;
@@ -102,15 +42,7 @@ export interface PrMapCanvasProps {
   className?: string;
 }
 
-export function PrMapCanvas(props: PrMapCanvasProps) {
-  return (
-    <ReactFlowProvider>
-      <PrMapFlow {...props} />
-    </ReactFlowProvider>
-  );
-}
-
-function PrMapFlow({
+export function PrMapCanvas({
   map,
   loading,
   error,
@@ -122,8 +54,6 @@ function PrMapFlow({
   reviewPending,
   className,
 }: PrMapCanvasProps) {
-  const { setViewport } = useReactFlow();
-  const paneRef = useRef<HTMLDivElement | null>(null);
   const [showContext, setShowContext] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   /** The card clicked last — kept locally because a card with no component (e.g. dependencies) can't be expressed as a component selection. */
@@ -217,10 +147,7 @@ function PrMapFlow({
     [expanded, highlighted, cardMarkers, fileMarkers, onOpenFile, toggleExpand, onShowInRepo]
   );
 
-  // --- Layout: measure offscreen, then ELK -------------------------------
-  const measureRefs = useRef(new Map<string, HTMLDivElement>());
-  /** Top-left corner and measured size of every card, from the last layout. */
-  const [positions, setPositions] = useState<Map<string, { x: number; y: number; width: number; height: number }> | null>(null);
+  // --- Canvas ------------------------------------------------------------
   const layoutKey = useMemo(
     () =>
       JSON.stringify([
@@ -229,135 +156,21 @@ function PrMapFlow({
       ]),
     [cards, links, expanded, cardMarkers]
   );
-  const layoutRun = useRef(0);
-
-  useLayoutEffect(() => {
-    const run = ++layoutRun.current;
-    if (cards.length === 0) {
-      setPositions(null);
-      return;
-    }
-    const children = cards.map((card) => ({
-      id: card.id,
-      width: PR_CARD_WIDTH,
-      height: Math.ceil(measureRefs.current.get(card.id)?.offsetHeight ?? 120),
-    }));
-    const graph = {
-      id: "root",
-      layoutOptions: ELK_OPTIONS,
-      children,
-      edges: links.map((e, i) => ({ id: `e${i}`, sources: [e.source], targets: [e.target] })),
-    };
-    getElk()
-      .then((elk) => elk.layout(graph))
-      .then((result) => {
-        if (run !== layoutRun.current) return;
-        const size = new Map(children.map((c) => [c.id, c]));
-        setPositions(
-          new Map(
-            (result.children ?? []).map((c) => [
-              c.id,
-              { x: c.x ?? 0, y: c.y ?? 0, width: PR_CARD_WIDTH, height: size.get(c.id)?.height ?? 120 },
-            ])
-          )
-        );
-      })
-      .catch((err: unknown) => {
-        console.error("PR map layout failed:", err);
-        if (run !== layoutRun.current) return;
-        // A plain column is still readable.
-        let y = 0;
-        setPositions(
-          new Map(
-            children.map((c) => {
-              const pos = { x: 0, y, width: c.width, height: c.height };
-              y += c.height + 32;
-              return [c.id, pos];
-            })
-          )
-        );
-      });
-    // `layoutKey` captures everything that changes a card's size or the edge set.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layoutKey]);
-
-  // Refit only when the layout itself changes — never on selection, so a
-  // click doesn't yank the viewport out from under the pointer. Computed from
-  // the layout rather than with `fitView()`: in React Flow 12 that only
-  // *queues* a fit, flushed through `onNodesChange`, which a canvas with
-  // fixed, non-draggable nodes never fires.
-  useEffect(() => {
-    const pane = paneRef.current;
-    if (!positions || positions.size === 0 || !pane) return;
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (const p of positions.values()) {
-      minX = Math.min(minX, p.x);
-      minY = Math.min(minY, p.y);
-      maxX = Math.max(maxX, p.x + p.width);
-      maxY = Math.max(maxY, p.y + p.height);
-    }
-    const viewport = getViewportForBounds(
-      { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
-      pane.clientWidth,
-      pane.clientHeight,
-      MIN_ZOOM,
-      1,
-      0.08
-    );
-    void setViewport(viewport, { duration: 200 });
-  }, [positions, setViewport]);
-
-  const nodes = useMemo<Node<CardData>[]>(
-    () =>
-      positions
-        ? cards
-            .filter((card) => positions.has(card.id))
-            .map((card) => ({
-              id: card.id,
-              type: "prCard",
-              position: { x: positions.get(card.id)!.x, y: positions.get(card.id)!.y },
-              data: { card: cardProps(card) },
-              draggable: false,
-              selectable: false,
-              connectable: false,
-            }))
-        : [],
-    [positions, cards, cardProps]
+  const cardIdList = useMemo(() => cards.map((c) => c.id), [cards]);
+  const renderCard = useCallback(
+    (id: string) => {
+      const card = cards.find((c) => c.id === id);
+      return card ? <PrMapCard {...cardProps(card)} /> : null;
+    },
+    [cards, cardProps]
   );
-
-  const edges = useMemo<Edge[]>(() => {
+  const flowLinks = useMemo<CardFlowLink[]>(() => {
     const roleOf = new Map(cards.map((c) => [c.id, c.role]));
-    return links.map((link) => {
-      const active = highlighted.has(link.source) || highlighted.has(link.target);
-      const dimmed = highlighted.size > 0 && !active;
-      const context = roleOf.get(link.source) === "context" || roleOf.get(link.target) === "context";
-      const color = active ? EDGE_ACTIVE_COLOR : EDGE_COLOR;
-      const labelled = active || links.length <= ALWAYS_LABEL_EDGES;
-      return {
-        id: `${link.source}->${link.target}`,
-        source: link.source,
-        target: link.target,
-        label: labelled ? (link.weight > 1 ? `${link.label} ×${link.weight}` : link.label) : undefined,
-        selectable: false,
-        focusable: false,
-        markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color },
-        style: {
-          stroke: color,
-          // Heavier for edges that stand for many imports.
-          strokeWidth: (active ? 0.6 : 0) + 1.2 + Math.min(1.6, Math.log2(link.weight) * 0.5),
-          strokeDasharray: context ? "5 4" : undefined,
-          opacity: dimmed ? 0.3 : 1,
-        },
-        labelStyle: { fill: "var(--muted-foreground)", fontSize: 11, opacity: dimmed ? 0.4 : 1 },
-        labelBgStyle: { fill: "var(--canvas)" },
-        labelBgPadding: [5, 2] as [number, number],
-        labelBgBorderRadius: 4,
-      };
-    });
-  }, [links, cards, highlighted]);
+    return links.map((link) => ({
+      ...link,
+      dashed: roleOf.get(link.source) === "context" || roleOf.get(link.target) === "context",
+    }));
+  }, [links, cards]);
 
   // --- Summary -----------------------------------------------------------
   const changedFiles = map?.nodes.reduce((n, node) => n + node.files.length, 0) ?? 0;
@@ -404,67 +217,29 @@ function PrMapFlow({
         )}
       </div>
 
-      <div
-        ref={paneRef}
-        className="relative h-[min(68vh,680px)] min-h-[440px] overflow-hidden rounded-xl bg-canvas ring-1 ring-border"
-        style={
-          {
-            // The un-suffixed names: React Flow re-declares the `-default`
-            // ones on its own root, which would shadow anything set here.
-            "--xy-background-color": "transparent",
-            "--xy-controls-button-background-color": "var(--card)",
-            "--xy-controls-button-background-color-hover": "var(--secondary)",
-            "--xy-controls-button-color": "var(--foreground)",
-            "--xy-controls-button-color-hover": "var(--foreground)",
-            "--xy-controls-button-border-color": "var(--border)",
-            "--xy-controls-box-shadow": "0 0 0 1px var(--border)",
-          } as React.CSSProperties
-        }
-      >
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={NODE_TYPES}
-          nodesDraggable={false}
-          nodesConnectable={false}
-          elementsSelectable={false}
-          minZoom={MIN_ZOOM}
-          maxZoom={1.6}
-          proOptions={{ hideAttribution: true }}
-          onNodeClick={(_, node) => {
-            const card = map?.nodes.find((n) => n.id === node.id);
-            if (!card) return;
-            if (highlighted.has(card.id) && activeCardId === card.id) {
-              setActiveCardId(null);
-              onSelectComponents([]);
-              return;
-            }
-            setActiveCardId(card.id);
-            onSelectComponents(card.componentIds);
-          }}
-          onPaneClick={() => {
+      <CardFlow
+        cardIds={cardIdList}
+        cardWidth={PR_CARD_WIDTH}
+        renderCard={renderCard}
+        links={flowLinks}
+        highlighted={highlighted}
+        layoutKey={layoutKey}
+        onCardClick={(id) => {
+          const card = map?.nodes.find((n) => n.id === id);
+          if (!card) return;
+          if (highlighted.has(card.id) && activeCardId === card.id) {
             setActiveCardId(null);
             onSelectComponents([]);
-          }}
-        >
-          <Controls showInteractive={false} position="bottom-right" />
-        </ReactFlow>
-
-        {/* Offscreen measuring pass — same card, same width, never seen. */}
-        <div aria-hidden inert className="pointer-events-none invisible absolute top-0 left-[-10000px]">
-          {cards.map((card) => (
-            <div
-              key={card.id}
-              ref={(el) => {
-                if (el) measureRefs.current.set(card.id, el);
-                else measureRefs.current.delete(card.id);
-              }}
-            >
-              <PrMapCard {...cardProps(card)} />
-            </div>
-          ))}
-        </div>
-
+            return;
+          }
+          setActiveCardId(card.id);
+          onSelectComponents(card.componentIds);
+        }}
+        onPaneClick={() => {
+          setActiveCardId(null);
+          onSelectComponents([]);
+        }}
+      >
         {!map && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
             {error ? (
@@ -485,7 +260,7 @@ function PrMapFlow({
             This diff changes no files.
           </div>
         )}
-      </div>
+      </CardFlow>
     </div>
   );
 }

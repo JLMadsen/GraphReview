@@ -86,6 +86,39 @@ export type {
   PrMapAiResult,
 } from "./pr-map";
 
+export {
+  CHECKLIST_TASK_MARKER,
+  CHECKLIST_TOKEN_BUDGET,
+  answerChecklist,
+  buildChecklistSystemPrompt,
+} from "./checklist";
+export type {
+  ChecklistAnswer,
+  ChecklistDiffFile,
+  ChecklistInput,
+  ChecklistQuestion,
+  ChecklistResult,
+  ChecklistVerdict,
+} from "./checklist";
+
+export {
+  PR_CHAT_MAX_STEPS,
+  PR_CHAT_TASK_MARKER,
+  PR_CHAT_TOKEN_BUDGET,
+  buildPrChatSystemPrompt,
+  parsePrChatReply,
+  runPrChat,
+} from "./pr-chat";
+export type {
+  PrChatInput,
+  PrChatResult,
+  PrChatStep,
+  PrChatTool,
+  PrChatToolOutput,
+  PrChatToolRunner,
+  PrChatTurn,
+} from "./pr-chat";
+
 export { buildSystemPrompt, buildUserMessage } from "./prompts";
 export type { UserMessageOptions } from "./prompts";
 
@@ -96,3 +129,28 @@ export type {
   ChatCompletionResult,
   TokenUsage,
 } from "./types";
+
+export {
+  APP_EXPLAIN_TASK_MARKER,
+  APP_FEATURES_TASK_MARKER,
+  APP_LAYERS_TASK_MARKER,
+  APP_MAP_TOKEN_BUDGET,
+  explainAppCards,
+  groupAppFeatures,
+  normalizeAppExplanations,
+  normalizeAppFeatures,
+  normalizeAppLayers,
+  placeAppLayers,
+} from "./app-map";
+export type {
+  AppCardExplanation,
+  AppEdgeExplanation,
+  AppExplainCard,
+  AppExplainInput,
+  AppFeatureGroup,
+  AppLayerPlacement,
+  AppMapAiFile,
+  AppMapAiFolder,
+  AppMapCallOptions,
+  AppMapTreeInput,
+} from "./app-map";

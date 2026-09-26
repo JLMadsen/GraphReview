@@ -169,6 +169,42 @@ export {
 } from "./pr-map";
 
 export {
+  assembleAppMap,
+  buildAppMap,
+  classifyLayer,
+  groupsForLevel,
+  heuristicFeatureGroups,
+  layerResolver,
+  loadAppMapInput,
+  matchMember,
+  toStoredAppMaps,
+  type AppMapGroup,
+  type AppMapInput,
+  type StoredAppMap,
+  type StoredAppMapEdge,
+  type StoredAppMapGroup,
+} from "./app-map";
+
+export {
+  APP_MAP_CANCELLED_REASON,
+  APP_MAP_JOB_NAME,
+  APP_MAP_QUEUE_NAME,
+  appMapJobId,
+  cancelAppMap,
+  clearAppMapCancel,
+  closeAppMapQueue,
+  enqueueAppMap,
+  getAppMapJob,
+  getAppMapJobLogs,
+  getAppMapQueue,
+  isAppMapCancelRequested,
+  type AppMapJob,
+  type AppMapJobData,
+  type AppMapJobResult,
+  type AppMapProgress,
+} from "./app-map-queue";
+
+export {
   checkReviewFreshness,
   invalidateReviewFreshness,
   type ReviewFreshness,
@@ -200,4 +236,6 @@ export {
 //
 // `./label` likewise (lib/ai):
 //     import { runLabelJob } from "@/lib/jobs/label";
+// and `./app-map-job`:
+//     import { runAppMapJob } from "@/lib/jobs/app-map-job";
 export type { JobLogger } from "./analyze";

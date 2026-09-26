@@ -138,7 +138,7 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
 // Diff + intent sources
 // ---------------------------------------------------------------------------
 
-interface ResolvedTarget {
+export interface ResolvedTarget {
   files: LocalFilePatch[];
   intent: ReviewInput["intent"];
   /** `(:PullRequest)` node id to hang `Finding -[:FOR]->` off, for PR targets only. */
@@ -204,7 +204,7 @@ async function persistPullRequestNode(
 }
 
 /** Fetches the changed files and the intent context for a review target, from whichever source the repo has (local checkout vs. GitHub API). */
-async function resolveTarget(
+export async function resolveTarget(
   repo: RepoRecord,
   target: ReviewTarget,
   log: JobLogger

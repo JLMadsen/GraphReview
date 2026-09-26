@@ -8,6 +8,8 @@ export {
   compareRefs,
   getRefSha,
   getLinkedIssues,
+  getCommitCiStatus,
+  getFileAtRef,
 } from "./client";
 
 export { GitLabApiError } from "./errors";
@@ -25,4 +27,7 @@ export type {
   PullRequestFile,
   RefComparison,
   LinkedIssue,
+  CiState,
+  CiCheck,
+  CiStatus,
 } from "./types";

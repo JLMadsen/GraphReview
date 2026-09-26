@@ -1,7 +1,7 @@
 // Worker process entrypoint.
 //
 // Same image as `app`, different command (`npm run worker`). It has no HTTP
-// surface: it consumes the `analysis`, `review` and `label` queues defined
+// surface: it consumes the `analysis`, `review`, `label` and `app-map` queues defined
 // in lib/jobs/ and writes results through lib/neo4j. Everything it does is
 // logged to stdout, since `docker logs graphreview-worker` is the only way
 // anyone observes it.
@@ -13,15 +13,21 @@ import { Worker } from "bullmq";
 import type { Job } from "bullmq";
 import {
   ANALYSIS_QUEUE_NAME,
+  APP_MAP_QUEUE_NAME,
   LABEL_QUEUE_NAME,
   REVIEW_QUEUE_NAME,
+  clearAppMapCancel,
   clearLabelCancel,
+  closeAppMapQueue,
   closeLabelQueue,
   closeQueues,
   closeReviewQueue,
   getBlockingRedisConnection,
+  isAppMapCancelRequested,
   isLabelCancelRequested,
   listRepoDtos,
+  type AppMapJobData,
+  type AppMapJobResult,
   type AnalysisJobData,
   type AnalysisJobResult,
   type LabelJobData,
@@ -37,6 +43,7 @@ import {
 import { runAnalysisJob } from "@/lib/jobs/analyze";
 import { runReviewJob } from "@/lib/jobs/review";
 import { runLabelJob } from "@/lib/jobs/label";
+import { runAppMapJob } from "@/lib/jobs/app-map-job";
 import { closeDriver, runMigrations } from "@/lib/neo4j";
 
 /** One job at a time: static analysis is CPU-bound (tree-sitter parsing) and a second concurrent run would just contend for the same core. */
@@ -61,6 +68,9 @@ const LABEL_CANCEL_POLL_MS = 1000;
  * on seeing serially.
  */
 const LABEL_CONCURRENCY = Number(process.env.LABEL_CONCURRENCY ?? 1);
+
+/** App-map runs (DESIGN.md §6.5): on demand, model calls — one at a time, like labeling. */
+const APP_MAP_CONCURRENCY = Number(process.env.APP_MAP_CONCURRENCY ?? 1);
 
 /**
  * Optional periodic staleness sweep. The normal refresh trigger is "on
@@ -95,7 +105,8 @@ async function main(): Promise<void> {
   log(
     `starting — queue "${ANALYSIS_QUEUE_NAME}" (concurrency ${CONCURRENCY}), ` +
       `queue "${REVIEW_QUEUE_NAME}" (concurrency ${REVIEW_CONCURRENCY}), ` +
-      `queue "${LABEL_QUEUE_NAME}" (concurrency ${LABEL_CONCURRENCY})`
+      `queue "${LABEL_QUEUE_NAME}" (concurrency ${LABEL_CONCURRENCY}), ` +
+      `queue "${APP_MAP_QUEUE_NAME}" (concurrency ${APP_MAP_CONCURRENCY})`
   );
 
   // Constraints are `IF NOT EXISTS`, so this is a no-op on an already
@@ -246,17 +257,70 @@ async function main(): Promise<void> {
     logError(`label worker error: ${error.message}`);
   });
 
+  // --- app-map queue -------------------------------------------------------
+  const appMapWorker = new Worker<AppMapJobData, AppMapJobResult>(
+    APP_MAP_QUEUE_NAME,
+    async (job: Job<AppMapJobData, AppMapJobResult>) => {
+      const { repoId, level } = job.data;
+      log(`app-map job ${job.id} started — repo ${repoId}, level ${level}`);
+      // Cooperative cancellation, exactly like the label queue above.
+      const abort = new AbortController();
+      const poll = setInterval(() => {
+        isAppMapCancelRequested(repoId)
+          .then((requested) => {
+            if (requested && !abort.signal.aborted) {
+              log(`app-map job ${job.id} · cancel requested`);
+              abort.abort();
+            }
+          })
+          .catch(() => undefined);
+      }, LABEL_CANCEL_POLL_MS);
+      try {
+        return await runAppMapJob(
+          job.data,
+          job,
+          (message) => {
+            log(`app-map job ${job.id} · ${message}`);
+            mirrorToJobLog(job, message);
+          },
+          abort.signal
+        );
+      } finally {
+        clearInterval(poll);
+        await clearAppMapCancel(repoId).catch(() => undefined);
+      }
+    },
+    { connection: getBlockingRedisConnection(), concurrency: APP_MAP_CONCURRENCY }
+  );
+
+  appMapWorker.on("completed", (job, result) => {
+    log(
+      `app-map job ${job.id} completed — repo ${result.repoId} (${result.level}): ${result.cards} card(s), ` +
+        `${result.explained} explained, ${result.calls} model call(s), ` +
+        `${result.promptTokens}+${result.completionTokens} token(s) in ${result.durationMs}ms` +
+        (result.parseFailed ? " (some output unparseable)" : "")
+    );
+  });
+  appMapWorker.on("failed", (job, error) => {
+    logError(`app-map job ${job?.id ?? "?"} failed — repo ${job?.data?.repoId ?? "?"}: ${error.message}`);
+    if (error.stack) console.error(error.stack);
+  });
+  appMapWorker.on("error", (error) => {
+    logError(`app-map worker error: ${error.message}`);
+  });
+
   const sweep = startStalenessSweep();
 
   const shutdown = async (signal: string): Promise<void> => {
     log(`received ${signal} — shutting down`);
     if (sweep) clearInterval(sweep);
     try {
-      await Promise.all([worker.close(), reviewWorker.close(), labelWorker.close()]);
+      await Promise.all([worker.close(), reviewWorker.close(), labelWorker.close(), appMapWorker.close()]);
       // The review and label queues borrow ./queue.ts's Redis connections, so
       // they have to be closed before `closeQueues()` tears those down.
       await closeReviewQueue();
       await closeLabelQueue();
+      await closeAppMapQueue();
       await closeQueues();
       await closeDriver();
     } catch (error) {

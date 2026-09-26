@@ -23,17 +23,37 @@
 // visible` inline on its nodes, which pokes straight through it.)
 // Selection is shared: a card selects its component, and "Show in repo" /
 // "Show in PR" move between the two without losing it.
+//
+// A third view, **App map** (DESIGN.md §6.5, `AppMapView`), is always
+// available: the whole codebase drawn like the PR map, at an architecture,
+// feature or module level of detail. It is mounted the first time it is
+// opened and stays mounted after, like the other two. Its explainer
+// (`AppMapPanel`) sits in the right column above the component panel, so a
+// module picked from it opens right underneath.
+//
+// Columns, left to right, edge to edge (DESIGN.md §6.6, §6.7): diff
+// selection · the graph with the checklist (1/3) and AI review (2/3) under
+// it · the selected component's panel (when something is selected) · the
+// PR chat, flush against the right edge and sticky, sized to the viewport.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FlaskConical, GitBranch, GitPullRequestArrow, LoaderCircle, Network } from "lucide-react";
+import { FlaskConical, GitBranch, GitPullRequestArrow, LayoutGrid, LoaderCircle, Network } from "lucide-react";
 import { cn } from "cn";
 import { GraphCanvas, type GraphCanvasHandle } from "./GraphCanvas";
 import { FileDiffModal } from "./FileDiffModal";
 import { PrMapCanvas } from "./PrMapCanvas";
 import { usePrMap } from "./usePrMap";
 import type { PrMapRequestDTO } from "./pr-map-types";
+import { AppMapView } from "./AppMapView";
+import { AppMapPanel, type AppMapSelection } from "./AppMapPanel";
+import { useAppMap, useAppMapJob } from "./useAppMap";
+import { isAppMapLevel, type AppMapLevel } from "./app-map-types";
 import { PanelResizeHandle, usePanelWidth } from "./PanelResizeHandle";
 import { ComponentFilesPanel } from "./ComponentFilesPanel";
+import { ChatPanel } from "./ChatPanel";
+import { ChecklistPanel } from "./ChecklistPanel";
+import { useChecklist } from "./useChecklist";
+import { usePrChat } from "./usePrChat";
 import { MergesControl, MergeSuggestionsPanel } from "./MergeSuggestions";
 import { DiffPanel, type DiffTargetMeta } from "./DiffPanel";
 import { ReviewPanel } from "./ReviewPanel";
@@ -44,6 +64,7 @@ import { useMerges } from "./useMerges";
 import { useReview } from "./useReview";
 import {
   DEFAULT_REVIEW_EFFORT,
+  reviewTargetLabel,
   type ReviewEffort,
 } from "./types";
 import type {
@@ -54,13 +75,14 @@ import type {
   ReviewTargetDTO,
 } from "./types";
 
-type GraphViewMode = "repo" | "pr";
+type GraphViewMode = "repo" | "app" | "pr";
 
 /** The two views share one grid cell; the inactive one stays laid out but can't be seen, clicked or focused. */
 function viewLayerClass(active: boolean): string {
   return cn("col-start-1 row-start-1 min-w-0", active ? "relative z-10" : "pointer-events-none opacity-0");
 }
 const VIEW_STORAGE_KEY = "graphreview.graph.view";
+const APP_LEVEL_STORAGE_KEY = "graphreview.appmap.level";
 
 /** Trimmed shape of `GET /api/repos/[repoId]` — see this repo's task brief. Only the fields this view needs. */
 interface RepoContext {
@@ -108,6 +130,8 @@ export function GraphView({
   /** Whether the selected target reviews itself — open PRs and branch comparisons only (see DiffPanel's `DiffTargetMeta`). */
   const [autoReview, setAutoReview] = useState(true);
   const review = useReview(repoId, reviewTarget, reviewEffort, autoReview);
+  const checklist = useChecklist(repoId, reviewTarget, review.state, autoReview);
+  const chat = usePrChat(repoId, reviewTarget);
   const handleLabelsCompleted = useCallback(() => setGraphNonce((n) => n + 1), []);
   const labels = useLabels(repoId, handleLabelsCompleted);
   // Feature merges (DESIGN.md §6.3). Every accept/unmerge/rename changes the
@@ -116,14 +140,17 @@ export function GraphView({
   const merges = useMerges(repoId, graphNonce, handleLabelsCompleted);
   const [mergesOpen, setMergesOpen] = useState(false);
   const [previewIds, setPreviewIds] = useState<string[] | null>(null);
-  /** Which view a selected diff opens in — remembered per browser, `pr` by default. With no diff there is only the Repo view. */
+  /** The view last chosen — remembered per browser, `pr` by default. With no diff selected, `pr` falls back to the Repo view. */
   const [preferredView, setPreferredViewState] = useState<GraphViewMode>("pr");
+  const [appLevel, setAppLevelState] = useState<AppMapLevel>("architecture");
   useEffect(() => {
     try {
       const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
-      if (stored === "repo" || stored === "pr") setPreferredViewState(stored);
+      if (stored === "repo" || stored === "pr" || stored === "app") setPreferredViewState(stored);
+      const level = window.localStorage.getItem(APP_LEVEL_STORAGE_KEY);
+      if (isAppMapLevel(level)) setAppLevelState(level);
     } catch {
-      /* storage unavailable — keep the default */
+      /* storage unavailable — keep the defaults */
     }
   }, []);
   const setPreferredView = useCallback((view: GraphViewMode) => {
@@ -141,6 +168,33 @@ export function GraphView({
   const [openFile, setOpenFile] = useState<string | null>(null);
   const [leftWidth, setLeftWidth] = usePanelWidth("graphreview.panel.diff", 288, 240, 560);
   const [rightWidth, setRightWidth] = usePanelWidth("graphreview.panel.files", 320, 260, 720);
+  const [chatWidth, setChatWidth] = usePanelWidth("graphreview.panel.chat", 380, 300, 720);
+  const chatRef = useRef<HTMLElement>(null);
+
+  // The chat column sticks under the app's sticky nav and fills the rest of
+  // the viewport. Before the page is scrolled it starts lower (under the
+  // repo header), so its height follows its actual top — otherwise the
+  // input would sit below the fold until the page is scrolled.
+  useEffect(() => {
+    const el = chatRef.current;
+    if (!el) return;
+    let frame = 0;
+    const fit = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const top = Math.max(el.getBoundingClientRect().top, 0);
+        el.style.setProperty("--chat-h", `${Math.max(320, window.innerHeight - top)}px`);
+      });
+    };
+    fit();
+    window.addEventListener("scroll", fit, { passive: true });
+    window.addEventListener("resize", fit);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", fit);
+      window.removeEventListener("resize", fit);
+    };
+  }, []);
 
   // A selection is only meaningful against the graph it was made in — but a
   // *re-fetch* of the same repo's graph (a finished labeling run) keeps the
@@ -287,7 +341,42 @@ export function GraphView({
     return { filePaths: [...diffResult.touchedFiles, ...diffResult.unmatchedFiles] };
   }, [diffResult, reviewTarget]);
   const prMap = usePrMap(repoId, prRequest, review.state);
-  const view: GraphViewMode = prRequest ? preferredView : "repo";
+  const view: GraphViewMode = preferredView === "pr" && !prRequest ? "repo" : preferredView;
+
+  // --- App map (DESIGN.md §6.5) ---------------------------------------------
+  /** Mounted (and fetching) from the first time the view is opened. */
+  const [appMounted, setAppMounted] = useState(false);
+  useEffect(() => {
+    if (view === "app") setAppMounted(true);
+  }, [view]);
+  const [appRunNonce, setAppRunNonce] = useState(0);
+  const appMap = useAppMap(repoId, appLevel, appMounted, `${graphNonce}:${appRunNonce}`);
+  const handleAppRunCompleted = useCallback(() => setAppRunNonce((n) => n + 1), []);
+  const appJob = useAppMapJob(repoId, appMounted, handleAppRunCompleted);
+  const [appSelection, setAppSelection] = useState<AppMapSelection | null>(null);
+  const setAppLevel = useCallback((level: AppMapLevel) => {
+    setAppLevelState(level);
+    setAppSelection(null);
+    try {
+      window.localStorage.setItem(APP_LEVEL_STORAGE_KEY, level);
+    } catch {
+      /* ignored */
+    }
+  }, []);
+  useEffect(() => setAppSelection(null), [repoId]);
+  /** The selected diff's files — the app map marks the cards they land on. */
+  const changedFiles = useMemo(
+    () => (diffResult ? new Set([...diffResult.touchedFiles, ...diffResult.unmatchedFiles]) : undefined),
+    [diffResult]
+  );
+  const selectFileModule = useCallback(
+    (path: string) => {
+      const owner = appMap.map?.fileOwners[path];
+      if (owner) setSelectedNodeId(owner);
+    },
+    [appMap.map]
+  );
+  const showAppPanel = view === "app" && appSelection !== null && appMap.map !== null;
 
   useEffect(() => {
     setOpenFile(null);
@@ -326,6 +415,12 @@ export function GraphView({
     [prMap.map, selectedNodeId]
   );
 
+  const componentNameById = useCallback(
+    (id: string) => graph?.nodes.find((n) => n.id === id)?.name,
+    [graph]
+  );
+  const chatChangedFiles = useMemo(() => changedFiles ?? new Set<string>(), [changedFiles]);
+
   const selectedFindings = useMemo(
     () =>
       selectedNodeId
@@ -337,9 +432,9 @@ export function GraphView({
   return (
     // `data-wide-shell` opts this tab out of the repo shell's `max-w-6xl`
     // cap — see app/repo/[repoId]/layout.tsx for the mechanism and why.
-    <div data-wide-shell className="flex flex-col gap-4 lg:flex-row">
+    <div data-wide-shell className="flex flex-col lg:flex-row">
       <aside
-        className="relative w-full shrink-0 border-border pb-4 lg:w-(--panel-w) lg:border-r lg:pr-4 lg:pb-0"
+        className="relative w-full shrink-0 border-border px-4 pb-4 lg:w-(--panel-w) lg:border-r lg:pb-6"
         style={{ "--panel-w": `${leftWidth}px` } as React.CSSProperties}
       >
         <PanelResizeHandle
@@ -378,7 +473,7 @@ export function GraphView({
         </div>
       </aside>
 
-      <div className="min-w-0 flex-1 space-y-3">
+      <div className="min-w-0 flex-1 space-y-3 px-4 pb-6">
         {usingSample && (
           <div className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 text-xs text-warning">
             <FlaskConical className="mt-px size-3.5 shrink-0" aria-hidden />
@@ -389,18 +484,24 @@ export function GraphView({
             </p>
           </div>
         )}
-        {prRequest && (
+        {!usingSample && (
           <div
             className="flex w-fit items-center gap-0.5 rounded-lg bg-muted p-[3px] ring-1 ring-border/60"
             role="group"
             aria-label="Graph view"
           >
-            {(
-              [
-                { value: "repo", label: "Repo", icon: Network, title: "The whole component graph" },
-                { value: "pr", label: "PR", icon: GitPullRequestArrow, title: "Only what this diff touches" },
-              ] as const
-            ).map((opt) => {
+            {[
+              { value: "repo" as const, label: "Repo", icon: Network, title: "The whole component graph" },
+              {
+                value: "app" as const,
+                label: "App map",
+                icon: LayoutGrid,
+                title: "The whole app as cards — by architecture, feature or module, with explanations",
+              },
+              ...(prRequest
+                ? [{ value: "pr" as const, label: "PR", icon: GitPullRequestArrow, title: "Only what this diff touches" }]
+                : []),
+            ].map((opt) => {
               const active = view === opt.value;
               const Icon = opt.icon;
               return (
@@ -426,6 +527,23 @@ export function GraphView({
         )}
 
         <div className="grid">
+        {appMounted && !usingSample && (
+          <div className={viewLayerClass(view === "app")} inert={view !== "app"}>
+            <AppMapView
+              map={appMap.map}
+              loading={appMap.loading}
+              error={appMap.error}
+              level={appLevel}
+              onLevelChange={setAppLevel}
+              job={appJob}
+              selection={appSelection}
+              onSelect={setAppSelection}
+              changedFiles={changedFiles}
+              onSelectModule={setSelectedNodeId}
+              onSelectFile={selectFileModule}
+            />
+          </div>
+        )}
         {prRequest && (
           <div className={viewLayerClass(view === "pr")} inert={view !== "pr"}>
           <PrMapCanvas
@@ -492,9 +610,16 @@ export function GraphView({
           />
         )}
 
-        {/* The review dock — see ReviewPanel's header for why it lives here
-            rather than in the sidebar. It renders nothing without a target,
-            so the Paste-paths flow is untouched. */}
+        {/* Under the graph: the checklist (1/3) next to the review dock
+            (2/3) — see ReviewPanel's header for why the review lives here
+            rather than in a sidebar. Both need a reviewable target, so the
+            Paste-paths flow is untouched. */}
+        {reviewTarget && (
+        <div className="grid items-start gap-3 xl:grid-cols-3">
+        <div className="min-w-0 xl:col-span-1">
+          <ChecklistPanel repoId={repoId} checklist={checklist} />
+        </div>
+        <div className="min-w-0 xl:col-span-2">
         <ReviewPanel
           repoId={repoId}
           target={reviewTarget}
@@ -515,15 +640,18 @@ export function GraphView({
           effort={reviewEffort}
           onEffortChange={setReviewEffort}
         />
+        </div>
+        </div>
+        )}
       </div>
 
-      {(selectedNode || (mergesOpen && !usingSample)) && (
+      {(selectedNode || (mergesOpen && !usingSample) || showAppPanel) && (
         // To the right of the graph rather than the left sidebar: clicking a
         // node shouldn't take the diff controls away, and this keeps the
         // canvas the visual center. `key` forces a fresh fetch/state when
         // the selection moves to another node.
         <aside
-          className="relative w-full shrink-0 border-border pt-4 lg:w-(--panel-w) lg:border-l lg:pt-0 lg:pl-4"
+          className="relative w-full shrink-0 border-border px-4 pt-4 pb-6 lg:w-(--panel-w) lg:border-l lg:pt-0"
           style={{ "--panel-w": `${rightWidth}px` } as React.CSSProperties}
         >
           <PanelResizeHandle
@@ -533,6 +661,16 @@ export function GraphView({
             label="Resize component panel"
           />
           <div className="space-y-3 lg:sticky lg:top-4">
+            {showAppPanel && (
+              <AppMapPanel
+                map={appMap.map!}
+                selection={appSelection!}
+                changedFiles={changedFiles}
+                onSelect={setAppSelection}
+                onSelectModule={setSelectedNodeId}
+                onSelectFile={selectFileModule}
+              />
+            )}
             {mergesOpen && !usingSample && (
               <MergeSuggestionsPanel
                 merges={merges}
@@ -557,7 +695,7 @@ export function GraphView({
               localFiles={addedFilesById.get(selectedNode.id)}
               findings={selectedFindings}
               headerAction={
-                view === "pr" ? (
+                view !== "repo" ? (
                   <button
                     type="button"
                     onClick={() => showInRepo([selectedNode.id])}
@@ -597,6 +735,26 @@ export function GraphView({
             />
             )}
           </div>
+        </aside>
+      )}
+
+      {/* The PR chat — the last column, flush against the right edge. */}
+      {!usingSample && (
+        <aside
+          ref={chatRef}
+          className="relative w-full shrink-0 border-t border-border bg-card lg:sticky lg:top-[57px] lg:h-(--chat-h) lg:w-(--panel-w) lg:self-start lg:border-t-0 lg:border-l"
+          style={{ "--panel-w": `${chatWidth}px` } as React.CSSProperties}
+        >
+          <PanelResizeHandle edge="left" width={chatWidth} onResize={setChatWidth} label="Resize chat" />
+          <ChatPanel
+            chat={chat}
+            targetLabel={reviewTarget ? reviewTargetLabel(reviewTarget) : null}
+            focus={selectedNode ? { id: selectedNode.id, name: selectedNode.name } : null}
+            componentName={componentNameById}
+            changedFiles={chatChangedFiles}
+            onSelectComponent={setSelectedNodeId}
+            onOpenFile={reviewTarget ? setOpenFile : undefined}
+          />
         </aside>
       )}
     </div>

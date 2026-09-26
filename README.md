@@ -4,7 +4,7 @@ A locally-run tool for reviewing GitHub pull requests and GitLab merge
 requests against a codebase's component graph.
 
 
-![GraphReview's component graph and AI review view](docs/images/example.png)
+![GraphReview's component graph and AI review view](docs/images/example2.png)
 
 ## Quickstart (Docker Compose — recommended)
 

@@ -320,3 +320,50 @@ export function toLocalFilePatch(file: PullRequestFile): LocalFilePatch {
     patch: file.patch,
   };
 }
+
+/** Files bigger than this are not returned by `readLocalFileAtRef` — generated bundles, fixtures. */
+const MAX_FILE_BYTES = 400_000;
+
+/** A file's text at a commit of a local repo (`git show <sha>:<path>`), or `null` when it isn't there or is too big. */
+export async function readLocalFileAtRef(
+  localPath: string,
+  sha: string,
+  filePath: string
+): Promise<string | null> {
+  if (!/^[0-9a-f]{7,64}$/.test(sha) || filePath.startsWith("-") || filePath.includes("..")) return null;
+  const dir = resolveLocalRepoPath(localPath);
+  try {
+    const out = await gitIn(dir, undefined, LOCAL_GIT_CONFIG).raw(["show", `${sha}:${filePath}`]);
+    return out.length > MAX_FILE_BYTES ? null : out;
+  } catch {
+    return null;
+  }
+}
+
+/** `git grep` at a commit: `path:line:text` hits for a fixed string, capped. */
+export async function grepLocalAtRef(
+  localPath: string,
+  sha: string,
+  query: string,
+  maxHits = 60
+): Promise<Array<{ path: string; line: number; text: string }>> {
+  if (!/^[0-9a-f]{7,64}$/.test(sha) || !query.trim()) return [];
+  const dir = resolveLocalRepoPath(localPath);
+  let out = "";
+  try {
+    out = await gitIn(dir, undefined, LOCAL_GIT_CONFIG).raw([
+      "grep", "-n", "-I", "-F", "--no-color", "-e", query, sha,
+    ]);
+  } catch {
+    return []; // git grep exits non-zero when nothing matches
+  }
+  const hits: Array<{ path: string; line: number; text: string }> = [];
+  for (const row of out.split("\n")) {
+    // <sha>:<path>:<line>:<text>
+    const match = /^[0-9a-f]+:([^:]+):(\d+):(.*)$/.exec(row);
+    if (!match) continue;
+    hits.push({ path: match[1], line: Number(match[2]), text: match[3].trim().slice(0, 200) });
+    if (hits.length >= maxHits) break;
+  }
+  return hits;
+}

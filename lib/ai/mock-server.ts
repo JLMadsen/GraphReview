@@ -45,7 +45,10 @@ import type { AddressInfo } from "node:net";
 // never drift out of sync with the prompts it is pretending to answer.
 import { DESCRIBE_TASK_MARKER, DOMAIN_TASK_MARKER } from "./label";
 import { MERGE_NAME_TASK_MARKER } from "./merge-name";
+import { CHECKLIST_TASK_MARKER } from "./checklist";
+import { PR_CHAT_TASK_MARKER } from "./pr-chat";
 import { PR_MAP_TASK_MARKER } from "./pr-map";
+import { APP_EXPLAIN_TASK_MARKER, APP_FEATURES_TASK_MARKER, APP_LAYERS_TASK_MARKER } from "./app-map";
 
 export const DEFAULT_MOCK_PORT = 4010;
 export const DEFAULT_MOCK_DELAY_MS = 900;
@@ -202,7 +205,17 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
             ? mergeNameContent(userText)
             : prompt.includes(PR_MAP_TASK_MARKER)
               ? prMapContent(userText)
-              : cannedContent(userText);
+              : prompt.includes(APP_FEATURES_TASK_MARKER)
+                ? appFeaturesContent(userText)
+                : prompt.includes(APP_LAYERS_TASK_MARKER)
+                  ? appLayersContent(userText)
+                  : prompt.includes(APP_EXPLAIN_TASK_MARKER)
+                    ? appExplainContent(userText)
+                    : prompt.includes(CHECKLIST_TASK_MARKER)
+                      ? checklistContent(userText)
+                      : prompt.includes(PR_CHAT_TASK_MARKER)
+                        ? prChatContent(userText)
+                        : cannedContent(userText);
 
     const promptTokens = Math.ceil(prompt.length / 4);
     const completionTokens = Math.ceil(content.length / 4);
@@ -519,6 +532,31 @@ function describeContent(userText: string): { content: string; note: string } {
   return { content, note: `describe-modules modules=${modules.length}` };
 }
 
+/** Answers every checklist question: "pass" when the PR has a description, "unknown" otherwise. */
+function checklistContent(userText: string): { content: string; note: string } {
+  const ids = [...userText.matchAll(/^- (q\d+): /gm)].map((m) => m[1]);
+  const hasDescription = !/^Description: \(none\)$/m.test(userText);
+  const answers = ids.map((id) => ({
+    id,
+    status: hasDescription ? "pass" : "unknown",
+    rationale: `${MOCK_DESCRIPTION_PREFIX}${hasDescription ? "The description covers it." : "There is no description to judge from."}`,
+  }));
+  const content = ["```json", JSON.stringify({ answers }, null, 2), "```"].join("\n");
+  return { content, note: `pr-checklist questions=${ids.length}` };
+}
+
+/** First turn: look at the changed files. After a tool result: answer, quoting the first file. */
+function prChatContent(userText: string): { content: string; note: string } {
+  if (!userText.includes("Result of list_changed_files")) {
+    const content = ["```json", JSON.stringify({ tool: "list_changed_files", args: {} }), "```"].join("\n");
+    return { content, note: "pr-chat tool" };
+  }
+  const firstFile = /Result of list_changed_files:\n```\n([^ \n]+)/.exec(userText)?.[1] ?? "(none)";
+  const answer = `${MOCK_DESCRIPTION_PREFIX}I looked at the changed files; the first one is \`${firstFile}\`.`;
+  const content = ["```json", JSON.stringify({ answer }), "```"].join("\n");
+  return { content, note: "pr-chat answer" };
+}
+
 /** Echoes the proposed feature name back, with a recognisable mock description. */
 function mergeNameContent(userText: string): { content: string; note: string } {
   const proposed = /^Proposed name: (.*)$/m.exec(userText)?.[1]?.trim() || "Feature";
@@ -569,6 +607,61 @@ function prMapContent(userText: string): { content: string; note: string } {
   }));
   const content = ["```json", JSON.stringify({ groups, edges }, null, 2), "```"].join("\n");
   return { content, note: `pr-map groups=${groups.length} edges=${edges.length}` };
+}
+
+// --- App map (lib/ai/app-map.ts) ------------------------------------------
+
+function fenced(value: unknown): string {
+  return ["```json", JSON.stringify(value, null, 2), "```"].join("\n");
+}
+
+/** Folder lines of the rendered tree: `lib/gitlab/ — module …` or `(root)/`. */
+function appTreeFolders(userText: string): string[] {
+  return [...userText.matchAll(/^(\S+)\/(?: — .*)?$/gm)].map((m) => m[1]).filter((d) => d !== "(root)");
+}
+
+/** One feature per top-level folder pair (`lib/gitlab`), named after it. */
+function appFeaturesContent(userText: string): { content: string; note: string } {
+  const byTop = new Map<string, string[]>();
+  for (const dir of appTreeFolders(userText)) {
+    const top = dir.split("/").slice(0, 2).join("/");
+    byTop.set(top, [...(byTop.get(top) ?? []), dir]);
+  }
+  const features = [...byTop].map(([top]) => ({
+    name: `Mock ${top.split("/").pop()}`,
+    description: `${MOCK_DESCRIPTION_PREFIX}Everything under ${top}`,
+    members: [`${top}/`],
+  }));
+  return { content: fenced({ features }), note: `app-map-features features=${features.length}` };
+}
+
+/** Every hinted layer described, no moves. */
+function appLayersContent(userText: string): { content: string; note: string } {
+  const layers = [...new Set([...userText.matchAll(/ \[([a-z]+)\]/g)].map((m) => m[1]))].map((layer) => ({
+    layer,
+    description: `${MOCK_DESCRIPTION_PREFIX}The ${layer} layer of this repo`,
+  }));
+  return { content: fenced({ layers, moves: [] }), note: `app-map-layers layers=${layers.length}` };
+}
+
+/** An explanation, the first listed file as key file, and "calls" on every outgoing connection. */
+function appExplainContent(userText: string): { content: string; note: string } {
+  const cards: unknown[] = [];
+  const edges: unknown[] = [];
+  for (const block of userText.split(/^### Card: /m).slice(1)) {
+    const name = block.split("\n")[0].trim();
+    const firstFile = /^ {2}(\S+?)(?::|$)/m.exec(block.slice(block.indexOf("Files (")))?.[1];
+    cards.push({
+      name,
+      description: `${MOCK_DESCRIPTION_PREFIX}What ${name} is for`,
+      explanation: `${MOCK_DESCRIPTION_PREFIX}${name} does its part of the app. It works through its files. It connects to its neighbours.`,
+      keyFiles: firstFile ? [{ path: firstFile, role: `${MOCK_DESCRIPTION_PREFIX}Entry point` }] : [],
+    });
+    for (const m of block.matchAll(/^ {2}-> (.+?) \(\d+ imports\)/gm)) {
+      edges.push({ from: name, to: m[1], label: "calls", explanation: `${MOCK_DESCRIPTION_PREFIX}${name} calls ${m[1]}` });
+    }
+  }
+  return { content: fenced({ cards, edges }), note: `app-map-explain cards=${cards.length} edges=${edges.length}` };
 }
 
 function mockDescriptionFor(module: MockModuleLine): string {

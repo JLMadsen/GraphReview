@@ -18,6 +18,9 @@ import { graphql } from "@octokit/graphql";
 import { GitHubApiError, toGitHubApiError } from "./errors";
 import type {
   Branch,
+  CiCheck,
+  CiState,
+  CiStatus,
   CommitSummary,
   GitHubResult,
   LinkedIssue,
@@ -500,5 +503,89 @@ export async function getLinkedIssues(
     return { data: issues, rateLimit: null };
   } catch (err) {
     throw toGitHubApiError(err, endpoint);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CI status + file contents (PR checklist, PR chat)
+// ---------------------------------------------------------------------------
+
+function checkRunState(status: string, conclusion: string | null): CiState {
+  if (status !== "completed") return "pending";
+  if (conclusion === "success" || conclusion === "neutral" || conclusion === "skipped") return "success";
+  return "failure";
+}
+
+function commitStatusState(state: string): CiState {
+  if (state === "success") return "success";
+  if (state === "pending") return "pending";
+  return "failure";
+}
+
+/** Folds many checks into one state: any failure fails, else any pending is pending, else success; nothing at all is `none`. */
+export function combineCiStates(checks: readonly CiCheck[]): CiState {
+  if (checks.length === 0) return "none";
+  if (checks.some((c) => c.state === "failure")) return "failure";
+  if (checks.some((c) => c.state === "pending")) return "pending";
+  return "success";
+}
+
+/**
+ * Every CI signal GitHub has for a commit: check runs (GitHub Actions and
+ * other Checks-API apps) plus legacy commit statuses (older CI services).
+ * The two APIs are independent, so both are read and merged.
+ */
+export async function getCommitCiStatus(
+  token: string,
+  owner: string,
+  repo: string,
+  sha: string
+): Promise<GitHubResult<CiStatus>> {
+  const octokit = createOctokit(token);
+  const [runs, statuses] = await Promise.all([
+    runRest(`GET /repos/${owner}/${repo}/commits/${sha}/check-runs`, () =>
+      octokit.rest.checks.listForRef({ owner, repo, ref: sha, per_page: 100 })
+    ),
+    runRest(`GET /repos/${owner}/${repo}/commits/${sha}/status`, () =>
+      octokit.rest.repos.getCombinedStatusForRef({ owner, repo, ref: sha, per_page: 100 })
+    ),
+  ]);
+  const checks: CiCheck[] = [
+    ...runs.data.check_runs.map((run) => ({
+      name: run.name,
+      state: checkRunState(run.status, run.conclusion),
+      url: run.html_url ?? undefined,
+    })),
+    ...statuses.data.statuses.map((status) => ({
+      name: status.context,
+      state: commitStatusState(status.state),
+      url: status.target_url ?? undefined,
+    })),
+  ];
+  return { data: { state: combineCiStates(checks), checks }, rateLimit: statuses.rateLimit ?? runs.rateLimit };
+}
+
+/** A file's text at a ref, or `null` when it doesn't exist there (or is a directory/binary). */
+export async function getFileAtRef(
+  token: string,
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string
+): Promise<GitHubResult<string | null>> {
+  const octokit = createOctokit(token);
+  const endpoint = `GET /repos/${owner}/${repo}/contents/{path}`;
+  try {
+    const response = await octokit.rest.repos.getContent({ owner, repo, path, ref });
+    const data = response.data as { type?: string; encoding?: string; content?: string };
+    const text =
+      !Array.isArray(response.data) && data.type === "file" && data.encoding === "base64" && data.content
+        ? Buffer.from(data.content, "base64").toString("utf8")
+        : null;
+    return { data: text, rateLimit: extractRateLimit(response.headers as Record<string, unknown>) };
+  } catch (err) {
+    const error = toGitHubApiError(err, endpoint);
+    if (error.status === 404) return { data: null, rateLimit: null };
+    throw error;
   }
 }

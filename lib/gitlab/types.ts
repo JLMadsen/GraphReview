@@ -19,6 +19,9 @@ export type {
   PullRequestFile,
   RefComparison,
   LinkedIssue,
+  CiState,
+  CiCheck,
+  CiStatus,
 } from "@/lib/github/types";
 
 import type { RateLimitInfo } from "@/lib/github/types";

@@ -37,6 +37,14 @@ const CONSTRAINT_STATEMENTS: string[] = [
    FOR (s:MergeSuggestion) REQUIRE s.id IS UNIQUE`,
   `CREATE CONSTRAINT pr_map_id_unique IF NOT EXISTS
    FOR (m:PrMap) REQUIRE m.id IS UNIQUE`,
+  `CREATE CONSTRAINT app_map_id_unique IF NOT EXISTS
+   FOR (m:AppMap) REQUIRE m.id IS UNIQUE`,
+  `CREATE CONSTRAINT checklist_item_id_unique IF NOT EXISTS
+   FOR (c:ChecklistItem) REQUIRE c.id IS UNIQUE`,
+  `CREATE CONSTRAINT checklist_answer_id_unique IF NOT EXISTS
+   FOR (a:ChecklistAnswer) REQUIRE a.id IS UNIQUE`,
+  `CREATE CONSTRAINT chat_message_id_unique IF NOT EXISTS
+   FOR (m:ChatMessage) REQUIRE m.id IS UNIQUE`,
   `CREATE CONSTRAINT ref_snapshot_sha_unique IF NOT EXISTS
    FOR (s:RefSnapshot) REQUIRE s.sha IS UNIQUE`,
 ];

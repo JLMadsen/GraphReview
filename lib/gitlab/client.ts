@@ -22,6 +22,9 @@
 import { GitLabApiError, toGitLabApiError, toGitLabNetworkError } from "./errors";
 import type {
   Branch,
+  CiCheck,
+  CiState,
+  CiStatus,
   CommitSummary,
   GitLabResult,
   LinkedIssue,
@@ -440,4 +443,82 @@ export async function getLinkedIssues(
       })),
     rateLimit: extractRateLimit(headers),
   };
+}
+
+// ---------------------------------------------------------------------------
+// CI status + file contents (PR checklist, PR chat)
+// ---------------------------------------------------------------------------
+
+function pipelineState(status: string): CiState {
+  if (status === "success" || status === "skipped" || status === "manual") return "success";
+  if (["created", "waiting_for_resource", "preparing", "pending", "running", "scheduled"].includes(status)) {
+    return "pending";
+  }
+  return "failure";
+}
+
+interface GitLabPipeline {
+  id: number;
+  status: string;
+  web_url?: string;
+}
+
+interface GitLabJob {
+  name: string;
+  status: string;
+  web_url?: string;
+}
+
+/**
+ * The latest pipeline for a commit, with its jobs as the individual checks.
+ * GitLab's counterpart to GitHub's check runs + statuses.
+ */
+export async function getCommitCiStatus(
+  token: string,
+  projectPath: string,
+  sha: string
+): Promise<GitLabResult<CiStatus>> {
+  const endpoint = "GET /projects/{id}/pipelines";
+  const url = `${projectApiBase(projectPath)}/pipelines?sha=${encodeURIComponent(sha)}&per_page=1&order_by=id&sort=desc`;
+  const { data, headers } = await gitlabFetch(endpoint, url, token);
+  const pipeline = (data as GitLabPipeline[])[0];
+  if (!pipeline) return { data: { state: "none", checks: [] }, rateLimit: extractRateLimit(headers) };
+
+  const jobsEndpoint = "GET /projects/{id}/pipelines/{pipeline_id}/jobs";
+  const jobsUrl = `${projectApiBase(projectPath)}/pipelines/${pipeline.id}/jobs?per_page=100`;
+  let checks: CiCheck[] = [];
+  try {
+    const jobs = await gitlabFetch(jobsEndpoint, jobsUrl, token);
+    checks = (jobs.data as GitLabJob[]).map((job) => ({
+      name: job.name,
+      state: pipelineState(job.status),
+      url: job.web_url,
+    }));
+  } catch {
+    // The pipeline's own status is still the answer; job names are detail.
+  }
+  return {
+    data: { state: pipelineState(pipeline.status), checks },
+    rateLimit: extractRateLimit(headers),
+  };
+}
+
+/** A file's text at a ref, or `null` when it doesn't exist there. */
+export async function getFileAtRef(
+  token: string,
+  projectPath: string,
+  path: string,
+  ref: string
+): Promise<GitLabResult<string | null>> {
+  const endpoint = "GET /projects/{id}/repository/files/{path}/raw";
+  const url = `${projectApiBase(projectPath)}/repository/files/${encodeURIComponent(path)}/raw?ref=${encodeURIComponent(ref)}`;
+  let response: Response;
+  try {
+    response = await fetch(url, { headers: { "PRIVATE-TOKEN": token } });
+  } catch (err) {
+    throw toGitLabNetworkError(err, endpoint);
+  }
+  if (response.status === 404) return { data: null, rateLimit: extractRateLimit(response.headers) };
+  if (!response.ok) throw await toGitLabApiError(response, endpoint);
+  return { data: await response.text(), rateLimit: extractRateLimit(response.headers) };
 }

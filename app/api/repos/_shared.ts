@@ -4,6 +4,8 @@
 // so this module is invisible to the router.
 
 import { NextResponse } from "next/server";
+import { z } from "zod";
+import type { ReviewTarget } from "@/lib/jobs";
 import { getRepoById } from "@/lib/neo4j";
 import type { RepoRecord } from "@/lib/neo4j";
 
@@ -43,4 +45,28 @@ export async function loadRepo(
 
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** A review target in a JSON body: `{prNumber}` or `{baseRef, headRef}`. */
+export const targetBodySchema = z.union([
+  z.object({ prNumber: z.number().int().positive() }),
+  z.object({ baseRef: z.string().min(1), headRef: z.string().min(1) }),
+]);
+
+export function toReviewTarget(parsed: z.infer<typeof targetBodySchema>): ReviewTarget {
+  return "prNumber" in parsed
+    ? { kind: "pr", prNumber: parsed.prNumber }
+    : { kind: "refs", baseRef: parsed.baseRef, headRef: parsed.headRef };
+}
+
+/** A review target from query params (`?prNumber=` or `?baseRef=&headRef=`), or `null`. */
+export function targetFromSearchParams(params: URLSearchParams): ReviewTarget | null {
+  const prNumberRaw = params.get("prNumber");
+  if (prNumberRaw !== null) {
+    const prNumber = Number(prNumberRaw);
+    return Number.isInteger(prNumber) && prNumber > 0 ? { kind: "pr", prNumber } : null;
+  }
+  const baseRef = params.get("baseRef")?.trim();
+  const headRef = params.get("headRef")?.trim();
+  return baseRef && headRef ? { kind: "refs", baseRef, headRef } : null;
 }
