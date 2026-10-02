@@ -4,6 +4,7 @@ import { listRepoDtos, type RepoDto } from "@/lib/jobs";
 import { AddRepoDialog } from "./add-repo-dialog";
 import { ProviderBadge, RepoStatusBadge, providerIcon } from "./repo-status-badge";
 import { RepoRetryButton } from "./repo-retry-button";
+import { RefreshWhileWorking } from "./refresh-while-working";
 
 /**
  * Repo list (landing page).
@@ -161,6 +162,7 @@ export default async function RepoListPage() {
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-10">
+      <RefreshWhileWorking active={repos.some((r) => r.status === "analyzing" || r.status === "stale")} />
       <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
         <div>
           <div className="flex items-center gap-2.5">

@@ -42,6 +42,7 @@
 // below — about the diff when one is selected, about the repo otherwise.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { FlaskConical, LayoutGrid, LoaderCircle } from "lucide-react";
 import { cn } from "cn";
 import { GraphCanvas, type GraphCanvasHandle } from "./GraphCanvas";
@@ -96,7 +97,11 @@ interface RepoContext {
   name: string;
   defaultBranch?: string;
   lastAnalyzedSha?: string;
+  status?: "analyzing" | "up_to_date" | "stale" | "error";
 }
+
+/** How often the repo's status is re-read while an analysis runs. */
+const ANALYSIS_POLL_MS = 3000;
 
 export interface GraphViewProps {
   repoId: string;
@@ -205,20 +210,47 @@ export function GraphView({
     setSelectedNodeId(null);
   }, [repoId]);
 
+  // Repo context: the header/defaults, and the analysis status. While an
+  // analysis is running (`analyzing`, or `stale` = refreshing an existing
+  // graph) the status is re-read every few seconds — a cheap read of the job
+  // queue, no git call — and the moment it finishes (or the analyzed commit
+  // changes) the graph and the App map are fetched again and the server-
+  // rendered header is refreshed. Without this the tab kept showing the old
+  // graph — or the sample one — until a manual reload. Fails silently: the
+  // endpoint 404s for an unknown repo and errors without a live Neo4j.
+  const router = useRouter();
   useEffect(() => {
     let cancelled = false;
-    // Repo context is a nice-to-have header/default — fail silently if the
-    // endpoint 404s (not built yet) or errors (no live Neo4j in dev).
-    fetch(`/api/repos/${repoId}`)
-      .then((res) => (res.ok ? (res.json() as Promise<RepoContext>) : null))
-      .then((data) => {
-        if (!cancelled && data) setRepo(data);
-      })
-      .catch(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let wasWorking = false;
+    let lastSha: string | undefined;
+    let first = true;
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/repos/${repoId}`);
+        const data = res.ok ? ((await res.json()) as RepoContext) : null;
+        if (cancelled || !data) return;
+        setRepo(data);
+        const working = data.status === "analyzing" || data.status === "stale";
+        const finished = (wasWorking && !working) || (!first && data.lastAnalyzedSha !== lastSha);
+        if (finished) {
+          setGraphNonce((n) => n + 1);
+          router.refresh();
+        }
+        wasWorking = working;
+        lastSha = data.lastAnalyzedSha;
+        first = false;
+        if (working) timer = setTimeout(() => void load(), ANALYSIS_POLL_MS);
+      } catch {
+        /* nice-to-have — keep what's on screen */
+      }
+    };
+    void load();
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
     };
-  }, [repoId]);
+  }, [repoId, router]);
 
   useEffect(() => {
     let cancelled = false;
@@ -238,6 +270,7 @@ export function GraphView({
         } else {
           setGraph(data);
           setUsingSample(false);
+          setLoadError(null);
         }
       })
       .catch((err) => {
