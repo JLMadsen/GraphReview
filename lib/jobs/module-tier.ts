@@ -21,7 +21,6 @@
 
 import { clusterByFolderDepth, DEFAULT_MODULE_DEPTH } from "@/lib/analysis/graph-builder";
 import type { ModuleCluster } from "@/lib/analysis/graph-builder";
-import { dirOf } from "@/lib/analysis/paths";
 import {
   deleteComponent,
   deleteEmptyAutoDomainComponents,
@@ -61,15 +60,12 @@ async function mapWithConcurrency<T>(
 }
 
 /**
- * The folder pattern a module cluster was derived from, recovered from one
- * of its files. `ModuleCluster.name` is the *display* name (a bare folder
- * name, or the qualified path when two folders would collide), so it can't
- * be used directly as a path pattern.
+ * The folder pattern a module cluster was derived from. `ModuleCluster.name`
+ * is the *display* name (a bare folder name, or a qualified one when two
+ * folders would collide), so it can't be used directly as a path pattern.
  */
-export function pathPatternFor(filePath: string, depth: number): string {
-  const dir = dirOf(filePath);
-  if (dir === "") return "*";
-  return `${dir.split("/").slice(0, depth).join("/")}/**`;
+export function pathPatternFor(cluster: Pick<ModuleCluster, "folder">): string {
+  return cluster.folder === "" ? "*" : `${cluster.folder}/**`;
 }
 
 export function parseLostFolders(raw: string | undefined): LostFolder[] {
@@ -125,7 +121,7 @@ export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTie
       name: existing?.createdBy === "user" ? existing.name : cluster.name,
       description: existing?.description,
       createdBy: existing?.createdBy ?? "auto",
-      pathPatterns: [pathPatternFor(cluster.filePaths[0] ?? "", moduleDepth)],
+      pathPatterns: [pathPatternFor(cluster)],
       tier: "module",
       origin: "folder",
     });
@@ -254,7 +250,7 @@ export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTie
         id,
         name: cluster.name,
         origin: "folder" as const,
-        pathPatterns: [pathPatternFor(cluster.filePaths[0] ?? "", moduleDepth)],
+        pathPatterns: [pathPatternFor(cluster)],
       })),
       ...liveMerged.map((m) => ({
         id: m.id,

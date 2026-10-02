@@ -19,6 +19,13 @@ import { walkRepo, type WalkOptions } from "./walk";
 export interface ModuleCluster {
   /** Derived from the folder name (path-qualified when names would collide). */
   name: string;
+  /**
+   * Repo-relative folder the cluster was cut at (`""` for files in the repo
+   * root); its path pattern is `<folder>/**`. Usually the first `depth`
+   * segments of its files' directory, deeper for JVM source roots (see
+   * {@link clusterByFolderDepth}).
+   */
+  folder: string;
   /** Repo-relative paths of the analyzed files belonging to this module. */
   filePaths: string[];
 }
@@ -147,38 +154,166 @@ function resolveFile(parsed: ParsedFile, ctx: AnalyzerContext): void {
   }
 }
 
+/** Extensions whose files live in package folders under a JVM source root. */
+const JVM_EXTENSIONS = new Set([".java", ".kt", ".kts", ".scala", ".groovy"]);
+/** Language folder of a Maven/Gradle source set: `src/<set>/<lang>/`. */
+const JVM_LANGUAGE_DIRS = new Set(["java", "kotlin", "scala", "groovy"]);
+
+/** Where a JVM file's package path starts. */
+interface JvmSourceRoot {
+  /** Folder holding the source root's `src` (`""` at the repo root): one Gradle/Maven project. */
+  project: string;
+  /** `main`, `test`, `commonMain`, …; `undefined` for a bare `src/` root (Eclipse/Ant). */
+  sourceSet?: string;
+  /** `java`, `kotlin`, …; `undefined` for a bare `src/` root. */
+  language?: string;
+  /** The source root itself (`app/src/main/java`, `src`). */
+  root: string;
+  /** Package folders below the root (`["com", "acme", "shop", "cart"]`). */
+  packageDirs: string[];
+}
+
+/**
+ * Locate a JVM file's source root from its path alone (the stored graph that
+ * `regroupRepo` re-clusters has no package declarations). Recognizes the
+ * Maven/Gradle `<project>/src/<set>/<lang>/` layout first, then a bare
+ * `<project>/src/` (Eclipse/Ant). `undefined` for non-JVM files and JVM files
+ * outside any `src` folder.
+ */
+function jvmSourceRoot(filePath: string): JvmSourceRoot | undefined {
+  if (!JVM_EXTENSIONS.has(extensionOf(filePath))) return undefined;
+  const dir = dirOf(filePath);
+  if (dir === "") return undefined;
+  const segments = dir.split("/");
+  const make = (srcIndex: number, rootLength: number, sourceSet?: string, language?: string): JvmSourceRoot => ({
+    project: segments.slice(0, srcIndex).join("/"),
+    sourceSet,
+    language,
+    root: segments.slice(0, rootLength).join("/"),
+    packageDirs: segments.slice(rootLength),
+  });
+  for (let i = 0; i + 2 < segments.length; i++) {
+    if (segments[i] === "src" && JVM_LANGUAGE_DIRS.has(segments[i + 2])) {
+      return make(i, i + 3, segments[i + 1], segments[i + 2]);
+    }
+  }
+  const src = segments.indexOf("src");
+  return src === -1 ? undefined : make(src, src + 1);
+}
+
+/** Longest common leading run of the given segment lists. */
+function commonPrefix(lists: readonly string[][]): string[] {
+  if (lists.length === 0) return [];
+  const prefix = lists[0].slice();
+  for (const list of lists.slice(1)) {
+    let i = 0;
+    while (i < prefix.length && i < list.length && prefix[i] === list[i]) i++;
+    prefix.length = i;
+  }
+  return prefix;
+}
+
+/** A cluster before it is named. */
+interface ClusterGroup {
+  folder: string;
+  /**
+   * Display names from most to least preferred; the last is always unique
+   * (the folder itself). A group moves down its list while its name collides.
+   */
+  names: string[];
+  files: string[];
+}
+
+/** `cart`, `cart (test)`, `cart (test, kotlin)`. */
+function withTags(base: string, tags: Array<string | undefined>): string {
+  const kept = tags.filter((t): t is string => Boolean(t));
+  return kept.length === 0 ? base : `${base} (${kept.join(", ")})`;
+}
+
 /**
  * Folder-based clustering at a fixed depth — the mechanical module tier of
  * §6.1. Applying this at a second, shallower depth is all the "domain tier"
  * needs structurally; naming it reliably is the part that needs AI (§6.1/§16).
+ *
+ * JVM sources are the exception: a fixed depth lands inside the build layout
+ * (`app/src/main/java/com/acme/…` → everything in `app/src`). Their depth is
+ * counted from below the source root *and* the package prefix every file of
+ * that project shares, so `com/acme/shop/cart/Cart.java` clusters as `cart`
+ * (and its tests as `cart (test)`).
  */
 export function clusterByFolderDepth(filePaths: string[], depth: number): ModuleCluster[] {
   const effectiveDepth = Math.max(1, Math.floor(depth));
-  const groups = new Map<string, string[]>();
+  const groups = new Map<string, ClusterGroup>();
+  const add = (folder: string, names: string[], filePath: string) => {
+    const group = groups.get(folder);
+    if (group) group.files.push(filePath);
+    else groups.set(folder, { folder, names: [...names, folder || ROOT_MODULE_NAME], files: [filePath] });
+  };
+
+  // The package prefix is shared per project, across its source sets and
+  // languages, so main and test cut their packages at the same level.
+  const jvmRoots = new Map<string, JvmSourceRoot>();
+  const packagesByProject = new Map<string, string[][]>();
   for (const filePath of filePaths) {
+    const root = jvmSourceRoot(filePath);
+    if (!root) continue;
+    jvmRoots.set(filePath, root);
+    const lists = packagesByProject.get(root.project);
+    if (lists) lists.push(root.packageDirs);
+    else packagesByProject.set(root.project, [root.packageDirs]);
+  }
+  const prefixByProject = new Map<string, string[]>();
+  for (const [project, lists] of packagesByProject) prefixByProject.set(project, commonPrefix(lists));
+
+  for (const filePath of filePaths) {
+    const jvm = jvmRoots.get(filePath);
+    if (jvm) {
+      const prefix = prefixByProject.get(jvm.project) ?? [];
+      // `depth` 2 means "one level below the container", as for `src/auth`.
+      const feature = jvm.packageDirs.slice(prefix.length, prefix.length + effectiveDepth - 1);
+      const folder = [jvm.root, ...prefix, ...feature].join("/");
+      const base = feature.join("/") || prefix[prefix.length - 1] || jvm.project.split("/").pop() || "src";
+      const sourceSet = jvm.sourceSet === "main" ? undefined : jvm.sourceSet;
+      const project = jvm.project ? `${jvm.project}/` : "";
+      add(
+        folder,
+        [
+          withTags(base, [sourceSet]),
+          withTags(base, [sourceSet, jvm.language]),
+          withTags(`${project}${base}`, [sourceSet]),
+          withTags(`${project}${base}`, [sourceSet, jvm.language]),
+        ],
+        filePath,
+      );
+      continue;
+    }
     const dir = dirOf(filePath);
-    const key = dir === "" ? "" : dir.split("/").slice(0, effectiveDepth).join("/");
-    const bucket = groups.get(key);
-    if (bucket) bucket.push(filePath);
-    else groups.set(key, [filePath]);
+    const folder = dir === "" ? "" : dir.split("/").slice(0, effectiveDepth).join("/");
+    add(folder, [folder === "" ? ROOT_MODULE_NAME : (folder.split("/").pop() as string)], filePath);
   }
 
-  // Name from the folder itself; fall back to the qualified path when two
-  // different folders would otherwise produce the same name (app/utils vs lib/utils).
-  const leafCounts = new Map<string, number>();
-  for (const key of groups.keys()) {
-    const leaf = key === "" ? ROOT_MODULE_NAME : (key.split("/").pop() as string);
-    leafCounts.set(leaf, (leafCounts.get(leaf) ?? 0) + 1);
-  }
-
-  const modules: ModuleCluster[] = [];
-  for (const [key, files] of groups) {
-    const leaf = key === "" ? ROOT_MODULE_NAME : (key.split("/").pop() as string);
-    modules.push({
-      name: (leafCounts.get(leaf) ?? 0) > 1 ? key : leaf,
-      filePaths: files.slice().sort(),
+  // Name from the folder itself; qualify only the names that collide
+  // (app/utils vs lib/utils → the full paths), until every name is unique.
+  const all = [...groups.values()];
+  const level = all.map(() => 0);
+  for (;;) {
+    const counts = new Map<string, number>();
+    all.forEach((g, i) => counts.set(g.names[level[i]], (counts.get(g.names[level[i]]) ?? 0) + 1));
+    let advanced = false;
+    all.forEach((g, i) => {
+      if ((counts.get(g.names[level[i]]) ?? 0) > 1 && level[i] < g.names.length - 1) {
+        level[i]++;
+        advanced = true;
+      }
     });
+    if (!advanced) break;
   }
+
+  const modules: ModuleCluster[] = all.map((group, i) => ({
+    name: group.names[level[i]],
+    folder: group.folder,
+    filePaths: group.files.slice().sort(),
+  }));
   modules.sort((a, b) => a.name.localeCompare(b.name));
   return modules;
 }

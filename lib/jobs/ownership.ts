@@ -108,7 +108,7 @@ export function resolveOwnership(
       else filesByMergedId.set(claim.mergedId, [filePath]);
     }
     if (kept.length > 0) {
-      liveFolderModules.push({ id: folderId, cluster: { name: cluster.name, filePaths: kept } });
+      liveFolderModules.push({ id: folderId, cluster: { ...cluster, filePaths: kept } });
     }
   }
 

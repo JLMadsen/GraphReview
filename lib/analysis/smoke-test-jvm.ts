@@ -19,7 +19,7 @@
 import os from "node:os";
 import path from "node:path";
 import { rm } from "node:fs/promises";
-import { analyzeRepo, type AnalysisResult } from "./graph-builder";
+import { analyzeRepo, clusterByFolderDepth, type AnalysisResult } from "./graph-builder";
 import { materializeSampleJvmRepo } from "./__fixtures__/sample-repo-jvm";
 
 let failures = 0;
@@ -224,6 +224,60 @@ async function main(): Promise<void> {
       "no edge points at a source file that does not exist (broken imports drop cleanly)",
       result.edges.every((e) => byFile.has(e.to)),
     );
+
+    // --- clustering (module tier) ---
+    // Depth counts from below the source root and the shared package prefix
+    // (com/acme), not from the repo root, which would put all of core in one
+    // `core` module. Same package in java/ and kotlin/ is two folders, told
+    // apart by language; test source sets are tagged. The build.gradle.kts
+    // files sit outside any source root and cluster by folder as usual
+    // (`jvmapp/client` collides with the `client` package, so both qualify).
+    const moduleNames = result.modules.map((m) => m.name);
+    check(
+      "jvm modules are cut below the source root and package prefix",
+      JSON.stringify(moduleNames) ===
+        JSON.stringify([
+          "app (java)", "app (kotlin)", "app (test)", "broken (java)", "broken (kotlin)",
+          "client (kotlin)", "core", "jvmapp", "jvmapp/client", "model", "util",
+        ]),
+      moduleNames.join(", "),
+    );
+    check(
+      "a jvm module's folder is its package folder",
+      result.modules.find((m) => m.name === "model")?.folder === `${JM}/model`,
+    );
+
+    const layouts: Array<[string, string[], string[]]> = [
+      [
+        "gradle `app/src/main/java` is not one `src` module",
+        [
+          "app/src/main/java/com/acme/shop/App.java",
+          "app/src/main/java/com/acme/shop/auth/Login.java",
+          "app/src/main/java/com/acme/shop/cart/Cart.java",
+          "app/src/test/java/com/acme/shop/cart/CartTest.java",
+        ],
+        ["auth", "cart", "cart (test)", "shop"],
+      ],
+      [
+        "maven at the repo root is not split into main/test only",
+        ["src/main/java/com/acme/shop/auth/Login.java", "src/test/java/com/acme/shop/cart/CartTest.java", "src/main/java/com/acme/shop/cart/Cart.java"],
+        ["auth", "cart", "cart (test)"],
+      ],
+      [
+        "eclipse-style bare `src/` is not one `com` module",
+        ["src/com/acme/shop/auth/Login.java", "src/com/acme/shop/cart/Cart.java"],
+        ["auth", "cart"],
+      ],
+      [
+        "same package in two gradle projects is project-qualified",
+        ["api/src/main/java/com/acme/util/A.java", "api/src/main/java/com/acme/x/A.java", "core/src/main/java/com/acme/util/B.java"],
+        ["api/util", "core/util", "x"],
+      ],
+    ];
+    for (const [label, files, expected] of layouts) {
+      const names = clusterByFolderDepth(files, 2).map((m) => m.name);
+      check(label, JSON.stringify(names) === JSON.stringify(expected), names.join(", "));
+    }
 
     if (dumpJson) console.log(JSON.stringify(result, null, 2));
   } finally {

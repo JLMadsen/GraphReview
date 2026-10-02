@@ -7,7 +7,7 @@
  * modules, most specific wins, dead patterns) and every heuristic kind
  * (shared name, import-only, move-file, rename) on a small Next.js-shaped repo.
  */
-import { clusterByFolderDepth } from "@/lib/analysis/graph-builder";
+import { clusterByFolderDepth, type ModuleCluster } from "@/lib/analysis/graph-builder";
 import { computeMergeSuggestions, displayName, featureKey, type HeuristicModule } from "./merge-heuristics";
 import { routeHint } from "./merge-naming";
 import { patternsOverlap } from "./merges";
@@ -73,10 +73,9 @@ const edges = [
 
 const clusters = clusterByFolderDepth(files, DEPTH);
 
-/** Same as module-tier.ts's pathPatternFor: the folder (cut at the module depth) a cluster came from. */
-function patternOf(filePath: string): string {
-  const dir = filePath.split("/").slice(0, -1);
-  return `${dir.slice(0, DEPTH).join("/")}/**`;
+/** Same as module-tier.ts's pathPatternFor (which pulls in Neo4j): the folder a cluster came from. */
+function patternOf(cluster: ModuleCluster): string {
+  return cluster.folder === "" ? "*" : `${cluster.folder}/**`;
 }
 
 function modulesFor(owner: Map<string, string>, merged: HeuristicModule[] = []): HeuristicModule[] {
@@ -86,7 +85,7 @@ function modulesFor(owner: Map<string, string>, merged: HeuristicModule[] = []):
       id,
       name: cluster.name,
       origin: "folder" as const,
-      pathPatterns: [patternOf(cluster.filePaths[0])],
+      pathPatterns: [patternOf(cluster)],
     })),
     ...merged,
   ].filter((m) => [...owner.values()].includes(m.id));
@@ -219,7 +218,7 @@ const renamedSuggestions = computeMergeSuggestions({
       id,
       name: cluster.name,
       origin: "folder" as const,
-      pathPatterns: [patternOf(cluster.filePaths[0])],
+      pathPatterns: [patternOf(cluster)],
     })),
     mapAfterRename,
   ],
@@ -252,7 +251,7 @@ const splitSuggestions = computeMergeSuggestions({
       id,
       name: cluster.name,
       origin: "folder" as const,
-      pathPatterns: [patternOf(cluster.filePaths[0])],
+      pathPatterns: [patternOf(cluster)],
     })),
     mapWithoutReview,
   ],
