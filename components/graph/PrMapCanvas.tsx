@@ -22,9 +22,9 @@ import { cn } from "cn";
 import { CardFlow, type CardFlowLink } from "./CardFlow";
 import { PR_CARD_WIDTH, PrMapCard, type PrCardMarker, type PrMapCardProps } from "./PrMapNode";
 import { Spark } from "./Spark";
-import { effectiveIntent, worstIntent } from "./review-visuals";
+import { effectiveAssessment, worstAssessment } from "./review-visuals";
 import type { PrMapNodeDTO, PrMapResponseDTO } from "./pr-map-types";
-import type { FindingDTO, IntentMatch } from "./types";
+import type { FindingDTO, Assessment } from "./types";
 
 export interface PrMapCanvasProps {
   map: PrMapResponseDTO | null;
@@ -79,7 +79,7 @@ export function PrMapCanvas({
 
   // --- Findings: one marker per card, one dot per file -------------------
   const { cardMarkers, fileMarkers } = useMemo(() => {
-    const fileMarkers = new Map<string, IntentMatch>();
+    const fileMarkers = new Map<string, Assessment>();
     const cardMarkers = new Map<string, PrCardMarker>();
     if (!map) return { cardMarkers, fileMarkers };
     const cardOfFile = new Map<string, string>();
@@ -90,17 +90,17 @@ export function PrMapCanvas({
         map.nodes.find((n) => n.role !== "context" && n.componentIds.includes(componentId))
       )?.id;
     for (const finding of findings) {
-      const intent = effectiveIntent(finding);
+      const intent = effectiveAssessment(finding);
       if (finding.filePath) {
         const prev = fileMarkers.get(finding.filePath);
-        fileMarkers.set(finding.filePath, prev ? worstIntent(prev, intent) : intent);
+        fileMarkers.set(finding.filePath, prev ? worstAssessment(prev, intent) : intent);
       }
       const cardId =
         (finding.filePath && cardOfFile.get(finding.filePath)) || cardOfComponent(finding.componentId);
       if (!cardId) continue;
       const prev = cardMarkers.get(cardId);
       cardMarkers.set(cardId, {
-        worst: prev ? worstIntent(prev.worst, intent) : intent,
+        worst: prev ? worstAssessment(prev.worst, intent) : intent,
         count: (prev?.count ?? 0) + 1,
       });
     }

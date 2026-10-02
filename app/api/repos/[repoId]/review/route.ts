@@ -30,7 +30,10 @@ import {
   getActiveAiProvider,
   getRepoById,
   listFindingsByTargetKey,
-  type FindingIntentMatch,
+  type FindingAssessment,
+  type FindingCategory,
+  type FindingKind,
+  type FindingScope,
 } from "@/lib/neo4j";
 
 export const dynamic = "force-dynamic";
@@ -47,8 +50,14 @@ export interface FindingDto {
   filePath?: string;
   lineRange?: string;
   summary: string;
-  intentMatch: FindingIntentMatch;
+  assessment: FindingAssessment;
+  scope?: FindingScope;
+  kind?: FindingKind;
+  /** `change`: per-component review · `impact`: a usage the PR left behind (componentId may be untouched, or "") · `intent`: the PR-level verdict (componentId ""). */
+  category: FindingCategory;
   confidence: number;
+  /** The head commit the review ran against — lets the UI open an untouched caller at that commit. */
+  reviewedHeadSha?: string;
   rationale: string;
   model: string;
   createdAt: string;
@@ -392,8 +401,12 @@ export async function GET(
         ...(finding.filePath ? { filePath: finding.filePath } : {}),
         ...(finding.lineRange ? { lineRange: finding.lineRange } : {}),
         summary: finding.summary,
-        intentMatch: finding.intentMatch,
+        assessment: finding.assessment,
+        ...(finding.scope ? { scope: finding.scope } : {}),
+        ...(finding.kind ? { kind: finding.kind } : {}),
+        category: finding.category,
         confidence: finding.confidence,
+        ...(finding.reviewedHeadSha ? { reviewedHeadSha: finding.reviewedHeadSha } : {}),
         rationale: finding.rationale,
         model: finding.model,
         createdAt: finding.createdAt,

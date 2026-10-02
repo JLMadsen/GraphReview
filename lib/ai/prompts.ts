@@ -25,45 +25,64 @@ const MAX_FILES_RENDERED = 40;
 const MAX_NEIGHBOR_DESCRIPTION_CHARS = 240;
 const MAX_SIGNATURE_CHARS = 200;
 
-const OUTPUT_SHAPE =
+const OUTPUT_SHAPE_PR =
   '{"findings":[{"filePath":"<one of the listed file paths>","lineRange":"<start>-<end>",' +
-  '"summary":"<plain English: what this change does>","intentMatch":"match|partial|mismatch|unknown",' +
+  '"summary":"<plain English: what this change does>","kind":"fix|feature|refactor|test|docs|config|chore",' +
+  '"assessment":"ok|concern|defect|unknown","scope":"described|supporting|unmentioned",' +
+  '"confidence":0.0,"rationale":"<why, citing concrete identifiers/lines>"}]}';
+const OUTPUT_SHAPE_REFS =
+  '{"findings":[{"filePath":"<one of the listed file paths>","lineRange":"<start>-<end>",' +
+  '"summary":"<plain English: what this change does>","kind":"fix|feature|refactor|test|docs|config|chore",' +
+  '"assessment":"ok|concern|defect|unknown",' +
   '"confidence":0.0,"rationale":"<why, citing concrete identifiers/lines>"}]}';
 
-/** System prompt for the review call. The wording about "intent" differs for a PR vs. a bare ref comparison. */
+/**
+ * System prompt for the review call. Every change is judged on its own
+ * merits — a correct drive-by fix is `ok` whatever the PR says it is about.
+ * For a pull request the stated intent only sets the separate, informational
+ * `scope` label; a bare ref comparison has no intent and no `scope`.
+ */
 export function buildSystemPrompt(source: ReviewInput["intent"]["source"]): string {
-  const intentRules =
-    source === "ref_comparison"
-      ? [
-          "This is a comparison between two git refs, not a pull request: there is NO stated intent.",
-          "Judge each change against the code's own evident purpose instead — identifier names, comments,",
-          "and the component description. Use `mismatch` for apparent defects (for example a function named",
-          "`square` that doubles its input), `match` when the change looks coherent and self-consistent,",
-          "and `unknown` when the purpose cannot be inferred.",
-        ]
-      : [
-          "The stated intent is the pull request's title, description and linked issues (the Intent section).",
-          "Judge each change against that intent.",
-        ];
+  const isPr = source === "pull_request";
+  const scopeRules = isPr
+    ? [
+        "",
+        "scope values — how the change relates to the pull request's stated intent (the Intent section:",
+        "title, description, linked issues). This is a label, NOT a judgement; it never lowers assessment:",
+        "- described: the intent covers this change.",
+        "- supporting: not named in the intent but needed by it (type updates, call sites, tests, wiring).",
+        "- unmentioned: unrelated to the intent (a drive-by fix, cleanup, or unrelated change).",
+        "An unmentioned change that is correct is still `ok`. Use `concern` for an unmentioned change only",
+        "when it is risky in itself (it changes behaviour other code relies on, a public API, security,",
+        "persisted data or configuration) — say so in the rationale.",
+      ]
+    : [
+        "",
+        "This is a comparison between two git refs, not a pull request: there is no stated intent and no",
+        "scope field. Use identifier names, comments and the component description to infer purpose.",
+      ];
 
   return [
     "You are a code-review assistant. You receive ONE component of a codebase, its dependency context,",
-    "the intent of a change, and the diff hunks that touch that component. For each meaningfully distinct",
-    "change: (a) explain in plain English what the change does, and (b) check whether it matches the intent.",
-    "",
-    ...intentRules,
+    isPr ? "the pull request's stated intent, and the diff hunks that touch that component." : "and the diff hunks that touch that component.",
+    "For each meaningfully distinct change: (a) explain in plain English what it does, (b) classify its kind,",
+    "and (c) judge whether it is sound ON ITS OWN MERITS — is the code correct, complete and safe?",
     "",
     "Answer with ONLY one fenced json block and nothing before or after it, in exactly this shape:",
     `${FENCE}json`,
-    OUTPUT_SHAPE,
+    isPr ? OUTPUT_SHAPE_PR : OUTPUT_SHAPE_REFS,
     FENCE,
     "",
-    "intentMatch values:",
-    "- match: the change plausibly implements the stated intent.",
-    "- partial: it implements only part of the intent, or includes unrelated extra changes.",
-    "- mismatch: it contradicts the intent OR contains an apparent defect (e.g. a function meant to square",
-    "  its input that doubles it instead).",
+    "assessment values:",
+    "- ok: the change is coherent and looks correct.",
+    "- concern: worth a closer look — risky, incomplete, missing error handling or an edge case, or a",
+    "  behaviour change that other code may depend on.",
+    "- defect: apparently wrong (e.g. a function named `square` that doubles its input, an inverted",
+    "  condition, a removed check that is still needed).",
     "- unknown: there is not enough information to judge.",
+    ...scopeRules,
+    "",
+    "kind values: fix, feature, refactor, test, docs, config, chore.",
     "",
     "Rules:",
     "- One finding per meaningfully distinct change, at most 6. A trivial diff gets exactly one finding.",
@@ -71,13 +90,13 @@ export function buildSystemPrompt(source: ReviewInput["intent"]["source"]): stri
     "  (use the @@ hunk headers); omit it if unsure.",
     "- confidence is a number from 0 to 1.",
     "- summary is plain English for a human reviewer: what the change does, not a restatement of the diff syntax.",
-    "- rationale must cite concrete identifiers and lines. For partial or mismatch, name the specific code",
+    "- rationale must cite concrete identifiers and lines. For concern or defect, name the specific code",
     "  (function/variable names, operators, line numbers) that supports the verdict.",
     "- summary and rationale are JSON string values: if you quote code or text that itself contains double",
     "  quotes (e.g. console.log(\"x\")), either use single quotes around it or escape the inner double quotes",
     "  with a backslash (\\\") — an unescaped one breaks the JSON.",
     "- Judge only what the diff and context show; if unsure, use unknown rather than guessing.",
-    "- Related code from other components (when present) is context for understanding the change. Do not",
+    "- Related code (when present) is context for understanding the change. Do not",
     "  report findings about it; filePath must still be one of the changed files.",
     "- When the diff is split into parts, judge only the part you are shown; the other parts are reviewed",
     "  separately and their findings merged with yours.",
@@ -173,7 +192,7 @@ export function renderRelatedSections(related: ReviewRelatedContext): string {
   const files = (related.files ?? []).filter((f) => f.signatures.length > 0 || f.snippets.length > 0);
   if (files.length > 0) {
     if (lines.length > 0) lines.push("");
-    lines.push("## Related code in other components (context only — not part of the change)");
+    lines.push("## Related code (context only — not part of the change)");
     for (const file of files) {
       const relation = file.relation === "imported" ? "imported by the changed files" : "imports the changed files";
       lines.push(`Related file: ${oneLine(file.path)} (component ${oneLine(file.componentName)}; ${relation})`);

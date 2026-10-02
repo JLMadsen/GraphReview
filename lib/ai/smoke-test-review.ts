@@ -93,14 +93,14 @@ async function partA(): Promise<void> {
             filePath: "src/math/square.ts",
             lineRange: "1-4",
             summary: "square() now multiplies by 2 instead of by itself.",
-            intentMatch: "mismatch",
+            assessment: "defect",
             confidence: 0.92,
             rationale: "square() returns n * 2, so square(3) is 6, not 9.",
           },
           {
             filePath: "src/math/index.ts",
             summary: "Re-exports a new symbol.",
-            intentMatch: "match",
+            assessment: "ok",
             confidence: 0.7,
             rationale: "index.ts adds an export line.",
           },
@@ -113,7 +113,7 @@ async function partA(): Promise<void> {
       "clean JSON: fields preserved",
       r.findings[0].filePath === "src/math/square.ts" &&
         r.findings[0].lineRange === "1-4" &&
-        r.findings[0].intentMatch === "mismatch" &&
+        r.findings[0].assessment === "defect" &&
         r.findings[0].confidence === 0.92 &&
         r.findings[0].rationale.includes("n * 2") &&
         r.findings[1].lineRange === undefined
@@ -128,16 +128,16 @@ async function partA(): Promise<void> {
     check("prompt: intent title/body/linked issue present", user.includes("Title: Add square helper") && user.includes("Implements square(n)") && user.includes("- #12 Need a square function"));
     check("prompt: dependsOn / dependents listed", user.includes("Depends on: Core") && user.includes("Depended on by: Charts, Stats"));
     check("prompt: PR body lines are quoted so they can't forge labels", !/^Component: Evil/m.test(user) && (user.match(/^Component:/gm) ?? []).length === 1);
-    check("prompt: system asks for one json fence + defines all four intentMatch values", (() => {
+    check("prompt: system asks for one json fence + defines all four assessment values", (() => {
       const s = call.messages[0].content;
-      return s.includes("```json") && ["match:", "partial:", "mismatch:", "unknown:"].every((t) => s.includes(t)) && s.includes("at most 6");
+      return s.includes("```json") && ["ok:", "concern:", "defect:", "unknown:"].every((t) => s.includes(t)) && s.includes("at most 6");
     })());
     check("call options: temperature 0.2, no response_format/tools", call.options.temperature === 0.2 && !("response_format" in call.options) && !("tools" in call.options));
   }
 
   // --- temperature override -------------------------------------------------
   {
-    const fake = fakeChat(fenced({ findings: [{ summary: "x", intentMatch: "match", confidence: 1, rationale: "y" }] }));
+    const fake = fakeChat(fenced({ findings: [{ summary: "x", assessment: "ok", confidence: 1, rationale: "y" }] }));
     await reviewComponentChange(config, baseInput(), { chat: fake.chat, temperature: 0.7 });
     check("temperature option forwarded", fake.calls[0].options.temperature === 0.7);
   }
@@ -145,17 +145,17 @@ async function partA(): Promise<void> {
   // --- prose-wrapped JSON ---------------------------------------------------
   {
     const fake = fakeChat(
-      'Sure! Here is my review: {"findings":[{"filePath":"src/math/square.ts","summary":"Doubles instead of squares.","intentMatch":"mismatch","confidence":0.8,"rationale":"n * 2 in square()"}]} Hope this helps.'
+      'Sure! Here is my review: {"findings":[{"filePath":"src/math/square.ts","summary":"Doubles instead of squares.","assessment":"defect","confidence":0.8,"rationale":"n * 2 in square()"}]} Hope this helps.'
     );
     const r = await reviewComponentChange(config, baseInput(), { chat: fake.chat });
-    check("prose-wrapped JSON parsed", !r.parseFailed && r.findings.length === 1 && r.findings[0].intentMatch === "mismatch");
+    check("prose-wrapped JSON parsed", !r.parseFailed && r.findings.length === 1 && r.findings[0].assessment === "defect");
   }
 
   // --- unescaped inner quote (observed from smaller/local models, e.g. Ollama) ---
   {
     const raw =
       '{"findings":[{"filePath":"src/math/square.ts","lineRange":"449-449",' +
-      '"summary":"Added a console log for testing purposes.","intentMatch":"match","confidence":1,' +
+      '"summary":"Added a console log for testing purposes.","assessment":"ok","confidence":1,' +
       '"rationale":"The change adds a `console.log("TESTING")` line at line 449, which aligns with the intent."}]}';
     const fake = fakeChat(raw);
     const r = await reviewComponentChange(config, baseInput(), { chat: fake.chat });
@@ -164,13 +164,13 @@ async function partA(): Promise<void> {
       !r.parseFailed &&
         r.findings.length === 1 &&
         r.findings[0].summary === "Added a console log for testing purposes." &&
-        r.findings[0].intentMatch === "match"
+        r.findings[0].assessment === "ok"
     );
   }
 
   // --- usage missing --------------------------------------------------------
   {
-    const fake = fakeChat(fenced({ findings: [{ summary: "x", intentMatch: "match", confidence: 1, rationale: "y" }] }), null);
+    const fake = fakeChat(fenced({ findings: [{ summary: "x", assessment: "ok", confidence: 1, rationale: "y" }] }), null);
     const r = await reviewComponentChange(config, baseInput(), { chat: fake.chat });
     check("provider without usage -> zero usage, calls still 1", r.calls === 1 && r.usage.totalTokens === 0 && r.usage.promptTokens === 0);
   }
@@ -180,7 +180,7 @@ async function partA(): Promise<void> {
     const raw = "I looked at this and it seems reasonable overall. " + "blah ".repeat(200);
     const fake = fakeChat(raw);
     const r = await reviewComponentChange(config, baseInput(), { chat: fake.chat });
-    check("garbage: parseFailed with one unknown fallback", r.parseFailed && r.findings.length === 1 && r.findings[0].intentMatch === "unknown" && r.findings[0].confidence === 0);
+    check("garbage: parseFailed with one unknown fallback", r.parseFailed && r.findings.length === 1 && r.findings[0].assessment === "unknown" && r.findings[0].confidence === 0);
     check(
       "garbage: fallback summary is the first ~400 chars of raw text",
       r.findings[0].summary === raw.trim().slice(0, 400) && r.findings[0].rationale === "Model output could not be parsed as structured JSON."
@@ -191,7 +191,7 @@ async function partA(): Promise<void> {
   // --- parseable JSON with no valid findings -> also parseFailed ------------
   {
     const r = await reviewComponentChange(config, baseInput(), { chat: fakeChat('{"findings":[null, 5, "x", {}, []]}').chat });
-    check("JSON with only junk entries -> parseFailed fallback", r.parseFailed && r.findings.length === 1 && r.findings[0].intentMatch === "unknown");
+    check("JSON with only junk entries -> parseFailed fallback", r.parseFailed && r.findings.length === 1 && r.findings[0].assessment === "unknown");
     const empty = await reviewComponentChange(config, baseInput(), { chat: fakeChat('{"findings":[]}').chat });
     check("empty findings array -> parseFailed fallback", empty.parseFailed && empty.findings.length === 1);
     const blank = await reviewComponentChange(config, baseInput(), { chat: fakeChat("").chat });
@@ -203,10 +203,10 @@ async function partA(): Promise<void> {
     const fake = fakeChat(
       fenced({
         findings: [
-          { filePath: "src/math/square.ts", summary: "Bad enum", intentMatch: "totally-wrong", confidence: 1.7, rationale: "r1" },
-          { filePath: "src/other/not-in-input.ts", summary: "Unknown path", intentMatch: "MATCH", confidence: -2, rationale: "r2" },
-          { filePath: "./src/math/index.ts", lineRange: "L10 to L14", summary: 42, intentMatch: "partial", confidence: "0.4", rationale: 7 },
-          { filePath: 123, lineRange: [3, 9], summary: "Array range", intentMatch: null, confidence: "high", rationale: "r4" },
+          { filePath: "src/math/square.ts", summary: "Bad enum", assessment: "totally-wrong", confidence: 1.7, rationale: "r1" },
+          { filePath: "src/other/not-in-input.ts", summary: "Unknown path", assessment: "MATCH", confidence: -2, rationale: "r2" },
+          { filePath: "./src/math/index.ts", lineRange: "L10 to L14", summary: 42, assessment: "concern", confidence: "0.4", rationale: 7 },
+          { filePath: 123, lineRange: [3, 9], summary: "Array range", assessment: null, confidence: "high", rationale: "r4" },
           null,
           "junk",
           5,
@@ -218,30 +218,30 @@ async function partA(): Promise<void> {
     );
     const r = await reviewComponentChange(config, baseInput(), { chat: fake.chat });
     const [a, b, c, d, e] = r.findings;
-    check("invalid intentMatch -> unknown", a.intentMatch === "unknown");
+    check("invalid assessment -> unknown", a.assessment === "unknown");
     check("confidence 1.7 clamped to 1, -2 clamped to 0", a.confidence === 1 && b.confidence === 0);
     check("filePath not in input is dropped", b.filePath === undefined && a.filePath === "src/math/square.ts");
-    check("intentMatch is case-insensitive", b.intentMatch === "match");
+    check("assessment is case-insensitive", b.assessment === "ok");
     check("leading ./ on filePath tolerated", c.filePath === "src/math/index.ts");
-    check("non-string summary/rationale coerced to strings", c.summary === "42" && c.rationale === "7" && c.intentMatch === "partial");
+    check("non-string summary/rationale coerced to strings", c.summary === "42" && c.rationale === "7" && c.assessment === "concern");
     check("numeric-string confidence parsed", c.confidence === 0.4);
     check("lineRange normalized from 'L10 to L14' and [3, 9]", c.lineRange === "10-14" && d.lineRange === "3-9");
-    check("non-string filePath dropped; non-numeric confidence neutral 0.5", d.filePath === undefined && d.confidence === 0.5 && d.intentMatch === "unknown");
+    check("non-string filePath dropped; non-numeric confidence neutral 0.5", d.filePath === undefined && d.confidence === 0.5 && d.assessment === "unknown");
     check("junk entries (null/string/number/{}/blank) ignored", r.findings.length === 5 && e.summary.startsWith("Rationale-only") && !r.parseFailed);
   }
 
   // --- max 6 findings -------------------------------------------------------
   {
-    const many = Array.from({ length: 10 }, (_, i) => ({ summary: `s${i}`, intentMatch: "match", confidence: 0.5, rationale: "r" }));
+    const many = Array.from({ length: 10 }, (_, i) => ({ summary: `s${i}`, assessment: "ok", confidence: 0.5, rationale: "r" }));
     const r = await reviewComponentChange(config, baseInput(), { chat: fakeChat(fenced({ findings: many })).chat });
     check("at most 6 findings kept", r.findings.length === 6 && r.findings[5].summary === "s5");
   }
 
   // --- bare array / bare finding accepted -----------------------------------
   {
-    const arr = await reviewComponentChange(config, baseInput(), { chat: fakeChat(fenced([{ summary: "a", intentMatch: "match", confidence: 0.5, rationale: "r" }])).chat });
-    const one = await reviewComponentChange(config, baseInput(), { chat: fakeChat(fenced({ summary: "b", intentMatch: "partial", confidence: 0.5, rationale: "r" })).chat });
-    check("bare array / bare finding object tolerated", !arr.parseFailed && arr.findings.length === 1 && !one.parseFailed && one.findings[0].intentMatch === "partial");
+    const arr = await reviewComponentChange(config, baseInput(), { chat: fakeChat(fenced([{ summary: "a", assessment: "ok", confidence: 0.5, rationale: "r" }])).chat });
+    const one = await reviewComponentChange(config, baseInput(), { chat: fakeChat(fenced({ summary: "b", assessment: "concern", confidence: 0.5, rationale: "r" })).chat });
+    check("bare array / bare finding object tolerated", !arr.parseFailed && arr.findings.length === 1 && !one.parseFailed && one.findings[0].assessment === "concern");
   }
 
   // --- no patch at all -> zero calls ----------------------------------------
@@ -256,7 +256,7 @@ async function partA(): Promise<void> {
     const r = await reviewComponentChange(config, noPatch, { chat: fake.chat });
     check(
       "no patch text anywhere: zero model calls, one unknown finding",
-      fake.calls.length === 0 && r.calls === 0 && r.findings.length === 1 && r.findings[0].intentMatch === "unknown" && r.findings[0].confidence === 0 && !r.parseFailed && !r.truncated
+      fake.calls.length === 0 && r.calls === 0 && r.findings.length === 1 && r.findings[0].assessment === "unknown" && r.findings[0].confidence === 0 && !r.parseFailed && !r.truncated
     );
     check("no patch text: zero usage and 'unavailable' wording", r.usage.totalTokens === 0 && r.usage.promptTokens === 0 && /unavailable/i.test(r.findings[0].summary));
     const noFiles = await reviewComponentChange(config, baseInput({ files: [] }), { chat: fake.chat });
@@ -265,7 +265,7 @@ async function partA(): Promise<void> {
 
   // --- a file without patch alongside one with a patch ----------------------
   {
-    const fake = fakeChat(fenced({ findings: [{ summary: "x", intentMatch: "match", confidence: 1, rationale: "y" }] }));
+    const fake = fakeChat(fenced({ findings: [{ summary: "x", assessment: "ok", confidence: 1, rationale: "y" }] }));
     const mixed = baseInput({
       files: [
         { path: "assets/logo.png", status: "added" },
@@ -285,7 +285,7 @@ async function partA(): Promise<void> {
 
     // Big enough for a few parts, small enough to stay under the part cap.
     const splitPatch = Array.from({ length: 20 }, (_, i) => hunk(i)).join("\n");
-    const fakeSplit = fakeChat(fenced({ findings: [{ summary: "x", intentMatch: "match", confidence: 1, rationale: "y" }] }));
+    const fakeSplit = fakeChat(fenced({ findings: [{ summary: "x", assessment: "ok", confidence: 1, rationale: "y" }] }));
     const split = await reviewComponentChange(
       config,
       baseInput({ files: [{ path: "src/math/split.ts", status: "modified", additions: 200, deletions: 0, patch: splitPatch }] }),
@@ -301,7 +301,7 @@ async function partA(): Promise<void> {
 
     // So big that even the part cap can't hold it: the tail part is truncated.
     const hugePatch = Array.from({ length: 80 }, (_, i) => hunk(i)).join("\n");
-    const fake = fakeChat(fenced({ findings: [{ summary: "x", intentMatch: "unknown", confidence: 0.1, rationale: "y" }] }));
+    const fake = fakeChat(fenced({ findings: [{ summary: "x", assessment: "unknown", confidence: 0.1, rationale: "y" }] }));
     const input = baseInput({
       files: [
         { path: "src/math/huge.ts", status: "modified", additions: 800, deletions: 0, patch: hugePatch },
@@ -325,13 +325,13 @@ async function partA(): Promise<void> {
       /\[diff truncated\] \(also touches: function f\d+\(\)(, function f\d+\(\))*, \+\d+ more hunks?\)/.test(last)
     );
 
-    const fake2 = fakeChat(fenced({ findings: [{ summary: "x", intentMatch: "match", confidence: 1, rationale: "y" }] }));
+    const fake2 = fakeChat(fenced({ findings: [{ summary: "x", assessment: "ok", confidence: 1, rationale: "y" }] }));
     const r2 = await reviewComponentChange(config, baseInput(), { chat: fake2.chat });
     check("small diff at default budget: truncated=false, no marker", !r2.truncated && !fake2.calls[0].messages[1].content.includes("[diff truncated]"));
 
     // Single hunk larger than the whole share: still sends a line-boundary prefix of it.
     const oneBigHunk = "@@ -1,1 +1,500 @@\n" + Array.from({ length: 500 }, (_, i) => `+line ${i} of a very long single hunk`).join("\n");
-    const fake3 = fakeChat(fenced({ findings: [{ summary: "x", intentMatch: "match", confidence: 1, rationale: "y" }] }));
+    const fake3 = fakeChat(fenced({ findings: [{ summary: "x", assessment: "ok", confidence: 1, rationale: "y" }] }));
     const r3 = await reviewComponentChange(config, baseInput({ files: [{ path: "a.ts", status: "added", patch: oneBigHunk }] }), { chat: fake3.chat, tokenBudget: 1500 });
     const u3 = fake3.calls[0].messages[1].content;
     check("single oversized hunk: prefix kept + marker, truncated=true", r3.truncated && u3.includes("+line 0 of a very long single hunk") && u3.includes("[diff truncated]") && estimateMessagesTokens(fake3.calls[0].messages) <= 1500);
@@ -339,20 +339,41 @@ async function partA(): Promise<void> {
 
   // --- ref_comparison wording -----------------------------------------------
   {
-    const fake = fakeChat(fenced({ findings: [{ summary: "x", intentMatch: "mismatch", confidence: 0.9, rationale: "y" }] }));
+    const fake = fakeChat(fenced({ findings: [{ summary: "x", assessment: "defect", confidence: 0.9, rationale: "y" }] }));
     const input = baseInput({ intent: { source: "ref_comparison", title: "SHOULD NOT APPEAR", body: "NOR THIS" } });
     const r = await reviewComponentChange(config, input, { chat: fake.chat });
     const system = fake.calls[0].messages[0].content;
     const user = fake.calls[0].messages[1].content;
-    check("ref_comparison: system prompt says no stated intent / judge by evident purpose / mismatch for defects", /no stated intent/i.test(system) && /evident purpose/i.test(system) && /mismatch.*apparent defects/i.test(system));
+    check("ref_comparison: system prompt says no stated intent and no scope field", /no stated intent/i.test(system) && /no\s+scope field/i.test(system) && !system.includes('"scope"'));
     check("ref_comparison: user message states source and omits PR title/body", user.includes("Source: ref_comparison") && !user.includes("SHOULD NOT APPEAR") && !user.includes("NOR THIS") && !user.includes("Title:"));
     check("ref_comparison: review still works", r.calls === 1 && !r.parseFailed);
     const pr = await (async () => {
-      const f = fakeChat(fenced({ findings: [{ summary: "x", intentMatch: "match", confidence: 1, rationale: "y" }] }));
+      const f = fakeChat(fenced({ findings: [{ summary: "x", assessment: "ok", confidence: 1, rationale: "y" }] }));
       await reviewComponentChange(config, baseInput(), { chat: f.chat });
       return f.calls[0].messages[0].content;
     })();
-    check("pull_request: system prompt refers to title/description/linked issues, not 'no stated intent'", /linked issues/i.test(pr) && !/there is NO stated intent/.test(pr));
+    check("pull_request: system prompt refers to title/description/linked issues, not 'no stated intent'", /linked issues/i.test(pr) && !/there is no stated intent/i.test(pr));
+    check("pull_request: system prompt asks for scope + says unmentioned-but-correct is still ok", pr.includes('"scope"') && /unmentioned/.test(pr) && /still `ok`/.test(pr));
+    check("both: system prompt judges changes on their own merits and asks for kind", /ON ITS OWN MERITS/.test(pr) && /ON ITS OWN MERITS/.test(system) && /kind values/.test(pr));
+  }
+
+  // --- scope / kind normalisation --------------------------------------------
+  {
+    const out = fenced({
+      findings: [
+        { summary: "a", assessment: "mismatch", scope: "Out of scope", kind: "BugFix", confidence: 1, rationale: "r" },
+        { summary: "b", assessment: "match", scope: "described", kind: "feature", confidence: 1, rationale: "r" },
+        { summary: "c", assessment: "OK", scope: "sideways", kind: "poetry", confidence: 1, rationale: "r" },
+      ],
+    });
+    const pr = await reviewComponentChange(config, baseInput(), { chat: fakeChat(out).chat });
+    const [a, b, c] = pr.findings;
+    check("old vocabulary maps: mismatch -> defect, match -> ok", a.assessment === "defect" && b.assessment === "ok" && c.assessment === "ok");
+    check("scope aliases: 'Out of scope' -> unmentioned", a.scope === "unmentioned" && b.scope === "described");
+    check("kind aliases: 'BugFix' -> fix", a.kind === "fix" && b.kind === "feature");
+    check("unknown scope/kind dropped", c.scope === undefined && c.kind === undefined);
+    const refs = await reviewComponentChange(config, baseInput({ intent: { source: "ref_comparison" } }), { chat: fakeChat(out).chat });
+    check("ref_comparison: scope never kept, kind kept", refs.findings.every((f) => f.scope === undefined) && refs.findings[0].kind === "fix");
   }
 
   // --- errors propagate -----------------------------------------------------
@@ -421,26 +442,26 @@ async function partB(): Promise<void> {
     check("real client: findings reference real input file paths", r.findings.every((f) => f.filePath !== undefined && allowed.has(f.filePath)) && r.findings.every((f) => /^\d+-\d+$/.test(f.lineRange ?? "")));
     check("real client: summaries/rationales mention the component name", r.findings.every((f) => f.summary.includes("Auth") || f.rationale.includes("Auth")));
     check("real client: usage estimated from prompt length", r.usage.promptTokens > 0 && r.usage.completionTokens > 0 && r.usage.totalTokens === r.usage.promptTokens + r.usage.completionTokens);
-    check("real client: first finding's intentMatch equals mockOutcomeFor('Auth')", r.findings[0].intentMatch === mockOutcomeFor("Auth"));
+    check("real client: first finding's assessment equals mockOutcomeFor('Auth')", r.findings[0].assessment === mockOutcomeFor("Auth"));
     const again = await reviewComponentChange(real, input);
     check("real client: deterministic across calls", JSON.stringify(again.findings) === JSON.stringify(r.findings));
 
     // --- outcome distribution ---------------------------------------------------
     const names = Array.from({ length: 200 }, (_, i) => `Component${i}`);
-    const counts = { match: 0, partial: 0, mismatch: 0 };
+    const counts = { ok: 0, concern: 0, defect: 0 };
     for (const n of names) counts[mockOutcomeFor(n)]++;
     check(
-      `outcome mix over 200 names is roughly 50/25/25 (got ${counts.match}/${counts.partial}/${counts.mismatch})`,
-      counts.match > 75 && counts.match < 125 && counts.partial > 25 && counts.partial < 75 && counts.mismatch > 25 && counts.mismatch < 75
+      `outcome mix over 200 names is roughly 50/25/25 (got ${counts.ok}/${counts.concern}/${counts.defect})`,
+      counts.ok > 75 && counts.ok < 125 && counts.concern > 25 && counts.concern < 75 && counts.defect > 25 && counts.defect < 75
     );
     // Prove the wire path yields each outcome kind.
     const seen = new Set<string>();
-    for (const wanted of ["match", "partial", "mismatch"] as const) {
+    for (const wanted of ["ok", "concern", "defect"] as const) {
       const name = names.find((n) => mockOutcomeFor(n) === wanted)!;
       const res = await reviewComponentChange(real, { ...input, component: { ...input.component, name } });
-      if (res.findings[0].intentMatch === wanted && res.findings[0].summary.length > 0) seen.add(wanted);
+      if (res.findings[0].assessment === wanted && res.findings[0].summary.length > 0) seen.add(wanted);
     }
-    check("real client: match, partial and mismatch each come back over the wire", seen.size === 3);
+    check("real client: ok, concern and defect each come back over the wire", seen.size === 3);
 
     // --- MOCK_FAIL -> thrown AiClientError ----------------------------------------
     let failErr: unknown;
@@ -455,7 +476,7 @@ async function partB(): Promise<void> {
     const garbage = await reviewComponentChange(real, { ...input, intent: { ...input.intent, title: "Please MOCK_GARBAGE this" } });
     check(
       "MOCK_GARBAGE: parseFailed with one unknown fallback holding the prose",
-      garbage.parseFailed && garbage.calls === 1 && garbage.findings.length === 1 && garbage.findings[0].intentMatch === "unknown" && garbage.findings[0].summary.includes("Auth") && garbage.usage.totalTokens > 0
+      garbage.parseFailed && garbage.calls === 1 && garbage.findings.length === 1 && garbage.findings[0].assessment === "unknown" && garbage.findings[0].summary.includes("Auth") && garbage.usage.totalTokens > 0
     );
 
     // --- ref_comparison through the wire ----------------------------------------------

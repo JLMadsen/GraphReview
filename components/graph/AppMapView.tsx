@@ -19,8 +19,8 @@ import { Segmented } from "./Segmented";
 import { Spark } from "./Spark";
 import { CardFlow, DEFAULT_ELK_OPTIONS, linkId, type CardFlowLink } from "./CardFlow";
 import type { PrCardMarker } from "./PrMapNode";
-import { effectiveIntent, worstIntent } from "./review-visuals";
-import type { FindingDTO, IntentMatch } from "./types";
+import { effectiveAssessment, worstAssessment } from "./review-visuals";
+import type { FindingDTO, Assessment } from "./types";
 import type { AppMapSelection } from "./AppMapPanel";
 import type { UseAppMapJobResult } from "./useAppMap";
 import {
@@ -142,11 +142,11 @@ export function AppMapView({
       return best?.id;
     };
     for (const finding of findings) {
-      const intent: IntentMatch = effectiveIntent(finding);
+      const intent: Assessment = effectiveAssessment(finding);
       const cardId = (finding.filePath && cardOfFile.get(finding.filePath)) || cardOfComponent(finding.componentId);
       if (!cardId) continue;
       const prev = cardMarkers.get(cardId);
-      cardMarkers.set(cardId, { worst: prev ? worstIntent(prev.worst, intent) : intent, count: (prev?.count ?? 0) + 1 });
+      cardMarkers.set(cardId, { worst: prev ? worstAssessment(prev.worst, intent) : intent, count: (prev?.count ?? 0) + 1 });
     }
     return cardMarkers;
   }, [nodes, findings]);

@@ -19,14 +19,23 @@
 //
 // So the dock sits in the main column, directly below the canvas, at full
 // width. It leads with the exceptions: the headline is "N need a look", the
-// list is every finding still below `match`, worst first, one row each —
-// and the matches and resolved findings fold behind a single line, because a
-// review of 25 matches should read as one fact, not 25 cards. Confidence is
+// list is every finding still below `ok`, worst first, one row each —
+// and the OK and resolved findings fold behind a single line, because a
+// review of 25 OKs should read as one fact, not 25 cards. Confidence is
 // only shown when it is low. The cost counter lives in a tooltip.
+//
+// A finding's colour is its *assessment* (is the change sound on its own
+// terms); how it relates to the PR's description and what kind of change it
+// is sit beside it as a neutral tag ("Drive-by fix"). Two more passes have
+// their own place: the PR-level "does it deliver what it describes" verdict
+// is one line under the headline, and usages the change left behind (the
+// impact check) are their own section, since they point at files the diff
+// never touched.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
+  Cable,
   Check,
   ChevronRight,
   CircleCheck,
@@ -47,15 +56,20 @@ import { cn } from "cn";
 import { FileDiffModal } from "./FileDiffModal";
 import { JobLogHover } from "./JobLogHover";
 import {
-  INTENT_VISUALS,
-  compareIntent,
+  ASSESSMENT_VISUALS,
+  compareAssessment,
   computeVerdict,
-  effectiveIntent,
+  effectiveAssessment,
   formatConfidence,
+  findingTag,
   formatLocation,
+  isImpactFinding,
+  isImpactNote,
+  isIntentFinding,
   isResolvable,
   reviewMarkdown,
-  worstIntent,
+  SCOPE_DESCRIPTIONS,
+  worstAssessment,
 } from "./review-visuals";
 import { Spark } from "./Spark";
 import {
@@ -63,7 +77,7 @@ import {
   reviewTargetLabel,
   reviewTargetQuery,
   type FindingDTO,
-  type IntentMatch,
+  type Assessment,
   type ReviewEffort,
   type ReviewFreshnessDTO,
   type ReviewProgressDTO,
@@ -149,8 +163,10 @@ function FindingRow({
   const [open, setOpen] = useState(false);
   const location = formatLocation(finding);
   const resolved = Boolean(finding.resolvedAt);
-  const visual = INTENT_VISUALS[finding.intentMatch];
+  const visual = ASSESSMENT_VISUALS[finding.assessment];
   const Icon = visual.icon;
+  const impact = isImpactFinding(finding);
+  const tag = impact ? null : findingTag(finding);
   return (
     <li className={cn("group/row flex gap-2.5 py-2", selected && "-mx-2 bg-brand-muted px-2")}>
       <span
@@ -185,14 +201,24 @@ function FindingRow({
           )}
         </button>
         <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
-          <button
-            type="button"
-            onClick={() => onSelectComponent(selected ? null : finding.componentId)}
-            className="max-w-48 truncate underline-offset-2 hover:text-foreground hover:underline"
-            title={selected ? "Clear the selection" : `Select ${finding.componentName} on the map`}
-          >
-            {finding.componentName}
-          </button>
+          {tag && (
+            <span
+              className="rounded-sm border border-border px-1 py-px text-[10px] leading-none"
+              title={finding.scope ? SCOPE_DESCRIPTIONS[finding.scope] : undefined}
+            >
+              {tag}
+            </span>
+          )}
+          {finding.componentId && finding.componentName && (
+            <button
+              type="button"
+              onClick={() => onSelectComponent(selected ? null : finding.componentId)}
+              className="max-w-48 truncate underline-offset-2 hover:text-foreground hover:underline"
+              title={selected ? "Clear the selection" : `Select ${finding.componentName} on the map`}
+            >
+              {finding.componentName}
+            </button>
+          )}
           {location && (
             <span className="min-w-0 truncate font-mono" title={location}>
               {location}
@@ -203,9 +229,9 @@ function FindingRow({
               type="button"
               onClick={() => onViewDiff(finding)}
               className="underline-offset-2 hover:text-foreground hover:underline"
-              title={`View the diff for ${finding.filePath}`}
+              title={impact ? `Open ${finding.filePath} at the reviewed commit (the diff did not touch it)` : `View the diff for ${finding.filePath}`}
             >
-              diff
+              {impact ? "open" : "diff"}
             </button>
           )}
           {!resolved && finding.confidence < LOW_CONFIDENCE && (
@@ -244,10 +270,10 @@ function FindingRow({
 }
 
 /** What the verdict tooltip says wherever the verdict is shown. */
-const ADVISORY = "Judged by the model against the PR's stated intent — it can be wrong. Nothing here blocks the PR or is posted anywhere.";
+const ADVISORY = "Judged by the model on each change's own merits — it can be wrong. Nothing here blocks the PR or is posted anywhere.";
 
 /**
- * The review's verdict in one line — "2 need a look", "All 28 match",
+ * The review's verdict in one line — "2 need a look", "All 28 OK",
  * "Reviewing 3/7" — in the worst verdict's colour. It heads the review under
  * the map (`heading`); as a button it jumps to the findings.
  */
@@ -262,8 +288,9 @@ export function ReviewHeadline({
   as?: "button" | "heading";
 }) {
   const running = state === "queued" || state === "running";
-  const open = findings.filter((f) => effectiveIntent(f) !== "match");
-  const worst = open.reduce<IntentMatch | null>((w, f) => (w ? worstIntent(w, f.intentMatch) : f.intentMatch), null);
+  const open = findings.filter((f) => effectiveAssessment(f) !== "ok");
+  const judged = findings.filter((f) => !isImpactNote(f)).length;
+  const worst = open.reduce<Assessment | null>((w, f) => (w ? worstAssessment(w, f.assessment) : f.assessment), null);
   const jump = () => document.getElementById("review")?.scrollIntoView({ behavior: "smooth", block: "start" });
 
   let body: React.ReactNode;
@@ -277,7 +304,7 @@ export function ReviewHeadline({
       </span>
     );
   } else if (worst) {
-    const visual = INTENT_VISUALS[worst];
+    const visual = ASSESSMENT_VISUALS[worst];
     const Icon = visual.icon;
     body = (
       <span className="flex items-center gap-1.5" style={{ color: visual.text }}>
@@ -286,11 +313,11 @@ export function ReviewHeadline({
       </span>
     );
   } else if (findings.length > 0) {
-    const Icon = INTENT_VISUALS.match.icon;
+    const Icon = ASSESSMENT_VISUALS.ok.icon;
     body = (
-      <span className="flex items-center gap-1.5" style={{ color: INTENT_VISUALS.match.text }}>
+      <span className="flex items-center gap-1.5" style={{ color: ASSESSMENT_VISUALS.ok.text }}>
         <Icon className="size-4" aria-hidden />
-        All {findings.length} match
+        {judged === 1 ? "OK" : `All ${judged} OK`}
       </span>
     );
   } else if (status === "loading") {
@@ -414,10 +441,10 @@ function ReviewMenu({
 function sortFindings(list: FindingDTO[]): FindingDTO[] {
   return [...list].sort(
     (a, b) =>
-      compareIntent(effectiveIntent(a), effectiveIntent(b)) ||
-      compareIntent(a.intentMatch, b.intentMatch) ||
+      compareAssessment(effectiveAssessment(a), effectiveAssessment(b)) ||
+      compareAssessment(a.assessment, b.assessment) ||
       b.confidence - a.confidence ||
-      a.componentName.localeCompare(b.componentName)
+      (a.componentName || "").localeCompare(b.componentName || "")
   );
 }
 
@@ -450,15 +477,37 @@ export function ReviewPanel({
     setDiffFinding(null);
   }, [targetKey]);
 
-  // Exceptions first: anything still below `match` needs a look; matches
-  // and resolved findings are "settled" and fold behind one line.
-  const { open, settled } = useMemo(() => {
+  // Exceptions first: anything still below `ok` needs a look; OK and
+  // resolved findings are "settled" and fold behind one line. The PR-level
+  // intent verdict and the impact check each get their own place.
+  const { intentFinding, open, impactOpen, notes, settled, driveBys } = useMemo(() => {
     const open: FindingDTO[] = [];
+    const impactOpen: FindingDTO[] = [];
+    const notes: FindingDTO[] = [];
     const settled: FindingDTO[] = [];
-    for (const f of findings) (effectiveIntent(f) === "match" ? settled : open).push(f);
-    return { open: sortFindings(open), settled: sortFindings(settled) };
+    let intentFinding: FindingDTO | undefined;
+    let driveBys = 0;
+    for (const f of findings) {
+      if (isIntentFinding(f)) intentFinding = f;
+      else if (isImpactNote(f)) notes.push(f);
+      else if (effectiveAssessment(f) === "ok") {
+        settled.push(f);
+        if (f.scope === "unmentioned") driveBys++;
+      } else (isImpactFinding(f) ? impactOpen : open).push(f);
+    }
+    return {
+      intentFinding,
+      open: sortFindings(open),
+      impactOpen: sortFindings(impactOpen),
+      notes,
+      settled: sortFindings(settled),
+      driveBys,
+    };
   }, [findings]);
-  const components = useMemo(() => new Set(findings.map((f) => f.componentId)).size, [findings]);
+  const components = useMemo(
+    () => new Set(findings.filter((f) => f.category === "change").map((f) => f.componentId)).size,
+    [findings]
+  );
 
   const verdict = useMemo(() => computeVerdict(findings), [findings]);
   const [copied, setCopied] = useState(false);
@@ -571,8 +620,8 @@ export function ReviewPanel({
                   !canRerun
                     ? "A review of this target is already in flight."
                     : state === "none"
-                      ? "Run the intent check at the selected effort."
-                      : "Run the intent check again at the selected effort — existing findings are overwritten."
+                      ? "Run the review at the selected effort."
+                      : "Run the review again at the selected effort — existing findings are overwritten."
                 }
               >
                 {rerunning ? <LoaderCircle className="animate-spin" aria-hidden /> : <RefreshCw aria-hidden />}
@@ -646,7 +695,7 @@ export function ReviewPanel({
         {notConfigured && (
           <p className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <Info className="size-3 shrink-0" aria-hidden />
-            Review is off — set up an OpenAI-compatible model provider to check changes against their intent.
+            Review is off — set up an OpenAI-compatible model provider to have each change explained and checked.
             <Link href="/settings" className="inline-flex items-center gap-0.5 text-foreground underline-offset-2 hover:underline">
               Settings <ExternalLink className="size-2.5 opacity-60" aria-hidden />
             </Link>
@@ -662,6 +711,22 @@ export function ReviewPanel({
         {/* ---- Findings: what needs a look, then the settled ones --------- */}
         {findings.length > 0 ? (
           <div className="mt-1.5 min-h-0 flex-1 overflow-y-auto pr-1">
+            {intentFinding && (
+              <div className="mb-1 border-b border-border/70">
+                <p className="pt-1 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+                  Delivers what it describes?
+                </p>
+                <ul>
+                  <FindingRow
+                    finding={intentFinding}
+                    selected={false}
+                    onSelectComponent={onSelectComponent}
+                    onViewDiff={setDiffFinding}
+                    onSetResolved={onSetResolved}
+                  />
+                </ul>
+              </div>
+            )}
             {open.length > 0 && (
               <ul className="divide-y divide-border/70">
                 {open.map((finding) => (
@@ -676,12 +741,48 @@ export function ReviewPanel({
                 ))}
               </ul>
             )}
+            {(impactOpen.length > 0 || notes.length > 0) && (
+              <div className={cn(open.length > 0 && "border-t border-border/70", "pt-2")}>
+                <p
+                  className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground"
+                  title="Usages of a changed signature, type or constant that the change did not update. They are usually in files the diff never touched."
+                >
+                  <Cable className="size-3" aria-hidden />
+                  Impact · {impactOpen.length} caller{impactOpen.length === 1 ? "" : "s"} not updated
+                </p>
+                {impactOpen.length > 0 && (
+                  <ul className="divide-y divide-border/70">
+                    {impactOpen.map((finding) => (
+                      <FindingRow
+                        key={finding.id}
+                        finding={finding}
+                        selected={Boolean(finding.componentId) && finding.componentId === selectedComponentId}
+                        onSelectComponent={onSelectComponent}
+                        onViewDiff={setDiffFinding}
+                        onSetResolved={onSetResolved}
+                      />
+                    ))}
+                  </ul>
+                )}
+                {notes.map((note) => (
+                  <p key={note.id} className="flex items-start gap-1.5 py-1.5 text-[11px] text-muted-foreground" title={note.rationale}>
+                    <Info className="mt-px size-3 shrink-0" aria-hidden />
+                    <span>{note.summary}</span>
+                  </p>
+                ))}
+              </div>
+            )}
             {settled.length > 0 && (
               <>
-                {open.length > 0 && (
+                {(open.length > 0 || impactOpen.length > 0 || notes.length > 0 || intentFinding) && (
                   <p className="flex items-center gap-1.5 border-t border-border/70 pt-3 pb-1 text-[11px] text-muted-foreground">
                     <CircleCheck className="size-3 text-success" aria-hidden />
-                    {settled.length} matching or resolved
+                    {settled.length} OK or resolved
+                    {driveBys > 0 && (
+                      <span title="Correct changes the description does not mention. Informational only.">
+                        · {driveBys} unmentioned
+                      </span>
+                    )}
                   </p>
                 )}
                 <ul className="divide-y divide-border/70">

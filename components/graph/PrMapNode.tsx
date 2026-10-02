@@ -8,9 +8,9 @@
 
 import { ChevronDown, ChevronUp, LayoutGrid } from "lucide-react";
 import { cn } from "cn";
-import { INTENT_VISUALS } from "./review-visuals";
+import { ASSESSMENT_VISUALS } from "./review-visuals";
 import type { PrMapFileDTO, PrMapNodeDTO, PrMapRole } from "./pr-map-types";
-import type { FileDiffStatus, IntentMatch } from "./types";
+import type { FileDiffStatus, Assessment } from "./types";
 
 /** Fixed card width — ELK only has to discover heights. */
 export const PR_CARD_WIDTH = 280;
@@ -51,13 +51,13 @@ function chipLabels(files: PrMapFileDTO[]): Map<string, string> {
 }
 
 export interface PrCardMarker {
-  worst: IntentMatch;
+  worst: Assessment;
   count: number;
 }
 
 /** A card's worst review verdict and finding count — shared by the PR map and the app map. Glyph + count, no pill: status is loud colour on a quiet card. */
 export function CardMarkerBadge({ marker, className }: { marker: PrCardMarker; className?: string }) {
-  const visual = INTENT_VISUALS[marker.worst];
+  const visual = ASSESSMENT_VISUALS[marker.worst];
   const Icon = visual.icon;
   return (
     <span
@@ -72,8 +72,8 @@ export function CardMarkerBadge({ marker, className }: { marker: PrCardMarker; c
 }
 
 /** A file's worst verdict as its glyph in the verdict colour — the file-row counterpart of `CardMarkerBadge`. */
-export function IntentGlyph({ intent }: { intent: IntentMatch }) {
-  const visual = INTENT_VISUALS[intent];
+export function AssessmentGlyph({ intent }: { intent: Assessment }) {
+  const visual = ASSESSMENT_VISUALS[intent];
   const Icon = visual.icon;
   return (
     <span className="shrink-0" style={{ color: visual.text }} title={`Worst finding: ${visual.label}`}>
@@ -88,7 +88,7 @@ export interface PrMapCardProps {
   expanded?: boolean;
   marker?: PrCardMarker;
   /** Worst verdict per file path, for the chip dots. */
-  fileMarkers?: Map<string, IntentMatch>;
+  fileMarkers?: Map<string, Assessment>;
   onOpenFile?: (path: string) => void;
   onToggleExpand?: () => void;
   onShowInRepo?: () => void;
@@ -156,7 +156,7 @@ export function PrMapCard({
             const content = (
               <>
                 {intent && (
-                  <IntentGlyph intent={intent} />
+                  <AssessmentGlyph intent={intent} />
                 )}
                 <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
                   {labels.get(file.path)}

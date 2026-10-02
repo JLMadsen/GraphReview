@@ -44,7 +44,9 @@ export interface PreviewCaseOutcome {
   label: string;
   /** Function: `repr`/`inspect` of the return value. */
   returned?: string;
-  /** Function: the arguments after the call — shows in-place mutation. */
+  /** Function: the arguments as passed in, in the same format as `argsAfter`. */
+  argsBefore?: string;
+  /** Function: the arguments after the call — differs from `argsBefore` when the call mutated them. */
   argsAfter?: string;
   /** Component: server-rendered markup. */
   html?: string;
@@ -137,4 +139,42 @@ export interface PreviewStatusDTO {
   result?: PreviewResult;
   error?: string;
   logs?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Scan: which changed files hold changed components (on target load, no Docker)
+// ---------------------------------------------------------------------------
+
+export interface PreviewScanComponent {
+  name: string;
+  change: PreviewChange;
+  line: number;
+  via?: string;
+}
+
+/** What the scan job returns: changed components per file. Plain functions are left out on purpose. */
+export interface PreviewScanResult {
+  baseSha: string;
+  headSha: string;
+  files: Array<{ filePath: string; components: PreviewScanComponent[] }>;
+}
+
+/** One file of the scan joined with its preview run, for the Graph tab's "Looks different" section. */
+export interface PreviewScanFileDTO {
+  filePath: string;
+  components: Array<
+    PreviewScanComponent & {
+      /** From the file's last finished preview run: whether any case renders differently. Absent when not run. */
+      looks?: "different" | "same" | "failed";
+    }
+  >;
+  /** The file's preview job, if one exists. */
+  preview: PreviewJobState;
+}
+
+/** `GET /api/repos/[repoId]/preview/scan` */
+export interface PreviewScanDTO {
+  state: PreviewJobState;
+  files: PreviewScanFileDTO[];
+  error?: string;
 }

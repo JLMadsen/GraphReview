@@ -6,8 +6,10 @@
 // a few in flight at a time → persist each component's findings the
 // moment it completes (overwriting any previous run's findings for that
 // component), so they stream into the UI → prune findings for components
-// the target no longer touches → one more call that groups and names the
-// PR map's cards (DESIGN.md §6.4), best-effort.
+// the target no longer touches → the impact pass (usages of changed
+// signatures/types the PR left behind, ./impact.ts) → for a PR, the one
+// "does it deliver what it claims" call → one more call that groups and
+// names the PR map's cards (DESIGN.md §6.4), best-effort.
 //
 // Kept out of `worker/index.ts` and out of lib/jobs' barrel on purpose, for
 // the same reason as `./analyze.ts`: this is the unit of work (importable
@@ -17,8 +19,14 @@
 
 import { randomUUID } from "node:crypto";
 import { UnrecoverableError } from "bullmq";
-import { DEFAULT_REVIEW_EFFORT, REVIEW_EFFORT_SETTINGS, groupPrMap, reviewComponentChange } from "@/lib/ai";
-import type { AiProviderConfig, PrMapAiInput, ReviewInput } from "@/lib/ai";
+import {
+  DEFAULT_REVIEW_EFFORT,
+  REVIEW_EFFORT_SETTINGS,
+  checkPrIntent,
+  groupPrMap,
+  reviewComponentChange,
+} from "@/lib/ai";
+import type { AiProviderConfig, PrIntentVerdict, PrMapAiInput, ReviewInput } from "@/lib/ai";
 import { decrypt } from "@/lib/crypto";
 import { compareRefs, getLinkedIssues, getPullRequest, listPullRequestFiles } from "@/lib/github";
 import type { LinkedIssue, PullRequestDetail } from "@/lib/github";
@@ -34,12 +42,13 @@ import {
   getRepoById,
   linkPullRequestToRepo,
   prMapFilesKey,
+  replaceFindingsForTargetCategory,
   replaceFindingsForTargetComponent,
   savePrMapGrouping,
   upsertPullRequest,
 } from "@/lib/neo4j";
 import type { RepoRecord } from "@/lib/neo4j";
-import type { TargetFindingInput } from "@/lib/neo4j";
+import type { FindingAssessment, TargetFindingInput } from "@/lib/neo4j";
 import type { JobLogger } from "./analyze";
 import {
   getComponentReviewContexts,
@@ -47,6 +56,8 @@ import {
   type ComponentReviewContext,
 } from "./diff-components";
 import { resolveGitHubAccess } from "./github-access";
+import { openHeadSource } from "./head-source";
+import { runImpactPass } from "./impact";
 import { gatherRelatedContext } from "./review-context";
 import {
   assemblePrMap,
@@ -474,6 +485,88 @@ async function runPrMapPass(args: {
 }
 
 // ---------------------------------------------------------------------------
+// The PR-level intent pass
+// ---------------------------------------------------------------------------
+
+const INTENT_ASSESSMENT: Record<PrIntentVerdict, FindingAssessment> = {
+  delivers: "ok",
+  partial: "concern",
+  missing: "defect",
+  unknown: "unknown",
+};
+
+/**
+ * One call: does the PR, as a whole, deliver what its title, description
+ * and linked issues claim? Its answer is one `category: "intent"` finding
+ * with no component — a line of the review verdict. A failed call becomes
+ * an `unknown` one, the same as a failed component. Never throws.
+ */
+async function runIntentPass(args: {
+  intent: ReviewInput["intent"];
+  files: LocalFilePatch[];
+  findingLines: string[];
+  aiConfig: AiProviderConfig;
+  tokenBudget: number;
+  prId?: string;
+  revision: Pick<TargetFindingInput, "reviewedBaseSha" | "reviewedHeadSha" | "reviewedAt">;
+  log: JobLogger;
+}): Promise<PrMapPassResult & { finding: TargetFindingInput & { componentId: string } }> {
+  const base = {
+    id: randomUUID(),
+    prId: args.prId,
+    componentId: "",
+    model: args.aiConfig.model,
+    createdAt: new Date().toISOString(),
+    ...args.revision,
+  };
+  try {
+    const result = await checkPrIntent(
+      args.aiConfig,
+      {
+        intent: args.intent,
+        files: args.files.map((file) => ({
+          path: file.path,
+          status: file.status,
+          additions: file.additions ?? 0,
+          deletions: file.deletions ?? 0,
+          patch: file.patch,
+        })),
+        findings: args.findingLines,
+      },
+      { tokenBudget: args.tokenBudget }
+    );
+    args.log(`intent: ${result.verdict}${result.parseFailed ? " (model output could not be parsed)" : ""}`);
+    return {
+      calls: 1,
+      promptTokens: result.usage.promptTokens,
+      completionTokens: result.usage.completionTokens,
+      finding: {
+        ...base,
+        summary: result.summary,
+        assessment: INTENT_ASSESSMENT[result.verdict],
+        confidence: result.parseFailed ? 0 : 0.7,
+        rationale: result.rationale,
+      },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    args.log(`intent: model call failed — ${message}`);
+    return {
+      calls: 1,
+      promptTokens: 0,
+      completionTokens: 0,
+      finding: {
+        ...base,
+        summary: "The check of whether this PR delivers what it describes failed.",
+        assessment: "unknown",
+        confidence: 0,
+        rationale: `The AI intent-check call did not complete: ${message}`,
+      },
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The job
 // ---------------------------------------------------------------------------
 
@@ -517,6 +610,10 @@ export async function runReviewJob(
     ...(resolved.reviewed.headSha ? { reviewedHeadSha: resolved.reviewed.headSha } : {}),
     reviewedAt,
   };
+
+  // The code as the target leaves it — for related-code context and the
+  // impact pass. `null` (logged) falls back to the default branch / skips.
+  const head = await openHeadSource(repo, target, resolved.reviewed.headSha, log);
 
   // --- Map the diff onto the component graph -----------------------------
   const filesByPath = new Map(resolved.files.map((file) => [file.path, file]));
@@ -565,6 +662,8 @@ export async function runReviewJob(
   let writeChain: Promise<unknown> = Promise.resolve();
   /** A few finding summaries per component, for the PR map pass. */
   const summariesByComponent = new Map<string, string[]>();
+  /** One line per finding, for the PR-level intent call. */
+  const findingLines: string[] = [];
 
   const reviewOne = async (context: ComponentReviewContext): Promise<void> => {
     const paths = match.pathsByComponentId.get(context.id) ?? [];
@@ -585,6 +684,7 @@ export async function runReviewJob(
         changedPaths: paths,
         patches: files.map((file) => file.patch ?? ""),
         settings: effortSettings,
+        head,
         log: (message) => log(`${context.name}: ${message}`),
       });
       const result = await reviewComponentChange(
@@ -611,6 +711,10 @@ export async function runReviewJob(
         context.id,
         result.findings.slice(0, 3).map((finding) => finding.summary)
       );
+      for (const finding of result.findings) {
+        const labels = [finding.kind, finding.scope, finding.assessment].filter(Boolean).join(", ");
+        findingLines.push(`${finding.filePath ?? context.name}: ${finding.summary} (${labels})`);
+      }
 
       findings = result.findings.map((finding) => ({
         id: randomUUID(),
@@ -618,7 +722,9 @@ export async function runReviewJob(
         filePath: finding.filePath,
         lineRange: finding.lineRange,
         summary: finding.summary,
-        intentMatch: finding.intentMatch,
+        assessment: finding.assessment,
+        scope: finding.scope,
+        kind: finding.kind,
         confidence: finding.confidence,
         rationale: finding.rationale,
         model: aiConfig.model,
@@ -651,7 +757,7 @@ export async function runReviewJob(
           id: randomUUID(),
           prId: resolved.prId,
           summary: `Review of ${context.name} failed.`,
-          intentMatch: "unknown",
+          assessment: "unknown",
           confidence: 0,
           rationale: `The AI review call for this component did not complete: ${message}`,
           model: aiConfig.model,
@@ -700,6 +806,67 @@ export async function runReviewJob(
   );
   if (prunedFindings > 0) {
     log(`pruned ${prunedFindings} finding(s) for components no longer touched`);
+  }
+
+  // Impact and intent findings are replaced wholesale per run, through the
+  // same serialised write chain as the component findings.
+  const persistCategory = async (
+    category: "impact" | "intent",
+    findings: Parameters<typeof replaceFindingsForTargetCategory>[3]
+  ): Promise<void> => {
+    const write = writeChain.then(() => replaceFindingsForTargetCategory(repoId, targetKey, category, findings));
+    writeChain = write.catch(() => undefined);
+    try {
+      await write;
+      findingsWritten += findings.length;
+    } catch (error) {
+      log(`persisting ${category} findings failed — ${(error as Error).message}`);
+    }
+  };
+
+  // --- Usages the change left behind ----------------------------------------
+  running.set("__impact", "Impact check");
+  await publishProgress();
+  const impact = await runImpactPass({
+    repoId,
+    files: resolved.files,
+    head,
+    aiConfig,
+    tokenBudget: effortSettings.tokenBudget,
+    prId: resolved.prId,
+    revision,
+    log,
+  });
+  running.delete("__impact");
+  progress.calls += impact.calls;
+  progress.promptTokens += impact.promptTokens;
+  progress.completionTokens += impact.completionTokens;
+  await persistCategory("impact", impact.findings);
+  for (const finding of impact.findings) {
+    if (finding.assessment !== "ok") findingLines.push(`${finding.filePath}: ${finding.summary} (impact, ${finding.assessment})`);
+  }
+
+  // --- Does the PR deliver what it claims? ----------------------------------
+  if (resolved.intent.source === "pull_request") {
+    running.set("__intent", "Intent check");
+    await publishProgress();
+    const intentPass = await runIntentPass({
+      intent: resolved.intent,
+      files: resolved.files,
+      findingLines,
+      aiConfig,
+      tokenBudget: effortSettings.tokenBudget,
+      prId: resolved.prId,
+      revision,
+      log,
+    });
+    running.delete("__intent");
+    progress.calls += intentPass.calls;
+    progress.promptTokens += intentPass.promptTokens;
+    progress.completionTokens += intentPass.completionTokens;
+    await persistCategory("intent", [intentPass.finding]);
+  } else {
+    await persistCategory("intent", []);
   }
 
   // --- Group and name the PR map (DESIGN.md §6.4) -------------------------

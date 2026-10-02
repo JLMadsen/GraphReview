@@ -13,9 +13,15 @@
  *
  * Responses are deterministic. The user message is parsed for the
  * `Component: <name>` and `File: <path> (...)` lines that `prompts.ts`
- * emits; an outcome is picked by a stable hash of the component name
- * (~50% match, ~25% partial, ~25% mismatch) and 1-2 findings referencing the
- * real file paths come back in a ```json fence.
+ * emits; an assessment is picked by a stable hash of the component name
+ * (~50% ok, ~25% concern, ~25% defect) and 1-2 findings referencing the
+ * real file paths come back in a ```json fence, with a `kind` and — for a
+ * pull request — a `scope` (the second finding is a drive-by fix).
+ *
+ * The impact check (`TASK: impact-check`) answers every usage of a removed
+ * declaration, and every other usage whose id hashes odd, `incompatible`;
+ * the rest `compatible`. The PR intent check (`TASK: pr-intent`) answers
+ * `delivers` unless the title contains MOCK_PARTIAL.
  *
  * The AI-labeling calls (lib/ai/label.ts) are recognised by
  * the `TASK: label-domains` / `TASK: describe-modules` marker in their system
@@ -50,12 +56,14 @@ import { PR_CHAT_TASK_MARKER, REPO_CHAT_SCOPE_MARKER } from "./pr-chat";
 import { PR_MAP_TASK_MARKER } from "./pr-map";
 import { APP_EXPLAIN_TASK_MARKER, APP_FEATURES_TASK_MARKER, APP_LAYERS_TASK_MARKER } from "./app-map";
 import { PREVIEW_INPUTS_TASK_MARKER } from "./preview-inputs";
+import { IMPACT_TASK_MARKER } from "./impact";
+import { PR_INTENT_TASK_MARKER } from "./pr-intent";
 
 export const DEFAULT_MOCK_PORT = 4010;
 export const DEFAULT_MOCK_DELAY_MS = 900;
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
 
-export type MockOutcome = "match" | "partial" | "mismatch";
+export type MockOutcome = "ok" | "concern" | "defect";
 
 export interface MockServerOptions {
   /** 0 = ephemeral. Default 4010. */
@@ -86,12 +94,12 @@ export function stableHash(text: string): number {
   return h >>> 0;
 }
 
-/** ~50% match, ~25% partial, ~25% mismatch, by stable hash of the component name. */
+/** ~50% ok, ~25% concern, ~25% defect, by stable hash of the component name. */
 export function mockOutcomeFor(componentName: string): MockOutcome {
   const bucket = stableHash(componentName) % 100;
-  if (bucket < 50) return "match";
-  if (bucket < 75) return "partial";
-  return "mismatch";
+  if (bucket < 50) return "ok";
+  if (bucket < 75) return "concern";
+  return "defect";
 }
 
 export function startMockServer(options: MockServerOptions = {}): Promise<MockServerHandle> {
@@ -214,6 +222,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
                     ? appExplainContent(userText)
                     : prompt.includes(PREVIEW_INPUTS_TASK_MARKER)
                     ? previewInputsContent(userText)
+                    : prompt.includes(IMPACT_TASK_MARKER)
+                    ? impactContent(userText)
+                    : prompt.includes(PR_INTENT_TASK_MARKER)
+                    ? prIntentContent(userText)
                     : prompt.includes(CHECKLIST_TASK_MARKER)
                       ? checklistContent(userText)
                       : prompt.includes(PR_CHAT_TASK_MARKER)
@@ -332,7 +344,7 @@ function cannedContent(userText: string): { content: string; note: string } {
   findings.push(makeFinding(name, outcome, files[0], h, parsed.refComparison));
   // Second finding for multi-file changes, on roughly half the components.
   if (files.length >= 2 && ((h >>> 3) & 1) === 0) {
-    findings.push(makeFinding(name, "match", files[1], h >>> 7, parsed.refComparison, true));
+    findings.push(makeFinding(name, "ok", files[1], h >>> 7, parsed.refComparison, true));
   }
 
   const content = ["```json", JSON.stringify({ findings }, null, 2), "```"].join("\n");
@@ -351,33 +363,32 @@ function makeFinding(
   const end = start + 3 + ((seed >>> 5) % 12);
   const where = filePath ?? "the changed code";
   const ident = identifierFor(filePath, name);
-  const basis = refComparison ? "the code's own evident purpose (there is no stated intent)" : "the stated intent";
+  const basis = refComparison ? "the code's own evident purpose (there is no stated intent)" : "what the code is for";
 
   let summary: string;
   let rationale: string;
   let confidence: number;
 
-  if (outcome === "match") {
+  if (outcome === "ok") {
     summary = secondary
       ? `Small supporting edit in ${where} that keeps the ${name} component consistent with the main change.`
       : `Updates how the ${name} component handles its core logic in ${where}; the edit is small and self-contained.`;
     rationale =
-      `Lines ${start}-${end} of ${where} change ${ident} in a way that plausibly implements ${basis} for ${name}. ` +
-      "No unrelated edits or suspicious operators were found in this hunk.";
+      `Lines ${start}-${end} of ${where} change ${ident} in a way that is consistent with ${basis} in ${name}. ` +
+      "No suspicious operators or missing checks were found in this hunk.";
     confidence = 0.85 + (seed % 10) / 100;
-  } else if (outcome === "partial") {
-    summary = `Changes ${ident} in the ${name} component, covering the main path but not everything that was asked for.`;
+  } else if (outcome === "concern") {
+    summary = `Changes ${ident} in the ${name} component; the main path looks right but an edge case is not handled.`;
     rationale =
-      `${where} lines ${start}-${end} implement only part of ${basis} for ${name}: ${ident} is updated, ` +
-      "but an expected companion change (tests, or the caller in a neighbouring component) is not in this diff, " +
-      "and there is an unrelated formatting edit alongside it.";
+      `${where} lines ${start}-${end}: ${ident} is updated, but the empty/error case is not handled ` +
+      "and the behaviour change may affect callers in a neighbouring component.";
     confidence = 0.6 + (seed % 15) / 100;
   } else {
     summary = `Rewrites ${ident} in the ${name} component, but the new behaviour appears to differ from what it should do.`;
     rationale =
       `In ${where} lines ${start}-${end}, ${ident} now computes a different result than its name and ${basis} imply ` +
       "(for example it doubles its input where it should square it), so this looks like a defect in " +
-      `${name} rather than an implementation of the intent.`;
+      `${name}.`;
     confidence = 0.75 + (seed % 15) / 100;
   }
 
@@ -387,7 +398,9 @@ function makeFinding(
     finding.lineRange = `${start}-${end}`;
   }
   finding.summary = summary;
-  finding.intentMatch = outcome;
+  finding.kind = secondary ? "fix" : ["feature", "fix", "refactor"][seed % 3];
+  finding.assessment = outcome;
+  if (!refComparison) finding.scope = secondary ? "unmentioned" : seed % 4 === 0 ? "supporting" : "described";
   finding.confidence = Math.round(confidence * 100) / 100;
   finding.rationale = rationale;
   return finding;
@@ -538,6 +551,43 @@ function describeContent(userText: string): { content: string; note: string } {
 }
 
 /** Answers every checklist question: "pass" when the PR has a description, "unknown" otherwise. */
+/** Impact check: removed declarations break every usage; otherwise usages whose id hashes odd do. */
+function impactContent(userText: string): { content: string; note: string } {
+  const results: Array<Record<string, string>> = [];
+  let removed = false;
+  for (const line of userText.split("\n")) {
+    const heading = /^### (\S+) \((\w+), (changed|removed)\) in /.exec(line);
+    if (heading) {
+      removed = heading[3] === "removed";
+      continue;
+    }
+    const usage = /^Usage (u\d+): (.+):(\d+)$/.exec(line);
+    if (!usage) continue;
+    const breaks = removed || (stableHash(usage[1]) & 1) === 1;
+    results.push({
+      usage: usage[1],
+      verdict: breaks ? "incompatible" : "compatible",
+      reason: `${MOCK_DESCRIPTION_PREFIX}${breaks ? "Still calls it the old way." : "Still fits."}`,
+    });
+  }
+  const content = ["```json", JSON.stringify({ results }, null, 2), "```"].join("\n");
+  return { content, note: `impact usages=${results.length}` };
+}
+
+function prIntentContent(userText: string): { content: string; note: string } {
+  const verdict = /MOCK_PARTIAL/.test(userText) ? "partial" : "delivers";
+  const content = [
+    "```json",
+    JSON.stringify({
+      verdict,
+      summary: `${MOCK_DESCRIPTION_PREFIX}${verdict === "delivers" ? "Everything the description promises is in the diff." : "Part of what the description promises is missing."}`,
+      rationale: `${MOCK_DESCRIPTION_PREFIX}Judged from the changed files and the review findings.`,
+    }),
+    "```",
+  ].join("\n");
+  return { content, note: `pr-intent ${verdict}` };
+}
+
 function checklistContent(userText: string): { content: string; note: string } {
   const ids = [...userText.matchAll(/^- (q\d+): /gm)].map((m) => m[1]);
   const hasDescription = !/^Description: \(none\)$/m.test(userText);

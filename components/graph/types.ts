@@ -121,6 +121,8 @@ export interface FileDiffResponseDTO {
   deletions: number;
   /** Unified diff hunks (`@@ ... @@`), the same text GitHub/`git diff -U3` produce. Absent for binary files or a diff too large to keep. */
   patch?: string;
+  /** The whole file at the requested commit — set only when the path is not part of the diff (an impact finding's caller). */
+  content?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,8 +134,14 @@ export interface FileDiffResponseDTO {
 // lib/jobs (Neo4j driver + a Redis connection), which are server-only and
 // must never reach a client bundle. These are the wire shapes only.
 
-/** Verdict of one finding. Mirrors `FindingIntentMatch` in lib/neo4j. */
-export type IntentMatch = "match" | "partial" | "mismatch" | "unknown";
+/** Verdict of one finding — is the change sound on its own terms. Mirrors `FindingAssessment` in lib/neo4j. */
+export type Assessment = "defect" | "concern" | "unknown" | "ok";
+/** How a change relates to the PR's stated intent. Informational. Mirrors `FindingScope`. */
+export type FindingScope = "described" | "supporting" | "unmentioned";
+/** Mirrors `FindingKind`. */
+export type FindingKind = "fix" | "feature" | "refactor" | "test" | "docs" | "config" | "chore";
+/** Which review pass wrote a finding. Mirrors `FindingCategory`. */
+export type FindingCategory = "change" | "impact" | "intent";
 
 /**
  * What a review is about — exactly one of the two shapes, matching the
@@ -180,7 +188,7 @@ export const REVIEW_EFFORT_OPTIONS: Array<{
 }> = [
   { value: "low", label: "Low", budget: "7k", description: "The diff and neighbour names only. Safe for small local models." },
   { value: "medium", label: "Medium", budget: "16k", description: "Adds what each neighbouring component does." },
-  { value: "high", label: "High", budget: "32k", description: "Adds signatures from related files in other components." },
+  { value: "high", label: "High", budget: "32k", description: "Adds signatures from the files the change imports or is imported by." },
   { value: "max", label: "Max", budget: "128k", description: "Adds the source of related code the diff refers to. Needs a large-context model." },
 ];
 
@@ -195,8 +203,20 @@ export interface FindingDTO {
   filePath?: string;
   lineRange?: string;
   summary: string;
-  intentMatch: IntentMatch;
+  assessment: Assessment;
+  /** PR reviews only. */
+  scope?: FindingScope;
+  kind?: FindingKind;
+  /**
+   * `change`: the per-component review. `impact`: a usage the change left
+   * behind — `componentId` is the *caller's* component (often untouched),
+   * or "" for the "not everything was checked" note. `intent`: the one
+   * PR-level verdict, `componentId` "".
+   */
+  category: FindingCategory;
   confidence: number;
+  /** The head commit the review ran against (absent on legacy findings). */
+  reviewedHeadSha?: string;
   rationale: string;
   model: string;
   createdAt: string;

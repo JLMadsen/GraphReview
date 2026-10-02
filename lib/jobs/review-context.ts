@@ -2,17 +2,18 @@
 // (lib/ai/effort.ts):
 //
 //   medium  neighbouring components' descriptions (one query, no disk reads)
-//   high    + declaration signatures from "related files": files in *other*
-//             components that the changed files import, or that import them
-//             (the file-level IMPORTS edges static analysis stored)
+//   high    + declaration signatures from "related files": files that the
+//             changed files import, or that import them (the file-level
+//             IMPORTS edges static analysis stored) — in any component,
+//             including the reviewed one, but never a file the diff changed
 //   max     + the full source of those files' declarations that the diff
 //             mentions by name
 //
-// Related files are read from the repo's checkout on disk — the local path,
-// or the app-managed clone of the default branch — not from the reviewed
-// ref. Neighbouring code usually isn't what the PR changed, so the default
-// branch is a fair picture of it; if the checkout is missing, the review
-// simply goes ahead without file context.
+// Related files are read at the reviewed head commit when the job could open
+// it (./head-source.ts), so a caller the PR already updated reads as updated
+// and a callee shows its new signature. Failing that, they are read from the
+// checkout on disk — the local path, or the app-managed clone of the default
+// branch; if that is missing too, the review goes ahead without file context.
 //
 // Declarations are found with a deliberately simple, language-agnostic
 // line matcher rather than tree-sitter: the output is context for a model,
@@ -26,6 +27,7 @@ import type { ReviewEffortSettings, ReviewNeighbor, ReviewRelatedContext, Review
 import { runRead } from "@/lib/neo4j";
 import type { RepoRecord } from "@/lib/neo4j";
 import type { JobLogger } from "./analyze";
+import type { HeadSource } from "./head-source";
 import { repoCacheDir, validateLocalRepoPath } from "./source";
 
 /** Related files per component, nearest relation first ("imported" before "importer"). */
@@ -93,9 +95,10 @@ async function loadRelatedFiles(
       RETURN g, c, "importer" AS relation
     }
     WITH g, c, relation
-    WHERE c.id <> $componentId
-    RETURN DISTINCT g.path AS path, c.name AS componentName, relation
-    ORDER BY relation, path
+    WHERE NOT g.path IN $paths
+    RETURN DISTINCT g.path AS path, c.name AS componentName, relation,
+           c.id = $componentId AS sameComponent
+    ORDER BY relation, sameComponent, path
     `,
     { repoId, componentId, paths: [...changedPaths] }
   );
@@ -248,6 +251,8 @@ export interface GatherRelatedContextInput {
   changedPaths: readonly string[];
   patches: readonly string[];
   settings: ReviewEffortSettings;
+  /** Read related files at the reviewed head when given; else from the checkout on disk. */
+  head?: HeadSource | null;
   log: JobLogger;
 }
 
@@ -258,6 +263,7 @@ export async function gatherRelatedContext({
   changedPaths,
   patches,
   settings,
+  head,
   log,
 }: GatherRelatedContextInput): Promise<ReviewRelatedContext | undefined> {
   if (!settings.neighborDescriptions && !settings.signatures && !settings.relatedSource) {
@@ -275,12 +281,13 @@ export async function gatherRelatedContext({
 
   if (settings.signatures || settings.relatedSource) {
     try {
-      const dir = await sourceDir(repo);
+      const dir = head ? head.dir : await sourceDir(repo);
+      const read = (filePath: string) => (head ? head.read(filePath) : readRepoFile(dir!, filePath));
       const refs = dir ? await loadRelatedFiles(repo.id, componentId, changedPaths) : [];
       const identifiers = settings.relatedSource ? diffIdentifiers(patches) : new Set<string>();
       const files: ReviewRelatedFile[] = [];
       for (const ref of refs) {
-        const source = await readRepoFile(dir!, ref.path);
+        const source = await read(ref.path);
         if (source === null) continue;
         const declarations = extractDeclarations(source);
         const lines = source.split(/\r?\n/);

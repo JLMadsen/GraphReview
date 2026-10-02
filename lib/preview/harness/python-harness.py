@@ -120,7 +120,11 @@ def run_case(fn, case):
     kwargs = revive(raw.get("kwargs") or {})
     args = copy.deepcopy(args)
     kwargs = copy.deepcopy(kwargs)
-    outcome = {"label": case.get("label", "")}
+    def describe_args():
+        return safe_repr(list(args) if not kwargs else {"args": list(args), "kwargs": kwargs})
+
+    # Recorded so the UI can tell whether the call changed its own arguments.
+    outcome = {"label": case.get("label", ""), "argsBefore": describe_args()}
     logs = io.StringIO()
     started = time.monotonic()
     signal.setitimer(signal.ITIMER_REAL, SPEC["caseTimeoutMs"] / 1000)
@@ -138,8 +142,7 @@ def run_case(fn, case):
         outcome["threw"] = error_text(error)
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
-    after = list(args)
-    outcome["argsAfter"] = safe_repr(after if not kwargs else {"args": after, "kwargs": kwargs})
+    outcome["argsAfter"] = describe_args()
     outcome["durationMs"] = int((time.monotonic() - started) * 1000)
     text = logs.getvalue()[:MAX_LOG_CHARS]
     outcome["logs"] = [line for line in text.splitlines() if line.strip()][:40]

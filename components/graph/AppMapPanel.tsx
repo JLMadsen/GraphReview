@@ -13,7 +13,7 @@
 
 import { ArrowRight, X } from "lucide-react";
 import { LayerBar } from "./AppMapCard";
-import { IntentGlyph } from "./PrMapNode";
+import { AssessmentGlyph } from "./PrMapNode";
 import { Spark } from "./Spark";
 import {
   APP_LAYERS,
@@ -23,7 +23,7 @@ import {
   type AppMapNodeDTO,
   type AppMapResponseDTO,
 } from "./app-map-types";
-import type { IntentMatch } from "./types";
+import type { Assessment } from "./types";
 
 export type AppMapSelection = { kind: "card"; id: string } | { kind: "edge"; source: string; target: string };
 
@@ -32,7 +32,7 @@ export interface AppMapPanelProps {
   selection: AppMapSelection;
   changedFiles?: ReadonlySet<string>;
   /** Worst review verdict per file path. */
-  fileMarkers?: ReadonlyMap<string, IntentMatch>;
+  fileMarkers?: ReadonlyMap<string, Assessment>;
   onSelect: (selection: AppMapSelection | null) => void;
   onSelectModule: (moduleId: string) => void;
   onSelectFile: (path: string) => void;
@@ -171,7 +171,7 @@ export function AppMapPanel({
   const keyRole = new Map(node.keyFiles.map((k) => [k.path, k.role]));
   // Files worth a look first: flagged by the review, then changed, then the key files, then the rest.
   const rank = (f: string) =>
-    (fileMarkers?.has(f) && fileMarkers.get(f) !== "match" ? 0 : 4) +
+    (fileMarkers?.has(f) && fileMarkers.get(f) !== "ok" ? 0 : 4) +
     (changedFiles?.has(f) ? 0 : 2) +
     (keyRole.has(f) ? 0 : 1);
   const files = [...node.files].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
@@ -218,7 +218,7 @@ export function AppMapPanel({
                   <span className="flex items-center gap-1.5 font-mono text-[11px]">
                     <span className="min-w-0 flex-1 truncate">{f}</span>
                     {role && <span className="shrink-0 text-muted-foreground">key</span>}
-                    {intent && <IntentGlyph intent={intent} />}
+                    {intent && <AssessmentGlyph intent={intent} />}
                     {changedFiles?.has(f) && (
                       <span className="w-2.5 shrink-0 text-center font-medium text-warning" title="Changed in the selected diff">
                         M

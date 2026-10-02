@@ -14,13 +14,15 @@ export {
 
 export { AiClientError } from "./errors";
 
-export { reviewComponentChange, pingProvider } from "./review";
+export { reviewComponentChange, pingProvider, normalizeEnum } from "./review";
 export type {
   ReviewIntent,
   ReviewComponentContext,
   ReviewFileDiff,
   ReviewInput,
-  IntentMatch,
+  Assessment,
+  ReviewScope,
+  ChangeKind,
   ReviewFinding,
   ReviewResult,
   ReviewOptions,
@@ -169,3 +171,18 @@ export type {
   PreviewInputsResult,
   PreviewInputsSymbol,
 } from "./preview-inputs";
+
+export {
+  IMPACT_TASK_MARKER,
+  MAX_IMPACT_CALLS,
+  buildImpactSystemPrompt,
+  checkImpact,
+} from "./impact";
+export type { ImpactContract, ImpactResult, ImpactUsage, ImpactVerdict } from "./impact";
+
+export {
+  PR_INTENT_TASK_MARKER,
+  buildPrIntentSystemPrompt,
+  checkPrIntent,
+} from "./pr-intent";
+export type { PrIntentFile, PrIntentInput, PrIntentResult, PrIntentVerdict } from "./pr-intent";

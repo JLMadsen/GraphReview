@@ -24,9 +24,9 @@ import {
 import { Spark } from "./Spark";
 import { formatMember } from "./MergeSuggestions";
 import {
-  INTENT_VISUALS,
-  compareIntent,
-  effectiveIntent,
+  ASSESSMENT_VISUALS,
+  compareAssessment,
+  effectiveAssessment,
   formatConfidence,
   formatLocation,
 } from "./review-visuals";
@@ -102,8 +102,8 @@ export function ComponentFilesPanel({
     () =>
       [...(findings ?? [])].sort(
         (a, b) =>
-          compareIntent(effectiveIntent(a), effectiveIntent(b)) ||
-          compareIntent(a.intentMatch, b.intentMatch) ||
+          compareAssessment(effectiveAssessment(a), effectiveAssessment(b)) ||
+          compareAssessment(a.assessment, b.assessment) ||
           b.confidence - a.confidence
       ),
     [findings]
@@ -229,7 +229,7 @@ export function ComponentFilesPanel({
           </p>
           <ul className="max-h-[26vh] divide-y divide-border/60 overflow-y-auto">
             {sortedFindings.map((finding) => {
-              const visual = INTENT_VISUALS[finding.intentMatch];
+              const visual = ASSESSMENT_VISUALS[finding.assessment];
               const Icon = visual.icon;
               const location = formatLocation(finding);
               return (

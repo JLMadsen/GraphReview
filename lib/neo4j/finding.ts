@@ -9,7 +9,7 @@
 // `refs:<base>...<head>` — see `FindingRecord.targetKey`).
 
 import { runRead, runWrite } from "./client";
-import type { FindingRecord } from "./types";
+import type { FindingCategory, FindingRecord } from "./types";
 
 function toFindingRecord(props: Record<string, unknown>): FindingRecord {
   return {
@@ -24,7 +24,10 @@ function toFindingRecord(props: Record<string, unknown>): FindingRecord {
     filePath: (props.filePath as string | undefined) ?? undefined,
     lineRange: (props.lineRange as string | undefined) ?? undefined,
     summary: props.summary as string,
-    intentMatch: props.intentMatch as FindingRecord["intentMatch"],
+    assessment: props.assessment as FindingRecord["assessment"],
+    scope: (props.scope as FindingRecord["scope"] | undefined) ?? undefined,
+    kind: (props.kind as FindingRecord["kind"] | undefined) ?? undefined,
+    category: (props.category as FindingRecord["category"] | undefined) ?? "change",
     confidence: Number(props.confidence),
     rationale: props.rationale as string,
     model: props.model as string,
@@ -56,7 +59,10 @@ export async function upsertFinding(
         f.filePath = $filePath,
         f.lineRange = $lineRange,
         f.summary = $summary,
-        f.intentMatch = $intentMatch,
+        f.assessment = $assessment,
+        f.scope = $scope,
+        f.kind = $kind,
+        f.category = $category,
         f.confidence = $confidence,
         f.rationale = $rationale,
         f.model = $model,
@@ -75,7 +81,10 @@ export async function upsertFinding(
       filePath: input.filePath ?? null,
       lineRange: input.lineRange ?? null,
       summary: input.summary,
-      intentMatch: input.intentMatch,
+      assessment: input.assessment,
+      scope: input.scope ?? null,
+      kind: input.kind ?? null,
+      category: input.category,
       confidence: input.confidence,
       rationale: input.rationale,
       model: input.model,
@@ -222,8 +231,33 @@ export async function listFindingsByTargetKey(
 /** The per-finding payload `replaceFindingsForTargetComponent` writes — everything on a `FindingRecord` except the three properties that identify the (target, component) slot, which are passed separately. */
 export type TargetFindingInput = Omit<
   FindingRecord,
-  "repoId" | "targetKey" | "componentId" | "createdAt"
+  "repoId" | "targetKey" | "componentId" | "createdAt" | "category"
 > & { createdAt?: string };
+
+function toFindingRow(finding: TargetFindingInput, now: string) {
+  return {
+    id: finding.id,
+    prId: finding.prId ?? null,
+    filePath: finding.filePath ?? null,
+    lineRange: finding.lineRange ?? null,
+    summary: finding.summary,
+    assessment: finding.assessment,
+    scope: finding.scope ?? null,
+    kind: finding.kind ?? null,
+    confidence: finding.confidence,
+    rationale: finding.rationale,
+    model: finding.model,
+    // `SET f += row` with a null removes the property, so a finding without
+    // shas simply has none (the "legacy" shape) rather than a stored null.
+    reviewedBaseSha: finding.reviewedBaseSha ?? null,
+    reviewedHeadSha: finding.reviewedHeadSha ?? null,
+    reviewedAt: finding.reviewedAt ?? null,
+    createdAt: finding.createdAt ?? now,
+  };
+}
+
+/** `change` findings only: legacy rows have no `category` and are all per-component change findings. */
+const IS_CHANGE = `coalesce(f.category, "change") = "change"`;
 
 /**
  * Overwrite-only persistence for one (target, component) slot:
@@ -254,6 +288,7 @@ export async function replaceFindingsForTargetComponent(
   await runWrite(
     `
     MATCH (f:Finding {repoId: $repoId, targetKey: $targetKey, componentId: $componentId})
+    WHERE ${IS_CHANGE}
     DETACH DELETE f
     `,
     { repoId, targetKey, componentId }
@@ -262,23 +297,7 @@ export async function replaceFindingsForTargetComponent(
   if (findings.length === 0) return [];
 
   const now = new Date().toISOString();
-  const rows = findings.map((finding) => ({
-    id: finding.id,
-    prId: finding.prId ?? null,
-    filePath: finding.filePath ?? null,
-    lineRange: finding.lineRange ?? null,
-    summary: finding.summary,
-    intentMatch: finding.intentMatch,
-    confidence: finding.confidence,
-    rationale: finding.rationale,
-    model: finding.model,
-    // `SET f += row` with a null removes the property, so a finding without
-    // shas simply has none (the "legacy" shape) rather than a stored null.
-    reviewedBaseSha: finding.reviewedBaseSha ?? null,
-    reviewedHeadSha: finding.reviewedHeadSha ?? null,
-    reviewedAt: finding.reviewedAt ?? null,
-    createdAt: finding.createdAt ?? now,
-  }));
+  const rows = findings.map((finding) => toFindingRow(finding, now));
 
   const result = await runWrite(
     `
@@ -289,7 +308,8 @@ export async function replaceFindingsForTargetComponent(
     SET f += row,
         f.repoId = $repoId,
         f.targetKey = $targetKey,
-        f.componentId = $componentId
+        f.componentId = $componentId,
+        f.category = "change"
     FOREACH (target IN CASE WHEN c IS NULL THEN [] ELSE [c] END |
       MERGE (f)-[:ABOUT]->(target)
     )
@@ -312,7 +332,8 @@ export async function replaceFindingsForTargetComponent(
 }
 
 /**
- * Drops findings for components a target no longer touches.
+ * Drops `change` findings for components a target no longer touches
+ * (impact and intent findings are replaced wholesale by their own pass).
  *
  * Run at the end of a review, not the start: clearing everything up front
  * would blank the UI for the whole duration of a re-run, whereas per-slot
@@ -328,7 +349,7 @@ export async function deleteFindingsForTargetExceptComponents(
   const result = await runWrite(
     `
     MATCH (f:Finding {repoId: $repoId, targetKey: $targetKey})
-    WHERE NOT f.componentId IN $keepComponentIds
+    WHERE ${IS_CHANGE} AND NOT f.componentId IN $keepComponentIds
     // Collect first, then delete inside FOREACH: this always yields exactly
     // one row (so the count is readable even when nothing matched), and
     // avoids returning anything derived from an already-deleted node.
@@ -340,6 +361,64 @@ export async function deleteFindingsForTargetExceptComponents(
   );
   const record = result.records[0];
   return record ? Number(record.get("deleted")) : 0;
+}
+
+/**
+ * Overwrite-only persistence for a whole pass that isn't per component —
+ * `impact` (stale usages, each attached to the *caller's* component, which
+ * the diff may not touch at all) or `intent` (one PR-level verdict, with an
+ * empty `componentId`). Deletes every finding of that category for the
+ * target and writes `findings` in their place.
+ *
+ * One statement for all components: callers already serialise Neo4j writes
+ * (see `replaceFindingsForTargetComponent`), so there's no concurrent
+ * MERGE onto a shared component to deadlock against.
+ */
+export async function replaceFindingsForTargetCategory(
+  repoId: string,
+  targetKey: string,
+  category: Exclude<FindingCategory, "change">,
+  findings: ReadonlyArray<TargetFindingInput & { componentId: string }>
+): Promise<FindingRecord[]> {
+  await runWrite(
+    `
+    MATCH (f:Finding {repoId: $repoId, targetKey: $targetKey, category: $category})
+    DETACH DELETE f
+    `,
+    { repoId, targetKey, category }
+  );
+  if (findings.length === 0) return [];
+
+  const now = new Date().toISOString();
+  const rows = findings.map((finding) => ({
+    ...toFindingRow(finding, now),
+    componentId: finding.componentId,
+  }));
+  const result = await runWrite(
+    `
+    UNWIND $rows AS row
+    CREATE (f:Finding)
+    SET f += row,
+        f.repoId = $repoId,
+        f.targetKey = $targetKey,
+        f.category = $category
+    WITH f
+    OPTIONAL MATCH (c:Component {id: f.componentId})
+    FOREACH (target IN CASE WHEN c IS NULL THEN [] ELSE [c] END |
+      MERGE (f)-[:ABOUT]->(target)
+    )
+    WITH f
+    OPTIONAL MATCH (p:PullRequest {id: f.prId})
+    FOREACH (target IN CASE WHEN p IS NULL THEN [] ELSE [p] END |
+      MERGE (f)-[:FOR]->(target)
+    )
+    RETURN f
+    `,
+    { repoId, targetKey, category, rows }
+  );
+  return result.records.map((record) =>
+    toFindingRecord(record.get("f").properties)
+  );
 }
 
 /** `(Finding)-[:ABOUT]->(Component)` */

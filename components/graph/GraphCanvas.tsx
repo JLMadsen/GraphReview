@@ -33,7 +33,7 @@
 //   halo painted *behind* the node, so unlike the two layers above they
 //   touch neither `background-color` (layer 1, impact) nor `border-*`/
 //   `opacity`/`z-index` (layer 2, selection). All three compose: a touched
-//   component that is also selected and also has a mismatch finding renders
+//   component that is also selected and also has a defect finding renders
 //   as an amber node with a bright white border sitting in a rose halo.
 //   Colours and glyphs live in review-visuals.ts, shared with ReviewPanel.
 // - Feature merges (DESIGN.md §6.3): a merged module is drawn as a rounded
@@ -61,11 +61,13 @@ import {
 } from "lucide-react";
 import { cn } from "cn";
 import {
-  INTENT_CLASS_NAMES,
-  INTENT_ORDER,
-  INTENT_VISUALS,
-  countComponentsByIntent,
-  intentClassName,
+  ASSESSMENT_CLASS_NAMES,
+  ASSESSMENT_ORDER,
+  ASSESSMENT_VISUALS,
+  IMPACTED_CLASS_NAME,
+  IMPACTED_COLOR,
+  countComponentsByAssessment,
+  assessmentClassName,
   type ReviewMarkerMap,
 } from "./review-visuals";
 import { LabelsControl } from "./LabelsControl";
@@ -78,7 +80,7 @@ import {
 } from "./collapse";
 import { tidyDomainLayout } from "./layout-tidy";
 import type { UseLabelsResult } from "./label-types";
-import type { GraphEdgeDTO, GraphNodeDTO, IntentMatch } from "./types";
+import type { GraphEdgeDTO, GraphNodeDTO, Assessment } from "./types";
 
 let extensionsRegistered = false;
 function registerExtensionsOnce() {
@@ -500,7 +502,7 @@ function nodeSize(fileCount: number, maxFileCount: number): number {
 }
 
 /**
- * One `intent-*` rule's style block — the AI-review marker layer.
+ * One `assessment-*` rule's style block — the AI-review marker layer.
  *
  * `underlay-*` is not in `@types/cytoscape` (the package's `Css.Node`
  * interface predates it; the properties themselves have shipped in
@@ -510,9 +512,9 @@ function nodeSize(fileCount: number, maxFileCount: number): number {
  * up, deleting the cast is a one-line change.
  */
 function intentUnderlayStyle(
-  intent: IntentMatch
+  intent: Assessment
 ): cytoscape.StylesheetStyle["style"] {
-  const visual = INTENT_VISUALS[intent];
+  const visual = ASSESSMENT_VISUALS[intent];
   return {
     "underlay-color": visual.color,
     "underlay-opacity": visual.markerOpacity,
@@ -715,6 +717,20 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
       },
     },
     {
+      // Holds a usage the change left behind (an impact finding) — usually
+      // a component the diff never touched. A dashed ring, not a fill, so it
+      // reads as "affected from outside" next to the amber "touched" fill;
+      // it sits before the selection rules so a selected node still shows
+      // its selection border.
+      selector: `node.${IMPACTED_CLASS_NAME}`,
+      style: {
+        "border-style": "dashed",
+        "border-color": IMPACTED_COLOR,
+        "border-width": 2.5,
+        "z-index": 15,
+      },
+    },
+    {
       // An edge with a touched endpoint is the actual path the change can
       // propagate along — it gets the touched hue and lifts above the mesh.
       selector: "edge.impacted",
@@ -815,8 +831,8 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
     // Only `underlay-*` is set, so these rules cannot overwrite an impact
     // fill or a selection border no matter where they sit in the sheet — the
     // three layers are orthogonal by construction, not by ordering luck.
-    ...INTENT_ORDER.map((intent) => ({
-      selector: `node.${intentClassName(intent)}`,
+    ...ASSESSMENT_ORDER.map((intent) => ({
+      selector: `node.${assessmentClassName(intent)}`,
       style: intentUnderlayStyle(intent),
     })),
     // ...and the one place the three layers *do* have to know about each
@@ -825,7 +841,7 @@ function buildStylesheet(): cytoscape.StylesheetStyle[] {
     // impact filter) kept a full-strength marker halo — on a real review
     // the dimmed-out background of the graph stayed lit with bright red
     // and green rings that competed with the node actually in focus.
-    // Re-stating `underlay-opacity` *after* the `intent-*` rules above is
+    // Re-stating `underlay-opacity` *after* the `assessment-*` rules above is
     // what lets the fade win, since Cytoscape resolves equal-specificity
     // conflicts in sheet order.
     {
@@ -1122,7 +1138,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         // can't turn the tooltip into a wall of text.
         const marker = markersRef.current[node.id()];
         if (marker) {
-          const visual = INTENT_VISUALS[marker.worst];
+          const visual = ASSESSMENT_VISUALS[marker.worst];
           const findingBox = document.createElement("div");
           findingBox.className =
             "mt-2 max-w-56 border-t border-border pt-2 text-[11px] leading-relaxed";
@@ -1147,6 +1163,14 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           summary.className = "mt-1 line-clamp-2 text-muted-foreground";
           summary.textContent = marker.summary;
           findingBox.appendChild(summary);
+
+          if (marker.impacted > 0) {
+            const impacted = document.createElement("div");
+            impacted.className = "mt-1 font-medium";
+            impacted.style.color = IMPACTED_COLOR;
+            impacted.textContent = `${marker.impacted} caller${marker.impacted === 1 ? "" : "s"} not updated for the change`;
+            findingBox.appendChild(impacted);
+          }
 
           tooltip.appendChild(findingBox);
         }
@@ -1459,7 +1483,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     }, [selectedNodeId, nodes, edges, ready, collapsed]);
 
     // AI review markers — the third layer. Its own effect with its own class
-    // namespace (`intent-*`), for the same reason selection has one: it must
+    // namespace (`assessment-*`), for the same reason selection has one: it must
     // compose with the other two rather than clobber them, and it changes on
     // a completely different cadence (every ~1.2s poll while a review
     // streams in, versus once per diff check / click).
@@ -1468,25 +1492,30 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       if (!cy || !ready) return;
 
       cy.batch(() => {
-        cy.nodes().removeClass(INTENT_CLASS_NAMES);
+        cy.nodes().removeClass(`${ASSESSMENT_CLASS_NAMES} ${IMPACTED_CLASS_NAME}`);
         if (!reviewMarkers) return;
         for (const [componentId, marker] of Object.entries(reviewMarkers)) {
           // A finding can outlive the graph it was made against (findings
           // persist, components are re-derived on re-analysis), so a marker
           // for a component that is no longer a node is simply skipped.
           const node = cy.getElementById(componentId);
-          if (!node.empty()) node.addClass(intentClassName(marker.worst));
+          if (node.empty()) continue;
+          node.addClass(assessmentClassName(marker.worst));
+          if (marker.impacted > 0) node.addClass(IMPACTED_CLASS_NAME);
         }
         // A collapsed domain shows the worst verdict among its members.
         for (const [domainId, memberIds] of collapsedRef.current?.members ?? []) {
-          let worst: IntentMatch | null = null;
+          let worst: Assessment | null = null;
+          let impacted = false;
           for (const id of memberIds) {
             const intent = reviewMarkers[id]?.worst;
-            if (intent && (!worst || INTENT_VISUALS[intent].rank < INTENT_VISUALS[worst].rank)) {
+            if (intent && (!worst || ASSESSMENT_VISUALS[intent].rank < ASSESSMENT_VISUALS[worst].rank)) {
               worst = intent;
             }
+            if ((reviewMarkers[id]?.impacted ?? 0) > 0) impacted = true;
           }
-          if (worst) cy.getElementById(domainId).addClass(intentClassName(worst));
+          if (worst) cy.getElementById(domainId).addClass(assessmentClassName(worst));
+          if (impacted) cy.getElementById(domainId).addClass(IMPACTED_CLASS_NAME);
         }
       });
 
@@ -1501,15 +1530,19 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
     // Legend counts for the review layer: how many *components* carry each
     // verdict as their worst finding — i.e. exactly what is drawn on the
-    // canvas, so a "Mismatch 3" chip always means three haloed nodes. (The
+    // canvas, so a "Defect 3" chip always means three haloed nodes. (The
     // dock below counts findings, which is a different and larger number;
     // each chip says which it is in its tooltip.)
     const intentCounts = useMemo(
-      () => countComponentsByIntent(reviewMarkers ?? {}),
+      () => countComponentsByAssessment(reviewMarkers ?? {}),
+      [reviewMarkers]
+    );
+    const impactedCount = useMemo(
+      () => Object.values(reviewMarkers ?? {}).filter((marker) => marker.impacted > 0).length,
       [reviewMarkers]
     );
     const hasReview = useMemo(
-      () => INTENT_ORDER.some((intent) => intentCounts[intent] > 0),
+      () => ASSESSMENT_ORDER.some((intent) => intentCounts[intent] > 0),
       [intentCounts]
     );
 
@@ -1665,7 +1698,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
               (the actual filters live in the dock below the canvas, which is
               also where the findings are — duplicating them here would give
               two controls for one list). Verdicts with no components are
-              omitted entirely, so the common "all match" review adds one
+              omitted entirely, so the common "all OK" review adds one
               small chip instead of four.
             */}
             {hasReview && (
@@ -1678,9 +1711,9 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
                   className="flex items-center gap-1.5"
                   aria-label="AI review findings"
                 >
-                  {INTENT_ORDER.filter((intent) => intentCounts[intent] > 0).map(
+                  {ASSESSMENT_ORDER.filter((intent) => intentCounts[intent] > 0).map(
                     (intent) => {
-                      const visual = INTENT_VISUALS[intent];
+                      const visual = ASSESSMENT_VISUALS[intent];
                       const Icon = visual.icon;
                       return (
                         <span
@@ -1704,6 +1737,16 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
                         </span>
                       );
                     }
+                  )}
+                  {impactedCount > 0 && (
+                    <span
+                      className="flex items-center gap-1 rounded-full border border-dashed px-1.5 py-0.5 text-xs font-medium"
+                      style={{ color: IMPACTED_COLOR, borderColor: IMPACTED_COLOR }}
+                      title={`${impactedCount} component${impactedCount === 1 ? "" : "s"} with code the change left behind — a usage of a changed signature, type or constant that was not updated (dashed ring)`}
+                    >
+                      Impacted
+                      <span className="font-mono text-[10px] opacity-80">{impactedCount}</span>
+                    </span>
                   )}
                 </div>
               </>

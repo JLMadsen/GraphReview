@@ -53,19 +53,33 @@ here:
 - `prompts.ts` — `buildSystemPrompt(source)` / `buildUserMessage(input)`.
   Plain-prompted output only (no `response_format`, no tool-calling): the
   model must answer with exactly one ```` ```json ```` block of
-  `{"findings":[{filePath,lineRange,summary,intentMatch,confidence,rationale}]}`.
-  The system prompt defines `intentMatch` (`match` / `partial` /
-  `mismatch` = contradicts the intent *or* an apparent defect / `unknown`),
-  caps findings at 6, and — for `ref_comparison` (no PR) — tells the model
-  to judge against the code's own evident purpose. The user message has a
+  `{"findings":[{filePath,lineRange,summary,kind,assessment,scope,confidence,rationale}]}`.
+  Every change is judged **on its own merits**: `assessment` is `ok` /
+  `concern` / `defect` / `unknown`. For a pull request the stated intent
+  only sets the separate, informational `scope` (`described` / `supporting`
+  / `unmentioned`) — a correct drive-by fix is still `ok`. `kind` is `fix` /
+  `feature` / `refactor` / `test` / `docs` / `config` / `chore`. Findings are
+  capped at 6; a `ref_comparison` (no PR) has no intent and no `scope`. The user message has a
   stable labelled layout: `## Intent`, `## Component` (with an exact
   `Component: <name>` line, description, depends-on / depended-on-by), then
   `## Changed files` with `File: <path> (<status>, +A/-D)` followed by the
   patch in a fenced diff block. Free-text PR bodies are quoted (`> `) so
   they can't forge label lines. The mock server parses this layout.
+- `impact.ts` — `checkImpact(config, contracts, {tokenBudget})`: given
+  declarations a PR changed or removed and the usages it did *not* touch
+  (found by `lib/jobs/impact.ts`), asks which usages no longer fit
+  (`TASK: impact-check`). Packs contracts/usages into at most
+  `MAX_IMPACT_CALLS` (3) calls of the budget and counts the rest as
+  `unchecked`; only `incompatible` verdicts are returned (`unsure` is
+  dropped on purpose).
+- `pr-intent.ts` — `checkPrIntent(config, input, {tokenBudget})`: one call
+  about the whole PR — does it deliver what its title/description/linked
+  issues claim? (`TASK: pr-intent`) → `delivers` / `partial` / `missing` /
+  `unknown`, with a summary and rationale. Unmentioned extra changes are
+  explicitly *not* a problem here.
 - `review.ts` — `reviewComponentChange(config, input, options?)` and
-  `pingProvider(config, options?)`, plus the `Review*` / `IntentMatch`
-  types. One model call per component:
+  `pingProvider(config, options?)`, plus the `Review*` / `Assessment` /
+  `ReviewScope` / `ChangeKind` types. One model call per component:
   1. If no file has patch text (binary/oversized) -> **no call**, one
      `unknown` finding, `calls: 0`, zero usage.
   2. Per-file diff truncation before the message-level fit: if the
@@ -75,8 +89,10 @@ here:
      and a `[diff truncated]` marker is appended -> `truncated: true`.
      `truncateMessagesToBudget` then runs as the final backstop.
   3. One `chat` call (`temperature` default 0.2), `extractJson`, then
-     per-finding validation: `intentMatch` outside the four values ->
-     `unknown`; `confidence` clamped to 0..1 (missing/non-numeric -> 0.5);
+     per-finding validation: `assessment` outside the four values ->
+     `unknown` (the old `match`/`partial`/`mismatch` and a few synonyms map
+     to `ok`/`concern`/`defect`); unknown `scope`/`kind` dropped, `scope`
+     dropped for ref comparisons; `confidence` clamped to 0..1 (missing/non-numeric -> 0.5);
      `filePath` not among the input paths is dropped; `lineRange` normalized
      to `"12"` / `"12-18"`; non-string fields coerced; junk entries ignored;
      max 6 findings. If nothing valid remains: `parseFailed: true` and a
@@ -129,9 +145,10 @@ here:
   `/chat/completions`) and `GET /v1/models`, both requiring
   `Authorization: Bearer ...` (else 401). It parses `Component:` / `File:`
   lines from the user message and returns a deterministic ```` ```json ````
-  reply: outcome chosen by a stable hash of the component name (~50%
-  `match`, ~25% `partial`, ~25% `mismatch`), 1-2 findings referencing the
-  real file paths, and an OpenAI-shaped `usage` estimated from prompt
+  reply: assessment chosen by a stable hash of the component name (~50%
+  `ok`, ~25% `concern`, ~25% `defect`), 1-2 findings referencing the
+  real file paths (with `kind`, and `scope` for PRs — the second one a
+  drive-by fix), and an OpenAI-shaped `usage` estimated from prompt
   length. The token `MOCK_FAIL` anywhere in the prompt -> HTTP 500;
   `MOCK_GARBAGE` -> non-JSON prose (parse-failure path). `MOCK_DELAY_MS`
   (default 900) simulates latency. It also answers the two labeling tasks
@@ -148,7 +165,7 @@ here:
   `node:http`).
 - `smoke-test-review.ts` — `npx tsx lib/ai/smoke-test-review.ts`: part A
   drives `reviewComponentChange` with an injected fake `chat` (clean /
-  prose-wrapped / garbage JSON, invalid `intentMatch`, foreign `filePath`,
+  prose-wrapped / garbage JSON, invalid `assessment`, scope/kind aliases, foreign `filePath`,
   no-patch -> zero calls, oversized diff -> truncated, `ref_comparison`
   wording, error propagation); part B starts the mock server on an
   ephemeral port and goes through the **real** `chatCompletion` client
@@ -225,7 +242,7 @@ const result = await reviewComponentChange(config, {
   component: { id: "c1", name: "Math", description: "Numeric helpers", dependsOn: ["Core"], dependents: ["Charts"] },
   files: [{ path: "src/math/square.ts", status: "modified", additions: 3, deletions: 1, patch }],
 });
-// result.findings[i] -> { filePath?, lineRange?, summary, intentMatch, confidence, rationale }
+// result.findings[i] -> { filePath?, lineRange?, summary, kind?, assessment, scope?, confidence, rationale }
 // result.parseFailed / result.truncated / result.calls / result.usage
 ```
 

@@ -60,4 +60,20 @@ export async function runMigrations(): Promise<void> {
   for (const statement of CONSTRAINT_STATEMENTS) {
     await runWrite(statement);
   }
+  for (const statement of DATA_MIGRATIONS) {
+    await runWrite(statement);
+  }
 }
+
+/**
+ * One-way data clean-ups, each a no-op once applied.
+ *
+ * Findings from before the review judged changes on their own merits
+ * (`assessment`, 2026-10-02) only carry the old `intentMatch` verdict, which
+ * conflated "is it correct" with "did the PR mention it". They are dropped
+ * rather than mapped: open PRs re-review on their own, and anything else
+ * shows the Review button again.
+ */
+const DATA_MIGRATIONS: string[] = [
+  `MATCH (f:Finding) WHERE f.assessment IS NULL DETACH DELETE f`,
+];

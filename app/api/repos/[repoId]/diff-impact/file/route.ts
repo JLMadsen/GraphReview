@@ -9,6 +9,10 @@
 // components, this one re-fetches the same diff source (PR files / ref
 // comparison / local git) and hands back one file's raw patch text — no
 // Neo4j write, no component matching.
+//
+// With `?sha=<head commit>`, a path that is NOT part of the diff comes back
+// as the whole file at that commit (`content`) instead of a 404 — what an
+// impact finding points at: a caller the change left untouched.
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -16,20 +20,24 @@ import { compareRefs, listPullRequestFiles } from "@/lib/github";
 import type { PullRequestFile } from "@/lib/github";
 import { compareRefs as compareGitLabRefs, listMergeRequestFiles } from "@/lib/gitlab";
 import { listLocalFilePatches, resolveGitHubAccess, resolveGitLabAccess } from "@/lib/jobs";
+import { readFileAtCommit } from "@/lib/jobs/pr-context";
 import { getRepoById } from "@/lib/neo4j";
 import type { FileDiffResponseDTO } from "@/components/graph/types";
 
 export const dynamic = "force-dynamic";
 
+const shaSchema = z.string().regex(/^[0-9a-f]{7,64}$/).optional();
 const querySchema = z.union([
   z.object({
     path: z.string().min(1),
     prNumber: z.coerce.number().int().positive(),
+    sha: shaSchema,
   }),
   z.object({
     path: z.string().min(1),
     baseRef: z.string().min(1),
     headRef: z.string().min(1),
+    sha: shaSchema,
   }),
 ]);
 
@@ -188,6 +196,20 @@ export async function GET(
         );
         const match = comparison.files.find((f) => f.filename === path);
         if (match) file = fromPullRequestFile(match);
+      }
+    }
+
+    if (!file && parsed.data.sha) {
+      const whole = await readFileAtCommit(repo, parsed.data.sha, path);
+      if (whole?.source === "commit") {
+        const body: FileDiffResponseDTO = {
+          path,
+          status: "modified",
+          additions: 0,
+          deletions: 0,
+          content: whole.text,
+        };
+        return NextResponse.json(body);
       }
     }
 

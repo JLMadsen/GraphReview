@@ -207,7 +207,10 @@ export async function runAiChecklist(
     intent: ctx.intent,
     files,
     findings: findings.map(
-      (f) => `${f.filePath ?? f.componentName}: ${f.summary} (${f.intentMatch}${f.resolvedAt ? ", resolved" : ""})`
+      (f) =>
+        `${f.filePath ?? (f.componentName || "whole PR")}: ${f.summary} (` +
+        [f.category !== "change" ? f.category : "", f.kind, f.scope, f.assessment].filter(Boolean).join(", ") +
+        `${f.resolvedAt ? ", resolved" : ""})`
     ),
     questions: [...idByRef].map(([ref, itemId]) => ({
       id: ref,

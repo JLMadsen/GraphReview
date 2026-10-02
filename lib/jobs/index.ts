@@ -225,8 +225,11 @@ export {
 export {
   PREVIEW_JOB_NAME,
   PREVIEW_QUEUE_NAME,
+  PREVIEW_SCAN_QUEUE_NAME,
   closePreviewQueue,
+  closePreviewScanQueue,
   enqueuePreview,
+  ensurePreviewScan,
   getPreviewJob,
   getPreviewJobLogs,
   getPreviewQueue,
@@ -234,6 +237,8 @@ export {
   type PreviewJob,
   type PreviewJobData,
   type PreviewJobResult,
+  type PreviewScanJob,
+  type PreviewScanJobData,
 } from "./preview-queue";
 
 // NOTE: `./analyze` is deliberately *not* re-exported here. It pulls in

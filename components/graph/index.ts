@@ -39,18 +39,18 @@ export type {
 } from "./label-types";
 
 export {
-  INTENT_ORDER,
-  INTENT_VISUALS,
+  ASSESSMENT_ORDER,
+  ASSESSMENT_VISUALS,
   buildReviewMarkers,
-  compareIntent,
-  countByIntent,
-  countComponentsByIntent,
+  compareAssessment,
+  countByAssessment,
+  countComponentsByAssessment,
   formatConfidence,
   formatLocation,
-  intentClassName,
-  worstIntent,
+  assessmentClassName,
+  worstAssessment,
 } from "./review-visuals";
-export type { IntentVisual, ReviewMarker, ReviewMarkerMap } from "./review-visuals";
+export type { AssessmentVisual, ReviewMarker, ReviewMarkerMap } from "./review-visuals";
 
 export { SAMPLE_NODES, SAMPLE_EDGES } from "./sample-data";
 
@@ -71,7 +71,7 @@ export type {
   DiffImpactResponseDTO,
   EnqueueReviewResponseDTO,
   FindingDTO,
-  IntentMatch,
+  Assessment,
   ReviewErrorDTO,
   ReviewProgressDTO,
   ReviewStateDTO,

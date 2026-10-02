@@ -81,15 +81,21 @@ export interface ReviewInput {
   related?: ReviewRelatedContext;
 }
 
-export type IntentMatch = "match" | "partial" | "mismatch" | "unknown";
+/** Is the change sound on its own terms? Drives the verdict. */
+export type Assessment = "defect" | "concern" | "unknown" | "ok";
+/** How the change relates to the PR's stated intent. PR reviews only; informational. */
+export type ReviewScope = "described" | "supporting" | "unmentioned";
+export type ChangeKind = "fix" | "feature" | "refactor" | "test" | "docs" | "config" | "chore";
 
 export interface ReviewFinding {
   filePath?: string; // MUST be one of the input file paths, else omitted
   lineRange?: string; // e.g. "12-18"
   summary: string; // plain-English: what this change does
-  intentMatch: IntentMatch;
+  assessment: Assessment;
+  scope?: ReviewScope; // only for pull requests
+  kind?: ChangeKind;
   confidence: number; // clamped to 0..1
-  rationale: string; // why; for partial/mismatch cite the specific code/identifiers
+  rationale: string; // why; for concern/defect cite the specific code/identifiers
 }
 
 export interface ReviewResult {
@@ -130,12 +136,50 @@ const MIN_PATCH_CHARS_PER_FILE = 200;
 // as "your provider is broken" when it is merely slow.
 const PING_TIMEOUT_MS = 60_000;
 
-const INTENT_MATCHES: readonly IntentMatch[] = ["match", "partial", "mismatch", "unknown"];
+const ASSESSMENTS: readonly Assessment[] = ["defect", "concern", "unknown", "ok"];
+/** Words a model reaches for instead of the four values (including the pre-2026-10 vocabulary). */
+const ASSESSMENT_ALIASES: Record<string, Assessment> = {
+  match: "ok",
+  pass: "ok",
+  good: "ok",
+  fine: "ok",
+  correct: "ok",
+  partial: "concern",
+  warning: "concern",
+  risk: "concern",
+  risky: "concern",
+  mismatch: "defect",
+  bug: "defect",
+  error: "defect",
+  broken: "defect",
+  fail: "defect",
+};
+const SCOPES: readonly ReviewScope[] = ["described", "supporting", "unmentioned"];
+const SCOPE_ALIASES: Record<string, ReviewScope> = {
+  in_scope: "described",
+  related: "supporting",
+  out_of_scope: "unmentioned",
+  unrelated: "unmentioned",
+  undisclosed: "unmentioned",
+};
+const KINDS: readonly ChangeKind[] = ["fix", "feature", "refactor", "test", "docs", "config", "chore"];
+const KIND_ALIASES: Record<string, ChangeKind> = {
+  bugfix: "fix",
+  feat: "feature",
+  tests: "test",
+  doc: "docs",
+  documentation: "docs",
+  build: "config",
+  ci: "config",
+  style: "chore",
+  cleanup: "chore",
+};
 
 const ZERO_USAGE: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
 /**
- * Reviews one component's change against the stated intent — one model call
+ * Reviews one component's change on its own merits (the stated intent is
+ * context, used only to label scope) — one model call
  * when the diff fits the budget, one per part when it has to be split.
  * Throws (`AiClientError`) if a call itself fails.
  */
@@ -154,7 +198,7 @@ export async function reviewComponentChange(
         {
           summary:
             "The diff text for this component's changed files was unavailable (binary or oversized files), so the change could not be reviewed.",
-          intentMatch: "unknown",
+          assessment: "unknown",
           confidence: 0,
           rationale:
             "No patch text was provided for any changed file, so no model call was made.",
@@ -220,7 +264,8 @@ export async function reviewComponentChange(
 
     const findings = normalizeFindings(
       extractJson(result.content),
-      new Set(files.map((f) => f.path))
+      new Set(files.map((f) => f.path)),
+      input.intent.source === "pull_request"
     );
     if (findings.length > 0) {
       merged.push(...findings);
@@ -230,7 +275,7 @@ export async function reviewComponentChange(
     const raw = result.content.trim().slice(0, FALLBACK_TEXT_CHARS);
     merged.push({
       summary: raw || "(The model returned an empty response.)",
-      intentMatch: "unknown",
+      assessment: "unknown",
       confidence: 0,
       rationale:
         "Model output could not be parsed as structured JSON" +
@@ -251,13 +296,13 @@ export async function reviewComponentChange(
 /** Keeps at most MAX_MERGED_FINDINGS, preferring the most severe, in their original order. */
 function capFindings(findings: ReviewFinding[]): ReviewFinding[] {
   if (findings.length <= MAX_MERGED_FINDINGS) return findings;
-  const rank: Record<IntentMatch, number> = { mismatch: 0, partial: 1, unknown: 2, match: 3 };
+  const rank: Record<Assessment, number> = { defect: 0, concern: 1, unknown: 2, ok: 3 };
   const keep = new Set(
     findings
       .map((finding, index) => ({ finding, index }))
       .sort(
         (a, b) =>
-          rank[a.finding.intentMatch] - rank[b.finding.intentMatch] ||
+          rank[a.finding.assessment] - rank[b.finding.assessment] ||
           b.finding.confidence - a.finding.confidence ||
           a.index - b.index
       )
@@ -534,7 +579,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeFindings(parsed: unknown, allowedPaths: Set<string>): ReviewFinding[] {
+function normalizeFindings(
+  parsed: unknown,
+  allowedPaths: Set<string>,
+  withScope: boolean
+): ReviewFinding[] {
   let entries: unknown[];
   if (Array.isArray(parsed)) {
     entries = parsed;
@@ -549,13 +598,17 @@ function normalizeFindings(parsed: unknown, allowedPaths: Set<string>): ReviewFi
   const findings: ReviewFinding[] = [];
   for (const entry of entries) {
     if (findings.length >= MAX_FINDINGS) break;
-    const finding = normalizeFinding(entry, allowedPaths);
+    const finding = normalizeFinding(entry, allowedPaths, withScope);
     if (finding) findings.push(finding);
   }
   return findings;
 }
 
-function normalizeFinding(entry: unknown, allowedPaths: Set<string>): ReviewFinding | null {
+function normalizeFinding(
+  entry: unknown,
+  allowedPaths: Set<string>,
+  withScope: boolean
+): ReviewFinding | null {
   if (!isRecord(entry)) return null;
 
   const rationaleText = coerceText(entry.rationale);
@@ -564,10 +617,17 @@ function normalizeFinding(entry: unknown, allowedPaths: Set<string>): ReviewFind
 
   const finding: ReviewFinding = {
     summary: clip(summary, MAX_SUMMARY_CHARS),
-    intentMatch: normalizeIntentMatch(entry.intentMatch),
+    assessment: normalizeAssessment(entry.assessment ?? entry.verdict),
     confidence: normalizeConfidence(entry.confidence),
     rationale: clip(rationaleText || "No rationale provided by the model.", MAX_RATIONALE_CHARS),
   };
+
+  if (withScope) {
+    const scope = normalizeEnum(entry.scope, SCOPES, SCOPE_ALIASES);
+    if (scope) finding.scope = scope;
+  }
+  const kind = normalizeEnum(entry.kind, KINDS, KIND_ALIASES);
+  if (kind) finding.kind = kind;
 
   const filePath = normalizeFilePath(entry.filePath, allowedPaths);
   if (filePath) finding.filePath = filePath;
@@ -588,10 +648,20 @@ function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
-function normalizeIntentMatch(value: unknown): IntentMatch {
-  if (typeof value !== "string") return "unknown";
+function normalizeAssessment(value: unknown): Assessment {
+  return normalizeEnum(value, ASSESSMENTS, ASSESSMENT_ALIASES) ?? "unknown";
+}
+
+/** Case-insensitive match against `values`, then `aliases` (spaces/dashes read as `_`); else `undefined`. */
+export function normalizeEnum<T extends string>(
+  value: unknown,
+  values: readonly T[],
+  aliases: Record<string, T> = {}
+): T | undefined {
+  if (typeof value !== "string") return undefined;
   const lowered = value.trim().toLowerCase();
-  return (INTENT_MATCHES as readonly string[]).includes(lowered) ? (lowered as IntentMatch) : "unknown";
+  if ((values as readonly string[]).includes(lowered)) return lowered as T;
+  return aliases[lowered.replace(/[\s-]+/g, "_")];
 }
 
 /** Clamped to 0..1. A missing/non-numeric value becomes a neutral 0.5 (the model gave no signal either way). */

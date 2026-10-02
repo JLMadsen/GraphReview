@@ -58,13 +58,15 @@ import { PanelResizeHandle, usePanelWidth } from "./PanelResizeHandle";
 import { ComponentFilesPanel } from "./ComponentFilesPanel";
 import { ChatPanel } from "./ChatPanel";
 import { ChecklistPanel } from "./ChecklistPanel";
+import { LooksDifferentPanel } from "./LooksDifferentPanel";
+import { usePreviewScan } from "./usePreviewScan";
 import { useChecklist } from "./useChecklist";
 import { usePrChat } from "./usePrChat";
 import { MergesControl, MergeSuggestionsPanel } from "./MergeSuggestions";
 import { DiffPanel, type DiffTargetMeta } from "./DiffPanel";
 import { ReviewPanel } from "./ReviewPanel";
 import { Segmented } from "./Segmented";
-import { buildReviewMarkers, effectiveIntent, worstIntent } from "./review-visuals";
+import { buildReviewMarkers, effectiveAssessment, worstAssessment } from "./review-visuals";
 import { SAMPLE_EDGES, SAMPLE_NODES } from "./sample-data";
 import { useLabels } from "./useLabels";
 import { useMerges } from "./useMerges";
@@ -79,7 +81,7 @@ import type {
   DiffImpactResponseDTO,
   GraphNodeDTO,
   GraphResponseDTO,
-  IntentMatch,
+  Assessment,
   ReviewTargetDTO,
 } from "./types";
 
@@ -144,6 +146,7 @@ export function GraphView({
   const review = useReview(repoId, reviewTarget, reviewEffort, autoReview);
   const checklist = useChecklist(repoId, reviewTarget, review.state, autoReview);
   const chat = usePrChat(repoId, reviewTarget);
+  const previewScan = usePreviewScan(repoId, reviewTarget);
   const handleLabelsCompleted = useCallback(() => setGraphNonce((n) => n + 1), []);
   const labels = useLabels(repoId, handleLabelsCompleted);
   // Feature merges (DESIGN.md §6.3). Every accept/unmerge/rename changes the
@@ -174,8 +177,9 @@ export function GraphView({
     }
   }, []);
   const canvasRef = useRef<GraphCanvasHandle>(null);
-  /** The file whose diff a PR map chip opened. */
-  const [openFile, setOpenFile] = useState<string | null>(null);
+  /** The file open in the diff modal, and optionally the before/after component to start on. */
+  const [openFile, setOpenFile] = useState<{ path: string; component?: string } | null>(null);
+  const openFilePath = useCallback((path: string) => setOpenFile({ path }), []);
   const [leftWidth, setLeftWidth] = usePanelWidth("graphreview.panel.diff", 236, 200, 480);
   const [chatWidth, setChatWidth] = usePanelWidth("graphreview.panel.chat", 380, 300, 720);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -473,11 +477,11 @@ export function GraphView({
 
   /** Worst verdict per file, for the explainer's file list. */
   const fileMarkers = useMemo(() => {
-    const map = new Map<string, IntentMatch>();
+    const map = new Map<string, Assessment>();
     for (const f of review.findings) {
       if (!f.filePath) continue;
       const prev = map.get(f.filePath);
-      map.set(f.filePath, prev ? worstIntent(prev, effectiveIntent(f)) : effectiveIntent(f));
+      map.set(f.filePath, prev ? worstAssessment(prev, effectiveAssessment(f)) : effectiveAssessment(f));
     }
     return map;
   }, [review.findings]);
@@ -514,6 +518,12 @@ export function GraphView({
             lineStats={lineStats}
           >
             {reviewTarget && <ChecklistPanel repoId={repoId} checklist={checklist} />}
+            {reviewTarget && (
+              <LooksDifferentPanel
+                scan={previewScan}
+                onOpen={(path, component) => setOpenFile({ path, component })}
+              />
+            )}
           </DiffPanel>
         </div>
       </aside>
@@ -583,7 +593,7 @@ export function GraphView({
             findings={review.findings}
             selectedComponentId={selectedNodeId}
             onSelectComponents={handleSelectCards}
-            onOpenFile={reviewTarget ? setOpenFile : undefined}
+            onOpenFile={reviewTarget ? openFilePath : undefined}
             onShowInRepo={(ids) => ids[0] && showInAppMap(ids[0])}
             reviewPending={review.state === "queued" || review.state === "running"}
           />
@@ -636,7 +646,8 @@ export function GraphView({
           <FileDiffModal
             repoId={repoId}
             target={reviewTarget}
-            finding={openFile ? { filePath: openFile } : null}
+            finding={openFile ? { filePath: openFile.path } : null}
+            initialComponent={openFile?.component}
             onClose={() => setOpenFile(null)}
           />
         )}
@@ -766,7 +777,7 @@ export function GraphView({
                 componentName={componentNameById}
                 changedFiles={chatChangedFiles}
                 onSelectComponent={showInAppMap}
-                onOpenFile={reviewTarget ? setOpenFile : undefined}
+                onOpenFile={reviewTarget ? openFilePath : undefined}
               />
             </div>
           )}

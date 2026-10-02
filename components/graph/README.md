@@ -37,8 +37,10 @@ On the rendering approach:
   then poll while the job streams findings in), `ReviewPanel` (the
   full-width dock under the canvas — progress, cost counter, filter chips,
   findings grouped by component) and `review-visuals.ts` (the one place the
-  four `intentMatch` colours/glyphs are defined, shared by the panel, the
-  sidebar and the canvas markers).
+  four `assessment` colours/glyphs are defined — plus the neutral scope/kind
+  tags and the dashed "impacted" ring for components holding a caller the
+  change left behind — shared by the panel, the sidebar and the canvas
+  markers).
 - The AI labeling surface, backed by `/api/repos/[repoId]/label`:
   `useLabels` (GET on mount, POST only when the user presses the button,
   then poll while the job runs and refetch the graph when it finishes) and

@@ -126,6 +126,11 @@ function num(value: unknown): number | undefined {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
 }
 
+/** `"defect, impact"`, `"ok, fix, unmentioned"` — the verdict first, then what kind of finding it is. */
+function findingLabels(f: FindingWithComponent): string {
+  return [f.assessment, f.category !== "change" ? f.category : "", f.kind, f.scope].filter(Boolean).join(", ");
+}
+
 function componentName(tc: ToolContext, id: string | undefined): string {
   return (id && tc.components.find((c) => c.id === id)?.name) || "(no component)";
 }
@@ -289,7 +294,7 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
       const text = findings
         .map(
           (f) =>
-            `[${f.intentMatch}${f.resolvedAt ? ", resolved" : ""}] ${f.componentName}` +
+            `[${findingLabels(f)}${f.resolvedAt ? ", resolved" : ""}] ${f.componentName || "whole PR"}` +
             `${f.filePath ? ` ${f.filePath}${f.lineRange ? `:${f.lineRange}` : ""}` : ""}: ${f.summary}\n  why: ${f.rationale}`
         )
         .join("\n");
@@ -347,10 +352,10 @@ function renderContext(tc: ToolContext): string {
 
   if (tc.findings.length > 0) {
     const counts = new Map<string, number>();
-    for (const f of tc.findings) counts.set(f.intentMatch, (counts.get(f.intentMatch) ?? 0) + 1);
+    for (const f of tc.findings) counts.set(f.assessment, (counts.get(f.assessment) ?? 0) + 1);
     lines.push("", `AI review: ${tc.findings.length} finding(s) — ${[...counts].map(([k, v]) => `${v} ${k}`).join(", ")}.`);
-    for (const f of tc.findings.filter((f) => f.intentMatch === "mismatch" || f.intentMatch === "partial").slice(0, 12)) {
-      lines.push(`- [${f.intentMatch}] ${f.componentName}${f.filePath ? ` ${f.filePath}` : ""}: ${f.summary}`);
+    for (const f of tc.findings.filter((f) => f.assessment === "defect" || f.assessment === "concern").slice(0, 12)) {
+      lines.push(`- [${findingLabels(f)}] ${f.componentName || "whole PR"}${f.filePath ? ` ${f.filePath}` : ""}: ${f.summary}`);
     }
   } else {
     lines.push("", "AI review: no findings yet.");

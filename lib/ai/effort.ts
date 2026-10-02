@@ -4,7 +4,8 @@
 //   low     7k tokens   the changed component's diff + neighbour *names*
 //   medium  16k tokens  + what each neighbouring component is (its description)
 //   high    32k tokens  + signatures from the files the changed files import
-//                         or are imported by, in other components
+//                         or are imported by (any component, read at the
+//                         reviewed head when it can be opened)
 //   max     128k tokens + the source of those files' declarations that the
 //                         diff actually refers to
 //
@@ -25,7 +26,7 @@ export interface ReviewEffortSettings {
   tokenBudget: number;
   /** Include each neighbouring component's description, not just its name. */
   neighborDescriptions: boolean;
-  /** Include declaration signatures from related files in other components. */
+  /** Include declaration signatures from related files (importers/imports of the changed files). */
   signatures: boolean;
   /** Include the source of related declarations the diff mentions. */
   relatedSource: boolean;

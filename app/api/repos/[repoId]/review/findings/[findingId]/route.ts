@@ -38,8 +38,8 @@ export async function PATCH(
     if (!existing || existing.repoId !== repoId) {
       return apiError(`No finding with id "${findingId}" in this repo.`, 404);
     }
-    if (existing.intentMatch === "match") {
-      return apiError("Only findings below match can be resolved.", 400);
+    if (existing.assessment === "ok") {
+      return apiError("Only findings that need a look (not OK) can be resolved.", 400);
     }
 
     const updated = await setFindingResolved(repoId, findingId, parsed.data.resolved);

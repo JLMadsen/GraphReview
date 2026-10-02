@@ -85,6 +85,14 @@ services:
       PREVIEW_INSTALL_TIMEOUT_MS: ${PREVIEW_INSTALL_TIMEOUT_MS:-}
       PREVIEW_MEMORY: ${PREVIEW_MEMORY:-}
       PREVIEW_CPUS: ${PREVIEW_CPUS:-}
+      PREVIEW_DEPS_MAX_AGE_HOURS: ${PREVIEW_DEPS_MAX_AGE_HOURS:-}
+      PREVIEW_DEPS_KEEP: ${PREVIEW_DEPS_KEEP:-}
+      # The app's own mirror settings, reused by the sandbox: its images come
+      # from NODE_BASE_IMAGE's registry, and its dependency installs get these
+      # registries plus the CA certificates baked into this image (CA_CERT_DIR).
+      NODE_BASE_IMAGE: ${NODE_BASE_IMAGE:-}
+      NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-}
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-}
     # No ports published — the worker has no HTTP surface.
     volumes:
       - repo_cache:/data/repos

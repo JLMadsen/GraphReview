@@ -19,7 +19,14 @@ import { generatePreviewInputs, type AiProviderConfig } from "@/lib/ai";
 import { decrypt } from "@/lib/crypto";
 import { getActiveAiProvider, getRepoById, type RepoRecord } from "@/lib/neo4j";
 import { materializeTree, mergeBaseOf, projectRootFor, readFileAt, runtimeForPath } from "@/lib/preview/checkout";
-import { assertDockerAvailable, harnessScript, prepareDeps, runHarness, SandboxUnavailableError } from "@/lib/preview/sandbox";
+import {
+  assertDockerAvailable,
+  harnessScript,
+  prepareDeps,
+  pruneDepsVolumes,
+  runHarness,
+  SandboxUnavailableError,
+} from "@/lib/preview/sandbox";
 import { detectChangedSymbols } from "@/lib/preview/symbols";
 import type {
   PreviewCaseInput,
@@ -38,7 +45,32 @@ import type { JobLogger } from "./analyze";
 import { loadPrContext } from "./pr-context";
 import type { PreviewJobData } from "./preview-queue";
 import type { ReviewTarget } from "./review-queue";
+import { getRedisConnection } from "./queue";
 import { ensureCommitsInCache, validateLocalRepoPath } from "./source";
+
+/** Redis hash: dependency cache volume → when a preview last used it (ms). Survives worker restarts, unlike memory. */
+const DEPS_LAST_USED_KEY = "graphreview:preview:deps-last-used";
+
+/**
+ * Records which dependency caches this run used, then removes the ones that
+ * went unused for too long (lib/preview/sandbox.ts `pruneDepsVolumes`).
+ * Best effort: cleanup never fails a preview.
+ */
+async function recordAndPruneDeps(used: Array<string | undefined>, log: JobLogger): Promise<void> {
+  try {
+    const redis = getRedisConnection();
+    const now = String(Date.now());
+    for (const volume of new Set(used.filter((v): v is string => Boolean(v)))) {
+      await redis.hset(DEPS_LAST_USED_KEY, volume, now);
+    }
+    const stored = await redis.hgetall(DEPS_LAST_USED_KEY);
+    const lastUsed = new Map(Object.entries(stored).map(([k, v]) => [k, Number(v)] as const));
+    const removed = await pruneDepsVolumes(lastUsed, log);
+    if (removed.length > 0) await redis.hdel(DEPS_LAST_USED_KEY, ...removed);
+  } catch (error) {
+    log(`dependency cache cleanup skipped: ${(error as Error).message}`);
+  }
+}
 
 /** Per case, inside the container. Whole-container limits live in sandbox.ts. */
 const CASE_TIMEOUT_MS = 10_000;
@@ -69,12 +101,14 @@ function fallbackRefspecs(repo: RepoRecord, target: ReviewTarget): string[] {
   return repo.provider === "gitlab" ? [`merge-requests/${target.prNumber}/head`] : [`pull/${target.prNumber}/head`];
 }
 
-async function resolveCommits(
+/** Pins a target to its merge-base and head and makes both available on disk. Also used by ./preview-scan.ts. */
+export async function resolveCommits(
   repo: RepoRecord,
   target: ReviewTarget,
   log: JobLogger
-): Promise<{ repoDir: string; baseSha: string; headSha: string }> {
+): Promise<{ repoDir: string; baseSha: string; headSha: string; changedFiles: string[] }> {
   const context = await loadPrContext(repo, target, log);
+  const changedFiles = context.files.map((f) => f.path);
   const { baseSha, headSha } = context.reviewed;
   if (!baseSha || !headSha) throw new UnrecoverableError("The base and head commits of this target could not be resolved.");
 
@@ -86,7 +120,7 @@ async function resolveCommits(
     repoDir = await ensureCommitsInCache(repo, [baseSha, headSha], fallbackRefspecs(repo, target), log);
   }
   // Compare against where the branch left off, exactly like the three-dot diff does.
-  return { repoDir, baseSha: await mergeBaseOf(repoDir, baseSha, headSha), headSha };
+  return { repoDir, baseSha: await mergeBaseOf(repoDir, baseSha, headSha), headSha, changedFiles };
 }
 
 function sameOutcome(a: PreviewCaseOutcome | undefined, b: PreviewCaseOutcome | undefined): boolean {
@@ -116,6 +150,8 @@ function summarize(
 interface SideRun {
   harness: PreviewHarnessResult | null;
   deps: string;
+  /** The dependency cache volume this side ran with, if any. */
+  depsVolume?: string;
   fatal?: string;
 }
 
@@ -135,12 +171,14 @@ async function runSide(options: {
   const treeDir = path.join(scratch, side);
   const jobDir = path.join(scratch, `${side}-job`);
   let deps = "none";
+  let depsVolume: string | undefined;
   try {
     log(`writing the tree at ${sha.slice(0, 7)}`);
     await materializeTree(repoDir, sha, treeDir, scratch);
     const projectRoot = projectRootFor(treeDir, filePath, runtime);
     const prepared = await prepareDeps(runtime, treeDir, projectRoot, log);
     deps = prepared.status;
+    depsVolume = prepared.volume;
 
     await mkdir(jobDir, { recursive: true });
     const script = harnessScript(runtime);
@@ -155,11 +193,11 @@ async function runSide(options: {
     await writeFile(path.join(jobDir, "spec.json"), JSON.stringify(spec));
     log("running in the sandbox");
     const harness = await runHarness({ runtime, treeDir, jobDir, projectRoot, deps: prepared, log });
-    return { harness, deps };
+    return { harness, deps, depsVolume };
   } catch (error) {
     if (error instanceof SandboxUnavailableError) throw error;
     log(`failed: ${(error as Error).message}`);
-    return { harness: null, deps, fatal: (error as Error).message };
+    return { harness: null, deps, depsVolume, fatal: (error as Error).message };
   }
 }
 
@@ -239,7 +277,10 @@ export async function runPreviewJob(
         });
         for (const [name, cases] of Object.entries(result.inputs)) inputs[name] = cases;
         if (inputsSource === "default" && Object.keys(result.inputs).length > 0) inputsSource = "ai";
-        if (result.parseFailed) inputsNote = "The AI's answer couldn't be read, so empty inputs were used. Edit them and run again.";
+        if (result.parseFailed) {
+          inputsNote = "The AI's answer couldn't be read, even after asking again, so empty inputs were used. Edit them and run again.";
+          log(`unreadable AI answer: ${(result.rawAnswer ?? "").replace(/\s+/g, " ")}`);
+        }
         log(`inputs from the AI: ${result.usage.promptTokens}+${result.usage.completionTokens} tokens`);
       } catch (error) {
         inputsNote = `Mocking up inputs failed (${(error as Error).message}), so empty inputs were used.`;
@@ -271,6 +312,7 @@ export async function runPreviewJob(
     throw error;
   } finally {
     await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+    await recordAndPruneDeps([beforeRun.depsVolume, afterRun.depsVolume], log);
   }
 
   // 6. compare

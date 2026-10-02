@@ -16,12 +16,12 @@
 
 | file | what it owns |
 |---|---|
-| `types.ts` | Shared shapes: harness output, the job's `PreviewResult`, the status DTO. Type-only. |
+| `types.ts` | Shared shapes: harness output, the job's `PreviewResult`, the status DTO, and the component scan (`PreviewScanResult`, `PreviewScanDTO`). Type-only. |
 | `runtime.ts` | `runtimeForPath`: which runtime (`node` / `python`) a file needs, or `null`. Pure, so the UI can use it. |
 | `symbols.ts` | `detectChangedSymbols`: tree-sitter over both versions of the file; changed, added and removed top-level declarations, which of them can run, and why the rest can't. |
 | `checkout.ts` | Writing a whole tree at a commit with a throwaway index (works on the read-only local-repo mount), reading a file at a commit, the merge base, and the project root (nearest `package.json` / `pyproject.toml`). |
 | `sandbox.ts` | The `docker` CLI wrapper: images, the harness volume, dependency volumes keyed by lockfile, and the offline run container. Files travel by `docker cp`, never by bind mount. |
-| `harness/node-harness.mjs` | Runs inside the Node container: esbuild bundle with stubbed missing imports, call the functions or SSR the components, run the global CSS through the repo's PostCSS. |
+| `harness/node-harness.mjs` | Runs inside the Node container: esbuild bundle with stubbed missing imports, call the functions or SSR the components (inside a stand-in Next.js router when the repo uses Next), run the global CSS through the repo's PostCSS. |
 | `harness/python-harness.py` | Runs inside the Python container: import by dotted name, call each function on a deep copy of its arguments, `repr()` the results. |
 
 ## Trying it by hand

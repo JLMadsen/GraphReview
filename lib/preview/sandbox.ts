@@ -13,7 +13,9 @@
 //                                     base and head share it when unchanged
 //
 // A run container gets no network, capped memory/CPU/processes and a wall-
-// clock limit; installs are the only step that goes online.
+// clock limit. Installs are the only step that goes online, and they carry
+// the worker's own CA bundle (CA_CERT_DIR, baked into its image) and
+// registry/proxy settings, so a closed-network setup needs nothing extra.
 //
 // Server-only (spawns processes). Worker-only in practice.
 
@@ -30,8 +32,21 @@ export const RESULT_MARKER = "@@GRAPHREVIEW_PREVIEW_RESULT@@";
 const HARNESS_VERSION = "1";
 const HARNESS_PACKAGES = ["esbuild@0.25", "react@19", "react-dom@19", "postcss@8"];
 
-const NODE_IMAGE = process.env.PREVIEW_NODE_IMAGE || "node:20-bookworm-slim";
-const PYTHON_IMAGE = process.env.PREVIEW_PYTHON_IMAGE || "python:3.12-slim";
+/**
+ * The registry/namespace part of `NODE_BASE_IMAGE` (the app's own base image),
+ * e.g. `mirror.corp/library/` from `mirror.corp/library/node:20-alpine`, so a
+ * closed-network setup pulls the sandbox images from the same mirror without
+ * any extra setting. Empty for the default Docker Hub `node:20-alpine`.
+ */
+function mirrorPrefix(): string {
+  const base = process.env.NODE_BASE_IMAGE?.trim() ?? "";
+  const slash = base.lastIndexOf("/");
+  return slash >= 0 ? base.slice(0, slash + 1) : "";
+}
+
+// Not the app's Alpine image: native npm/pip packages mostly ship glibc builds.
+const NODE_IMAGE = process.env.PREVIEW_NODE_IMAGE?.trim() || `${mirrorPrefix()}node:20-bookworm-slim`;
+const PYTHON_IMAGE = process.env.PREVIEW_PYTHON_IMAGE?.trim() || `${mirrorPrefix()}python:3.12-slim`;
 /** A positive number from the environment, else `fallback` — Compose passes unset optional vars as "". */
 function envMs(name: string, fallback: number): number {
   const value = Number(process.env[name]?.trim() || NaN);
@@ -40,7 +55,10 @@ function envMs(name: string, fallback: number): number {
 
 const RUN_TIMEOUT_MS = envMs("PREVIEW_RUN_TIMEOUT_MS", 120_000);
 const INSTALL_TIMEOUT_MS = envMs("PREVIEW_INSTALL_TIMEOUT_MS", 15 * 60_000);
-const MEMORY = process.env.PREVIEW_MEMORY || "1g";
+// 2 GB: bundling a Next.js server layout with its imports (Next, a DB driver,
+// a queue client…) peaked at 1.13 GB, and the kernel then kills esbuild's
+// process — "The service was stopped". Set `PREVIEW_MEMORY` to change it.
+const MEMORY = process.env.PREVIEW_MEMORY?.trim() || "2g";
 const CPUS = process.env.PREVIEW_CPUS || "1";
 const MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 
@@ -150,6 +168,78 @@ function startAttached(id: string, timeoutMs: number, log?: Logger): Promise<Exe
   });
 }
 
+// ---------------------------------------------------------------------------
+// Online steps (installs): the worker's own network settings, carried over
+// ---------------------------------------------------------------------------
+
+/** Where the worker's CA bundle lands inside an install container. */
+const CONTAINER_CA_FILE = "/tmp/graphreview-ca.crt";
+
+/**
+ * Settings an install container inherits from the worker, when set there:
+ * package registries (npm, yarn, corepack, pip) and proxies. Empty values are
+ * dropped — an empty `NPM_CONFIG_REGISTRY` would break npm, not reset it.
+ *
+ * Upper-case `NPM_CONFIG_*` only: npm itself injects dozens of lower-case
+ * `npm_config_*` variables (cache, prefix, user config — host paths) into
+ * every process it starts, the worker included, and those must not leak in.
+ */
+const FORWARDED_ENV = /^(NPM_CONFIG_\w+|YARN_NPM_\w+|COREPACK_NPM_\w+|PIP_\w+|HTTPS?_PROXY|https?_proxy|NO_PROXY|no_proxy)$/;
+
+function forwardedEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (FORWARDED_ENV.test(key) && value?.trim()) env[key] = value.trim();
+  }
+  // corepack fetches pnpm/yarn themselves from a registry of its own setting.
+  const registry = env.NPM_CONFIG_REGISTRY;
+  if (registry && !env.COREPACK_NPM_REGISTRY) env.COREPACK_NPM_REGISTRY = registry;
+  return env;
+}
+
+/**
+ * The worker's CA bundle: under Docker Compose it is the system bundle with
+ * every certificate from `CA_CERT_DIR` appended at build time, and
+ * `NODE_EXTRA_CA_CERTS` points at it (docker/Dockerfile). Outside Docker
+ * this is whatever the user set, or nothing.
+ */
+function caBundle(): string | null {
+  const file = process.env.NODE_EXTRA_CA_CERTS?.trim();
+  return file && existsSync(file) ? file : null;
+}
+
+/** Runs `script` in a container that may go online, with the worker's CA bundle and registry settings. */
+async function runOnline(options: {
+  image: string;
+  mounts: string[];
+  workdir?: string;
+  script: string;
+  timeoutMs: number;
+  before?: (id: string) => Promise<void>;
+}): Promise<ExecResult & { timedOut: boolean }> {
+  const env: Record<string, string> = { CI: "1", ...forwardedEnv() };
+  const ca = caBundle();
+  if (ca) {
+    // A full bundle (public roots + internal CAs), so it can replace each tool's own.
+    Object.assign(env, {
+      NODE_EXTRA_CA_CERTS: CONTAINER_CA_FILE,
+      PIP_CERT: CONTAINER_CA_FILE,
+      SSL_CERT_FILE: CONTAINER_CA_FILE,
+      REQUESTS_CA_BUNDLE: CONTAINER_CA_FILE,
+      GIT_SSL_CAINFO: CONTAINER_CA_FILE,
+    });
+  }
+  const args = [...options.mounts.flatMap((m) => ["-v", m])];
+  if (options.workdir) args.push("-w", options.workdir);
+  for (const [key, value] of Object.entries(env)) args.push("-e", `${key}=${value}`);
+  args.push(options.image, "sh", "-c", options.script);
+  return withContainer(args, async (id) => {
+    if (ca) await dockerOk(["cp", ca, `${id}:${CONTAINER_CA_FILE}`], "docker cp (CA bundle)");
+    await options.before?.(id);
+    return startAttached(id, options.timeoutMs);
+  });
+}
+
 async function volumeExists(name: string): Promise<boolean> {
   return (await docker(["volume", "inspect", name])).code === 0;
 }
@@ -173,9 +263,12 @@ async function ensureHarnessVolume(log: Logger): Promise<void> {
     "touch /harness/.ready",
   ].join("\n");
   if (!(await volumeExists(HARNESS_VOLUME))) log("installing the preview harness (first run only)");
-  const result = await withContainer(["-v", `${HARNESS_VOLUME}:/harness`, NODE_IMAGE, "sh", "-c", script], (id) =>
-    startAttached(id, INSTALL_TIMEOUT_MS)
-  );
+  const result = await runOnline({
+    image: NODE_IMAGE,
+    mounts: [`${HARNESS_VOLUME}:/harness`],
+    script,
+    timeoutMs: INSTALL_TIMEOUT_MS,
+  });
   if (result.code !== 0) {
     throw new Error(`Installing the preview harness failed: ${result.stderr.trim().slice(-600)}`);
   }
@@ -285,23 +378,76 @@ async function installInto(options: {
   const install = runtime === "python" ? pythonInstallCommand(projectDir) : nodeInstallCommand(projectDir);
   const script = `cd ${workdir} && (${install}) && touch ${marker}`;
   try {
-    const result = await withContainer(
-      ["-v", `${volume}:${mountPoint}`, "-w", workdir, "-e", "CI=1", image, "sh", "-c", script],
-      async (id) => {
-        await copyIn(id, treeDir, "/src");
-        return startAttached(id, INSTALL_TIMEOUT_MS);
-      }
-    );
+    const result = await runOnline({
+      image,
+      mounts: [`${volume}:${mountPoint}`],
+      workdir,
+      script,
+      timeoutMs: INSTALL_TIMEOUT_MS,
+      before: (id) => copyIn(id, treeDir, "/src"),
+    });
     if (result.code !== 0 || result.timedOut) {
       const reason = result.timedOut ? "timed out" : result.stderr.trim().split("\n").slice(-3).join(" ").slice(0, 300);
       log(`dependency install failed: ${reason}`);
+      await removeVolume(volume);
       return { status: `failed: ${reason || "unknown error"}` };
     }
     return { volume, status: "installed" };
   } catch (error) {
     log(`dependency install failed: ${(error as Error).message}`);
+    await removeVolume(volume);
     return { status: `failed: ${(error as Error).message.slice(0, 300)}` };
   }
+}
+
+/** Best effort: a half-filled cache from a failed install would only be retried into anyway. */
+async function removeVolume(name: string): Promise<boolean> {
+  return (await docker(["volume", "rm", name]).catch(() => ({ code: 1 }))).code === 0;
+}
+
+// ---------------------------------------------------------------------------
+// Dependency cache cleanup
+// ---------------------------------------------------------------------------
+
+const DEPS_VOLUME_PREFIX = "graphreview-preview-deps-";
+
+/** Caches unused for longer than this are removed (`PREVIEW_DEPS_MAX_AGE_HOURS`, default 48 h). */
+const DEPS_MAX_AGE_MS = envMs("PREVIEW_DEPS_MAX_AGE_HOURS", 48) * 60 * 60 * 1000;
+/** At most this many caches are kept, most recently used first (`PREVIEW_DEPS_KEEP`, default 6). */
+const DEPS_KEEP = envMs("PREVIEW_DEPS_KEEP", 6);
+
+/**
+ * Removes dependency caches that weren't used within {@link DEPS_MAX_AGE_MS},
+ * then all but the {@link DEPS_KEEP} most recently used. Each cache is a full
+ * `node_modules` (hundreds of MB) and a new one appears whenever a lockfile
+ * changes, so without this they only ever accumulate.
+ *
+ * `lastUsed` (volume → ms) comes from the caller; a cache it doesn't know
+ * falls back to its creation time. Caches being installed right now are
+ * skipped, and Docker itself refuses to remove one a container still uses.
+ */
+export async function pruneDepsVolumes(lastUsed: ReadonlyMap<string, number>, log: Logger): Promise<string[]> {
+  const listed = await docker(["volume", "ls", "-q", "--filter", `name=${DEPS_VOLUME_PREFIX}`]);
+  const names = listed.stdout.split("\n").map((n) => n.trim()).filter((n) => n.startsWith(DEPS_VOLUME_PREFIX));
+  if (names.length === 0) return [];
+
+  const inspected = await docker(["volume", "inspect", "--format", "{{.Name}} {{.CreatedAt}}", ...names]);
+  const volumes = inspected.stdout
+    .split("\n")
+    .map((row) => row.trim().split(" "))
+    .filter(([name]) => name && !installsInFlight.has(name))
+    .map(([name, createdAt]) => ({ name, used: lastUsed.get(name) ?? (Date.parse(createdAt ?? "") || 0) }))
+    .sort((a, b) => b.used - a.used);
+
+  const now = Date.now();
+  const removed: string[] = [];
+  for (const [index, volume] of volumes.entries()) {
+    const stale = now - volume.used > DEPS_MAX_AGE_MS;
+    if (!stale && index < DEPS_KEEP) continue;
+    if (await removeVolume(volume.name)) removed.push(volume.name);
+  }
+  if (removed.length > 0) log(`removed ${removed.length} unused dependency cache(s)`);
+  return removed;
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +505,8 @@ export async function runHarness(options: RunHarnessOptions): Promise<PreviewHar
     workdir,
     "-e",
     "HOME=/tmp",
+    "-e",
+    `GRAPHREVIEW_MEMORY=${MEMORY}`,
   ];
   if (runtime === "node") {
     args.push("-v", `${HARNESS_VOLUME}:/harness:ro`);
@@ -384,5 +532,9 @@ export async function runHarness(options: RunHarnessOptions): Promise<PreviewHar
         : (result.stderr || result.stdout).trim().split("\n").slice(-4).join(" ").slice(0, 600) || `exit code ${result.code}`;
     throw new Error(`The sandbox produced no result: ${why}`);
   }
-  return JSON.parse(line.slice(RESULT_MARKER.length)) as PreviewHarnessResult;
+  const parsed = JSON.parse(line.slice(RESULT_MARKER.length)) as PreviewHarnessResult;
+  // A fatal load error often has its real cause only on stderr (a crashed bundler, the OOM killer).
+  const stderr = result.stderr.trim();
+  if (parsed.fatal && stderr) log(`sandbox stderr: ${stderr.split("\n").slice(-6).join(" | ").slice(0, 800)}`);
+  return parsed;
 }

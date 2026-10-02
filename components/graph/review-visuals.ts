@@ -1,7 +1,7 @@
 // The AI-review highlight layer's visual language.
 //
 // Single source of truth shared by every surface that renders an
-// `intentMatch`: the Cytoscape `underlay-*` markers in `GraphCanvas`, the
+// `assessment`: the Cytoscape `underlay-*` markers in `GraphCanvas`, the
 // legend chips next to them, `ReviewPanel`'s filter chips and finding
 // badges, and `ComponentFilesPanel`'s compact per-component list. A badge in
 // the panel is therefore exactly the colour of the halo on the node it
@@ -20,8 +20,13 @@
 //   layer 3 (this one)  — UNDERLAY halo behind the node
 //
 // So the palette deliberately avoids amber, indigo and sky: rose for
-// mismatch, orchid for partial, a neutral slate for unknown, and emerald for
-// match. Each also differs in lightness, not just hue.
+// defect, orchid for concern, a neutral slate for unknown, and emerald for
+// ok. Each also differs in lightness, not just hue.
+//
+// What drives the colour is the *assessment* — is the change sound on its
+// own terms. How a change relates to the PR's stated intent (`scope`) and
+// what sort of change it is (`kind`) are neutral tags beside it, never a
+// colour: a correct drive-by fix is green.
 //
 // Colour is never the only channel, per the accessibility requirement: every
 // badge and chip carries a distinct lucide glyph *and* a written label, so
@@ -31,9 +36,9 @@
 // redundant cue — the authoritative, labelled list is in `ReviewPanel`.
 
 import { CircleAlert, CircleCheck, CircleHelp, CircleX } from "lucide-react";
-import type { FindingDTO, IntentMatch } from "./types";
+import type { FindingDTO, Assessment, FindingKind, FindingScope } from "./types";
 
-export interface IntentVisual {
+export interface AssessmentVisual {
   /** Short, written label — the colour-independent channel. */
   label: string;
   /** One-line explanation, used as chip `title` text. */
@@ -47,7 +52,7 @@ export interface IntentVisual {
   rank: number;
   /**
    * Cytoscape `underlay-opacity`/`underlay-padding` for a node whose worst
-   * finding is this state. `match` is deliberately faint and tight (the
+   * finding is this state. `ok` is deliberately faint and tight (the
    * brief's "subtle or none"): it still says "reviewed, looks consistent"
    * without adding a fourth loud colour to a 109-node canvas.
    */
@@ -55,17 +60,17 @@ export interface IntentVisual {
   markerPadding: number;
 }
 
-export const INTENT_ORDER: IntentMatch[] = [
-  "mismatch",
-  "partial",
+export const ASSESSMENT_ORDER: Assessment[] = [
+  "defect",
+  "concern",
   "unknown",
-  "match",
+  "ok",
 ];
 
-export const INTENT_VISUALS: Record<IntentMatch, IntentVisual> = {
-  mismatch: {
-    label: "Mismatch",
-    description: "The change does not match the stated intent.",
+export const ASSESSMENT_VISUALS: Record<Assessment, AssessmentVisual> = {
+  defect: {
+    label: "Defect",
+    description: "The change looks wrong — or code it depends on was left behind.",
     color: "#fb3b53",
     text: "#ff8f9f",
     icon: CircleX,
@@ -73,9 +78,9 @@ export const INTENT_VISUALS: Record<IntentMatch, IntentVisual> = {
     markerOpacity: 0.55,
     markerPadding: 11,
   },
-  partial: {
-    label: "Partial",
-    description: "Only part of the change matches the stated intent.",
+  concern: {
+    label: "Concern",
+    description: "Worth a closer look: risky, incomplete, or a behaviour change others rely on.",
     color: "#e879f9",
     text: "#f0abfc",
     icon: CircleAlert,
@@ -93,9 +98,9 @@ export const INTENT_VISUALS: Record<IntentMatch, IntentVisual> = {
     markerOpacity: 0.4,
     markerPadding: 8,
   },
-  match: {
-    label: "Match",
-    description: "The change is consistent with the stated intent.",
+  ok: {
+    label: "OK",
+    description: "The change looks correct on its own terms.",
     color: "#34d399",
     text: "#6ee7b7",
     icon: CircleCheck,
@@ -106,46 +111,113 @@ export const INTENT_VISUALS: Record<IntentMatch, IntentVisual> = {
 };
 
 /** Cytoscape class names this layer owns — removed as a set before re-applying. */
-export const INTENT_CLASS_NAMES = INTENT_ORDER.map(intentClassName).join(" ");
+export const ASSESSMENT_CLASS_NAMES = ASSESSMENT_ORDER.map(assessmentClassName).join(" ");
 
-export function intentClassName(intent: IntentMatch): string {
-  return `intent-${intent}`;
+export function assessmentClassName(intent: Assessment): string {
+  return `assessment-${intent}`;
 }
 
-/** `["mismatch", "partial", ...]` sorted worst-first. */
-export function compareIntent(a: IntentMatch, b: IntentMatch): number {
-  return INTENT_VISUALS[a].rank - INTENT_VISUALS[b].rank;
+/** Cytoscape class for a component holding a usage the change left behind (an impact finding). */
+export const IMPACTED_CLASS_NAME = "impacted";
+/** Dashed rose ring — the colour of `defect`, the shape of "not part of the diff". */
+export const IMPACTED_COLOR = "#fb3b53";
+
+/** `["defect", "concern", ...]` sorted worst-first. */
+export function compareAssessment(a: Assessment, b: Assessment): number {
+  return ASSESSMENT_VISUALS[a].rank - ASSESSMENT_VISUALS[b].rank;
 }
 
-/** The worse of two verdicts (`mismatch` beats `partial` beats `unknown` beats `match`). */
-export function worstIntent(a: IntentMatch, b: IntentMatch): IntentMatch {
-  return compareIntent(a, b) <= 0 ? a : b;
+/** The worse of two verdicts (`defect` beats `concern` beats `unknown` beats `ok`). */
+export function worstAssessment(a: Assessment, b: Assessment): Assessment {
+  return compareAssessment(a, b) <= 0 ? a : b;
 }
 
 /**
  * The verdict a finding counts as once reviewers have had their say: a
- * resolved finding counts as `match`, whatever the model said. Everything
+ * resolved finding counts as `ok`, whatever the model said. Everything
  * that ranks or colours by severity (markers, groups, the overall verdict)
  * goes through this; the filter chips keep the model's own verdict.
  */
-export function effectiveIntent(finding: FindingDTO): IntentMatch {
-  return finding.resolvedAt ? "match" : finding.intentMatch;
+export function effectiveAssessment(finding: FindingDTO): Assessment {
+  return finding.resolvedAt ? "ok" : finding.assessment;
 }
 
-/** Only findings below `match` have anything to resolve. */
+/** Only findings below `ok` have anything to resolve. */
 export function isResolvable(finding: FindingDTO): boolean {
-  return finding.intentMatch !== "match";
+  return finding.assessment !== "ok";
+}
+
+// ---------------------------------------------------------------------------
+// Scope / kind tags and finding categories
+// ---------------------------------------------------------------------------
+
+export const SCOPE_LABELS: Record<FindingScope, string> = {
+  described: "Described",
+  supporting: "Supporting",
+  unmentioned: "Unmentioned",
+};
+
+export const SCOPE_DESCRIPTIONS: Record<FindingScope, string> = {
+  described: "The PR's title, description or linked issues cover this change.",
+  supporting: "Not named in the PR, but needed by what it describes.",
+  unmentioned: "Not mentioned by the PR — a drive-by change. Informational only, never a problem by itself.",
+};
+
+export const KIND_LABELS: Record<FindingKind, string> = {
+  fix: "Fix",
+  feature: "Feature",
+  refactor: "Refactor",
+  test: "Test",
+  docs: "Docs",
+  config: "Config",
+  chore: "Chore",
+};
+
+/**
+ * The neutral tag beside a finding's verdict: "Drive-by fix",
+ * "Unmentioned refactor", "Feature", … `null` when there's nothing to say.
+ */
+export function findingTag(finding: Pick<FindingDTO, "scope" | "kind">): string | null {
+  const kind = finding.kind ? KIND_LABELS[finding.kind] : null;
+  if (finding.scope === "unmentioned") {
+    if (finding.kind === "fix") return "Drive-by fix";
+    return kind ? `Unmentioned ${kind.toLowerCase()}` : "Unmentioned";
+  }
+  if (finding.scope === "supporting") return kind ? `Supporting ${kind.toLowerCase()}` : "Supporting";
+  return kind;
+}
+
+/** The PR-level "does it deliver what it claims" verdict. */
+export function isIntentFinding(finding: FindingDTO): boolean {
+  return finding.category === "intent";
+}
+
+/** "Impact check incomplete: N usages were not checked" — a note, not a verdict. */
+export function isImpactNote(finding: FindingDTO): boolean {
+  return finding.category === "impact" && !finding.filePath;
+}
+
+/** A usage of a changed declaration that the change left behind. */
+export function isImpactFinding(finding: FindingDTO): boolean {
+  return finding.category === "impact" && !isImpactNote(finding);
+}
+
+/** Per-component change findings. */
+export function isChangeFinding(finding: FindingDTO): boolean {
+  return finding.category === "change";
 }
 
 /** What the canvas needs per component to draw its marker and extend its tooltip. */
 export interface ReviewMarker {
   componentName: string;
   /** Drives the marker colour — the single worst verdict among this component's findings. */
-  worst: IntentMatch;
+  worst: Assessment;
   /** How many findings this component has, across all verdicts. */
   count: number;
   /** The worst finding's summary, for the hover tooltip's extra line. */
   summary: string;
+  /** How many open impact findings (usages the change left behind) sit in this component. */
+  impacted: number;
 }
 
 export type ReviewMarkerMap = Record<string, ReviewMarker>;
@@ -159,19 +231,24 @@ export type ReviewMarkerMap = Record<string, ReviewMarker>;
 export function buildReviewMarkers(findings: FindingDTO[]): ReviewMarkerMap {
   const markers: ReviewMarkerMap = {};
   for (const finding of findings) {
+    // The PR-level intent verdict and impact notes belong to no component.
+    if (!finding.componentId) continue;
+    const impacted = isImpactFinding(finding) && !finding.resolvedAt ? 1 : 0;
     const existing = markers[finding.componentId];
     if (!existing) {
       markers[finding.componentId] = {
         componentName: finding.componentName,
-        worst: effectiveIntent(finding),
+        worst: effectiveAssessment(finding),
         count: 1,
         summary: finding.summary,
+        impacted,
       };
       continue;
     }
     existing.count += 1;
-    if (compareIntent(effectiveIntent(finding), existing.worst) < 0) {
-      existing.worst = effectiveIntent(finding);
+    existing.impacted += impacted;
+    if (compareAssessment(effectiveAssessment(finding), existing.worst) < 0) {
+      existing.worst = effectiveAssessment(finding);
       existing.summary = finding.summary;
     }
   }
@@ -179,28 +256,28 @@ export function buildReviewMarkers(findings: FindingDTO[]): ReviewMarkerMap {
 }
 
 /** Findings per verdict — powers both the panel's filter chips and the canvas legend. */
-export function countByIntent(
+export function countByAssessment(
   findings: FindingDTO[]
-): Record<IntentMatch, number> {
-  const counts: Record<IntentMatch, number> = {
-    mismatch: 0,
-    partial: 0,
+): Record<Assessment, number> {
+  const counts: Record<Assessment, number> = {
+    defect: 0,
+    concern: 0,
     unknown: 0,
-    match: 0,
+    ok: 0,
   };
-  for (const finding of findings) counts[finding.intentMatch] += 1;
+  for (const finding of findings) counts[finding.assessment] += 1;
   return counts;
 }
 
 /** Components per verdict (by their worst finding) — what the canvas legend counts, since that's what's drawn. */
-export function countComponentsByIntent(
+export function countComponentsByAssessment(
   markers: ReviewMarkerMap
-): Record<IntentMatch, number> {
-  const counts: Record<IntentMatch, number> = {
-    mismatch: 0,
-    partial: 0,
+): Record<Assessment, number> {
+  const counts: Record<Assessment, number> = {
+    defect: 0,
+    concern: 0,
     unknown: 0,
-    match: 0,
+    ok: 0,
   };
   for (const marker of Object.values(markers)) counts[marker.worst] += 1;
   return counts;
@@ -208,9 +285,9 @@ export function countComponentsByIntent(
 
 /** The whole review in one verdict, for the dock header and the Markdown export. */
 export interface ReviewVerdict {
-  /** Worst effective verdict across every finding (resolved ones count as `match`). */
-  intent: IntentMatch;
-  /** Findings below `match` that nobody has resolved yet. */
+  /** Worst effective verdict across every finding (resolved ones count as `ok`). */
+  intent: Assessment;
+  /** Findings below `ok` that nobody has resolved yet. */
   open: number;
   resolved: number;
   total: number;
@@ -219,11 +296,11 @@ export interface ReviewVerdict {
 /** `null` when there are no findings to judge. */
 export function computeVerdict(findings: FindingDTO[]): ReviewVerdict | null {
   if (findings.length === 0) return null;
-  let intent: IntentMatch = "match";
+  let intent: Assessment = "ok";
   let open = 0;
   let resolved = 0;
   for (const finding of findings) {
-    intent = worstIntent(intent, effectiveIntent(finding));
+    intent = worstAssessment(intent, effectiveAssessment(finding));
     if (finding.resolvedAt) resolved += 1;
     else if (isResolvable(finding)) open += 1;
   }
@@ -237,9 +314,11 @@ function mdInline(text: string): string {
 
 function mdFindingLine(finding: FindingDTO): string {
   const location = formatLocation(finding);
+  const tag = isImpactFinding(finding) ? "Caller not updated" : isIntentFinding(finding) ? "Intent" : findingTag(finding);
   return [
-    `**${INTENT_VISUALS[finding.intentMatch].label}**`,
-    mdInline(finding.componentName || finding.componentId),
+    `**${ASSESSMENT_VISUALS[finding.assessment].label}**`,
+    ...(tag ? [mdInline(tag)] : []),
+    ...(finding.componentName ? [mdInline(finding.componentName)] : []),
     ...(location ? ["`" + location.replace(/`/g, "'") + "`"] : []),
   ].join(" · ") + ` — ${mdInline(finding.summary)}`;
 }
@@ -256,26 +335,38 @@ export function reviewMarkdown(
   reviewedHeadSha?: string
 ): string {
   const bySeverity = (a: FindingDTO, b: FindingDTO) =>
-    compareIntent(a.intentMatch, b.intentMatch) ||
+    compareAssessment(a.assessment, b.assessment) ||
     (a.componentName || "").localeCompare(b.componentName || "");
-  const open = findings.filter((f) => isResolvable(f) && !f.resolvedAt).sort(bySeverity);
-  const resolved = findings.filter((f) => f.resolvedAt).sort(bySeverity);
-  const matches = findings.filter((f) => !isResolvable(f)).length;
+  const intentFinding = findings.find(isIntentFinding);
+  const notes = findings.filter(isImpactNote);
+  const rest = findings.filter((f) => !isIntentFinding(f) && !isImpactNote(f));
+  const open = rest.filter((f) => isResolvable(f) && !f.resolvedAt).sort(bySeverity);
+  const resolved = rest.filter((f) => f.resolvedAt).sort(bySeverity);
+  const oks = rest.filter((f) => !isResolvable(f)).length;
+  const driveBys = rest.filter((f) => f.scope === "unmentioned" && f.assessment === "ok").length;
 
-  const openCounts = INTENT_ORDER.filter((intent) => intent !== "match")
-    .map((intent) => ({ intent, n: open.filter((f) => f.intentMatch === intent).length }))
+  const openCounts = ASSESSMENT_ORDER.filter((intent) => intent !== "ok")
+    .map((intent) => ({ intent, n: open.filter((f) => f.assessment === intent).length }))
     .filter(({ n }) => n > 0)
-    .map(({ intent, n }) => `${n} ${INTENT_VISUALS[intent].label.toLowerCase()}`);
+    .map(({ intent, n }) => `${n} ${ASSESSMENT_VISUALS[intent].label.toLowerCase()}`);
 
   const lines = [
     `## AI review — ${mdInline(targetLabel)}`,
     "",
-    `**Overall verdict: ${INTENT_VISUALS[verdict.intent].label}**` +
+    `**Overall verdict: ${ASSESSMENT_VISUALS[verdict.intent].label}**` +
       (reviewedHeadSha ? ` (reviewed at \`${reviewedHeadSha.slice(0, 7)}\`)` : ""),
+    ...(intentFinding
+      ? [
+          "",
+          `**Delivers what it describes: ${ASSESSMENT_VISUALS[effectiveAssessment(intentFinding)].label}** — ${mdInline(intentFinding.summary)}`,
+        ]
+      : []),
     "",
-    `${verdict.open} open finding${verdict.open === 1 ? "" : "s"}` +
+    `${open.length} open finding${open.length === 1 ? "" : "s"}` +
       (openCounts.length > 0 ? ` (${openCounts.join(", ")})` : "") +
-      ` · ${verdict.resolved} resolved · ${matches} match`,
+      ` · ${resolved.length} resolved · ${oks} OK` +
+      (driveBys > 0 ? ` (${driveBys} unmentioned)` : ""),
+    ...notes.map((f) => `_${mdInline(f.summary)}_`),
   ];
   if (open.length > 0) {
     lines.push("", "### Open findings", "", ...open.map((f) => `- ${mdFindingLine(f)}`));

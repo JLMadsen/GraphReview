@@ -16,12 +16,14 @@ import {
   APP_MAP_QUEUE_NAME,
   LABEL_QUEUE_NAME,
   PREVIEW_QUEUE_NAME,
+  PREVIEW_SCAN_QUEUE_NAME,
   REVIEW_QUEUE_NAME,
   clearAppMapCancel,
   clearLabelCancel,
   closeAppMapQueue,
   closeLabelQueue,
   closePreviewQueue,
+  closePreviewScanQueue,
   closeQueues,
   closeReviewQueue,
   getBlockingRedisConnection,
@@ -36,6 +38,7 @@ import {
   type LabelJobResult,
   type PreviewJobData,
   type PreviewJobResult,
+  type PreviewScanJobData,
   type ReviewJobData,
   type ReviewJobResult,
 } from "@/lib/jobs";
@@ -49,6 +52,8 @@ import { runReviewJob } from "@/lib/jobs/review";
 import { runLabelJob } from "@/lib/jobs/label";
 import { runAppMapJob } from "@/lib/jobs/app-map-job";
 import { runPreviewJob } from "@/lib/jobs/preview";
+import { runPreviewScanJob } from "@/lib/jobs/preview-scan";
+import type { PreviewScanResult } from "@/lib/preview/types";
 import { closeDriver, runMigrations } from "@/lib/neo4j";
 
 /** One job at a time: static analysis is CPU-bound (tree-sitter parsing) and a second concurrent run would just contend for the same core. */
@@ -349,19 +354,39 @@ async function main(): Promise<void> {
     logError(`preview worker error: ${error.message}`);
   });
 
+  // --- preview-scan queue --------------------------------------------------
+  // Parsing only (no Docker, no model), triggered by the Graph tab loading a
+  // target — a couple at once is fine.
+  const previewScanWorker = new Worker<PreviewScanJobData, PreviewScanResult>(
+    PREVIEW_SCAN_QUEUE_NAME,
+    async (job: Job<PreviewScanJobData, PreviewScanResult>) =>
+      runPreviewScanJob(job.data, (message) => {
+        log(`preview-scan job ${job.id} · ${message}`);
+        mirrorToJobLog(job, message);
+      }),
+    { connection: getBlockingRedisConnection(), concurrency: 2 }
+  );
+  previewScanWorker.on("failed", (job, error) => {
+    logError(`preview-scan job ${job?.id ?? "?"} failed: ${error.message}`);
+  });
+  previewScanWorker.on("error", (error) => {
+    logError(`preview-scan worker error: ${error.message}`);
+  });
+
   const sweep = startStalenessSweep();
 
   const shutdown = async (signal: string): Promise<void> => {
     log(`received ${signal} — shutting down`);
     if (sweep) clearInterval(sweep);
     try {
-      await Promise.all([worker.close(), reviewWorker.close(), labelWorker.close(), appMapWorker.close(), previewWorker.close()]);
+      await Promise.all([worker.close(), reviewWorker.close(), labelWorker.close(), appMapWorker.close(), previewWorker.close(), previewScanWorker.close()]);
       // The review and label queues borrow ./queue.ts's Redis connections, so
       // they have to be closed before `closeQueues()` tears those down.
       await closeReviewQueue();
       await closeLabelQueue();
       await closeAppMapQueue();
       await closePreviewQueue();
+      await closePreviewScanQueue();
       await closeQueues();
       await closeDriver();
     } catch (error) {

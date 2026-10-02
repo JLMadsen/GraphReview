@@ -16,7 +16,7 @@ From the project's background on background jobs:
 - Queue definitions (names, connection config from `REDIS_URL`) shared by
   both `app` (producer, via route handlers) and `worker` (consumer).
 - Job-type payload/result types: repo analysis (clone/pull → static
-  analysis → clustering), per-component AI intent-check, AI-assisted
+  analysis → clustering), per-component AI review (plus its impact and PR-intent passes), AI-assisted
   labeling of the domain tier.
 - Nothing here executes a job — `worker/` owns the consumer/processor
   wiring; this directory is the shared contract both sides import.
@@ -47,6 +47,11 @@ From the project's background on background jobs:
 | `label.ts` | The job body: module-tier components (+ file paths, dependency names, optional README excerpt) → `labelComponents` from `lib/ai` → replace this repo's auto domain components and their `CHILD_OF` edges (serially — Neo4j Community deadlocks on parallel relationship writes) → write one description per module, **never over a non-empty one** unless `force`. Not re-exported from `index.ts` — it pulls in `lib/ai`. |
 | `preview-queue.ts` | The `preview` queue (DESIGN.md §6.9): payload `{ repoId, target, filePath, inputs? }`, `attempts: 1`, one job per (repo, target, file) — job id `preview-<hash>` — so running again replaces the last run. The result is the job's return value; nothing is written to Neo4j. |
 | `preview.ts` | The before/after preview job: pin base (merge-base) and head, detect changed symbols, get inputs (edited → AI → empty), write both trees, run each in a sandbox container (`lib/preview`), and compare case by case. Not re-exported (pulls in `lib/ai`, `lib/analysis`). |
+| `head-source.ts` | `openHeadSource()` — read files and `git grep -w` at a review target's head commit (the local checkout, or the app-managed clone with the head fetched in). Used by the review's related-code context and its impact pass; `null` when the head can't be opened. |
+| `impact-contracts.ts` | Pure: `detectChangedContracts()` — function/method signatures, type shapes and exported constants a diff changed or removed (hunk old/new side + the file at the head; body-only edits don't count), and `addedLineNumbers()`. |
+| `impact.ts` | The review's impact pass: grep each changed contract at the head, keep usages the PR didn't write that can reach the declaration (`untouchedReachableUsages`, pure), ask `checkImpact` (lib/ai) which no longer fit, and return `category: "impact"` findings on the callers' components (plus a note when caps cut usages off). Never throws. |
+| `smoke-test-impact.ts` | `npx tsx lib/jobs/smoke-test-impact.ts` — contract detection, the usage filter, and the impact / PR-intent model calls (fake chat + mock server). |
+| `preview-scan.ts` | The scan behind the Graph tab's "Looks different" list: parses both versions of each changed JSX-capable file and keeps the changed **components** (not plain functions). No Docker, no model. Its queue (`preview-scan`, in `preview-queue.ts`) is started by reading `GET …/preview/scan` and re-scans after 5 minutes (`ensurePreviewScan`). Not re-exported (pulls in `lib/analysis`). |
 
 `worker/` owns the consumer wiring; nothing in this directory starts a
 `Worker`. The actual parsing (`lib/analysis/`) and AI (`lib/ai/`) logic stays

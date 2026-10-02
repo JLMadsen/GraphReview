@@ -11,7 +11,7 @@
 import { createHash } from "node:crypto";
 import { Queue } from "bullmq";
 import type { Job, JobState, JobsOptions } from "bullmq";
-import type { PreviewInputs, PreviewProgress, PreviewResult } from "@/lib/preview/types";
+import type { PreviewInputs, PreviewProgress, PreviewResult, PreviewScanResult } from "@/lib/preview/types";
 import { getRedisConnection, isPendingJobState } from "./queue";
 import { reviewTargetKey, type ReviewTarget } from "./review-queue";
 
@@ -79,5 +79,62 @@ export async function closePreviewQueue(): Promise<void> {
   if (!queueSingleton) return;
   const queue = queueSingleton;
   queueSingleton = undefined;
+  await queue.close();
+}
+
+// ---------------------------------------------------------------------------
+// Scan queue: which changed files hold changed components (./preview-scan.ts)
+// ---------------------------------------------------------------------------
+
+export const PREVIEW_SCAN_QUEUE_NAME = "preview-scan";
+export const PREVIEW_SCAN_JOB_NAME = "preview-scan-target";
+
+/** A scan older than this is redone on the next read, so a pushed PR is picked up. */
+const SCAN_FRESH_MS = 5 * 60_000;
+
+export interface PreviewScanJobData {
+  repoId: string;
+  target: ReviewTarget;
+}
+
+export type PreviewScanJob = Job<PreviewScanJobData, PreviewScanResult>;
+
+let scanQueueSingleton: Queue<PreviewScanJobData, PreviewScanResult> | undefined;
+
+export function getPreviewScanQueue(): Queue<PreviewScanJobData, PreviewScanResult> {
+  scanQueueSingleton ??= new Queue<PreviewScanJobData, PreviewScanResult>(PREVIEW_SCAN_QUEUE_NAME, {
+    connection: getRedisConnection(),
+    defaultJobOptions: PREVIEW_JOB_OPTIONS,
+  });
+  return scanQueueSingleton;
+}
+
+export function previewScanJobId(repoId: string, target: ReviewTarget): string {
+  const digest = createHash("sha1").update(`${repoId}|${reviewTargetKey(target)}`).digest("hex").slice(0, 16);
+  return `preview-scan-${digest}`;
+}
+
+/**
+ * The target's scan job, (re)started when there is none, it failed, or its
+ * result is older than {@link SCAN_FRESH_MS}. Cheap — reading it is how a
+ * scan gets triggered.
+ */
+export async function ensurePreviewScan(repoId: string, target: ReviewTarget): Promise<PreviewScanJob> {
+  const queue = getPreviewScanQueue();
+  const jobId = previewScanJobId(repoId, target);
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    const fresh = state === "completed" && Date.now() - (existing.finishedOn ?? 0) < SCAN_FRESH_MS;
+    if (fresh || isPendingJobState(state)) return existing;
+    await queue.remove(jobId).catch(() => undefined);
+  }
+  return queue.add(PREVIEW_SCAN_JOB_NAME, { repoId, target }, { jobId });
+}
+
+export async function closePreviewScanQueue(): Promise<void> {
+  if (!scanQueueSingleton) return;
+  const queue = scanQueueSingleton;
+  scanQueueSingleton = undefined;
   await queue.close();
 }

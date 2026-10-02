@@ -149,7 +149,19 @@ export interface RefSnapshotRecord {
   timestamp: string;
 }
 
-export type FindingIntentMatch = "match" | "partial" | "mismatch" | "unknown";
+/** Is the change sound on its own terms? The only field that drives the verdict. */
+export type FindingAssessment = "defect" | "concern" | "unknown" | "ok";
+/** How a change relates to what the PR says it does. PR reviews only — informational, never a verdict. */
+export type FindingScope = "described" | "supporting" | "unmentioned";
+/** What sort of change it is. */
+export type FindingKind = "fix" | "feature" | "refactor" | "test" | "docs" | "config" | "chore";
+/**
+ * Which pass wrote the finding: `change` — the per-component review of the
+ * diff; `impact` — a usage of a changed contract that the PR left behind
+ * (its file is usually outside the diff); `intent` — the one PR-level
+ * "does it deliver what it claims" verdict (no component).
+ */
+export type FindingCategory = "change" | "impact" | "intent";
 
 export interface FindingRecord {
   id: string;
@@ -172,7 +184,11 @@ export interface FindingRecord {
   filePath?: string;
   lineRange?: string;
   summary: string;
-  intentMatch: FindingIntentMatch;
+  assessment: FindingAssessment;
+  /** Absent for ref comparisons (no stated intent) and for impact/intent findings. */
+  scope?: FindingScope;
+  kind?: FindingKind;
+  category: FindingCategory;
   confidence: number;
   rationale: string;
   model: string;
@@ -191,7 +207,7 @@ export interface FindingRecord {
   reviewedAt?: string;
   /**
    * ISO-8601 time a reviewer marked this finding resolved; absent while it
-   * is open. Only non-`match` findings can be resolved. A resolved finding
+   * is open. Only non-`ok` findings can be resolved. A resolved finding
    * counts as OK in the overall verdict. Not carried over by a re-review:
    * that replaces the findings, so fresh ones start unresolved.
    */
