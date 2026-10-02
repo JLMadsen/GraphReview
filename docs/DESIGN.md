@@ -424,8 +424,14 @@ Nothing renders until **Preview all** or **Run** is pressed (✦, since the inpu
 6. **Compare.** Case by case: return value, arguments after, markup and error. Any difference marks the case.
 
 #### The harnesses (`lib/preview/harness/`)
-- **Node** (`node-harness.mjs`): esbuild bundles the changed file. That covers TS/TSX/JSX, tsconfig paths, CSS imports and CSS modules, with images as data URLs. esbuild, React, react-dom and PostCSS come from a shared harness volume as fallbacks; the repo's own copies win.
-  - Any import that can't be resolved becomes a stand-in, and the side is marked **approximate** with the stubbed module names. The stand-in is an ES module exporting exactly the names its importer asks for, each a callable, endlessly chainable proxy that returns `null`.
+- **Node** (`node-harness.mjs`): esbuild bundles **the repo's own code only**: the changed file and what it imports from the repo. That covers TS/TSX/JSX, tsconfig paths, CSS imports and CSS modules, with images as data URLs.
+  - **Installed packages are not bundled.** Node loads them itself, from the exact file esbuild resolved. CSS and assets from packages are the exception, since Node can't load them.
+  - The first version bundled all of `node_modules`, and that broke library code in ways a bundle can't fix: `__dirname is not defined in ES module scope`; Next's optional `try { require("@opentelemetry/api") }` getting a fake instead of falling back; and over 1 GB of memory for a Next.js layout, which got esbuild killed ("The service was stopped"). With packages left to Node, PR #1's 10 files render in seconds instead of ~45 s each.
+  - esbuild, React, react-dom and PostCSS come from a shared harness volume as fallbacks; the repo's own copies win. `NODE_ENV` is `development`.
+  - A static `import` of a module that can't be found becomes a stand-in, and the side is marked **approximate** with the stubbed module names. The stand-in is an ES module exporting exactly the names its importer asks for, each a callable, endlessly chainable proxy that returns `null`. A missing module reached through `require()` or `import()` instead throws "Cannot find module", so optional-dependency fallbacks still work.
+  - **Next.js route files** (`app/**/page|layout|template|…`) get `params` and `searchParams` as values that work both awaited (Next 15) and read directly (Next 14). When the inputs leave them out, they're filled in from the route folders (`[repoId]` → `example-repoId`). Layouts and templates also get a stand-in `children`. The model may pass `{"$promise": …}`, and that works too.
+  - Next's `notFound()` / `redirect()` signals are reported in words ("Calls notFound() — Next.js would show the 404 page").
+  - How it was verified (2026-10-02): **Preview all** on PR #1 with AI inputs, exactly as the Graph tab does it. All 10 files and 11 components rendered on both sides (48 renders); the only errors were the intended `notFound()` cases.
   - Functions are called with each case's arguments; promises are awaited. Values are compared as `util.inspect` text, so `2` vs `'2'` and mutated objects show.
   - Components are rendered with `renderToPipeableStream` after `onAllReady`, so async components and Suspense resolve.
   - **Next.js:** when the repo has `next` installed, the bundle also pulls in Next's own router context modules (the same instances the component imports), and every render is wrapped in a stand-in app router: pathname `/`, empty search params, and navigation that does nothing. `Link`, `useRouter`, `usePathname` and `useSearchParams` then render instead of throwing "expected app router to be mounted".
@@ -460,6 +466,7 @@ The worker image adds `docker-cli`, and `docker-compose.yml` mounts the host's D
 - Only exported top-level functions and components; no class methods.
 - Components render on the server, so effects don't run and there's no interaction.
 - Context-dependent components fail with the hook's error rather than rendering, except for the Next.js router, which gets a stand-in. App-specific providers (themes, stores, data clients) aren't provided.
+- Server pages that load data while rendering have no network or database in the sandbox. They render their own "couldn't load" or empty state, so different inputs often produce the same markup.
 - pnpm workspaces lose per-package `node_modules` symlinks; the hoisted install covers most cases.
 - Only JS/TS and Python.
 

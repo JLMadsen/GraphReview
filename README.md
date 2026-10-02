@@ -6,6 +6,10 @@ requests against a codebase's component graph.
 
 ![GraphReview's component graph and AI review view](docs/images/example3.png)
 
+Preview app changes, runs the app in a sandboxed docker container.
+
+![GraphReview's before and after app renderings](docs/images/example4.png)
+
 ## Quickstart (Docker Compose — recommended)
 
 ```bash
