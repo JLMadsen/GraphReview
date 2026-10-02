@@ -45,6 +45,8 @@ From the project's background on background jobs:
 | `smoke-test-merges.ts` | `npx tsx lib/jobs/smoke-test-merges.ts` — checks for the two pure modules above and the route hints. |
 | `label-queue.ts` | The `label` queue: payload `{ repoId, force? }`, `attempts: 1` (never auto-retry something that spends model calls), job id `label-<repoId>`, and `enqueueLabel()` with the same idempotent enqueue dance as analysis/review. Unlike a review, nothing enqueues this automatically — it is on demand only (re-analysis is frequent and silent token spend is not acceptable). |
 | `label.ts` | The job body: module-tier components (+ file paths, dependency names, optional README excerpt) → `labelComponents` from `lib/ai` → replace this repo's auto domain components and their `CHILD_OF` edges (serially — Neo4j Community deadlocks on parallel relationship writes) → write one description per module, **never over a non-empty one** unless `force`. Not re-exported from `index.ts` — it pulls in `lib/ai`. |
+| `preview-queue.ts` | The `preview` queue (DESIGN.md §6.9): payload `{ repoId, target, filePath, inputs? }`, `attempts: 1`, one job per (repo, target, file) — job id `preview-<hash>` — so running again replaces the last run. The result is the job's return value; nothing is written to Neo4j. |
+| `preview.ts` | The before/after preview job: pin base (merge-base) and head, detect changed symbols, get inputs (edited → AI → empty), write both trees, run each in a sandbox container (`lib/preview`), and compare case by case. Not re-exported (pulls in `lib/ai`, `lib/analysis`). |
 
 `worker/` owns the consumer wiring; nothing in this directory starts a
 `Worker`. The actual parsing (`lib/analysis/`) and AI (`lib/ai/`) logic stays

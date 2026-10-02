@@ -1,0 +1,140 @@
+// Shared shapes for the before/after preview (DESIGN.md §6.9): what the
+// sandbox harnesses print, what the preview job returns, and what the Graph
+// tab renders. Type-only, so client components may import it.
+
+/** Which harness/image runs a file. */
+export type PreviewRuntime = "node" | "python";
+
+/** `component`: rendered to HTML. `function`: called, return value + arguments compared. */
+export type PreviewSymbolKind = "component" | "function";
+
+/** How the symbol changed between base and head. */
+export type PreviewChange = "modified" | "added" | "removed";
+
+export type PreviewSide = "before" | "after";
+
+/** One mocked input. Functions use `args` (and `kwargs` in Python); components use `props`. */
+export interface PreviewInput {
+  args?: unknown[];
+  kwargs?: Record<string, unknown>;
+  props?: Record<string, unknown>;
+}
+
+export interface PreviewCaseInput {
+  label: string;
+  input: PreviewInput;
+}
+
+/** Mocked inputs per symbol name — what the AI produces and what the user can edit and re-run. */
+export type PreviewInputs = Record<string, PreviewCaseInput[]>;
+
+/** A changed top-level declaration found in the file. */
+export interface PreviewSymbol {
+  name: string;
+  kind: PreviewSymbolKind;
+  change: PreviewChange;
+  /** 1-based line in the head file (base file for removed symbols). */
+  line: number;
+  /** Its own code is unchanged, but it uses this changed declaration of the same file. */
+  via?: string;
+}
+
+/** One case on one side, as printed by a harness. */
+export interface PreviewCaseOutcome {
+  label: string;
+  /** Function: `repr`/`inspect` of the return value. */
+  returned?: string;
+  /** Function: the arguments after the call — shows in-place mutation. */
+  argsAfter?: string;
+  /** Component: server-rendered markup. */
+  html?: string;
+  threw?: string;
+  durationMs?: number;
+  logs?: string[];
+}
+
+export interface PreviewHarnessSymbol {
+  name: string;
+  kind: PreviewSymbolKind;
+  error?: string;
+  cases?: PreviewCaseOutcome[];
+}
+
+/** The JSON a harness prints after its result marker. */
+export interface PreviewHarnessResult {
+  side: PreviewSide;
+  symbols: PreviewHarnessSymbol[];
+  stubbedModules?: string[];
+  warnings?: string[];
+  css?: string;
+  cssNote?: string;
+  /** The module couldn't even be loaded. */
+  fatal?: string;
+}
+
+/** What happened to one side as a whole. */
+export interface PreviewSideSummary {
+  sha: string;
+  /** The file doesn't exist on this side (added or removed file). */
+  missing?: boolean;
+  fatal?: string;
+  stubbedModules: string[];
+  warnings: string[];
+  /** Component previews only: the stylesheet both the bundle and the app's global CSS produced. */
+  css?: string;
+  cssNote?: string;
+  /** Dependency install state, e.g. "cached", "installed", "none", "failed: …". */
+  deps: string;
+}
+
+export interface PreviewCaseResult {
+  label: string;
+  input: PreviewInput;
+  before?: PreviewCaseOutcome;
+  after?: PreviewCaseOutcome;
+  /** Before and after disagree on anything shown (return, arguments, markup, error). */
+  differs: boolean;
+}
+
+export interface PreviewSymbolResult extends PreviewSymbol {
+  cases: PreviewCaseResult[];
+  beforeError?: string;
+  afterError?: string;
+}
+
+/** The preview job's result. */
+export interface PreviewResult {
+  filePath: string;
+  runtime: PreviewRuntime;
+  baseSha: string;
+  headSha: string;
+  symbols: PreviewSymbolResult[];
+  /** Changed declarations that weren't run, with why (not exported, a type, a class…). */
+  skipped: Array<{ name: string; reason: string }>;
+  before: PreviewSideSummary;
+  after: PreviewSideSummary;
+  /** Where the inputs came from. */
+  inputsSource: "ai" | "default" | "user";
+  inputs: PreviewInputs;
+  /** Set when AI input generation failed and defaults were used instead. */
+  inputsNote?: string;
+  durationMs: number;
+}
+
+export type PreviewStage = "resolving" | "inputs" | "preparing" | "running";
+
+export interface PreviewProgress {
+  stage: PreviewStage;
+  message: string;
+}
+
+export type PreviewJobState = "none" | "queued" | "running" | "completed" | "failed";
+
+/** `GET /api/repos/[repoId]/preview` */
+export interface PreviewStatusDTO {
+  state: PreviewJobState;
+  progress?: PreviewProgress;
+  result?: PreviewResult;
+  error?: string;
+  logs?: string[];
+}

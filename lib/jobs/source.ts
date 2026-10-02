@@ -355,6 +355,57 @@ export async function prepareRepoSource(
 }
 
 /**
+ * Makes sure the given commits exist in a GitHub/GitLab repo's app-managed
+ * clone, fetching them (and `refspecs`, e.g. a PR's head ref, as a fallback
+ * for hosts that refuse fetch-by-sha) when they don't. Clones first if the
+ * repo was never analyzed. Returns the clone's directory. Used by the
+ * before/after preview, which needs whole trees at a PR's base and head, not
+ * just the diff.
+ */
+export async function ensureCommitsInCache(
+  repo: RepoRecord,
+  shas: readonly string[],
+  refspecs: readonly string[],
+  log: Logger = () => {}
+): Promise<string> {
+  const remoteProvider = repo.provider as RemoteProvider;
+  const dir = repoCacheDir(repo.id);
+  if (!existsSync(path.join(dir, ".git"))) await prepareRepoSource(repo, log);
+
+  const token = await resolveRemoteToken(remoteProvider);
+  const git = gitIn(dir, SLOW_GIT_TIMEOUT_MS, authConfig(token, remoteProvider));
+  const missing = async (): Promise<string[]> => {
+    const out: string[] = [];
+    for (const sha of shas) {
+      try {
+        await git.raw(["cat-file", "-e", `${sha}^{commit}`]);
+      } catch {
+        out.push(sha);
+      }
+    }
+    return out;
+  };
+
+  let absent = await missing();
+  if (absent.length === 0) return dir;
+  log(`fetching ${absent.map((s) => s.slice(0, 7)).join(", ")} into the app's clone`);
+  try {
+    await withFriendlyAuthError(git.fetch(["origin", ...absent]), remoteProvider, Boolean(token));
+  } catch (error) {
+    log(`fetch by sha failed (${(error as Error).message.split("\n")[0]}) — fetching refs instead`);
+  }
+  absent = await missing();
+  if (absent.length > 0 && refspecs.length > 0) {
+    await withFriendlyAuthError(git.fetch(["origin", ...refspecs]), remoteProvider, Boolean(token));
+    absent = await missing();
+  }
+  if (absent.length > 0) {
+    throw new Error(`Could not fetch commit(s) ${absent.map((s) => s.slice(0, 7)).join(", ")} from ${providerLabel(remoteProvider)}.`);
+  }
+  return dir;
+}
+
+/**
  * The repo's *current* HEAD SHA without doing any expensive work — the cheap
  * staleness probe. Returns `null` when it can't be determined (offline,
  * bad path, missing credentials); callers treat that as "assume unchanged"

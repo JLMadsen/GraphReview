@@ -62,5 +62,9 @@ CMD ["npm", "run", "start"]
 # needed for it) — see the `worker` script in package.json.
 FROM deps AS worker
 ENV NODE_ENV=production
+# The before/after preview (DESIGN.md §6.9) runs PR code in throwaway
+# containers on the host's Docker, reached through the socket that
+# docker-compose.yml mounts into this service. Only the CLI is needed here.
+RUN apk add --no-cache docker-cli
 COPY . .
 CMD ["npm", "run", "worker"]

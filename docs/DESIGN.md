@@ -303,7 +303,7 @@ Folded into the diff summary in the left column (since the 2026-09-26 redesign, 
 
 | kind | passes when | notes |
 |---|---|---|
-| `ci` | the head commit's CI succeeded | GitHub check runs + commit statuses, GitLab's latest pipeline + its jobs (`getCommitCiStatus` in both clients). Local repos: *doesn't apply*. Polled every 30 s while pending. GraphReview never runs code itself. |
+| `ci` | the head commit's CI succeeded | GitHub check runs + commit statuses, GitLab's latest pipeline + its jobs (`getCommitCiStatus` in both clients). Local repos: *doesn't apply*. Polled every 30 s while pending. The checklist never runs code itself (the before/after preview, §6.9, does, in a sandbox). |
 | `description` | the PR description has ≥ N characters | ref comparisons: *doesn't apply* |
 | `linked-issue` | the PR closes/links an issue | ref comparisons: *doesn't apply* |
 | `max-files` / `max-lines` | ≤ N files / changed lines | |
@@ -378,7 +378,67 @@ The Graph tab had the stock shadcn look (every region a rounded card with a 1px 
 
 **Edges are routed, not just drawn (same day).** ELK now routes the card maps' edges as well as placing the cards (`elk.edgeRouting: ORTHOGONAL`, with edge-edge and edge-node spacing): right angles, one lane per edge between layers, attached at their own points along a card's side, kept clear of the cards. `CardFlow` draws each edge along its ELK route with rounded corners (`RoutedEdge`), with the label on the route's longest leg. Edges that weren't in the layout (a weak connection shown when its card is selected) fall back to a smooth-step path in the same right-angled style. Edge strokes use `vector-effect: non-scaling-stroke`, so they keep their on-screen width on a zoomed-out map. This applies to both the App map and the PR map.
 
+**Finished analyses show up without a reload (same day).** The Graph tab used to read the repo's status and graph once on load, so a finished analysis only appeared after a manual refresh. It now re-reads `GET /api/repos/[repoId]` every 3 s while the status is `analyzing` or `stale`. That read is a job-queue lookup, with no git probe until the job is done. When the job finishes, or the analyzed commit changes, the tab refetches the graph (which also refetches the App map, keyed on the same nonce) and calls `router.refresh()` for the server-rendered header. The repo list does the same through `RefreshWhileWorking`, refreshing every 4 s while any repo is working.
+
 Not restyled in this pass: the Repo view's Cytoscape canvas and its toolbar (labels, merges), the file diff modal, and the other tabs beyond what the global tokens change.
+
+### 6.9 Before/after preview: running the changed code (built 2026-10-02)
+
+A diff shows what the code says. This preview shows what it *does*. For one changed file, every changed function and component runs twice, once at the target's base and once at its head, on the same mocked-up inputs, and the results sit side by side. A component appears as both renders next to each other. A function appears as what it returned and what its arguments looked like after the call, so an `add` that now returns `2.0` instead of `2`, or one that started mutating its input, shows up directly.
+
+**This deliberately reverses "GraphReview never runs code itself"** (§6.6). The user chose it with eyes open: the preview is for repos you trust. The code runs only in throwaway Docker containers, never in the app or worker process.
+
+#### Where it lives
+The file diff modal (`FileDiffModal`) has a second tab, **Before / after**, for JS/TS and Python files (`lib/preview/runtime.ts`). Every way of opening a file reaches it: a finding, a changed file in the inspector, or a PR map chip. Nothing runs until **Run** is pressed (✦, since the inputs come from the model). A run is one BullMQ job on the `preview` queue (`lib/jobs/preview-queue.ts`), one per (repo, target, file); running it again replaces the previous run. The result lives in the job's return value in Redis, not in Neo4j: it's cheap to redo and goes stale with every push.
+
+#### The job (`lib/jobs/preview.ts`)
+1. **Resolve.** `loadPrContext` pins the target to its base and head commits. Base becomes `merge-base(base, head)`, like the three-dot diff. Remote repos fetch both commits into the app's clone (`ensureCommitsInCache` in `lib/jobs/source.ts`), falling back to `pull/N/head` / `merge-requests/N/head` or the ref names when the host won't serve a sha.
+2. **Detect** (`lib/preview/symbols.ts`). Both versions of the file are parsed with the analyzer's tree-sitter grammars, and their top-level declarations compared by name: modified, added, removed.
+   - A function whose own text didn't change but that uses a changed declaration of the same file (a helper, a constant) is included as `via` that name.
+   - Runnable: exported functions and components in JS/TS (`export function`, `export const X = () =>`, `memo`/`forwardRef` wrappers, `export default`, `export { a as b }`), and top-level functions in Python.
+   - Classes and unexported functions are listed as "Not run", with the reason. Types are ignored.
+   - A component is a function in a `.tsx`/`.jsx` file (or one containing JSX) that renders JSX and has a PascalCase name.
+3. **Inputs.** Where the inputs come from, in order:
+   - inputs the user edited
+   - `generatePreviewInputs` (`lib/ai/preview-inputs.ts`): one call per file, which gets each symbol's before and after source plus the whole file, and returns 2–4 cases that must be valid for *both* versions and exercise the change
+   - empty defaults, when no AI provider is set
+
+   Tagged JSON carries values JSON can't hold (`{"$undefined":true}`, `{"$date":…}`, `{"$map":…}`; `{"$tuple":…}` in Python).
+4. **Prepare.** Each side's whole tree is written to a temp folder with a throwaway index (`lib/preview/checkout.ts`): `GIT_INDEX_FILE=<tmp> git read-tree <sha>` + `checkout-index --prefix`. That works on the read-only local-repo mount and never touches the repo's own index. Dependencies are installed into a named volume keyed by manifests + lockfile + image (`prepareDeps` in `lib/preview/sandbox.ts`), so base and head share one install when the lockfile didn't change, and a later run reuses it.
+   - Node: npm/yarn/pnpm, flat `node_modules` (pnpm `node-linker=hoisted`, yarn `nodeLinker=node-modules`).
+   - Python: `pip install --target /deps` from `requirements.txt` or the project itself.
+   - A failed install doesn't fail the run: it's reported, and unresolved imports get stubbed.
+5. **Run.** One container per side, run in parallel.
+   - Limits: `--network none`, 1 GB of memory, 1 CPU, 512 processes, `--cap-drop ALL` and a 2-minute wall clock (all configurable, `docker/.env.example`).
+   - Files go in with `docker cp`, never bind mounts: the worker may itself be a container, so its paths mean nothing to the daemon.
+   - The harness (`lib/preview/harness/`) prints one JSON line after a marker.
+6. **Compare.** Case by case: return value, arguments after, markup and error. Any difference marks the case.
+
+#### The harnesses (`lib/preview/harness/`)
+- **Node** (`node-harness.mjs`): esbuild bundles the changed file. That covers TS/TSX/JSX, tsconfig paths, CSS imports and CSS modules, with images as data URLs. esbuild, React, react-dom and PostCSS come from a shared harness volume as fallbacks; the repo's own copies win.
+  - Any import that can't be resolved becomes a stand-in, and the side is marked **approximate** with the stubbed module names. The stand-in is an ES module exporting exactly the names its importer asks for, each a callable, endlessly chainable proxy that returns `null`.
+  - Functions are called with each case's arguments; promises are awaited. Values are compared as `util.inspect` text, so `2` vs `'2'` and mutated objects show.
+  - Components are rendered with `renderToPipeableStream` after `onAllReady`, so async components and Suspense resolve.
+  - For components, the app's global stylesheet (`globals.css`, `index.css`, … in the usual folders) is run through the repo's own PostCSS config, which is how Tailwind classes get styled, and added to the bundled CSS.
+- **Python** (`python-harness.py`): imports the file by dotted name from the deepest matching root (so relative imports work), and calls each function on a deep copy of the arguments. `repr()` is the comparison format, which is what makes `2` vs `2.0` visible. Each case has a `SIGALRM` timeout, and prints are captured per case.
+
+#### UI (`PreviewPanel`, `usePreview`)
+- The headline names the result ("2 of 5 cases changed" / "All 5 cases behave the same"), followed by where the inputs came from and the run time.
+- Side notes cover the problems: a side that couldn't load, the stubbed modules, a failed install.
+- **Each symbol** gets a git-style M/A/D letter, its kind, "uses changed `X`" where that applies, and **Edit inputs**: a JSON editor whose changes are applied with "Run with edited inputs".
+- **Function cases:** Before | After columns, each with "returned" (or "threw") and "arguments after".
+- **Component cases:** two iframes with an empty `sandbox` (scripts off; the markup is static server output), resizable, plus the markup on demand.
+- Cells that differ from the other side get an amber tint and the case an amber edge. Matching cells stay quiet.
+
+#### Under Docker Compose
+The worker image adds `docker-cli`, and `docker-compose.yml` mounts the host's Docker socket into the worker (`DOCKER_SOCKET`). That gives the worker control of the host's Docker, which is acceptable for trusted repos and is what the preview needs. Outside Compose, the worker uses whatever `docker` is on its PATH.
+
+#### Limits
+- Only exported top-level functions and components; no class methods.
+- Components render on the server, so effects don't run and there's no interaction.
+- Context-dependent components (a router or a provider) fail with the hook's error rather than rendering.
+- pnpm workspaces lose per-package `node_modules` symlinks; the hoisted install covers most cases.
+- Only JS/TS and Python.
 
 ## 7. Neo4j schema
 
@@ -502,6 +562,7 @@ Out of scope: a full secrets manager/vault integration, or per-user credential i
 
 *Design-time sketch below; **as built** the notable additions are:*
 - `lib/ai/` = `client, parse, budget, prompts, review, label, errors, types, mock-server` (+ several smoke tests, incl. `smoke-test-label.ts`)
+- `lib/preview/` = the before/after preview's sandbox (`sandbox`, `checkout`, `symbols`, `runtime`, `types`, `harness/`) — §6.9
 - `lib/jobs/` = `queue, review-queue, review, label-queue, label, review-freshness, analyze, source, staleness, repo-status, github-access, local-git, diff-components`
 - `lib/neo4j/` also has `label.ts` (the labeling job's repo-scoped bulk queries, kept out of `component.ts`/`file.ts`)
 - `lib/analysis/` also has `languages/{go,rust,java,kotlin,jvm}/` (`jvm/` is shared Java+Kotlin resolution infrastructure, not a language of its own — see §5)

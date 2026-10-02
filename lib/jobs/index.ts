@@ -222,6 +222,20 @@ export {
   type LocalFilePatch,
 } from "./local-git";
 
+export {
+  PREVIEW_JOB_NAME,
+  PREVIEW_QUEUE_NAME,
+  closePreviewQueue,
+  enqueuePreview,
+  getPreviewJob,
+  getPreviewJobLogs,
+  getPreviewQueue,
+  previewJobId,
+  type PreviewJob,
+  type PreviewJobData,
+  type PreviewJobResult,
+} from "./preview-queue";
+
 // NOTE: `./analyze` is deliberately *not* re-exported here. It pulls in
 // lib/analysis (tree-sitter + WASM grammars), which only the worker ever
 // executes — re-exporting it would drag the whole parsing engine into the
@@ -238,4 +252,6 @@ export {
 //     import { runLabelJob } from "@/lib/jobs/label";
 // and `./app-map-job`:
 //     import { runAppMapJob } from "@/lib/jobs/app-map-job";
+// and `./preview` (lib/ai, lib/analysis, the Docker sandbox):
+//     import { runPreviewJob } from "@/lib/jobs/preview";
 export type { JobLogger } from "./analyze";

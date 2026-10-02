@@ -15,11 +15,13 @@ import {
   ANALYSIS_QUEUE_NAME,
   APP_MAP_QUEUE_NAME,
   LABEL_QUEUE_NAME,
+  PREVIEW_QUEUE_NAME,
   REVIEW_QUEUE_NAME,
   clearAppMapCancel,
   clearLabelCancel,
   closeAppMapQueue,
   closeLabelQueue,
+  closePreviewQueue,
   closeQueues,
   closeReviewQueue,
   getBlockingRedisConnection,
@@ -32,6 +34,8 @@ import {
   type AnalysisJobResult,
   type LabelJobData,
   type LabelJobResult,
+  type PreviewJobData,
+  type PreviewJobResult,
   type ReviewJobData,
   type ReviewJobResult,
 } from "@/lib/jobs";
@@ -44,6 +48,7 @@ import { runAnalysisJob } from "@/lib/jobs/analyze";
 import { runReviewJob } from "@/lib/jobs/review";
 import { runLabelJob } from "@/lib/jobs/label";
 import { runAppMapJob } from "@/lib/jobs/app-map-job";
+import { runPreviewJob } from "@/lib/jobs/preview";
 import { closeDriver, runMigrations } from "@/lib/neo4j";
 
 /** One job at a time: static analysis is CPU-bound (tree-sitter parsing) and a second concurrent run would just contend for the same core. */
@@ -71,6 +76,9 @@ const LABEL_CONCURRENCY = Number(process.env.LABEL_CONCURRENCY ?? 1);
 
 /** App-map runs (DESIGN.md §6.5): on demand, model calls — one at a time, like labeling. */
 const APP_MAP_CONCURRENCY = Number(process.env.APP_MAP_CONCURRENCY ?? 1);
+
+/** Before/after previews (DESIGN.md §6.9): each runs two sandbox containers already, so one file at a time by default. */
+const PREVIEW_CONCURRENCY = Number(process.env.PREVIEW_CONCURRENCY ?? 1);
 
 /**
  * Optional periodic staleness sweep. The normal refresh trigger is "on
@@ -106,7 +114,8 @@ async function main(): Promise<void> {
     `starting — queue "${ANALYSIS_QUEUE_NAME}" (concurrency ${CONCURRENCY}), ` +
       `queue "${REVIEW_QUEUE_NAME}" (concurrency ${REVIEW_CONCURRENCY}), ` +
       `queue "${LABEL_QUEUE_NAME}" (concurrency ${LABEL_CONCURRENCY}), ` +
-      `queue "${APP_MAP_QUEUE_NAME}" (concurrency ${APP_MAP_CONCURRENCY})`
+      `queue "${APP_MAP_QUEUE_NAME}" (concurrency ${APP_MAP_CONCURRENCY}), ` +
+      `queue "${PREVIEW_QUEUE_NAME}" (concurrency ${PREVIEW_CONCURRENCY})`
   );
 
   // Constraints are `IF NOT EXISTS`, so this is a no-op on an already
@@ -309,18 +318,50 @@ async function main(): Promise<void> {
     logError(`app-map worker error: ${error.message}`);
   });
 
+  // --- preview queue -------------------------------------------------------
+  const previewWorker = new Worker<PreviewJobData, PreviewJobResult>(
+    PREVIEW_QUEUE_NAME,
+    async (job: Job<PreviewJobData, PreviewJobResult>) => {
+      log(`preview job ${job.id} started — repo ${job.data.repoId}, ${job.data.filePath}`);
+      return runPreviewJob(
+        job.data,
+        { updateProgress: (progress) => job.updateProgress(progress) },
+        (message) => {
+          log(`preview job ${job.id} · ${message}`);
+          mirrorToJobLog(job, message);
+        }
+      );
+    },
+    { connection: getBlockingRedisConnection(), concurrency: PREVIEW_CONCURRENCY }
+  );
+  previewWorker.on("completed", (job, result) => {
+    const cases = result.symbols.reduce((n, s) => n + s.cases.length, 0);
+    const differing = result.symbols.reduce((n, s) => n + s.cases.filter((c) => c.differs).length, 0);
+    log(
+      `preview job ${job.id} completed — ${result.filePath}: ${result.symbols.length} symbol(s), ` +
+        `${cases} case(s), ${differing} differ, in ${result.durationMs}ms`
+    );
+  });
+  previewWorker.on("failed", (job, error) => {
+    logError(`preview job ${job?.id ?? "?"} failed — ${job?.data?.filePath ?? "?"}: ${error.message}`);
+  });
+  previewWorker.on("error", (error) => {
+    logError(`preview worker error: ${error.message}`);
+  });
+
   const sweep = startStalenessSweep();
 
   const shutdown = async (signal: string): Promise<void> => {
     log(`received ${signal} — shutting down`);
     if (sweep) clearInterval(sweep);
     try {
-      await Promise.all([worker.close(), reviewWorker.close(), labelWorker.close(), appMapWorker.close()]);
+      await Promise.all([worker.close(), reviewWorker.close(), labelWorker.close(), appMapWorker.close(), previewWorker.close()]);
       // The review and label queues borrow ./queue.ts's Redis connections, so
       // they have to be closed before `closeQueues()` tears those down.
       await closeReviewQueue();
       await closeLabelQueue();
       await closeAppMapQueue();
+      await closePreviewQueue();
       await closeQueues();
       await closeDriver();
     } catch (error) {

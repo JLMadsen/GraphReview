@@ -155,3 +155,17 @@ export type {
   AppMapCallOptions,
   AppMapTreeInput,
 } from "./app-map";
+
+export {
+  PREVIEW_INPUTS_TASK_MARKER,
+  buildPreviewInputsSystemPrompt,
+  generatePreviewInputs,
+  normalizePreviewInputs,
+} from "./preview-inputs";
+export type {
+  PreviewInputCase,
+  PreviewInputsInput,
+  PreviewInputsOptions,
+  PreviewInputsResult,
+  PreviewInputsSymbol,
+} from "./preview-inputs";

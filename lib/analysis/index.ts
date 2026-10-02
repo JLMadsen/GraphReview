@@ -36,5 +36,5 @@ export {
   type RawImport,
 } from "./analyzer";
 export { DEFAULT_IGNORED_DIRS, walkRepo, type WalkOptions } from "./walk";
-export { disposeTreeSitter, initTreeSitter } from "./tree-sitter";
+export { disposeTreeSitter, initTreeSitter, withSyntaxTree } from "./tree-sitter";
 export { dirOf, extensionOf, joinPosix, repoRelative, toPosix } from "./paths";

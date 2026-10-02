@@ -78,10 +78,21 @@ services:
       GITLAB_API_URL: ${GITLAB_API_URL:-}
       GITLAB_WEB_URL: ${GITLAB_WEB_URL:-}
       AI_REQUEST_TIMEOUT_MS: ${AI_REQUEST_TIMEOUT_MS:-}
+      # Before/after preview sandbox (DESIGN.md §6.9) — see docker/.env.example.
+      PREVIEW_NODE_IMAGE: ${PREVIEW_NODE_IMAGE:-}
+      PREVIEW_PYTHON_IMAGE: ${PREVIEW_PYTHON_IMAGE:-}
+      PREVIEW_RUN_TIMEOUT_MS: ${PREVIEW_RUN_TIMEOUT_MS:-}
+      PREVIEW_INSTALL_TIMEOUT_MS: ${PREVIEW_INSTALL_TIMEOUT_MS:-}
+      PREVIEW_MEMORY: ${PREVIEW_MEMORY:-}
+      PREVIEW_CPUS: ${PREVIEW_CPUS:-}
     # No ports published — the worker has no HTTP surface.
     volumes:
       - repo_cache:/data/repos
       - ${LOCAL_REPOS_PATH}:/data/local-repos:ro
+      # The host's Docker, for the before/after preview's sandbox containers.
+      # This gives the worker full control of the host's Docker — fine for
+      # repos you trust, which is what the preview is meant for.
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

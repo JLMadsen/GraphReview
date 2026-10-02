@@ -49,6 +49,7 @@ import { CHECKLIST_TASK_MARKER } from "./checklist";
 import { PR_CHAT_TASK_MARKER, REPO_CHAT_SCOPE_MARKER } from "./pr-chat";
 import { PR_MAP_TASK_MARKER } from "./pr-map";
 import { APP_EXPLAIN_TASK_MARKER, APP_FEATURES_TASK_MARKER, APP_LAYERS_TASK_MARKER } from "./app-map";
+import { PREVIEW_INPUTS_TASK_MARKER } from "./preview-inputs";
 
 export const DEFAULT_MOCK_PORT = 4010;
 export const DEFAULT_MOCK_DELAY_MS = 900;
@@ -211,6 +212,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
                   ? appLayersContent(userText)
                   : prompt.includes(APP_EXPLAIN_TASK_MARKER)
                     ? appExplainContent(userText)
+                    : prompt.includes(PREVIEW_INPUTS_TASK_MARKER)
+                    ? previewInputsContent(userText)
                     : prompt.includes(CHECKLIST_TASK_MARKER)
                       ? checklistContent(userText)
                       : prompt.includes(PR_CHAT_TASK_MARKER)
@@ -624,6 +627,24 @@ function prMapContent(userText: string): { content: string; note: string } {
 }
 
 // --- App map (lib/ai/app-map.ts) ------------------------------------------
+
+/** Two cases per symbol: small integers for functions (1 + 1 shows int-vs-float changes), a title prop for components. */
+function previewInputsContent(userText: string): { content: string; note: string } {
+  const symbols = [...userText.matchAll(/^### (component|function) `([^`]+)`/gm)].map((m) => ({
+    name: m[2],
+    cases:
+      m[1] === "component"
+        ? [
+            { label: "short title", props: { title: "Hello", label: "Save" } },
+            { label: "long title", props: { title: "A much longer title than usual", label: "Cancel" } },
+          ]
+        : [
+            { label: "1 + 1", args: [1, 1] },
+            { label: "2 + 3", args: [2, 3] },
+          ],
+  }));
+  return { content: fenced({ symbols }), note: `preview-inputs ${symbols.length}` };
+}
 
 function fenced(value: unknown): string {
   return ["```json", JSON.stringify(value, null, 2), "```"].join("\n");
