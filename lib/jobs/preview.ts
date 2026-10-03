@@ -32,9 +32,9 @@ import {
 import { relatedSources } from "@/lib/preview/related";
 import { detectChangedSymbols } from "@/lib/preview/symbols";
 import { DEFAULT_NODE_MAJOR, requiredNodeMajor } from "@/lib/preview/node-version";
+import { caseDiffers } from "@/lib/preview/compare";
 import type {
   PreviewCaseInput,
-  PreviewCaseOutcome,
   PreviewHarnessResult,
   PreviewInputs,
   PreviewMocks,
@@ -160,11 +160,6 @@ export async function resolveCommits(
   }
   // Compare against where the branch left off, exactly like the three-dot diff does.
   return { repoDir, baseSha: await mergeBaseOf(repoDir, baseSha, headSha), headSha, changedFiles };
-}
-
-function sameOutcome(a: PreviewCaseOutcome | undefined, b: PreviewCaseOutcome | undefined): boolean {
-  if (!a || !b) return false;
-  return a.returned === b.returned && a.argsAfter === b.argsAfter && a.html === b.html && a.threw === b.threw;
 }
 
 function summarize(
@@ -492,7 +487,7 @@ export async function runPreviewJob(
         input: c.input,
         ...(beforeCase ? { before: beforeCase } : {}),
         ...(afterCase ? { after: afterCase } : {}),
-        differs: !sameOutcome(beforeCase, afterCase),
+        differs: caseDiffers(symbol, { before: beforeCase, after: afterCase }),
       };
     });
     return {

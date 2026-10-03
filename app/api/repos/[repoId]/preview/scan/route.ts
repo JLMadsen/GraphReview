@@ -14,6 +14,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { enqueuePreview, ensurePreviewScan, getPreviewJob, type ReviewTarget } from "@/lib/jobs";
 import { getRepoById } from "@/lib/db";
+import { symbolStatus } from "@/lib/preview/compare";
 import { getDockerStatus } from "@/lib/preview/sandbox";
 import type {
   PreviewJobState,
@@ -52,10 +53,18 @@ function toState(jobState: string): PreviewJobState {
 function looksOf(result: PreviewResult, name: string): PreviewScanFileDTO["components"][number]["looks"] {
   const symbol = result.symbols.find((s) => s.name === name);
   if (!symbol) return undefined;
-  // Never rendered on either side (errors on both, even identical ones) isn't "looks the same".
-  const rendered = symbol.cases.some((c) => c.before?.html !== undefined || c.after?.html !== undefined);
-  if (!rendered) return "failed";
-  return symbol.cases.some((c) => c.differs) ? "different" : "same";
+  // A side that didn't render (load error, a throw, notFound()) is a failure,
+  // never "looks different" — see lib/preview/compare.ts.
+  switch (symbolStatus(symbol)) {
+    case "failed":
+    case "breaks":
+    case "recovers":
+      return "failed";
+    case "same":
+      return "same";
+    default:
+      return "different";
+  }
 }
 
 async function loadScan(repoId: string, target: ReviewTarget): Promise<{ state: PreviewJobState; scan?: PreviewScanResult; error?: string }> {

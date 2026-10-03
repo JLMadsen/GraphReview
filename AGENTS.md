@@ -13,8 +13,9 @@ Requires Node.js 22.13+ (`node:sqlite`).
 ## Building while the user's copy runs
 
 The user may be running GraphReview from this checkout (`npx graphreview`
-linked to it, or `npm start`), which serves `.next/`. Never `npm run build`
-into it while that's running — check `~/.graphreview/instance.json` for a live
+linked to it, or `npm start`), which serves `.next/`. `npm run dev` is safe:
+it always builds into `.next-dev/` (next.config.mjs). Never `npm run build`
+into `.next/` while the user's copy is running — check `~/.graphreview/instance.json` for a live
 pid. To verify a build, use a separate folder:
 
 ```bash
