@@ -4,7 +4,7 @@
 // (architecture layers, features, modules).
 //
 // Same split as the PR map:
-//   1. `loadAppMapInput` is the only Neo4j-touching part — every analyzed
+//   1. `loadAppMapInput` is the only database-touching part — every analyzed
 //      file, its owning module, and every file-level `IMPORTS` edge.
 //   2. Everything else is pure. A *grouping* (which files go on which card)
 //      comes either from the heuristics here or from a stored AI run
@@ -60,7 +60,7 @@ export interface AppMapGroup {
   files: string[];
 }
 
-/** An AI card as the app-map job stores it (lib/neo4j/app-map.ts). */
+/** An AI card as the app-map job stores it (lib/db/app-map.ts). */
 export interface StoredAppMapGroup {
   key: string;
   name: string;
@@ -691,7 +691,7 @@ function isRecordLike(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Validates the JSON blobs lib/neo4j/app-map.ts hands back; anything malformed is dropped, never thrown. */
+/** Validates the JSON blobs lib/db/app-map.ts hands back; anything malformed is dropped, never thrown. */
 export function toStoredAppMaps(
   records: ReadonlyArray<{ level: string; groups: unknown[]; edges: unknown[]; model: string; createdAt: string }>
 ): Map<AppMapLevel, StoredAppMap> {

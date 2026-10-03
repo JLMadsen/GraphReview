@@ -150,8 +150,8 @@ function EmptyState({
 }
 
 export default async function RepoListPage() {
-  // Neo4j/Redis may not be up yet (first run, or mid-development). Degrade to
-  // an explanatory empty state instead of crashing the landing page.
+  // The database can fail to open (a locked or unreadable data folder).
+  // Degrade to an explanatory empty state instead of crashing the landing page.
   let repos: RepoDto[] = [];
   let loadError: string | null = null;
   try {
@@ -189,10 +189,10 @@ export default async function RepoListPage() {
           title="Can't load repositories"
           detail={loadError}
         >
-          The graph database or job queue isn&apos;t reachable. Check that the{" "}
-          <span className="font-mono text-foreground/80">neo4j</span> and{" "}
-          <span className="font-mono text-foreground/80">redis</span> services
-          are running.
+          GraphReview couldn&apos;t open its database. Check that its data folder
+          (<span className="font-mono text-foreground/80">~/.graphreview</span> by
+          default) is readable and writable, and that no other program has it
+          locked.
         </EmptyState>
       ) : repos.length === 0 ? (
         <EmptyState icon={Waypoints} title="No repos yet" action={<AddRepoDialog />}>

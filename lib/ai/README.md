@@ -159,7 +159,7 @@ here:
   Backend, `docker`/`scripts`/`config`/`infra`/`github` -> Infrastructure,
   else Shared — the module's own name first, then its sample paths), and
   descriptions always prefixed with the literal `[mock] ` so mock-generated
-  test data is obvious in the UI and trivially deletable from Neo4j. Also
+  test data is obvious in the UI and trivially deletable from the database. Also
   exports `startMockServer({port, host, delayMs, log})` for in-process
   tests. Deliberately **not** in the `index.ts` barrel (it imports
   `node:http`).
@@ -275,6 +275,5 @@ npx tsx lib/ai/mock-server.ts --port 4010     # default port 4010
 MOCK_DELAY_MS=0 npx tsx lib/ai/mock-server.ts # no simulated latency
 ```
 
-Point the app's AI settings at `http://localhost:4010/v1` (or
-`http://host.docker.internal:4010/v1` from inside a container) with any
+Point the app's AI settings at `http://localhost:4010/v1` with any
 non-empty API key and any model name.

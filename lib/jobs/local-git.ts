@@ -15,10 +15,10 @@ import { gitIn, resolveLocalRepoPath } from "./source";
 /**
  * Git config applied to every command in this module.
  *
- * Local repos are read into the container through a read-only bind mount,
- * so the checkout is owned by whatever uid the *host* user has
- * while git runs as the container's user. Git refuses to operate on a repo
- * it considers owned by someone else ("detected dubious ownership in
+ * Local repos are read in place, and their checkout can be owned by a
+ * different account than the one GraphReview runs as (a shared drive, a repo
+ * cloned as admin, WSL/Windows ownership mismatches). Git refuses to operate
+ * on a repo it considers owned by someone else ("detected dubious ownership in
  * repository"), which would make every local-repo feature fail with a
  * confusing message. `safe.directory=*` waives that check — appropriate
  * here because the mount is read-only and the path was already constrained

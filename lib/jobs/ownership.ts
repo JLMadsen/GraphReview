@@ -8,7 +8,7 @@
 //   2. otherwise the longest `<dir>/**` folder pattern of any merged module;
 //   3. otherwise the folder module the file was clustered into.
 //
-// Pure — no Neo4j, no disk. Both the analysis job and a regroup (after an
+// Pure — no database, no disk. Both the analysis job and a regroup (after an
 // accept/unmerge) feed it and write what it returns, so there is exactly
 // one place that decides membership.
 

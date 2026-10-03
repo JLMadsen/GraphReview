@@ -5,12 +5,12 @@
 // in types/ — see components/graph/README.md's scope note; promote later if
 // another layer needs them.
 
-/** Mirrors `lib/neo4j`'s `ComponentTier`, duplicated here (not imported) so
+/** Mirrors `lib/db`'s `ComponentTier`, duplicated here (not imported) so
  * this file stays framework/DB-agnostic and safe to import from client
- * components — `lib/neo4j` is server-only. */
+ * components — `lib/db` is server-only. */
 export type GraphNodeTier = "domain" | "module" | "file";
 
-/** One `(:Component)` node, flattened for the graph UI. `parentId` is only
+/** One component, flattened for the graph UI. `parentId` is only
  * present when a `CHILD_OF` edge exists — v1 rarely populates the domain
  * tier, so most nodes have no parent and the UI must
  * render a flat graph in that case rather than assuming a 3-tier hierarchy. */
@@ -38,7 +38,7 @@ export interface GraphResponseDTO {
   edges: GraphEdgeDTO[];
 }
 
-/** One `(:File)` belonging to a component, as returned by
+/** One file belonging to a component, as returned by
  * `GET /api/repos/[repoId]/components/[componentId]/files`. A trimmed
  * `FileRecord` — the graph UI only needs identity, path, language and size. */
 export interface ComponentFileDTO {
@@ -63,18 +63,18 @@ export type DiffImpactRequestDTO =
 
 /** Response shape for `POST /api/repos/[repoId]/diff-impact`. */
 export interface DiffImpactResponseDTO {
-  /** Changed file paths that matched a stored `(:File)` node. */
+  /** Changed file paths that matched a stored stored file. */
   touchedFiles: string[];
   /** Distinct `Component` ids touched via a matched file's `BELONGS_TO` edge. */
   touchedComponentIds: string[];
-  /** Changed paths with no matching `(:File)` node (non-code files, or the repo needs re-analysis). */
+  /** Changed paths with no matching stored file (non-code files, or the repo needs re-analysis). */
   unmatchedFiles: string[];
 }
 
 /**
  * One AI-labeled, folder-clustered group of `unmatchedFiles` — files a PR
- * added that have no `(:File)` node in the persisted graph yet (see
- * lib/jobs/added-components.ts). Never written to Neo4j: synthesized fresh
+ * added that have no stored file in the persisted graph yet (see
+ * lib/jobs/added-components.ts). Never written to the database: synthesized fresh
  * on request and scoped to one PR view, which is why it travels as its own
  * DTO instead of joining `GraphNodeDTO`. `description` is absent when the AI
  * provider isn't configured or the labeling call failed — the component
@@ -130,11 +130,11 @@ export interface FileDiffResponseDTO {
 // ---------------------------------------------------------------------------
 //
 // Duplicated here rather than imported from the route module for the same
-// reason as everything else in this file: that module pulls in lib/neo4j and
-// lib/jobs (Neo4j driver + a Redis connection), which are server-only and
+// reason as everything else in this file: that module pulls in lib/db and
+// lib/jobs (the SQLite database and the job runner), which are server-only and
 // must never reach a client bundle. These are the wire shapes only.
 
-/** Verdict of one finding — is the change sound on its own terms. Mirrors `FindingAssessment` in lib/neo4j. */
+/** Verdict of one finding — is the change sound on its own terms. Mirrors `FindingAssessment` in lib/db. */
 export type Assessment = "defect" | "concern" | "unknown" | "ok";
 /** How a change relates to the PR's stated intent. Informational. Mirrors `FindingScope`. */
 export type FindingScope = "described" | "supporting" | "unmentioned";
@@ -195,7 +195,7 @@ export const REVIEW_EFFORT_OPTIONS: Array<{
 /** Pre-selected in the dropdown — mirrors DEFAULT_REVIEW_EFFORT. */
 export const DEFAULT_REVIEW_EFFORT: ReviewEffort = "medium";
 
-/** One persisted `(:Finding)`, flattened for the graph UI. `componentId` is a graph node id. */
+/** One persisted finding, flattened for the graph UI. `componentId` is a graph node id. */
 export interface FindingDTO {
   id: string;
   componentId: string;
@@ -245,7 +245,7 @@ export interface ReviewStatusResponseDTO {
   targetKey: string;
   state: ReviewStateDTO;
   progress?: ReviewProgressDTO;
-  /** The failed job's reason, or a degraded-read note (e.g. Redis down). */
+  /** The failed job's reason. */
   error?: string;
   findings: FindingDTO[];
   /** Present only for a completed review whose findings carry the shas they were made from. */

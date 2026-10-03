@@ -62,7 +62,7 @@ import {
   type ReviewTargetDTO,
 } from "./types";
 
-/** Poll cadence while a job is queued/running. Mock calls take ~900ms, so this shows every component landing without hammering Neo4j. */
+/** Poll cadence while a job is queued/running. Mock calls take ~900ms, so this shows every component landing without hammering the server. */
 const POLL_INTERVAL_MS = 1200;
 /** Shorter first poll straight after an enqueue, so "queued" appears immediately rather than a second later. */
 const POST_SETTLE_MS = 350;
@@ -232,10 +232,9 @@ export function useReview(
         if (!live()) return;
         // Success is decided by the HTTP status, never by "does the body
         // have an `error` field" — a 200 status response legitimately
-        // carries one (the endpoint degrades to "findings without live job
-        // state" when Redis is down and says so in `error`). Treating that
-        // as a failed request would throw away findings that are sitting
-        // right there in the same payload.
+        // carries one (a failed run's reason, next to the findings it
+        // already wrote). Treating that as a failed request would throw
+        // away findings that are sitting right there in the same payload.
         if (!res.ok || !json) {
           const failure = (json ?? {}) as ReviewErrorDTO;
           setSnapshot({

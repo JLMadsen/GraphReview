@@ -39,7 +39,7 @@ import type { AiProviderConfig, ChatMessage, TokenUsage } from "./types";
 
 /** One module-tier component, as the labeler sees it. No file contents. */
 export interface LabelModuleInput {
-  /** The real `(:Component)` id. Never sent to the model verbatim — see the module comment. */
+  /** The real component id. Never sent to the model verbatim — see the module comment. */
   id: string;
   name: string;
   fileCount: number;
@@ -137,7 +137,7 @@ const PROMPT_MARGIN_TOKENS = 64;
 
 const ZERO_USAGE: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
-/** Stable markers the mock server (and a human reading `docker logs`) recognises a call by. */
+/** Stable markers the mock server (and a human reading the server log) recognises a call by. */
 export const DOMAIN_TASK_MARKER = "TASK: label-domains";
 export const DESCRIBE_TASK_MARKER = "TASK: describe-modules";
 export const ASSIGN_TASK_MARKER = "TASK: assign-modules";

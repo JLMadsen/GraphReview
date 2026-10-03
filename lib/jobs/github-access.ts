@@ -1,7 +1,7 @@
-// Bridge between a stored `(:Repo)` record and lib/github.
+// Bridge between a stored repo record and lib/github.
 //
 // lib/github is deliberately credential-free (every function takes an
-// explicit `token`), and lib/neo4j only stores the *encrypted* PAT. This
+// explicit `token`), and lib/db only stores the *encrypted* PAT. This
 // module is the one place that joins the two: read the Settings singleton,
 // decrypt the PAT with lib/crypto, parse owner/repo out of the stored GitHub
 // URL, and call the matching lib/github function.
@@ -75,7 +75,7 @@ export function gitHubCloneUrl(ref: GitHubRepoRef): string {
   return `${GITHUB_WEB_URL}/${ref.owner}/${ref.repo}.git`;
 }
 
-/** Canonical `<GITHUB_WEB_URL>/<owner>/<repo>` page URL — what gets stored on `(:Repo).url` and shown in the UI. */
+/** Canonical `<GITHUB_WEB_URL>/<owner>/<repo>` page URL — what gets stored on `Repo.url` and shown in the UI. */
 export function gitHubRepoWebUrl(ref: GitHubRepoRef): string {
   return `${GITHUB_WEB_URL}/${ref.owner}/${ref.repo}`;
 }

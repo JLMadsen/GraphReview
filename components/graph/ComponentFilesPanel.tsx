@@ -46,11 +46,11 @@ export interface ComponentFilesPanelProps {
   /** From the graph payload; the panel shows it while loading so the header doesn't jump. */
   fileCount?: number;
   description?: string;
-  /** True when the canvas is showing `sample-data.ts` (no analyzed graph) — those component ids don't exist in Neo4j, so the fetch is skipped rather than 404'ing. */
+  /** True when the canvas is showing `sample-data.ts` (no analyzed graph) — those component ids don't exist in the database, so the fetch is skipped rather than 404'ing. */
   sampleData?: boolean;
   /**
    * File paths for a synthetic "added" node (a PR's new, not-yet-analyzed
-   * files — see `AddedComponentDTO`). These never got a `(:File)` node
+   * files — see `AddedComponentDTO`). These never got a stored file
    * either, so the fetch is skipped the same way `sampleData` skips it;
    * the paths are rendered directly instead.
    */

@@ -60,7 +60,7 @@ const README_CANDIDATES = ["README.md", "readme.md", "README", "Readme.md", "REA
 
 /**
  * Reads and decrypts the currently *active* saved AI provider (multiple
- * providers can be saved, lib/neo4j/ai-provider.ts, with one
+ * providers can be saved, lib/db/ai-provider.ts, with one
  * marked active at a time).
  *
  * Deliberately a local copy of `./review.ts`'s equivalent rather than a
@@ -110,7 +110,7 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
  * "perhaps a README/package.json snippet" alongside the paths.
  *
  * Entirely best-effort: a repo whose source isn't on disk (never cloned, or
- * a local path outside the bind mount) simply gets labeled from its
+ * a local path that no longer exists) simply gets labeled from its
  * module names and paths, which is the input the feature is designed around
  * anyway. Never throws.
  */

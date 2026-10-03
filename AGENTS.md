@@ -1,23 +1,19 @@
 # Agent instructions
 
-## Docker builds
+## Running the app
 
-Never run `docker compose build` / `docker build` / `docker compose up --build` directly.
-Rebuilding without pruning leaves the previous image dangling (untagged, `<none>:<none>`)
-because the tag just moves to the new image — old layers stick around and silently eat disk.
+GraphReview is one Node process: `npm run dev` starts the Next.js dev server
+*and* the background job workers (instrumentation.ts → worker/index.ts).
+There is no separate worker, database server or queue to start. Dev data
+lives in `.data/` (SQLite file, clone cache, generated credential key);
+delete that folder to start from scratch.
 
-Always use:
+Requires Node.js 22.13+ (`node:sqlite`).
 
-```bash
-npm run docker
-```
+## Packaging
 
-This builds the `app`/`worker` images (docker/docker-compose.yml, docker/Dockerfile), prunes the
-now-dangling previous image (`docker image prune -f` — only removes untagged images, never
-anything currently tagged or in use, so it's safe every time), then runs `docker compose up`.
-
-Use `npm run docker:build` instead if you only want to build + prune without starting containers.
-
-Use `npm run docker:up` (plain `up`, no build) only when you're certain no source/Dockerfile
-changes have happened since the last build — it starts whatever image is already tagged, which
-can silently run stale code otherwise.
+The app ships as an npm package run with `npx graphreview`
+(bin/graphreview.mjs → `next start`). `npm pack` builds and packs it; test a
+change to the launcher or the `files` list by installing that tarball into
+an empty folder and running `npx graphreview --no-open --data <tmp dir>`.
+Never `npm publish` without the user asking.

@@ -52,13 +52,13 @@ export interface ReviewProgress {
   completionTokens: number;
   /** Display names of the components currently in flight. */
   running: string[];
-  /** Changed paths that matched no `(:File)` node — the graph may need re-analysis. */
+  /** Changed paths that matched no stored file — the graph may need re-analysis. */
   unmatchedFiles: number;
   /** The effort level this run uses. */
   effort?: ReviewEffort;
 }
 
-/** What a completed review job returns, for `docker logs` visibility and job introspection. */
+/** What a completed review job returns, for log visibility and job introspection. */
 export interface ReviewJobResult {
   repoId: string;
   targetKey: string;
@@ -119,7 +119,7 @@ export function getReviewQueue(): ReviewQueue {
 /**
  * The stable identity of "what is being reviewed" — `pr:<number>` or
  * `refs:<baseRef>...<headRef>`. Stored on every `Finding` as `targetKey`
- * (lib/neo4j/types.ts) and used as the lookup key by the GET endpoint, so
+ * (lib/db/types.ts) and used as the lookup key by the GET endpoint, so
  * findings and job state always agree on which review they belong to.
  */
 export function reviewTargetKey(target: ReviewTarget): string {

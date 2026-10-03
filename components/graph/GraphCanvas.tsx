@@ -459,7 +459,7 @@ const IMPACT_COLORS: Record<
 };
 
 /**
- * A file added by the PR under review, with no `(:File)` node in the
+ * A file added by the PR under review, with no stored file in the
  * persisted graph — rendered as an ephemeral node the moment that PR is
  * selected (see `addedComponentIds`). Deliberately outside `IMPACT_COLORS`/
  * `AffectedCategory`: "added" is orthogonal to touched/neighbor/not-affected

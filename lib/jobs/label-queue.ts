@@ -35,7 +35,7 @@ export interface LabelJobData {
 
 /**
  * Which part of the run is in flight: lib/ai/label.ts's two model phases,
- * then `saving` while the results are written to Neo4j. A run can be
+ * then `saving` while the results are written to the database. A run can be
  * cancelled during the first two; `saving` is short and runs to completion,
  * so the graph is never left half-replaced.
  */
@@ -65,7 +65,7 @@ export interface LabelProgress {
   completionTokens: number;
 }
 
-/** What a completed labeling job returns, for `docker logs` visibility and job introspection. */
+/** What a completed labeling job returns, for log visibility and job introspection. */
 export interface LabelJobResult {
   repoId: string;
   /** Module-tier components the run considered. */

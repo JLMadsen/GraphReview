@@ -6,41 +6,48 @@ requests against a codebase's component graph.
 
 ![GraphReview's component graph and AI review view](docs/images/example3.png)
 
-Preview app changes, runs the app in a sandboxed docker container.
+Preview app changes: GraphReview renders the changed components before and
+after, in a sandboxed Docker container.
 
 ![GraphReview's before and after app renderings](docs/images/example4.png)
 
-## Quickstart (Docker Compose — recommended)
+## Quickstart
+
+You need [Node.js](https://nodejs.org) 22.13 or newer and
+[git](https://git-scm.com). Then:
 
 ```bash
-cp docker/.env.example docker/.env
-# edit docker/.env: set LOCAL_REPOS_PATH, NEO4J_PASSWORD, SESSION_SECRET
-
-docker compose -f docker/docker-compose.yml --env-file docker/.env up
+npx graphreview
 ```
 
-The app is served at [http://localhost:3470](http://localhost:3470) (set
-`APP_PORT` in `docker/.env` to use another port). Neo4j
-and Redis run as internal-only services (not published to the host).
+That starts GraphReview at [http://127.0.0.1:3470](http://127.0.0.1:3470)
+and opens it in your browser. Everything it stores — the database, clones of
+GitHub/GitLab repos, and the key that encrypts your saved tokens — lives in
+`~/.graphreview`. Stop it with Ctrl+C.
 
-## Local development (without Docker)
+Options: `--port <n>`, `--data <dir>`, `--no-open` (`npx graphreview --help`).
+
+[Docker](https://www.docker.com/products/docker-desktop/) is optional: it's
+only used by the before/after preview, which says so when Docker isn't
+running. Everything else works without it.
+
+## Running from a checkout
 
 ```bash
 npm install
-npm run dev       # Next.js dev server, http://localhost:3470 (other port: npm run dev -- -p 4000)
-npm run worker    # BullMQ worker process (separate terminal)
+npm run dev       # http://localhost:3470, workers included (other port: npm run dev -- -p 4000)
 ```
 
-You'll need your own Neo4j 5 and Redis instances reachable via the env vars
-in `docker/.env.example` (`NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`,
-`REDIS_URL`, `SESSION_SECRET`).
+`npm run dev` keeps its data in `.data/` in the checkout, separate from an
+installed copy's `~/.graphreview`. `npm run build && npm start` runs the
+production build the same way `npx graphreview` does.
 
 ## Running your own AI
 
 GraphReview's labeling and PR review features call an OpenAI-compatible
 `/v1/chat/completions` endpoint, so a locally-run model (e.g. Ollama) works
 as a drop-in replacement for a hosted API key. See
-[`install.md`](install.md#6-optional-features) for setup steps.
+[`install.md`](install.md#5-optional-features) for setup steps.
 
 ## Project layout
 

@@ -2,7 +2,7 @@
  * Static analysis engine.
  *
  * Self-contained by design: it takes a directory path and returns an in-memory
- * result. It knows nothing about Neo4j, GitHub, jobs or the AI provider.
+ * result. It knows nothing about the database, GitHub, jobs or the AI provider.
  *
  * ```ts
  * import { analyzeRepo } from "@/lib/analysis";

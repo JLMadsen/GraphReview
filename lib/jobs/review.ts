@@ -94,7 +94,7 @@ import {
  */
 const MODEL_CONCURRENCY = 3;
 
-/** Stable `(:PullRequest)` node id for a repo + PR number — mirrors the `<repoId>:<kind>:<key>` convention `analyze.ts` uses for components and files. */
+/** Stable pull request record id for a repo + PR number — mirrors the `<repoId>:<kind>:<key>` convention `analyze.ts` uses for components and files. */
 function pullRequestNodeId(repoId: string, prNumber: number): string {
   return `${repoId}:pr:${prNumber}`;
 }
@@ -105,7 +105,7 @@ function pullRequestNodeId(repoId: string, prNumber: number): string {
 
 /**
  * Reads and decrypts the currently *active* saved AI provider (multiple
- * providers can be saved, lib/neo4j/ai-provider.ts, with one
+ * providers can be saved, lib/db/ai-provider.ts, with one
  * marked active at a time).
  *
  * All three fields are required and checked together: a half-configured
@@ -152,7 +152,7 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
 export interface ResolvedTarget {
   files: LocalFilePatch[];
   intent: ReviewInput["intent"];
-  /** `(:PullRequest)` node id to hang `Finding -[:FOR]->` off, for PR targets only. */
+  /** pull request record id to hang `Finding -[:FOR]->` off, for PR targets only. */
   prId?: string;
   /** Human-readable description of the diff source, for the job log. */
   description: string;
@@ -177,8 +177,8 @@ function toIntentIssues(
 }
 
 /**
- * Persists the PR being reviewed as a `(:PullRequest)` node, so the
- * `Finding -[:FOR]-> (:PullRequest)` edge has something to point at.
+ * Persists the PR being reviewed as a pull request record, so findings'
+ * `prId` has something to point at.
  *
  * Best-effort by design: if this write fails, the review itself is still
  * perfectly valid — the findings just lose one edge — so it is logged and

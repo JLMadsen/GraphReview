@@ -1,5 +1,5 @@
 // The per-tab dispatch shared by the Branches and Pull-Requests-or-Merge-
-// Requests API routes and server pages: given a `(:Repo)` record, fetch its
+// Requests API routes and server pages: given a repo record, fetch its
 // branch/PR(MR) list from whichever source applies — local `.git`, the
 // GitHub API, or the GitLab API — and hand back one envelope shape the UI
 // already knows how to render regardless of which provider produced it.

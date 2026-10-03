@@ -12,7 +12,7 @@ From the project's background on GitHub integration:
 > specifically for linked-issue resolution — `closingIssuesReferences` on a
 > PR is reliably available only via GraphQL — and optionally to batch PR +
 > files + linked-issues into fewer round-trips. The PAT is
-> stored via in-app settings, persisted in Neo4j, and used as a Bearer
+> stored via in-app settings, persisted in the database, and used as a Bearer
 > token. REST rate-limit headers are surfaced in the UI.
 
 ## Scope
@@ -23,5 +23,5 @@ From the project's background on GitHub integration:
   linked-issue resolution, and ad-hoc ref-to-ref comparison.
 - Surfacing REST rate-limit headers for the UI.
 
-Out of scope here: where the PAT is stored (`lib/neo4j/` `Settings` node)
+Out of scope here: where the PAT is stored (`lib/db/settings.ts`)
 and how it's encrypted (`lib/crypto/`).

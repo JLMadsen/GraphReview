@@ -1,4 +1,4 @@
-// Bridge between a stored `(:Repo)` record and lib/gitlab — the GitLab
+// Bridge between a stored repo record and lib/gitlab — the GitLab
 // counterpart to github-access.ts (see that module's header comment for the
 // general shape this mirrors: lib/gitlab is credential-free, this module
 // joins it to the decrypted PAT and the repo's stored URL).
@@ -82,7 +82,7 @@ export function gitLabCloneUrl(ref: GitLabProjectRef): string {
   return `${GITLAB_WEB_URL}/${ref.path}.git`;
 }
 
-/** Canonical `<GITLAB_WEB_URL>/<path>` page URL — what gets stored on `(:Repo).url` and shown in the UI. */
+/** Canonical `<GITLAB_WEB_URL>/<path>` page URL — what gets stored on `Repo.url` and shown in the UI. */
 export function gitLabRepoWebUrl(ref: GitLabProjectRef): string {
   return `${GITLAB_WEB_URL}/${ref.path}`;
 }

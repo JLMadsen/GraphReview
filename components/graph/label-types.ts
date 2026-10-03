@@ -3,8 +3,8 @@
 //
 // A separate file from `./types.ts` for the same reason that file exists at
 // all: these must be importable from a client component, and the route
-// module that defines them server-side pulls in lib/neo4j and lib/jobs (a
-// Neo4j driver and a Redis connection), which must never reach a client
+// module that defines them server-side pulls in lib/db and lib/jobs (the
+// SQLite database and the job runner), which must never reach a client
 // bundle. Duplicated deliberately, not imported.
 
 /** Which part of a labeling run is in flight. Mirrors `LabelPhaseName` in lib/jobs. `saving` can't be cancelled. */
@@ -29,7 +29,7 @@ export interface LabelProgressDTO {
 export interface LabelStatusResponseDTO {
   state: LabelStateDTO;
   progress?: LabelProgressDTO;
-  /** A failed job's reason, or a degraded-read note (e.g. Redis down). */
+  /** A failed job's reason. */
   error?: string;
   /** `running` only: a cancel was requested and the worker hasn't stopped yet. */
   cancelRequested?: boolean;

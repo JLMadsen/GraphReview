@@ -1,6 +1,6 @@
 // Wire shapes for the PR chat (DESIGN.md §6.7) — the contract between
 // app/api/repos/[repoId]/chat and the chat column. Duplicated from
-// lib/neo4j/chat.ts for the client/server boundary, like ./types.ts.
+// lib/db/chat.ts for the client/server boundary, like ./types.ts.
 
 export interface ChatStepDTO {
   tool: string;

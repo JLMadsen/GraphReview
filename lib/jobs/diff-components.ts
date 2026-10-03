@@ -7,21 +7,21 @@
 // additionally needs to know *which* files landed in *which* component so it
 // can send that component's diff hunks (and only those) to the model.
 //
-// Server-only — it queries Neo4j directly.
+// Server-only — it queries the database.
 
 import { listComponentNeighbourSummaries, lookupFileOwners } from "@/lib/db";
 
 /** The result of resolving changed paths against the stored graph. */
 export interface DiffComponentMatch {
-  /** Changed paths that matched a stored `(:File)` node, in input order. */
+  /** Changed paths that matched a stored stored file, in input order. */
   touchedFiles: string[];
   /** Distinct `Component` ids reached from a matched file via `BELONGS_TO`. */
   touchedComponentIds: string[];
-  /** Changed paths with no matching `(:File)` node — non-code files, or the repo needs re-analysis. */
+  /** Changed paths with no matching stored file — non-code files, or the repo needs re-analysis. */
   unmatchedFiles: string[];
   /**
    * Matched file path -> the id of the component that owns it. Omits files
-   * that matched a `(:File)` node but have no `BELONGS_TO` edge (possible
+   * that matched a stored file but have no `BELONGS_TO` edge (possible
    * mid-re-analysis, since analyze.ts writes nodes before edges).
    */
   componentIdByPath: Map<string, string>;

@@ -42,7 +42,7 @@ export const dynamic = "force-dynamic";
 // Response contract
 // ---------------------------------------------------------------------------
 
-/** One persisted `(:Finding)`, flattened for the graph UI. Deliberately *not* the raw `FindingRecord`: `repoId`/`targetKey`/`prId` are request context the client already has, while `componentName` (joined from the component node) is what a finding list actually renders. */
+/** One persisted finding, flattened for the graph UI. Deliberately *not* the raw `FindingRecord`: `repoId`/`targetKey`/`prId` are request context the client already has, while `componentName` (joined from the component node) is what a finding list actually renders. */
 export interface FindingDto {
   id: string;
   componentId: string;
@@ -65,7 +65,7 @@ export interface FindingDto {
   resolvedAt?: string;
 }
 
-/** Lifecycle of a review target, collapsed from BullMQ's finer-grained job states. `"none"` means "never reviewed". */
+/** Lifecycle of a review target, collapsed from the job runner's states. `"none"` means "never reviewed". */
 export type ReviewState = "none" | "queued" | "running" | "completed" | "failed";
 
 export interface ReviewStatusResponse {
@@ -221,7 +221,7 @@ export async function POST(
 // GET — status + findings
 // ---------------------------------------------------------------------------
 
-/** Collapses BullMQ's job states onto the five the UI knows about. */
+/** Collapses the job runner's states onto the five the UI knows about. */
 function toReviewState(jobState: string): ReviewState {
   switch (jobState) {
     case "waiting":
@@ -240,7 +240,7 @@ function toReviewState(jobState: string): ReviewState {
   }
 }
 
-/** BullMQ's `job.progress` is typed as `number | object` and is whatever the job last wrote. Accept it only when it structurally matches the progress contract, so a client never sees a half-shaped object. */
+/** A job's `progress` is whatever the job last wrote. Accept it only when it structurally matches the progress contract, so a client never sees a half-shaped object. */
 function toProgress(raw: unknown): ReviewProgress | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const candidate = raw as Partial<ReviewProgress>;

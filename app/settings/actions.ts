@@ -4,12 +4,12 @@
 //
 // Plaintext secrets (GitHub PAT, AI provider API keys) are submitted here as
 // FormData from the client and encrypted (lib/crypto) before ever being
-// persisted via lib/neo4j — they are never sent back to the client in
+// persisted via lib/db — they are never sent back to the client in
 // plaintext, and never round-tripped through anything client-persisted
 // along the way.
 //
-// AI provider config lives as a list of `(:AiProvider)` nodes
-// (lib/neo4j/ai-provider.ts) rather than directly on `Settings`, so a user
+// AI provider config lives as a list of saved AI providers
+// (lib/db/ai-provider.ts) rather than directly on `Settings`, so a user
 // can save several (e.g. a local model server alongside a hosted one) and
 // flip which is active without re-entering anything. GitHub PAT stays a
 // single instance-wide credential on `Settings`.
@@ -126,7 +126,7 @@ export async function clearGitlabPatAction(): Promise<ClearGitlabPatState> {
 /**
  * Creates a new saved AI provider from the "Add provider" form. Becomes the
  * active provider automatically if it's the first one ever saved
- * (lib/neo4j/ai-provider.ts) — otherwise it's just added to the list, active
+ * (lib/db/ai-provider.ts) — otherwise it's just added to the list, active
  * selection unchanged, so adding a second provider never silently switches
  * what a running review/label job is using.
  */

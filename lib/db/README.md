@@ -1,57 +1,43 @@
-# lib/neo4j
+# lib/db
 
-> `lib/neo4j/` driver singleton + typed repository functions per entity
+> `lib/db/` SQLite connection + typed repository functions per entity
 
-From the project's background on the data layer:
-
-> **Neo4j driver**: the official `neo4j-driver` package, wrapped in a
-> server-only singleton (`lib/neo4j/client.ts`) with a connection pool. It is
-> never imported into client components — all reads/writes go through typed
-> repository functions in `lib/neo4j/`.
+All persistent state lives in one SQLite file in the data folder
+(`lib/runtime/paths.ts`: `~/.graphreview/graphreview.db`, or `.data/` under
+`npm run dev`), opened with Node's built-in `node:sqlite`. Nothing outside
+this directory writes SQL for app data — route handlers, `lib/jobs/` and
+`worker/` call the typed functions exported from `index.ts`. (The job
+queue's own tables are the exception: `lib/jobs/runner.ts` owns those.)
 
 ## Scope
 
-- `client.ts` — the server-only driver singleton / connection pool, plus
-  `runQuery`/`runRead`/`runWrite`/`withSession` helpers that always close
-  their session, even on error. Reads `NEO4J_URI`/`NEO4J_USER`/
-  `NEO4J_PASSWORD` from env (see `docker/.env.example`).
-- `types.ts` — typed shapes for every node label and relationship property
-  bag (`RepoRecord`, `ComponentRecord`, `FileRecord`,
-  `PullRequestRecord`, `RefSnapshotRecord`, `FindingRecord`, plus
-  `ImportsProps`/`DependsOnProps`/`ChangesProps` for relationship
-  properties). `SettingsRecord` is the one exception — it's defined in
-  `settings.ts` itself per that module's integration contract.
-- `schema.ts` — `runMigrations()`, which creates (`IF NOT EXISTS`, so it's
-  safe to re-run) a uniqueness constraint on every label's `id` property
-  (and `Settings.id`). `RefSnapshot` is a documented exception: see the
-  Community Edition note in the file for why its constraint is on `sha`
-  rather than a composite `(repoId, sha)` key.
-- One repository module per node label in the schema: `repo.ts`,
-  `component.ts`, `file.ts`, `pullRequest.ts`, `refSnapshot.ts`,
-  `finding.ts`, `settings.ts`, `ai-provider.ts`. Each owns the Cypher for its entity —
-  parameterized only, never string-concatenated — and returns typed
-  results. Each also owns the relationship functions where it's the
-  "from" side of that edge (e.g. `file.ts` exports `linkFileToComponent`
-  for `BELONGS_TO` and `linkFileImport` for `IMPORTS`; `component.ts`
-  exports `linkComponentDependency` for `DEPENDS_ON`, `linkComponentChildOf`
-  for `CHILD_OF`, and `linkComponentToRepo` for `PART_OF`; `pullRequest.ts`
-  exports `linkPullRequestToRepo` for `BELONGS_TO` and
-  `linkPullRequestChangesFile` for `CHANGES`; `finding.ts` exports
-  `linkFindingAboutComponent` for `ABOUT` and `linkFindingForPullRequest`
-  for `FOR`; `ai-provider.ts` exports `createAiProvider`/`listAiProviders`/
-  `getActiveAiProvider`/`setActiveAiProvider`/`updateAiProvider`/
-  `deleteAiProvider` for `(:Settings)-[:HAS_AI_PROVIDER]->(:AiProvider)` and
-  also owns the one-time lazy migration off the old single-provider
-  `Settings` fields).
-- `pr-map.ts` — the PR map's queries (DESIGN.md §6.4): `listPrMapImports`
-  (every `IMPORTS` edge touching a set of paths, with both owners),
-  `listPrMapComponents`, and the `(:PrMap)` store —
-  `getPrMapGrouping`/`savePrMapGrouping` (the AI grouping only, as JSON,
-  `-[:FOR]->` its `PullRequest`) and `prMapFilesKey`.
-- `index.ts` — barrel re-exporting all of the above.
-- No Neo4j import belongs in a client component. Route handlers and
-  `worker/` are the only callers.
+- `client.ts` — the process-wide connection (pinned to `globalThis`, since
+  Next.js bundles route handlers and instrumentation separately), the
+  `all`/`get`/`run` helpers with a statement cache, `transaction()`, and the
+  `pack`/`unpack`/`applyPatch` helpers for JSON documents. Calls are
+  synchronous; repository functions stay `async` so callers don't care.
+- `schema.ts` — versioned migrations (`PRAGMA user_version`), applied on
+  first connection. Append, never edit a shipped entry.
+- `types.ts` — record shapes (`RepoRecord`, `ComponentRecord`,
+  `FileRecord`, `PullRequestRecord`, `RefSnapshotRecord`, `FindingRecord`,
+  …). `SettingsRecord` lives in `settings.ts`.
+- One module per entity: `repo.ts`, `component.ts`, `file.ts`,
+  `pullRequest.ts`, `refSnapshot.ts`, `finding.ts`, `settings.ts`,
+  `ai-provider.ts`, `checklist.ts`, `chat.ts`, `pr-map.ts`, `app-map.ts`,
+  plus `label.ts` and `merge.ts` for the set-based reads/writes labeling and
+  feature merges need, and `kv.ts` for small cached JSON values.
+- No import from a client component — this is server-only.
 
-Out of scope here: encryption of credential fields on `Settings` (that's
-`lib/crypto/`), and the GitHub/AI API calls that produce the data being
-persisted.
+## Layout
+
+Each entity table has its key, the columns it is looked up or joined by,
+and a `data` column with the full record as JSON. The graph's relationships
+are edge tables: `component_parents` (`CHILD_OF`), `component_deps`
+(`DEPENDS_ON`), `file_owners` (`BELONGS_TO`, one owner per file),
+`file_imports` (`IMPORTS`) and `pr_changes` (`CHANGES`). Edges cascade with
+their endpoints; references that are only ids (a finding's `componentId`,
+a PR map's `prId`) don't, so pruning a component never deletes findings —
+`relinkFindings` in `merge.ts` moves them instead.
+
+Out of scope here: encryption of credential fields (`lib/crypto/`), and the
+GitHub/AI calls that produce the data being persisted.

@@ -1,16 +1,33 @@
 {
   "name": "graphreview",
   "version": "0.1.0",
-  "private": true,
+  "description": "Review pull requests against a component graph of your codebase, with optional AI review. Runs locally.",
+  "license": "GPL-3.0-only",
+  "bin": {
+    "graphreview": "bin/graphreview.mjs"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "files": [
+    "bin/",
+    ".next/",
+    "!.next/cache/",
+    "!.next/trace",
+    "!.next/types/",
+    "public/",
+    "lib/analysis/languages/**/*.scm",
+    "lib/preview/harness/",
+    "next.config.mjs",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "dev": "next dev -p 3470",
     "build": "next build",
-    "start": "next start",
+    "start": "node bin/graphreview.mjs",
     "lint": "eslint",
-    "worker": "tsx worker/index.ts",
-    "docker:build": "docker compose -f docker/docker-compose.yml --env-file docker/.env build && docker image prune -f",
-    "docker": "npm run docker:build && docker compose -f docker/docker-compose.yml --env-file docker/.env up",
-    "docker:up": "docker compose -f docker/docker-compose.yml --env-file docker/.env up"
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

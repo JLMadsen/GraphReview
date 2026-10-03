@@ -26,7 +26,7 @@
 
 ## Trying it by hand
 
-Docker must be running. The harness volume and dependency volumes are
+Docker must be running; without it `getDockerStatus()` reports why and the UI disables previews. The harness volume and dependency volumes are
 created on first use, and they're named `graphreview-preview-*`, so they're
 easy to remove:
 

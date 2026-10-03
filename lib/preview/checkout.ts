@@ -2,8 +2,8 @@
 //
 // A preview runs the changed file at two commits, and that file imports the
 // rest of the repo, so each side needs the full tree at its commit. Local
-// repos sit on a read-only bind mount, so neither `git worktree add` nor a
-// plain checkout is possible there. Instead the tree is written with a
+// repos are the user's own working copies and must not be touched, so
+// neither `git worktree add` nor a plain checkout is acceptable there. Instead the tree is written with a
 // throwaway index: `GIT_INDEX_FILE=<tmp> git read-tree <sha>` followed by
 // `checkout-index --prefix=<dest>/`. Git only *reads* objects from the repo;
 // every write goes to the temp index and the destination folder.

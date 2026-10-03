@@ -29,7 +29,7 @@ export default async function BranchesPage({
 }) {
   const { repoId } = await params;
 
-  // Neo4j down is a degraded state, not a 404 — see the same handling in the
+  // An unreadable database is a degraded state, not a 404 — see the same handling in the
   // repo layout.
   let repo: Awaited<ReturnType<typeof getRepoById>> = null;
   let dbError: string | null = null;

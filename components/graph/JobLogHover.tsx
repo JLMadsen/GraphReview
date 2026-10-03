@@ -2,11 +2,11 @@
 
 // Hover-to-see-progress for the analyze/review/label spinners.
 //
-// Each of those three jobs already writes a play-by-play to `docker logs`
+// Each of those three jobs already writes a play-by-play to the server log
 // (worker/index.ts's `log()` calls) — this makes the same lines reachable
 // from the UI, on demand, without turning them into something the regular
 // progress poll has to carry. `?logs=1` on the existing status endpoints
-// reads BullMQ's own per-job log (worker/index.ts also mirrors every line
+// reads the job's own log (worker/index.ts also mirrors every line
 // into `job.log()`), so nothing new needs to be persisted anywhere.
 //
 // Deliberately built on Base UI's `Tooltip` primitives directly (rather than

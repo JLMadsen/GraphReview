@@ -537,7 +537,7 @@ function domainContent(userText: string): { content: string; note: string } {
   };
 }
 
-/** The literal prefix every mock-written module description carries, so test data is recognisable (and deletable) in the UI and in Neo4j. */
+/** The literal prefix every mock-written module description carries, so test data is recognisable (and deletable) in the UI and in the database. */
 export const MOCK_DESCRIPTION_PREFIX = "[mock] ";
 
 function describeContent(userText: string): { content: string; note: string } {

@@ -9,11 +9,11 @@ import { ChecklistEditor } from "@/components/graph/ChecklistEditor";
  * A single global (not per-repo) page for the GitHub PAT and AI provider
  * config, since both are instance-wide under the
  * single-local-admin model. AI provider config is a *list* of saved
- * providers (base URL/key/model each, lib/neo4j/ai-provider.ts) with one
+ * providers (base URL/key/model each, lib/db/ai-provider.ts) with one
  * marked active — so a user can keep e.g. a local model server and a hosted
  * one both configured and flip between them without re-entering credentials.
  * Credential fields are encrypted at rest via lib/crypto (see
- * app/settings/actions.ts) before being written to Neo4j (lib/neo4j).
+ * app/settings/actions.ts) before being written to the database (lib/db).
  *
  * This is a server component: it only ever reads whether a secret is
  * currently saved (a boolean) or plain metadata (name/base URL/model), never
@@ -24,9 +24,8 @@ import { ChecklistEditor } from "@/components/graph/ChecklistEditor";
  * Never prerender this page.
  *
  * Without this, Next statically renders `/settings` at *build* time and
- * serves it with `Cache-Control: s-maxage=31536000`. Inside the Docker
- * image build there is no Neo4j to reach, so `getSettings()` throws, the
- * `catch` below degrades to "nothing is saved", and that HTML is then
+ * serves it with `Cache-Control: s-maxage=31536000`. At build time there is
+ * no user database to read, so the page would render "nothing is saved", and that HTML is then
  * cached for a year — the page reports no stored PAT and no stored API key
  * no matter what is actually in the database, and the AI card's key field
  * offers a blank input instead of the masked "saved · Replace · Clear" row.
@@ -39,9 +38,8 @@ import { ChecklistEditor } from "@/components/graph/ChecklistEditor";
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
-  // Neo4j may not be reachable yet (e.g. first run before `docker compose
-  // up`, or mid-development). Degrade to an empty settings view rather than
-  // crashing the whole page.
+  // The database may fail to open (e.g. an unreadable data folder). Degrade
+  // to an empty settings view rather than crashing the whole page.
   let settings: Awaited<ReturnType<typeof getSettings>> | null = null;
   let providers: Awaited<ReturnType<typeof listAiProviders>> = [];
   let activeProviderId: string | null = null;

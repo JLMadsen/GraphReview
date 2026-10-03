@@ -29,7 +29,7 @@ export default async function RepoDetailLayout({
   const { repoId } = await params;
   if (!repoId) notFound();
 
-  // Neo4j being unreachable is a different failure from "this repo doesn't
+  // An unreadable database is a different failure from "this repo doesn't
   // exist": only the latter is a 404. The former degrades to a bare header so
   // the tabs still work once the database comes back.
   //

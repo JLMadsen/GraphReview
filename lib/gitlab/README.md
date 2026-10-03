@@ -18,7 +18,7 @@ fetch layer, never past it.
   endpoint, no GraphQL needed here), and ad-hoc ref-to-ref comparison.
 - Surfacing GitLab's `RateLimit-*` response headers for the UI.
 
-Out of scope here: where the PAT is stored (`lib/neo4j/` `Settings` node,
+Out of scope here: where the PAT is stored (`lib/db/settings.ts`,
 `gitlabPatEncrypted`) and how it's encrypted (`lib/crypto/`) — see
 `lib/jobs/gitlab-access.ts` for that wiring.
 

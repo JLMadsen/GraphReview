@@ -5,7 +5,7 @@
 // sidebar, and feeds diff-impact results into GraphCanvas for touched-node
 // highlighting. Everything fetches client-side (rather than the server
 // page doing it) so a missing/not-yet-built `/api/repos/[repoId]` repo
-// endpoint or an unreachable Neo4j degrades gracefully in the browser
+// endpoint or an unreadable database degrades gracefully in the browser
 // instead of failing the page render.
 //
 // It is also where the v2 AI review is hung off the diff flow:
@@ -221,7 +221,7 @@ export function GraphView({
   // changes) the graph and the App map are fetched again and the server-
   // rendered header is refreshed. Without this the tab kept showing the old
   // graph — or the sample one — until a manual reload. Fails silently: the
-  // endpoint 404s for an unknown repo and errors without a live Neo4j.
+  // endpoint 404s for an unknown repo and errors without a readable database.
   const router = useRouter();
   useEffect(() => {
     let cancelled = false;
@@ -279,7 +279,7 @@ export function GraphView({
       })
       .catch((err) => {
         if (cancelled) return;
-        // No live Neo4j / repo not analyzed yet — show sample data rather
+        // Database unreadable / repo not analyzed yet — show sample data rather
         // than a dead page, but surface the real error too.
         setGraph({ nodes: SAMPLE_NODES, edges: SAMPLE_EDGES });
         setUsingSample(true);
@@ -612,7 +612,7 @@ export function GraphView({
             onSelectNode={handleSelectNode}
             reviewMarkers={reviewMarkers}
             // No labeling control over sample data: those component ids
-            // don't exist in Neo4j, so there is nothing to label.
+            // don't exist in the database, so there is nothing to label.
             labels={usingSample ? undefined : labels}
             previewComponentIds={previewIds ?? undefined}
             toolbarExtra={

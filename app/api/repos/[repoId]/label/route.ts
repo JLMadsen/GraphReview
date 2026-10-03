@@ -35,7 +35,7 @@ export const dynamic = "force-dynamic";
 // Response contract
 // ---------------------------------------------------------------------------
 
-/** Lifecycle of a repo's labeling run, collapsed from BullMQ's finer-grained job states. `"none"` means "never labeled". */
+/** Lifecycle of a repo's labeling run, collapsed from the job runner's states. `"none"` means "never labeled". */
 export type LabelState = "none" | "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export interface LabelStatusResponse {
@@ -139,7 +139,7 @@ export async function POST(
 // GET — status
 // ---------------------------------------------------------------------------
 
-/** Collapses BullMQ's job states onto the five the UI knows about. */
+/** Collapses the job runner's states onto the five the UI knows about. */
 function toLabelState(jobState: string): LabelState {
   switch (jobState) {
     case "waiting":

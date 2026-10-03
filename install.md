@@ -1,182 +1,111 @@
 # Installing and running GraphReview
 
-GraphReview is a locally-run Next.js app that reviews GitHub pull requests
-against a statically-derived "component graph" of a codebase, with optional
-AI-generated per-component summaries and intent checks. It's built as three
-processes sharing one codebase: the **app** (Next.js web server), a
-**worker** (BullMQ job consumer that does the actual static analysis and AI
-calls), backed by **Neo4j** (graph storage) and **Redis** (job queue).
-
-> **Note on the root README:** [`README.md`](README.md) currently describes
-> the project as a "skeleton" with nothing wired up. That's stale — v1 and
-> v2 are in fact done (static analysis, the graph UI, GitHub integration, AI
-> review, and AI labeling all work). This file reflects the current, more
-> complete state.
+GraphReview is a locally-run Next.js app that reviews pull requests against
+a statically-derived "component graph" of a codebase, with optional
+AI-generated summaries, reviews and intent checks. It runs as **one
+process**: the web server and the background workers (static analysis, AI
+calls, previews) share it, and everything is stored in one SQLite file.
 
 ## 1. Prerequisites
 
 | For | Need |
 |---|---|
-| Docker Compose install (recommended) | Docker Desktop (Windows/Mac) or Docker Engine + Compose plugin (Linux) |
-| Local dev without Docker | Node.js 20+ (matches the Docker image's `node:20-alpine`; not pinned in `package.json`), `git` on `PATH`, and your own reachable **Neo4j 5** and **Redis** instances |
-| Optional: running your own local AI model | [Ollama](https://ollama.com) (or any other OpenAI-compatible server) |
+| Running GraphReview | [Node.js](https://nodejs.org) **22.13+** (for the built-in `node:sqlite`) and `git` on `PATH` |
+| Before/after previews (optional) | [Docker Desktop](https://www.docker.com/products/docker-desktop/) or Docker Engine, running |
+| Running your own local AI model (optional) | [Ollama](https://ollama.com) or any other OpenAI-compatible server |
 
-`package.json` has no `engines` field, so nothing enforces the Node version
-locally — use Node 20+ to match what's actually tested (the container
-image).
-
-## 2. Install — Docker Compose (recommended)
-
-Compose is the primary, supported way to run the app.
+## 2. Install and run
 
 ```bash
-cp docker/.env.example docker/.env
-# edit docker/.env — see the Configuration section below for what's required vs. optional
-
-npm run docker
+npx graphreview
 ```
 
-`npm run docker` runs `docker compose -f docker/docker-compose.yml
---env-file docker/.env build && docker image prune -f && docker compose ...
-up`. The app is served at [http://localhost:3470](http://localhost:3470) — set
-`APP_PORT` in `docker/.env` to publish it on another port.
+The first run downloads the package; later runs start in about a second. The
+app is served at [http://127.0.0.1:3470](http://127.0.0.1:3470) — or the
+next free port, if 3470 is taken — and the browser opens on it. Ctrl+C stops
+it. To keep it installed rather than going through `npx` each time:
+
+```bash
+npm install -g graphreview
+graphreview
+```
+
+| Option | Purpose |
+|---|---|
+| `--port <n>` | Listen on this port instead of 3470 |
+| `--data <dir>` | Use this data folder instead of `~/.graphreview` (also `GRAPHREVIEW_HOME`) |
+| `--no-open` | Don't open the browser |
 
 **Caveats:**
 
-- **Always use `npm run docker`, not `docker compose up --build` /
-  `docker build` directly.** Rebuilding without pruning leaves the previous
-  image dangling (`<none>:<none>`) and silently eats disk over repeated
-  rebuilds, since the tag just moves to the new image. `npm run docker:build`
-  builds+prunes without starting containers; `npm run docker:up` starts
-  already-built images without rebuilding — only safe when you're sure
-  nothing changed since the last build.
-- **There is no bind-mounted source.** The image is built once from
-  whatever's on disk at build time. Any code change requires re-running
-  `npm run docker` (a rebuild) to take effect — editing files while the
-  containers are up does nothing.
-- **Both `app` and `worker` must be running.** The worker is what actually
-  does static analysis, AI calls, *and* runs the one-time Neo4j schema
-  migration (`runMigrations()`) on startup. The app alone will come up fine
-  but nothing will ever get analyzed and the schema constraints won't be
-  created.
-- **Neo4j and Redis are not published to the host** by default (only `app`'s
-  port is, `APP_PORT`, default 3470). If you want the Neo4j Browser for debugging, add a `ports:`
-  mapping (e.g. `7474:7474` / `7687:7687`) to the `neo4j` service in
-  `docker/docker-compose.yml` yourself.
-- **Windows + Docker Desktop**: after an unclean shutdown, Docker Desktop can
-  fail to start with a `removing stale socket ...
-  userAnalyticsOtlpHttp.sock` error. Fix: rename aside
-  `%LOCALAPPDATA%\Docker\run` and let Docker recreate it. This is a known
-  recurring Docker Desktop issue, not a GraphReview bug — check for it first
-  if Docker won't start after a machine restart.
-- **Wiping the `neo4j_data` volume loses everything** — all analyzed repos,
-  curated component descriptions, AI-generated domain labels, saved GitHub
-  PAT and AI provider config. There's no export/backup feature yet.
+- **The server listens on 127.0.0.1 only.** GraphReview has no login — it
+  is a single-user tool for your own machine, so it isn't reachable from
+  other machines.
+- **One instance per data folder.** Starting it again while it's running just
+  points you at the running one (two servers on one database would each run
+  workers and trip over each other's jobs).
+- **Stopping it mid-job.** Queued jobs survive a restart. A job that was
+  *running* is retried if it's an analysis, and marked "Interrupted — run it
+  again" if it's an AI job (AI jobs never re-run on their own, since that
+  would silently repeat model spend).
+- **SQLite in Node is still flagged experimental** by Node itself; the
+  launcher hides the warning. It's stable in practice for this use.
 
-## 3. Install — local development (without Docker)
+## 3. Running from a source checkout
 
 ```bash
 npm install
-npm run dev       # Next.js dev server, http://localhost:3470 (other port: npm run dev -- -p 4000)
-npm run worker    # BullMQ worker — separate terminal, required (see above)
+npm run dev       # dev server with hot reload, http://localhost:3470 (other port: npm run dev -- -p 4000)
 ```
 
-You need your own Neo4j 5 and Redis reachable via the env vars below
-(`NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `REDIS_URL`, `SESSION_SECRET`).
-Easiest way to get those without installing them natively is still Docker,
-just for the two dependency containers — e.g. run only `neo4j`/`redis` from
-`docker/docker-compose.yml`, or their official images directly.
+The workers start with the dev server (via `instrumentation.ts`) — there's
+nothing else to run. `npm run dev` keeps its data in `.data/` in the
+checkout, so it never touches an installed copy's database.
 
-**Caveat:** this path is explicitly *not* the primary supported one —
-local-path repo ingestion in particular is designed around a single
-bind-mounted folder under Docker; outside Docker there's no equivalent
-mount restriction, so it behaves a bit differently (see the
-`LOCAL_REPOS_ROOT` note below).
+`npm run build` then `npm start` runs the production build exactly as
+`npx graphreview` does. `npm pack` builds and produces the publishable
+tarball (`npm install -g ./graphreview-<version>.tgz` to try it).
 
-## 4. Configuration (env vars)
+## 4. Where data lives
 
-Copy `docker/.env.example` to `docker/.env` and fill in the **required**
-section; everything else has a working default.
+Everything is in the data folder (`~/.graphreview` by default):
 
-### Required
-
-| Var | Purpose |
+| File | What |
 |---|---|
-| `NEO4J_URI` | Bolt URI — leave as `bolt://neo4j:7687` under Compose |
-| `NEO4J_USER` | Neo4j username — leave as `neo4j` under Compose |
-| `NEO4J_PASSWORD` | **Must be at least 8 characters** (Neo4j's own requirement) |
-| `REDIS_URL` | Leave as `redis://redis:6379` under Compose |
-| `LOCAL_REPOS_PATH` | Absolute **host** path bind-mounted read-only at `/data/local-repos`. Only repos already cloned under this one folder are usable as a "local" source — see the caveat below. |
-| `SESSION_SECRET` | Long random string (e.g. `openssl rand -base64 32`) — keys AES-256-GCM encryption of the GitHub PAT and AI provider API keys at rest in Neo4j. |
+| `graphreview.db` (+ `-wal`, `-shm`) | The SQLite database: repos, the component graph, findings, settings, saved AI providers, job queue |
+| `repos/` | Clones of GitHub/GitLab repos (local repos are read in place, never copied) |
+| `secret.key` | Random key that encrypts saved tokens and API keys in the database. Generated on first use. Lose it and saved credentials have to be re-entered — nothing else is affected |
 
-### Optional — tuning
-
-| Var | Default | Purpose |
-|---|---|---|
-| `REPO_CACHE_DIR` | `/data/repos` (Docker) / `./.data/repos` (plain `npm run dev`) | Where app-managed clone-by-URL repos are cached |
-| `LOCAL_REPOS_ROOT` | `/data/local-repos` (Docker) / `LOCAL_REPOS_PATH` itself (outside Docker) | Container-side root that "local path" repos are confined to |
-| `ANALYSIS_CONCURRENCY` | `1` | Parallel static-analysis jobs (CPU-bound; 1 is sensible) |
-| `REVIEW_CONCURRENCY` | `1` | Parallel AI review jobs (documented in `worker/index.ts`, not in `.env.example`) |
-| `LABEL_CONCURRENCY` | `1` | Parallel AI labeling jobs (same as above) |
-| `AI_REQUEST_TIMEOUT_MS` | `1800000` (30 min) | Longest one AI request may take; `0` = no limit. Raise it for large local models |
-| `STALENESS_SWEEP_INTERVAL_MS` | `0` (off) | Periodic background staleness re-check; the normal trigger is "on view", so this is only for keeping repos warm without anyone opening the UI |
-
-### Optional — closed-network / mirror support
-
-All default to the real-world service and only matter on a network without
-direct internet access:
-
-| Var | Purpose |
-|---|---|
-| `GITHUB_API_URL` | Point at a GitHub Enterprise Server / internal proxy (default: `https://api.github.com`) |
-| `GITHUB_WEB_URL` | GitHub *web* host for clone URLs and UI links (default: `https://github.com`) |
-| `NODE_BASE_IMAGE` | Base image for the app/worker build (default: `node:20-alpine`) |
-| `ALPINE_MIRROR` | Alpine package mirror for `apk add git` during image build |
-| `NEO4J_IMAGE` / `REDIS_IMAGE` | Mirrors of the official `neo4j:5` / `redis:7-alpine` images |
-| `CA_CERT_DIR` | Folder of internal CA certificates (`*.crt`/`*.pem`) to trust — default `docker/certs/`. Baked into the app/worker images and trusted by `apk`, `npm ci`, git and Node (AI endpoint, GitHub/GitLab APIs). Rebuild after changing it; see `docker/certs/README.md` |
-
-Fonts are bundled (the `geist` npm package), so neither the build nor the
-browser needs to reach Google Fonts.
-
-**Caveat: npm's registry is deliberately not covered here.** `npm ci`/`npm
-run build` inside the Docker image build still need real npm registry access
-or your own `.npmrc`/`NPM_CONFIG_REGISTRY` — none of the above vars affect
-that.
-
-### Not env vars
-
-The **GitHub PAT** and **AI provider config** (base URL / API key / model)
-are *not* set via env vars — they're entered on the app's **Settings** page
-at runtime and stored encrypted in Neo4j. Env vars only cover infrastructure
-wiring.
+Back up or move GraphReview by copying the folder while it's stopped.
+Deleting it resets GraphReview completely.
 
 ## 5. First-run setup (in the app)
 
-1. Open [http://localhost:3470](http://localhost:3470) (or your `APP_PORT`).
-2. Go to **Settings**:
-   - **GitHub PAT** (optional) — needed only for PR/linked-issue fetching
-     and cloning private repos. Local repos work with **no GitHub PAT at
-     all** — branch listing, ref comparison, and diffs for the AI review all
-     come from the checkout's own `git`. Needs `repo` scope.
+1. Go to **Settings**:
+   - **GitHub / GitLab PAT** (optional) — needed only for PR/MR and linked-
+     issue fetching and cloning private repos. Local repos work with **no
+     token at all** — branch listing, ref comparison, and diffs for the AI
+     review all come from the checkout's own `git`. GitHub needs `repo`
+     scope, GitLab `api`.
    - **AI provider(s)** (optional) — add one or more OpenAI-compatible
      endpoints (base URL, API key, model name). You can save several and
      toggle which one is *active*; only the active one is used. Use **Test
-     connection** before saving to confirm it's reachable — it sends one
-     tiny chat completion, nothing is persisted by the test itself.
-3. Add a repo from the landing page — either a path under `LOCAL_REPOS_PATH`
-   or a GitHub URL. This kicks off static analysis automatically.
+     connection** before saving to confirm it's reachable.
+2. Add a repo from the landing page — pick one of the git repos GraphReview
+   found in the usual folders (`~/code`, `~/Documents/GitHub`,
+   `~/source/repos`, …), type the full path to any other checkout, or paste a
+   GitHub/GitLab URL. This kicks off static analysis automatically.
 
-**Caveat:** without an AI provider configured, the app is still fully usable
-for the graph/diff-impact view — AI review and labeling just show a
-non-alarming "not configured" note instead of running.
+Without an AI provider the app is still fully usable for the graph and
+diff-impact view — AI review and labeling just show a "not configured" note.
 
 ## 6. Optional features
 
 - **Multiple AI providers, hot-swappable.** Save a local model and a hosted
   one side by side and flip the active toggle — no restart needed.
-- **Running your own local AI model instead of a hosted API key.** Any
-  OpenAI-compatible `/v1/chat/completions` server works. [Ollama](https://ollama.com)
-  is the easiest local option:
+- **Running your own local AI model.** Any OpenAI-compatible
+  `/v1/chat/completions` server works. [Ollama](https://ollama.com) is the
+  easiest local option:
   ```bash
   # Windows: installer from https://ollama.com/download
   # Ubuntu:
@@ -184,30 +113,27 @@ non-alarming "not configured" note instead of running.
 
   ollama pull qwen2.5:7b-instruct   # small instruct model, fits an 8GB GPU
   ```
-  Then in Settings: Base URL `http://localhost:11434/v1` (plain `npm run
-  dev`) or `http://host.docker.internal:11434/v1` (Docker Compose — Ollama
-  stays on the host), API key any placeholder (e.g. `local`), Model the tag
-  you pulled. `docker-compose.yml` already maps `host.docker.internal` to
-  the host gateway on both Windows and Linux for this to work uniformly.
-  Caveat: review/label quality with a small local model is well below a
-  hosted frontier model.
-- **AI-assisted domain labeling.** A repo starts with only a mechanical
-  folder-based module tier — the higher-level "domain" grouping (e.g.
-  "Auth", "UI primitives") requires an AI provider and a manual click
-  ("Generate labels" in the graph toolbar). It does not run automatically on
-  first analysis.
+  Then in Settings: Base URL `http://localhost:11434/v1`, API key any
+  placeholder (e.g. `local`), Model the tag you pulled. Review/label quality
+  with a small local model is well below a hosted frontier model.
+- **AI-assisted domain labeling.** A repo starts with a mechanical
+  folder-based module tier — the higher-level "domain" grouping needs an AI
+  provider and a click on "Generate labels" in the graph toolbar.
+- **Before/after previews** render changed UI components and run changed
+  functions at the base and the head, each in a throwaway Docker container
+  with no network while the code runs. Meant for repos you trust. Without
+  Docker running, the preview buttons are disabled and say why.
 - **Testing the AI pipeline without a real provider** — a dependency-free
-  mock OpenAI-compatible server:
+  mock OpenAI-compatible server (from a checkout):
   ```bash
   npx tsx lib/ai/mock-server.ts --port 4010
   ```
-  Point Settings at `http://localhost:4010/v1` (or
-  `http://host.docker.internal:4010/v1` from a container) with any API key.
-  Special tokens in a prompt: `MOCK_FAIL` → HTTP 500, `MOCK_GARBAGE` →
-  unparseable response; `MOCK_DELAY_MS` env var simulates latency. Caveat:
-  on Windows, `tsx` can leave a child process behind after you stop it —
-  kill the PID still listening on the port.
-- **Smoke tests** (no test runner/framework — plain scripts):
+  Point Settings at `http://localhost:4010/v1` with any API key. Special
+  tokens in a prompt: `MOCK_FAIL` → HTTP 500, `MOCK_GARBAGE` → unparseable
+  response; `MOCK_DELAY_MS` env var simulates latency. On Windows, `tsx`
+  can leave a child process behind after you stop it — kill the PID still
+  listening on the port.
+- **Smoke tests** (plain scripts, from a checkout):
   ```bash
   npx tsx lib/ai/smoke-test.ts
   npx tsx lib/ai/smoke-test-review.ts
@@ -217,27 +143,69 @@ non-alarming "not configured" note instead of running.
   npx tsx lib/analysis/smoke-test-jvm.ts [dir]     # Java+Kotlin resolver
   npx tsx lib/analysis/smoke-test-node.ts [dir]    # JS/TS monorepo resolver
   ```
-- **Closed-network / air-gapped deployment** — see the mirror env vars above.
 
-## 7. Other known caveats worth knowing before you rely on this
+## 7. Configuration (env vars)
 
-- **Local-path repos are confined to one bind-mounted folder under Docker**
-  (`LOCAL_REPOS_PATH`). A repo cloned elsewhere on the host must be moved or
-  symlinked into that folder, or ingested via the app's clone-by-URL path
-  instead.
+Nothing is required. Tokens and AI providers are entered in **Settings**,
+not env vars. Set any of these in the environment GraphReview starts in:
+
+### General
+
+| Var | Default | Purpose |
+|---|---|---|
+| `GRAPHREVIEW_HOME` | `~/.graphreview` (`.data/` under `npm run dev`) | Data folder (same as `--data`) |
+| `LOCAL_REPOS_ROOT` | unset | Confine local repos to this folder: only repos under it can be added, relative paths resolve from it, and the add-repo list shows its repos |
+| `REPO_CACHE_DIR` | `<data folder>/repos` | Where GitHub/GitLab clones are kept |
+| `SESSION_SECRET` | `secret.key` in the data folder | Key credential encryption with this string instead of the generated key |
+| `AI_REQUEST_TIMEOUT_MS` | `1800000` (30 min) | Longest one AI request may take; `0` = no limit. Raise it for large local models |
+| `ANALYSIS_CONCURRENCY` | `1` | Parallel static-analysis jobs (CPU-bound; 1 is sensible) |
+| `REVIEW_CONCURRENCY` / `LABEL_CONCURRENCY` / `APP_MAP_CONCURRENCY` | `1` | Parallel AI jobs of each kind |
+| `STALENESS_SWEEP_INTERVAL_MS` | `0` (off) | Periodic background staleness re-check; the normal trigger is "on view" |
+| `GRAPHREVIEW_NO_WORKER` | unset | `1` serves the UI without processing jobs |
+
+### Before/after preview sandbox
+
+| Var | Default | Purpose |
+|---|---|---|
+| `PREVIEW_NODE_IMAGE` / `PREVIEW_PYTHON_IMAGE` | `node:20-bookworm-slim` / `python:3.12-slim` | Images the code runs in (pulled on first use) |
+| `PREVIEW_RUN_TIMEOUT_MS` / `PREVIEW_INSTALL_TIMEOUT_MS` | `120000` / `900000` | Wall-clock limits for one side's run, and for a dependency install |
+| `PREVIEW_MEMORY` / `PREVIEW_CPUS` | `2g` / `1` | Resource caps per sandbox container |
+| `PREVIEW_DEPS_MAX_AGE_HOURS` / `PREVIEW_DEPS_KEEP` | `48` / `6` | Installed dependencies are cached in Docker volumes (often hundreds of MB each); after every preview, caches unused this long are removed and only this many are kept |
+| `PREVIEW_CONCURRENCY` | `1` | Files previewed at once (each runs two containers) |
+
+### Closed networks
+
+All optional — set them only on a network where the public services aren't
+reachable and an internal mirror or proxy stands in:
+
+| Var | Purpose |
+|---|---|
+| `GITHUB_API_URL` / `GITHUB_WEB_URL` | GitHub Enterprise Server or an internal proxy (defaults `https://api.github.com` / `https://github.com`) |
+| `GITLAB_API_URL` / `GITLAB_WEB_URL` | Self-hosted GitLab (defaults to gitlab.com) |
+| `NODE_EXTRA_CA_CERTS` | A file of internal CA certificates. Node uses it for the AI endpoint and the GitHub/GitLab APIs, and preview installs get it combined with the public roots |
+| `NPM_CONFIG_REGISTRY` | npm registry mirror — for installing GraphReview itself, and for preview dependency installs |
+| `PIP_INDEX_URL` | PyPI mirror for Python preview installs |
+| `PREVIEW_IMAGE_REGISTRY` | Registry/namespace prefix for the preview images, e.g. `mirror.corp/library` |
+| `HTTPS_PROXY` / `NO_PROXY` | Passed to preview installs as well |
+
+git uses its own configuration (`git config http.sslCAInfo …`,
+`http.proxy`) for clones. Fonts are bundled, so neither GraphReview nor the
+browser needs to reach Google Fonts.
+
+## 8. Other known caveats worth knowing before you rely on this
+
 - **GitHub-backed review paths are code-reviewed but not live-tested**
-  against a real PAT/GitHub API as of this writing — the plumbing is there
-  but hasn't been exercised end-to-end.
-  Similarly, AI review/labeling has mainly been exercised against the mock
-  server; a real provider surfaced client-compatibility issues (reasoning
-  models, `temperature`/`max_tokens` rejections) that are now handled, but
-  output *quality* against a real model is otherwise unproven.
+  against a real PAT/GitHub API as of this writing. Similarly, AI
+  review/labeling has mainly been exercised against the mock server; a real
+  provider surfaced client-compatibility issues (reasoning models,
+  `temperature`/`max_tokens` rejections) that are now handled, but output
+  *quality* against a real model is otherwise unproven.
 - **No audit trail for AI findings.** Re-running a review overwrites prior
   findings for the same PR/component rather than versioning them — fine for
   an advisory tool, not for anything compliance-adjacent.
-- **Component/domain descriptions live only in Neo4j**, never written back
-  to the target repo — losing the `neo4j_data` volume loses them with no
-  recovery path.
+- **Component/domain descriptions live only in GraphReview's database**,
+  never written back to the target repo — deleting the data folder loses
+  them.
 - **Java/Kotlin dependency resolution is lexical, not type-checked** — same-
   package/wildcard-import references can produce false edges when a local
   variable happens to share a name with a real class.

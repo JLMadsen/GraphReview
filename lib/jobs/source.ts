@@ -285,7 +285,7 @@ type Logger = (message: string) => void;
  * Brings the repo's source on disk up to date and returns the directory to
  * analyze plus its exact commit SHA (recorded as `Repo.lastAnalyzedSha`).
  *
- * Local repos are read-only (the bind mount is `:ro`) — they are never
+ * Local repos are treated as read-only — they are never
  * fetched or mutated, only read at whatever commit the developer has checked
  * out. URL repos are cloned on first use and fast-forwarded to the remote's
  * default branch afterwards.

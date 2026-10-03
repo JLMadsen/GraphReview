@@ -6,7 +6,7 @@
 //               modules: nothing to group (the modules are the cards).
 //   explaining  a few cards per call: a real explanation, the files to open
 //               first, and a verb + sentence per outgoing connection.
-//   saving      one `(:AppMap)` node for the level, replacing the last run.
+//   saving      one app-map record for the level, replacing the last run.
 //
 // Cards and edges are assembled by lib/jobs/app-map.ts exactly as the read
 // path does, so the explain calls see the same connections the canvas will
