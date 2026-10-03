@@ -16,4 +16,6 @@ The app ships as an npm package run with `npx graphreview`
 (bin/graphreview.mjs → `next start`). `npm pack` builds and packs it; test a
 change to the launcher or the `files` list by installing that tarball into
 an empty folder and running `npx graphreview --no-open --data <tmp dir>`.
-Never `npm publish` without the user asking.
+Never `npm publish` without the user asking. `npm pack` packs the working
+copy, not the commit: `bin/graphreview.mjs` must have LF line endings (a CRLF
+shebang breaks it on macOS/Linux) — `git checkout -- bin` restores them.
