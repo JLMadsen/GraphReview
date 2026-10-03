@@ -4,6 +4,7 @@ import { getRepoDto } from "@/lib/jobs";
 import type { RepoDto } from "@/lib/jobs";
 import { getRepoById } from "@/lib/neo4j";
 import { PROVIDER_NAMES, RepoStatusText, providerIcon } from "@/app/repo-status-badge";
+import { ReanalyzeButton } from "./reanalyze-button";
 
 /**
  * Repo detail shell.
@@ -94,6 +95,7 @@ export default async function RepoDetailLayout({
               {PROVIDER_NAMES[repo.provider]}
             </span>
             <RepoStatusText status={repo.status} lastAnalyzedSha={repo.lastAnalyzedSha} repoId={repo.id} />
+            {repo.status !== "analyzing" ? <ReanalyzeButton repoId={repo.id} /> : null}
           </div>
         ) : null}
       </div>
