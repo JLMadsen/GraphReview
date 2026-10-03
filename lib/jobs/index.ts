@@ -22,6 +22,8 @@ export {
   type EnqueueAnalysisResult,
 } from "./queue";
 
+export { cleanUpIfRepoRemoved, removeRepo } from "./repo-removal";
+
 export {
   checkAndEnqueueIfStale,
   checkAndEnqueueIfStaleForRepo,

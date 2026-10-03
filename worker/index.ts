@@ -20,6 +20,7 @@ import {
   REVIEW_QUEUE_NAME,
   clearAppMapCancel,
   clearLabelCancel,
+  cleanUpIfRepoRemoved,
   isAppMapCancelRequested,
   isLabelCancelRequested,
   listRepoDtos,
@@ -372,6 +373,17 @@ export async function startWorker(): Promise<void> {
   previewScanWorker.on("error", (error) => {
     logError(`preview-scan worker error: ${error.message}`);
   });
+
+  // A repo removed while one of its jobs ran gets that job's leftovers
+  // (files, findings, a fresh clone) removed too (lib/jobs/repo-removal.ts).
+  const cleanUp = (job: { data?: { repoId?: string } } | undefined) => {
+    void cleanUpIfRepoRemoved(job?.data?.repoId).catch((error: unknown) =>
+      logError(`cleanup after a removed repo failed: ${(error as Error).message}`)
+    );
+  };
+  for (const w of [worker, reviewWorker, labelWorker, appMapWorker, previewWorker, previewScanWorker]) {
+    (w as Worker<{ repoId: string }, unknown>).on("completed", cleanUp).on("failed", cleanUp);
+  }
 
   startStalenessSweep();
 

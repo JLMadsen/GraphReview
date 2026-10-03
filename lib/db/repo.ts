@@ -1,6 +1,6 @@
 // Typed repository functions for repos.
 
-import { all, applyPatch, get, pack, run, unpack } from "./client";
+import { all, applyPatch, get, pack, run, transaction, unpack } from "./client";
 import type { RepoRecord } from "./types";
 
 function toRepoRecord(props: Record<string, unknown>): RepoRecord {
@@ -88,6 +88,30 @@ export async function listRepos(): Promise<RepoRecord[]> {
   );
 }
 
+/**
+ * Deletes a repo and everything stored for it: its graph, PRs, findings,
+ * merge suggestions, checklist items and answers, chats, PR/app maps,
+ * preview caches and its not-yet-running jobs. Atomic. Files on disk (the
+ * clone cache) are the caller's to remove; a local checkout is never touched.
+ */
 export async function deleteRepo(id: string): Promise<void> {
-  run(`DELETE FROM repos WHERE id = ?`, id);
+  transaction(() => {
+    // Graph: edge tables cascade with their endpoints.
+    run(`DELETE FROM components WHERE repo_id = ?`, id);
+    run(`DELETE FROM files WHERE repo_id = ?`, id);
+    run(`DELETE FROM pull_requests WHERE repo_id = ?`, id);
+    run(`DELETE FROM ref_snapshots WHERE repo_id = ?`, id);
+    run(`DELETE FROM findings WHERE repo_id = ?`, id);
+    run(`DELETE FROM merge_suggestions WHERE repo_id = ?`, id);
+    run(`DELETE FROM checklist_answers WHERE repo_id = ?`, id);
+    run(`DELETE FROM checklist_items WHERE scope = ?`, id);
+    run(`DELETE FROM chat_messages WHERE repo_id = ?`, id);
+    run(`DELETE FROM pr_maps WHERE json_extract(data, '$.repoId') = ?`, id);
+    run(`DELETE FROM app_maps WHERE repo_id = ?`, id);
+    run(`DELETE FROM kv WHERE key = ?`, `kv:preview:mocks:${id}`);
+    // Queued work for the repo would only fail; a running job finishes and
+    // its leftovers are removed by `deleteRepo` again (worker/index.ts).
+    run(`DELETE FROM jobs WHERE json_extract(data, '$.repoId') = ? AND state <> 'active'`, id);
+    run(`DELETE FROM repos WHERE id = ?`, id);
+  });
 }

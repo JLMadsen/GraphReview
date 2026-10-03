@@ -22,7 +22,7 @@ import {
 } from "@/lib/db";
 import { writeModuleTier } from "./module-tier";
 import type { AnalysisJobResult } from "./queue";
-import { LocalPathOutsideRootError, prepareRepoSource } from "./source";
+import { LocalPathOutsideRootError, RepoAccessError, prepareRepoSource } from "./source";
 
 export type JobLogger = (message: string) => void;
 
@@ -129,7 +129,7 @@ export async function persistAnalysis(
  * Runs one full analysis for a repo. Throws on failure — the job runner's
  * retry policy owns what happens next; nothing here swallows an error.
  * Failures that retrying cannot possibly fix (repo deleted, path outside the
- * allowed folder) are raised as `UnrecoverableError` so they fail fast instead of
+ * allowed folder, no access to a private repo) are raised as `UnrecoverableError` so they fail fast instead of
  * burning three attempts.
  */
 export async function runAnalysisJob(
@@ -149,7 +149,7 @@ export async function runAnalysisJob(
   try {
     ({ dir, sha } = await prepareRepoSource(repo, log));
   } catch (error) {
-    if (error instanceof LocalPathOutsideRootError) {
+    if (error instanceof LocalPathOutsideRootError || error instanceof RepoAccessError) {
       throw new UnrecoverableError(error.message);
     }
     throw error;

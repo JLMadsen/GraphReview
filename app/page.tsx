@@ -3,6 +3,7 @@ import { ChevronRight, Clock3, Plug, Waypoints } from "lucide-react";
 import { listRepoDtos, type RepoDto } from "@/lib/jobs";
 import { AddRepoDialog } from "./add-repo-dialog";
 import { ProviderBadge, RepoStatusBadge, providerIcon } from "./repo-status-badge";
+import { RepoDeleteButton } from "./repo-delete-button";
 import { RepoRetryButton } from "./repo-retry-button";
 import { RefreshWhileWorking } from "./refresh-while-working";
 
@@ -92,20 +93,21 @@ function RepoRow({ repo }: { repo: RepoDto }) {
         </div>
       </div>
 
-      {isError ? (
-        <div className="relative z-10 flex items-center justify-end gap-1 border-t border-border/70 px-4 py-2 pointer-events-none">
-          <div className="pointer-events-auto">
+      <div className="pointer-events-none relative z-10 flex items-center gap-1 border-t border-border/70 px-2 py-1.5">
+        <div className="pointer-events-auto">
+          <RepoDeleteButton repoId={repo.id} repoName={repo.name} local={repo.provider === "local"} compact />
+        </div>
+        {isError ? (
+          <div className="pointer-events-auto ml-auto pr-2">
             <RepoRetryButton repoId={repo.id} />
           </div>
-        </div>
-      ) : (
-        <div className="pointer-events-none relative z-10 flex items-center gap-1 border-t border-border/70 px-2 py-1.5">
+        ) : (
           <ChevronRight
             className="ml-auto mr-2 size-4 shrink-0 text-muted-foreground/30 transition-all group-hover/repo:translate-x-0.5 group-hover/repo:text-muted-foreground/70"
             aria-hidden
           />
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

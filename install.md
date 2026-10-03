@@ -96,7 +96,10 @@ Deleting it resets GraphReview completely.
 2. Add a repo from the landing page — pick one of the git repos GraphReview
    found in the usual folders (`~/code`, `~/Documents/GitHub`,
    `~/source/repos`, …), type the full path to any other checkout, or paste a
-   GitHub/GitLab URL. This kicks off static analysis automatically.
+   GitHub/GitLab URL. This kicks off static analysis automatically. Adding
+   the same repo twice is refused (with a link to the existing one); the
+   trash button on a repo card or in the repo header removes a repo and
+   everything GraphReview stored for it — never your files on disk.
 
 Without an AI provider the app is still fully usable for the graph and
 diff-impact view — AI review and labeling just show a "not configured" note.
@@ -197,6 +200,11 @@ browser needs to reach Google Fonts.
 
 ## 8. Other known caveats worth knowing before you rely on this
 
+- **Private GitHub/GitLab repos need a PAT in Settings.** GraphReview never
+  uses your own git credentials (credential manager, SSH agent) for the
+  repos it clones — on a desktop those can pop up a login window that a
+  background job would wait on forever. Without access, analysis fails at
+  once with "add a PAT in Settings".
 - **GitHub-backed review paths are code-reviewed but not live-tested**
   against a real PAT/GitHub API as of this writing. Similarly, AI
   review/labeling has mainly been exercised against the mock server; a real

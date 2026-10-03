@@ -25,10 +25,19 @@ import { getStoredGitLabToken, gitLabCloneUrl, parseGitLabUrl } from "./gitlab-a
 type RemoteProvider = Exclude<RepoProvider, "local">;
 
 // A `git` subprocess that decides to ask for credentials would hang forever
-// here — there is no terminal attached to a Next.js route handler or a
-// background job. Fail the command instead, so a private repo without a
-// configured PAT surfaces as a job error rather than a stuck process.
+// here — nobody is watching a background job. Fail the command instead, so a
+// private (or misspelled) repo without a configured PAT surfaces as a job
+// error rather than a stuck process. On a desktop that takes more than
+// GIT_TERMINAL_PROMPT: Git for Windows' credential manager and GUI askpass
+// (or an editor's, inherited via GIT_ASKPASS) open a login window instead,
+// and the clone waits on it. So askpass answers with nothing, and
+// credential helpers are switched off for every command (`gitOptions`) —
+// GraphReview authenticates with the PAT from Settings only, never with the
+// user's own git credentials.
 process.env.GIT_TERMINAL_PROMPT = "0";
+process.env.GIT_ASKPASS = "echo";
+process.env.SSH_ASKPASS = "echo";
+process.env.GCM_INTERACTIVE = "never";
 
 /** Idle timeout for a git subprocess that should be quick (`ls-remote`, `rev-parse`). */
 const QUICK_GIT_TIMEOUT_MS = 20_000;
@@ -45,7 +54,10 @@ function gitOptions(
     maxConcurrentProcesses: 1,
     trimmed: true,
     timeout: { block: timeoutMs },
-    config,
+    // Empty `credential.helper` clears any configured helper (see the note on
+    // GIT_ASKPASS above). simple-git refuses to touch this key unless told to.
+    config: ["credential.helper=", ...config],
+    unsafe: { allowUnsafeCredentialHelper: true },
   };
 }
 
@@ -114,12 +126,17 @@ function providerLabel(provider: RemoteProvider): string {
 const AUTH_FAILURE_PATTERN =
   /could not read username|authentication failed|write access to repository not granted|status code: ?40[13]\b|remote: .*forbidden|repository not found/i;
 
+/** A clone/fetch the host refused for lack of (valid) credentials. Retrying can't fix it; a PAT in Settings can. */
+export class RepoAccessError extends Error {
+  override readonly name = "RepoAccessError";
+}
+
 function withFriendlyAuthError<T>(promise: Promise<T>, provider: RemoteProvider, hadToken: boolean): Promise<T> {
   return promise.catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     if (AUTH_FAILURE_PATTERN.test(message)) {
       const host = providerLabel(provider);
-      throw new Error(
+      throw new RepoAccessError(
         hadToken
           ? `${host} rejected the request (likely an invalid, expired, or insufficiently-scoped PAT — it needs repo read access for a private repository). Re-enter it in Settings.`
           : `This repository could not be reached without credentials — it's likely private. Add a ${host} PAT in Settings.`

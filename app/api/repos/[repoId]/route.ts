@@ -1,4 +1,7 @@
-// `GET /api/repos/[repoId]` — one repo plus its derived status.
+// `GET /api/repos/[repoId]`    — one repo plus its derived status.
+// `DELETE /api/repos/[repoId]` — remove the repo and everything stored for it
+//                                (lib/jobs/repo-removal.ts). A local
+//                                checkout on disk is never touched.
 //
 // Response contract (depended on by the Graph tab):
 //
@@ -15,7 +18,7 @@
 // immediately. The caller is never blocked on the re-analysis.
 
 import { NextResponse } from "next/server";
-import { getAnalysisJobLogs, getRepoDto } from "@/lib/jobs";
+import { getAnalysisJobLogs, getRepoDto, removeRepo } from "@/lib/jobs";
 import { apiError, errorMessage, loadRepo } from "../_shared";
 
 export const dynamic = "force-dynamic";
@@ -52,5 +55,23 @@ export async function GET(
       `Could not determine repo status: ${errorMessage(error)}`,
       503
     );
+  }
+}
+
+export async function DELETE(
+  _request: Request,
+  { params }: { params: Promise<{ repoId: string }> }
+): Promise<NextResponse> {
+  const { repoId } = await params;
+
+  const loaded = await loadRepo(repoId);
+  if ("response" in loaded) return loaded.response;
+
+  try {
+    await removeRepo(repoId);
+    return NextResponse.json({ deleted: true });
+  } catch (error) {
+    console.error(`DELETE /api/repos/${repoId} failed:`, error);
+    return apiError(`Could not delete the repo: ${errorMessage(error)}`, 500);
   }
 }

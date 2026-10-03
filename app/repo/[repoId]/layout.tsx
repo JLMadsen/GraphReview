@@ -5,6 +5,7 @@ import type { RepoDto } from "@/lib/jobs";
 import { getRepoById } from "@/lib/db";
 import { PROVIDER_NAMES, RepoStatusText, providerIcon } from "@/app/repo-status-badge";
 import { ReanalyzeButton } from "./reanalyze-button";
+import { RepoDeleteButton } from "../../repo-delete-button";
 
 /**
  * Repo detail shell.
@@ -96,6 +97,7 @@ export default async function RepoDetailLayout({
             </span>
             <RepoStatusText status={repo.status} lastAnalyzedSha={repo.lastAnalyzedSha} repoId={repo.id} />
             {repo.status !== "analyzing" ? <ReanalyzeButton repoId={repo.id} /> : null}
+            <RepoDeleteButton repoId={repo.id} repoName={repo.name} local={repo.provider === "local"} redirectTo="/" />
           </div>
         ) : null}
       </div>

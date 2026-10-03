@@ -32,7 +32,7 @@ export async function loadRepo(
   } catch (error) {
     return {
       response: apiError(
-        `Could not reach the graph database: ${(error as Error).message}`,
+        `Could not read the database: ${(error as Error).message}`,
         503
       ),
     };

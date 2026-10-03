@@ -9,6 +9,7 @@
 // refresh the server-rendered list and the new repo shows up as
 // "Analyzing…".
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
@@ -49,6 +50,8 @@ export function AddRepoDialog() {
   const [url, setUrl] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /** Set when the repo was already added: links to it next to the error. */
+  const [existingRepoId, setExistingRepoId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [candidates, setCandidates] = useState<LocalRepoCandidate[]>([]);
   const [candidatesLoaded, setCandidatesLoaded] = useState(false);
@@ -81,12 +84,15 @@ export function AddRepoDialog() {
     setUrl("");
     setName("");
     setError(null);
+    setExistingRepoId(null);
     setSubmitting(false);
   }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (submitting) return;
     setError(null);
+    setExistingRepoId(null);
     setSubmitting(true);
 
     const body =
@@ -102,11 +108,11 @@ export function AddRepoDialog() {
       });
 
       if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        setError(
-          (payload as { error?: string } | null)?.error ??
-            `Request failed with status ${response.status}.`
-        );
+        const payload = (await response.json().catch(() => null)) as
+          | { error?: string; code?: string; repoId?: string }
+          | null;
+        setError(payload?.error ?? `Request failed with status ${response.status}.`);
+        if (payload?.code === "duplicate" && payload.repoId) setExistingRepoId(payload.repoId);
         setSubmitting(false);
         return;
       }
@@ -283,7 +289,17 @@ export function AddRepoDialog() {
               role="alert"
             >
               <TriangleAlert className="mt-px size-4 shrink-0" aria-hidden />
-              <span>{error}</span>
+              <span>
+                {error}
+                {existingRepoId ? (
+                  <>
+                    {" "}
+                    <Link href={`/repo/${existingRepoId}/graph`} className="font-medium underline underline-offset-2">
+                      Open it
+                    </Link>
+                  </>
+                ) : null}
+              </span>
             </p>
           ) : null}
 
