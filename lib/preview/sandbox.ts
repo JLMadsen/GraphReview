@@ -27,6 +27,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { rootCertificates } from "node:tls";
 import { getDataDir } from "@/lib/runtime/paths";
+import { DEFAULT_NODE_MAJOR } from "./node-version";
 import type { PreviewHarnessResult, PreviewRuntime } from "./types";
 
 export const RESULT_MARKER = "@@GRAPHREVIEW_PREVIEW_RESULT@@";
@@ -45,8 +46,14 @@ function mirrorPrefix(): string {
   return prefix && !prefix.endsWith("/") ? `${prefix}/` : prefix;
 }
 
-// Not the app's Alpine image: native npm/pip packages mostly ship glibc builds.
-const NODE_IMAGE = process.env.PREVIEW_NODE_IMAGE?.trim() || `${mirrorPrefix()}node:20-bookworm-slim`;
+// Debian, not Alpine: native npm/pip packages mostly ship glibc builds.
+/** `PREVIEW_NODE_IMAGE` pins one image for every repo; otherwise it follows the repo's Node version (./node-version.ts). */
+const NODE_IMAGE_OVERRIDE = process.env.PREVIEW_NODE_IMAGE?.trim() || undefined;
+/** The image for a Node major, unless `PREVIEW_NODE_IMAGE` pins one. */
+export function nodeImageFor(major: number): string {
+  return NODE_IMAGE_OVERRIDE ?? `${mirrorPrefix()}node:${major}-bookworm-slim`;
+}
+const NODE_IMAGE = nodeImageFor(DEFAULT_NODE_MAJOR);
 const PYTHON_IMAGE = process.env.PREVIEW_PYTHON_IMAGE?.trim() || `${mirrorPrefix()}python:3.12-slim`;
 /** A positive number from the environment, else `fallback` — Compose passes unset optional vars as "". */
 function envMs(name: string, fallback: number): number {
@@ -368,9 +375,10 @@ export async function prepareDeps(
   runtime: PreviewRuntime,
   treeDir: string,
   projectRoot: string,
-  log: Logger
+  log: Logger,
+  /** The image both sides run on; defaults to the runtime's default image. Part of the cache key, since native modules differ per Node version. */
+  image: string = imageFor(runtime)
 ): Promise<PreparedDeps> {
-  const image = imageFor(runtime);
   const projectDir = path.join(treeDir, projectRoot);
   const key = await manifestHash(projectDir, runtime === "python" ? PYTHON_MANIFESTS : NODE_MANIFESTS, image);
   if (!key) return { status: "none" };
@@ -514,12 +522,14 @@ export interface RunHarnessOptions {
   projectRoot: string;
   deps: PreparedDeps;
   log: Logger;
+  /** The image to run in (the one `prepareDeps` installed with); defaults to the runtime's default image. */
+  image?: string;
 }
 
 /** Runs one side in a fresh, offline container and parses the harness's result line. */
 export async function runHarness(options: RunHarnessOptions): Promise<PreviewHarnessResult> {
   const { runtime, treeDir, jobDir, projectRoot, deps, log } = options;
-  const image = imageFor(runtime);
+  const image = options.image ?? imageFor(runtime);
   await ensureImage(image, log);
   if (runtime === "node") await ensureHarnessVolume(log);
 

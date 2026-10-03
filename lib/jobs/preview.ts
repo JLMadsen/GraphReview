@@ -22,6 +22,7 @@ import { materializeTree, mergeBaseOf, projectRootFor, readFileAt, runtimeForPat
 import {
   assertDockerAvailable,
   harnessScript,
+  nodeImageFor,
   prepareDeps,
   pruneDepsVolumes,
   runHarness,
@@ -30,6 +31,7 @@ import {
 } from "@/lib/preview/sandbox";
 import { relatedSources } from "@/lib/preview/related";
 import { detectChangedSymbols } from "@/lib/preview/symbols";
+import { DEFAULT_NODE_MAJOR, requiredNodeMajor } from "@/lib/preview/node-version";
 import type {
   PreviewCaseInput,
   PreviewCaseOutcome,
@@ -206,6 +208,8 @@ const NO_SIDE: SideRun = { harness: null, deps: "none" };
 async function runSide(options: {
   side: PreviewSide;
   runtime: PreviewRuntime;
+  /** The sandbox image (both sides share one); undefined = the runtime's default. */
+  image?: string;
   repoDir: string;
   sha: string;
   filePath: string;
@@ -217,7 +221,7 @@ async function runSide(options: {
   /** Reuse an earlier run's checkout and dependencies. */
   reuse?: PreparedSide;
 }): Promise<SideRun> {
-  const { side, runtime, repoDir, sha, filePath, symbols, inputs, mocks, scratch, reuse } = options;
+  const { side, runtime, image, repoDir, sha, filePath, symbols, inputs, mocks, scratch, reuse } = options;
   const log: JobLogger = (message) => options.log(`${side}: ${message}`);
   let deps = reuse?.prepared.status ?? "none";
   let depsVolume = reuse?.prepared.volume;
@@ -229,7 +233,7 @@ async function runSide(options: {
       log(`writing the tree at ${sha.slice(0, 7)}`);
       await materializeTree(repoDir, sha, treeDir, scratch);
       const projectRoot = projectRootFor(treeDir, filePath, runtime);
-      const installed = await prepareDeps(runtime, treeDir, projectRoot, log);
+      const installed = await prepareDeps(runtime, treeDir, projectRoot, log, image);
       deps = installed.status;
       depsVolume = installed.volume;
       await mkdir(jobDir, { recursive: true });
@@ -254,6 +258,7 @@ async function runSide(options: {
       projectRoot: prepared.projectRoot,
       deps: prepared.prepared,
       log,
+      image,
     });
     return { harness, deps, depsVolume, prepared };
   } catch (error) {
@@ -324,6 +329,18 @@ export async function runPreviewJob(
   if (before === null && after === null) {
     throw new UnrecoverableError(`${data.filePath} exists at neither ${baseSha.slice(0, 7)} nor ${headSha.slice(0, 7)}.`);
   }
+  // Both sides run on one image — the newer Node either side asks for — so
+  // a difference in output is the code's, not the runtime's.
+  let image: string | undefined;
+  if (runtime === "node") {
+    const majors = await Promise.all(
+      [baseSha, headSha].map((sha) => requiredNodeMajor((p) => readFileAt(repoDir, sha, p), data.filePath))
+    );
+    const declared = majors.filter((m): m is number => m !== undefined);
+    image = nodeImageFor(declared.length > 0 ? Math.max(...declared) : DEFAULT_NODE_MAJOR);
+    log(`sandbox image ${image}${declared.length > 0 ? "" : " (the repo doesn't say which Node it needs)"}`);
+  }
+
   const detected = await detectChangedSymbols(data.filePath, runtime, before, after);
   const symbols = detected.runnable;
   log(`${symbols.length} changed function(s)/component(s), ${detected.skipped.length} skipped`);
@@ -392,7 +409,7 @@ export async function runPreviewJob(
     if (symbols.length > 0) {
       progress("preparing", "checking out both sides and running them in the sandbox");
       const runBoth = (reuseBefore?: PreparedSide, reuseAfter?: PreparedSide) => {
-        const common = { runtime, repoDir, filePath: data.filePath, inputs, mocks, scratch, log };
+        const common = { runtime, image, repoDir, filePath: data.filePath, inputs, mocks, scratch, log };
         return Promise.all([
           before === null
             ? Promise.resolve<SideRun>(NO_SIDE)

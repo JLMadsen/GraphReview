@@ -180,7 +180,7 @@ not env vars. Set any of these in the environment GraphReview starts in:
 
 | Var | Default | Purpose |
 |---|---|---|
-| `PREVIEW_NODE_IMAGE` / `PREVIEW_PYTHON_IMAGE` | `node:20-bookworm-slim` / `python:3.12-slim` | Images the code runs in (pulled on first use) |
+| `PREVIEW_NODE_IMAGE` / `PREVIEW_PYTHON_IMAGE` | `node:<major>-bookworm-slim` / `python:3.12-slim` | Images the code runs in (pulled on first use). The Node major follows the repo — `.nvmrc`, `.node-version`, `volta.node` or `engines.node`, nearest to the previewed file; the newer of base and head; 22 when nothing says. Setting `PREVIEW_NODE_IMAGE` pins one image for every repo |
 | `PREVIEW_RUN_TIMEOUT_MS` / `PREVIEW_INSTALL_TIMEOUT_MS` | `120000` / `900000` | Wall-clock limits for one side's run, and for a dependency install |
 | `PREVIEW_MEMORY` / `PREVIEW_CPUS` | `2g` / `1` | Resource caps per sandbox container |
 | `PREVIEW_DEPS_MAX_AGE_HOURS` / `PREVIEW_DEPS_KEEP` | `48` / `6` | Installed dependencies are cached in Docker volumes (often hundreds of MB each); after every preview, caches unused this long are removed and only this many are kept |
