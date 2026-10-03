@@ -11,7 +11,7 @@
 // `relinkFindings` (merge.ts) moves them when modules change.
 
 import { all, compareText, get, pack, placeholders, run, transaction, unpack } from "./client";
-import type { FindingCategory, FindingRecord } from "./types";
+import type { FindingCategory, FindingRecord, FindingResponse, FindingResponseKind } from "./types";
 
 function toFindingRecord(props: Record<string, unknown>): FindingRecord {
   return {
@@ -36,6 +36,7 @@ function toFindingRecord(props: Record<string, unknown>): FindingRecord {
     reviewedAt: (props.reviewedAt as string | undefined) ?? undefined,
     resolvedAt: (props.resolvedAt as string | undefined) ?? undefined,
     callFailed: props.callFailed === true || isLegacyFailurePlaceholder(props) ? true : undefined,
+    responses: Array.isArray(props.responses) && props.responses.length ? (props.responses as FindingResponse[]) : undefined,
   };
 }
 
@@ -85,7 +86,7 @@ export type UpsertFindingInput = Omit<FindingRecord, "createdAt"> & {
   createdAt?: string;
 };
 
-/** Creates or fully replaces a finding, keyed on `id`. `createdAt` and `resolvedAt` are kept from the stored copy. */
+/** Creates or fully replaces a finding, keyed on `id`. `createdAt`, `resolvedAt` and `responses` are kept from the stored copy. */
 export async function upsertFinding(input: UpsertFindingInput): Promise<FindingRecord> {
   const existing = get<{ data: string }>(`SELECT data FROM findings WHERE id = ?`, input.id);
   const previous = existing ? toFindingRecord(unpack(existing.data)) : undefined;
@@ -93,6 +94,7 @@ export async function upsertFinding(input: UpsertFindingInput): Promise<FindingR
     ...JSON.parse(pack(input)),
     createdAt: previous?.createdAt ?? input.createdAt ?? new Date().toISOString(),
     resolvedAt: previous?.resolvedAt,
+    responses: previous?.responses,
   });
   writeFinding(record);
   return record;
@@ -132,6 +134,29 @@ export async function setFindingResolved(
   record.resolvedAt = resolved ? new Date().toISOString() : undefined;
   writeFinding(record);
   return record;
+}
+
+/**
+ * Appends a reply to one finding of `repoId`. An `answered` reply also
+ * resolves the finding (keeping an earlier `resolvedAt`); `fixing` and
+ * `comment` leave its resolved state alone. Returns `null` when no such
+ * finding exists in that repo. Callers enforce which findings may be replied to.
+ */
+export async function addFindingResponse(
+  repoId: string,
+  id: string,
+  reply: { kind: FindingResponseKind; author: string; body: string }
+): Promise<FindingRecord | null> {
+  return transaction(() => {
+    const row = get<{ data: string }>(`SELECT data FROM findings WHERE id = ? AND repo_id = ?`, id, repoId);
+    if (!row) return null;
+    const record = toFindingRecord(unpack(row.data));
+    const now = new Date().toISOString();
+    record.responses = [...(record.responses ?? []), { id: crypto.randomUUID(), ...reply, createdAt: now }];
+    if (reply.kind === "answered") record.resolvedAt ??= now;
+    writeFinding(record);
+    return record;
+  });
 }
 
 export async function deleteFinding(id: string): Promise<void> {

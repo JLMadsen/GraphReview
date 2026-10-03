@@ -203,6 +203,7 @@ export {
 export {
   checkReviewFreshness,
   invalidateReviewFreshness,
+  latestReviewedRevision,
   type ReviewFreshness,
   type ReviewedRevision,
 } from "./review-freshness";

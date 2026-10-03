@@ -94,7 +94,7 @@ interface SettingsFormProps {
 }
 
 /** Section heading with a leading icon chip — shared by every card. */
-function SectionTitle({
+export function SectionTitle({
   icon: Icon,
   children,
 }: {
@@ -748,174 +748,180 @@ export function SettingsForm({
     if (clearGitlabPatState.status === "success") setGitlabPatFieldState("editing");
   }, [clearGitlabPatState]);
 
+  // Two columns of the settings page's grid (app/settings/page.tsx): the
+  // git-host PATs, then the AI providers.
   return (
-    <div className="space-y-5">
-      <form action={patFormAction}>
+    <>
+      <div className="min-w-0 space-y-5">
+        <form action={patFormAction}>
+          <Card className="[--card-spacing:--spacing(5)]">
+            <CardHeader>
+              <SectionTitle icon={Github}>GitHub</SectionTitle>
+              <CardDescription className="text-[13px] leading-relaxed">
+                Personal Access Token used to fetch repos, PRs, diffs, and linked
+                issues.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                <FieldLabel htmlFor="githubPat" hint="repo scope">
+                  Personal Access Token
+                </FieldLabel>
+                {patFieldState === "saved" ? (
+                  <SavedSecret
+                    label="PAT"
+                    onReplace={() => setPatFieldState("editing")}
+                    clearAction={clearPatFormAction}
+                    clearing={isClearingPat}
+                  />
+                ) : (
+                  <Input
+                    id="githubPat"
+                    name="githubPat"
+                    type="password"
+                    autoComplete="off"
+                    placeholder="ghp_..."
+                    className="font-mono"
+                    value={githubPat}
+                    onChange={(e) => setGithubPat(e.target.value)}
+                  />
+                )}
+              </div>
+            </CardContent>
+            <CardFooter className="flex items-center gap-3">
+              <Button type="submit" size="sm" disabled={isPatSaving}>
+                {isPatSaving ? (
+                  <>
+                    <LoaderCircle className="animate-spin" aria-hidden />
+                    Saving…
+                  </>
+                ) : (
+                  "Save"
+                )}
+              </Button>
+              {patState.status === "success" && (
+                <span className="flex items-center gap-1.5 text-[13px] text-success">
+                  <Check className="size-4" aria-hidden />
+                  Saved
+                </span>
+              )}
+              {patState.status === "error" && (
+                <span className="flex items-center gap-1.5 text-[13px] text-destructive">
+                  <TriangleAlert className="size-4 shrink-0" aria-hidden />
+                  {patState.error}
+                </span>
+              )}
+              {clearPatState.status === "error" && (
+                <span className="flex items-center gap-1.5 text-[13px] text-destructive">
+                  <TriangleAlert className="size-4 shrink-0" aria-hidden />
+                  {clearPatState.error}
+                </span>
+              )}
+            </CardFooter>
+          </Card>
+        </form>
+
+        <form action={gitlabPatFormAction}>
+          <Card className="[--card-spacing:--spacing(5)]">
+            <CardHeader>
+              <SectionTitle icon={Gitlab}>GitLab</SectionTitle>
+              <CardDescription className="text-[13px] leading-relaxed">
+                Personal Access Token used to fetch repos, merge requests,
+                diffs, and linked issues. For a self-hosted instance, also set{" "}
+                <span className="font-mono text-foreground/80">GITLAB_API_URL</span>.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                <FieldLabel htmlFor="gitlabPat" hint="api scope">
+                  Personal Access Token
+                </FieldLabel>
+                {gitlabPatFieldState === "saved" ? (
+                  <SavedSecret
+                    label="PAT"
+                    onReplace={() => setGitlabPatFieldState("editing")}
+                    clearAction={clearGitlabPatFormAction}
+                    clearing={isClearingGitlabPat}
+                  />
+                ) : (
+                  <Input
+                    id="gitlabPat"
+                    name="gitlabPat"
+                    type="password"
+                    autoComplete="off"
+                    placeholder="glpat-..."
+                    className="font-mono"
+                    value={gitlabPat}
+                    onChange={(e) => setGitlabPat(e.target.value)}
+                  />
+                )}
+              </div>
+            </CardContent>
+            <CardFooter className="flex items-center gap-3">
+              <Button type="submit" size="sm" disabled={isGitlabPatSaving}>
+                {isGitlabPatSaving ? (
+                  <>
+                    <LoaderCircle className="animate-spin" aria-hidden />
+                    Saving…
+                  </>
+                ) : (
+                  "Save"
+                )}
+              </Button>
+              {gitlabPatState.status === "success" && (
+                <span className="flex items-center gap-1.5 text-[13px] text-success">
+                  <Check className="size-4" aria-hidden />
+                  Saved
+                </span>
+              )}
+              {gitlabPatState.status === "error" && (
+                <span className="flex items-center gap-1.5 text-[13px] text-destructive">
+                  <TriangleAlert className="size-4 shrink-0" aria-hidden />
+                  {gitlabPatState.error}
+                </span>
+              )}
+              {clearGitlabPatState.status === "error" && (
+                <span className="flex items-center gap-1.5 text-[13px] text-destructive">
+                  <TriangleAlert className="size-4 shrink-0" aria-hidden />
+                  {clearGitlabPatState.error}
+                </span>
+              )}
+            </CardFooter>
+          </Card>
+        </form>
+      </div>
+
+      <div className="min-w-0">
         <Card className="[--card-spacing:--spacing(5)]">
           <CardHeader>
-            <SectionTitle icon={Github}>GitHub</SectionTitle>
+            <SectionTitle icon={Bot}>AI providers</SectionTitle>
             <CardDescription className="text-[13px] leading-relaxed">
-              Personal Access Token used to fetch repos, PRs, diffs, and linked
-              issues.
+              Save more than one OpenAI-compatible provider — e.g. a local
+              model server and a hosted one — and toggle which is active. Only
+              the active provider is used for reviews and labeling.
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <FieldLabel htmlFor="githubPat" hint="repo scope">
-                Personal Access Token
-              </FieldLabel>
-              {patFieldState === "saved" ? (
-                <SavedSecret
-                  label="PAT"
-                  onReplace={() => setPatFieldState("editing")}
-                  clearAction={clearPatFormAction}
-                  clearing={isClearingPat}
-                />
-              ) : (
-                <Input
-                  id="githubPat"
-                  name="githubPat"
-                  type="password"
-                  autoComplete="off"
-                  placeholder="ghp_..."
-                  className="font-mono"
-                  value={githubPat}
-                  onChange={(e) => setGithubPat(e.target.value)}
-                />
-              )}
-            </div>
+          <CardContent className="space-y-3">
+            {initialProviders.length === 0 ? (
+              <p className="text-[13px] text-muted-foreground">
+                No providers saved yet.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {initialProviders.map((provider) => (
+                  <ProviderViewRow
+                    key={provider.id}
+                    provider={provider}
+                    isActive={provider.id === initialActiveProviderId}
+                  />
+                ))}
+              </div>
+            )}
+
+            <AddProviderForm />
           </CardContent>
-          <CardFooter className="flex items-center gap-3">
-            <Button type="submit" size="sm" disabled={isPatSaving}>
-              {isPatSaving ? (
-                <>
-                  <LoaderCircle className="animate-spin" aria-hidden />
-                  Saving…
-                </>
-              ) : (
-                "Save"
-              )}
-            </Button>
-            {patState.status === "success" && (
-              <span className="flex items-center gap-1.5 text-[13px] text-success">
-                <Check className="size-4" aria-hidden />
-                Saved
-              </span>
-            )}
-            {patState.status === "error" && (
-              <span className="flex items-center gap-1.5 text-[13px] text-destructive">
-                <TriangleAlert className="size-4 shrink-0" aria-hidden />
-                {patState.error}
-              </span>
-            )}
-            {clearPatState.status === "error" && (
-              <span className="flex items-center gap-1.5 text-[13px] text-destructive">
-                <TriangleAlert className="size-4 shrink-0" aria-hidden />
-                {clearPatState.error}
-              </span>
-            )}
-          </CardFooter>
         </Card>
-      </form>
-
-      <form action={gitlabPatFormAction}>
-        <Card className="[--card-spacing:--spacing(5)]">
-          <CardHeader>
-            <SectionTitle icon={Gitlab}>GitLab</SectionTitle>
-            <CardDescription className="text-[13px] leading-relaxed">
-              Personal Access Token used to fetch repos, merge requests,
-              diffs, and linked issues. For a self-hosted instance, also set{" "}
-              <span className="font-mono text-foreground/80">GITLAB_API_URL</span>.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <FieldLabel htmlFor="gitlabPat" hint="api scope">
-                Personal Access Token
-              </FieldLabel>
-              {gitlabPatFieldState === "saved" ? (
-                <SavedSecret
-                  label="PAT"
-                  onReplace={() => setGitlabPatFieldState("editing")}
-                  clearAction={clearGitlabPatFormAction}
-                  clearing={isClearingGitlabPat}
-                />
-              ) : (
-                <Input
-                  id="gitlabPat"
-                  name="gitlabPat"
-                  type="password"
-                  autoComplete="off"
-                  placeholder="glpat-..."
-                  className="font-mono"
-                  value={gitlabPat}
-                  onChange={(e) => setGitlabPat(e.target.value)}
-                />
-              )}
-            </div>
-          </CardContent>
-          <CardFooter className="flex items-center gap-3">
-            <Button type="submit" size="sm" disabled={isGitlabPatSaving}>
-              {isGitlabPatSaving ? (
-                <>
-                  <LoaderCircle className="animate-spin" aria-hidden />
-                  Saving…
-                </>
-              ) : (
-                "Save"
-              )}
-            </Button>
-            {gitlabPatState.status === "success" && (
-              <span className="flex items-center gap-1.5 text-[13px] text-success">
-                <Check className="size-4" aria-hidden />
-                Saved
-              </span>
-            )}
-            {gitlabPatState.status === "error" && (
-              <span className="flex items-center gap-1.5 text-[13px] text-destructive">
-                <TriangleAlert className="size-4 shrink-0" aria-hidden />
-                {gitlabPatState.error}
-              </span>
-            )}
-            {clearGitlabPatState.status === "error" && (
-              <span className="flex items-center gap-1.5 text-[13px] text-destructive">
-                <TriangleAlert className="size-4 shrink-0" aria-hidden />
-                {clearGitlabPatState.error}
-              </span>
-            )}
-          </CardFooter>
-        </Card>
-      </form>
-
-      <Card className="[--card-spacing:--spacing(5)]">
-        <CardHeader>
-          <SectionTitle icon={Bot}>AI providers</SectionTitle>
-          <CardDescription className="text-[13px] leading-relaxed">
-            Save more than one OpenAI-compatible provider — e.g. a local
-            model server and a hosted one — and toggle which is active. Only
-            the active provider is used for reviews and labeling.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {initialProviders.length === 0 ? (
-            <p className="text-[13px] text-muted-foreground">
-              No providers saved yet.
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {initialProviders.map((provider) => (
-                <ProviderViewRow
-                  key={provider.id}
-                  provider={provider}
-                  isActive={provider.id === initialActiveProviderId}
-                />
-              ))}
-            </div>
-          )}
-
-          <AddProviderForm />
-        </CardContent>
-      </Card>
-    </div>
+      </div>
+    </>
   );
 }

@@ -211,6 +211,29 @@ export interface FindingRecord {
    * a judgement of the code. "Retry failed" re-runs exactly these.
    */
   callFailed?: boolean;
+  /**
+   * Replies to the finding, oldest first — today written by coding agents
+   * over MCP (`lib/mcp/`). Like `resolvedAt`, not carried over by a
+   * re-review.
+   */
+  responses?: FindingResponse[];
+}
+
+/**
+ * How a reply settles a finding: `answered` — the concern does not hold (or
+ * is already handled), and the reply says why; resolves the finding.
+ * `fixing` — the concern is right and a fix is under way; the finding stays
+ * open until a re-review of the fixed code drops it. `comment` — neither.
+ */
+export type FindingResponseKind = "answered" | "fixing" | "comment";
+
+export interface FindingResponse {
+  id: string;
+  kind: FindingResponseKind;
+  /** Who wrote it — the agent's name as it gave it, e.g. "claude-code". */
+  author: string;
+  body: string;
+  createdAt: string;
 }
 
 // Note: `SettingsRecord` is defined in settings.ts, not here — re-declaring

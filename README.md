@@ -113,6 +113,20 @@ GraphReview's labeling and PR review features call an OpenAI-compatible
 as a drop-in replacement for a hosted API key. See
 [`install.md`](install.md#5-optional-features) for setup steps.
 
+## Connecting a coding agent (MCP)
+
+GraphReview serves an MCP server at `http://127.0.0.1:3470/api/mcp`
+(Streamable HTTP) while it runs. A coding agent can read a review's open
+findings and the diff of each flagged component, then answer each finding —
+"this doesn't hold, because…" (resolves it) or "right, fixing it" — and
+the replies show under the finding in the app. For Claude Code:
+
+```bash
+claude mcp add --transport http graphreview http://127.0.0.1:3470/api/mcp
+```
+
+See [`lib/mcp/README.md`](lib/mcp/README.md) for the tools.
+
 ## Project layout
 
 Each `lib/*`, `worker/`, `types/`, and `components/graph/` directory has its

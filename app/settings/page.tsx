@@ -1,5 +1,7 @@
+import { headers } from "next/headers";
 import { getActiveAiProviderId, getSettings, listAiProviders } from "@/lib/db";
 import { SettingsForm } from "./settings-form";
+import { McpCard } from "./mcp-card";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ChecklistEditor } from "@/components/graph/ChecklistEditor";
 
@@ -55,8 +57,12 @@ export default async function SettingsPage() {
     activeProviderId = null;
   }
 
+  // The MCP snippets use the address this page was reached on, so they carry
+  // this instance's real port (middleware.ts only lets loopback hosts through).
+  const mcpUrl = `http://${(await headers()).get("host") ?? "127.0.0.1:3470"}/api/mcp`;
+
   return (
-    <div className="mx-auto max-w-2xl space-y-8 px-6 py-10">
+    <div className="mx-auto max-w-[1800px] space-y-8 px-6 py-10">
       <div>
         <h1 className="text-2xl font-semibold tracking-[-0.02em]">Settings</h1>
         <p className="mt-1.5 text-sm text-muted-foreground">
@@ -65,34 +71,42 @@ export default async function SettingsPage() {
         </p>
       </div>
 
-      <SettingsForm
-        initialHasGithubPat={Boolean(settings?.githubPatEncrypted)}
-        initialHasGitlabPat={Boolean(settings?.gitlabPatEncrypted)}
-        initialProviders={providers.map((p) => ({
-          id: p.id,
-          name: p.name,
-          baseUrl: p.baseUrl,
-          model: p.model,
-          hasApiKey: Boolean(p.apiKeyEncrypted),
-        }))}
-        initialActiveProviderId={activeProviderId}
-      />
+      {/* Four columns on a wide screen — git-host PATs, AI providers, PR
+          checklist, MCP — two on a laptop, one on a phone. */}
+      <div className="grid items-start gap-5 lg:grid-cols-2 2xl:grid-cols-4">
+        <SettingsForm
+          initialHasGithubPat={Boolean(settings?.githubPatEncrypted)}
+          initialHasGitlabPat={Boolean(settings?.gitlabPatEncrypted)}
+          initialProviders={providers.map((p) => ({
+            id: p.id,
+            name: p.name,
+            baseUrl: p.baseUrl,
+            model: p.model,
+            hasApiKey: Boolean(p.apiKeyEncrypted),
+          }))}
+          initialActiveProviderId={activeProviderId}
+        />
 
-      {/* The PR prerequisite checklist's defaults (DESIGN.md §6.6). Each
-          repo can switch these off or add its own from the checklist card
-          in its Graph tab. */}
-      <Card className="[--card-spacing:--spacing(5)]">
-        <CardHeader>
-          <CardTitle className="text-sm font-semibold tracking-tight">PR checklist</CardTitle>
-          <CardDescription className="text-[13px] leading-relaxed">
-            Checks shown under the graph for every pull request or ref comparison. AI questions are answered
-            once per commit, after the AI review finishes. A failing check is only a badge.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ChecklistEditor />
-        </CardContent>
-      </Card>
+        {/* The PR prerequisite checklist's defaults (DESIGN.md §6.6). Each
+            repo can switch these off or add its own from the checklist card
+            in its Graph tab. */}
+        <Card className="min-w-0 [--card-spacing:--spacing(5)]">
+          <CardHeader>
+            <CardTitle className="text-sm font-semibold tracking-tight">PR checklist</CardTitle>
+            <CardDescription className="text-[13px] leading-relaxed">
+              Checks shown under the graph for every pull request or ref comparison. AI questions are answered
+              once per commit, after the AI review finishes. A failing check is only a badge.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ChecklistEditor />
+          </CardContent>
+        </Card>
+
+        <div className="min-w-0">
+          <McpCard url={mcpUrl} />
+        </div>
+      </div>
     </div>
   );
 }

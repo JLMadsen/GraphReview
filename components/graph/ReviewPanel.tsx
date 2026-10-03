@@ -143,6 +143,13 @@ function timeAgo(iso: string | undefined): string {
   return `${Math.round(hours / 24)} days ago`;
 }
 
+/** How each kind of agent reply reads above its text. */
+const RESPONSE_LABELS: Record<NonNullable<FindingDTO["responses"]>[number]["kind"], string> = {
+  answered: "answered",
+  fixing: "agreed, fixing",
+  comment: "commented",
+};
+
 /**
  * One finding as a row: verdict glyph (colour + shape + a label on hover —
  * colour is never the only channel), the summary, then component · file:line
@@ -168,6 +175,7 @@ function FindingRow({
   const [open, setOpen] = useState(false);
   const location = formatLocation(finding);
   const resolved = Boolean(finding.resolvedAt);
+  const fixing = !resolved && Boolean(finding.responses?.some((reply) => reply.kind === "fixing"));
   const visual = ASSESSMENT_VISUALS[finding.assessment];
   const Icon = visual.icon;
   const impact = isImpactFinding(finding);
@@ -245,11 +253,28 @@ function FindingRow({
             </span>
           )}
           {resolved && <span className="text-success">resolved</span>}
+          {fixing && (
+            <span className="text-brand" title="An agent agreed with this finding and is fixing it">
+              fixing
+            </span>
+          )}
         </div>
         {open && finding.rationale && (
           <p className="mt-1.5 border-l border-border pl-2.5 text-xs leading-relaxed whitespace-pre-line text-muted-foreground">
             {finding.rationale}
           </p>
+        )}
+        {finding.responses && (
+          <ul className="mt-1.5 space-y-1 border-l border-brand/40 pl-2.5">
+            {finding.responses.map((reply) => (
+              <li key={reply.id} className="text-xs leading-relaxed">
+                <span className="text-[11px] text-muted-foreground" title={new Date(reply.createdAt).toLocaleString()}>
+                  {reply.author} · {RESPONSE_LABELS[reply.kind]} · {timeAgo(reply.createdAt)}
+                </span>
+                <p className="whitespace-pre-line">{reply.body}</p>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
       {finding.callFailed ? (

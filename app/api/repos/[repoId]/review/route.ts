@@ -20,6 +20,7 @@ import {
   getReviewJob,
   getReviewJobLogs,
   invalidateReviewFreshness,
+  latestReviewedRevision,
   reviewTargetKey,
   type ReviewFreshness,
   type ReviewProgress,
@@ -33,6 +34,7 @@ import {
   type FindingAssessment,
   type FindingCategory,
   type FindingKind,
+  type FindingResponse,
   type FindingScope,
 } from "@/lib/db";
 
@@ -65,6 +67,8 @@ export interface FindingDto {
   resolvedAt?: string;
   /** The model call behind it never completed — a placeholder that "Retry failed" re-runs. */
   callFailed?: boolean;
+  /** Replies from coding agents (MCP), oldest first. */
+  responses?: FindingResponse[];
 }
 
 /** Lifecycle of a review target, collapsed from the job runner's states. `"none"` means "never reviewed". */
@@ -271,29 +275,6 @@ function toProgress(raw: unknown): ReviewProgress | undefined {
   };
 }
 
-/**
- * The revision the persisted findings were produced from: the most recent
- * stamped run. Legacy findings (no `reviewedHeadSha`) are ignored, so a target
- * with only legacy findings yields `undefined` and gets no `freshness` at all.
- * Mixed shas can only exist after a run that failed part-way; the newest
- * stamp wins, since that is the run whose findings are on screen.
- */
-function latestReviewedRevision(
-  findings: readonly { reviewedHeadSha?: string; reviewedBaseSha?: string; reviewedAt?: string }[]
-): { headSha: string; baseSha?: string; reviewedAt?: string } | undefined {
-  let best: (typeof findings)[number] | undefined;
-  for (const finding of findings) {
-    if (!finding.reviewedHeadSha) continue;
-    if (!best || (finding.reviewedAt ?? "") > (best.reviewedAt ?? "")) best = finding;
-  }
-  if (!best?.reviewedHeadSha) return undefined;
-  return {
-    headSha: best.reviewedHeadSha,
-    ...(best.reviewedBaseSha ? { baseSha: best.reviewedBaseSha } : {}),
-    ...(best.reviewedAt ? { reviewedAt: best.reviewedAt } : {}),
-  };
-}
-
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ repoId: string }> }
@@ -386,6 +367,7 @@ export async function GET(
         createdAt: finding.createdAt,
         ...(finding.resolvedAt ? { resolvedAt: finding.resolvedAt } : {}),
         ...(finding.callFailed ? { callFailed: true } : {}),
+        ...(finding.responses ? { responses: finding.responses } : {}),
       })),
       aiConfigured,
     };

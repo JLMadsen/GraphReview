@@ -224,6 +224,17 @@ export interface FindingDTO {
   resolvedAt?: string;
   /** The model call behind it never completed (provider error, timeout) — "Retry failed" re-runs it. */
   callFailed?: boolean;
+  /** Replies from coding agents (over MCP), oldest first. */
+  responses?: FindingResponseDTO[];
+}
+
+/** A reply to a finding. Mirrors `FindingResponse` in lib/db: `answered` resolved it, `fixing` says a fix is under way. */
+export interface FindingResponseDTO {
+  id: string;
+  kind: "answered" | "fixing" | "comment";
+  author: string;
+  body: string;
+  createdAt: string;
 }
 
 /**
