@@ -192,10 +192,24 @@ const url = `http://127.0.0.1:${port}`;
 const nextBin = require.resolve("next/dist/bin/next", { paths: [pkgRoot] });
 const grammarDir = path.join(path.dirname(require.resolve("@vscode/tree-sitter-wasm/package.json", { paths: [pkgRoot] })), "wasm");
 
+// Trust certificates installed in the OS (Windows store, macOS keychain), so
+// an internal CA for the AI endpoint, GitHub Enterprise or GitLab works
+// without NODE_EXTRA_CA_CERTS. Node 22.15+ / 23.8+.
+const supportsSystemCa = major > 23 || (major === 23 && minor >= 8) || (major === 22 && minor >= 15);
+
 const child = spawn(
   process.execPath,
-  // node:sqlite still prints an ExperimentalWarning on every start; it's noise for users.
-  ["--disable-warning=ExperimentalWarning", nextBin, "start", "-H", "127.0.0.1", "-p", String(port)],
+  [
+    // node:sqlite still prints an ExperimentalWarning on every start; it's noise for users.
+    "--disable-warning=ExperimentalWarning",
+    ...(supportsSystemCa ? ["--use-system-ca"] : []),
+    nextBin,
+    "start",
+    "-H",
+    "127.0.0.1",
+    "-p",
+    String(port),
+  ],
   {
     cwd: pkgRoot,
     stdio: ["ignore", "pipe", "inherit"],

@@ -183,27 +183,32 @@ not env vars. Set any of these in the environment GraphReview starts in:
 | `PREVIEW_NODE_IMAGE` / `PREVIEW_PYTHON_IMAGE` | `node:<major>-bookworm-slim` / `python:3.12-slim` | Images the code runs in (pulled on first use). The Node major follows the repo — `.nvmrc`, `.node-version`, `volta.node` or `engines.node`, nearest to the previewed file; the newer of base and head; 22 when nothing says. Setting `PREVIEW_NODE_IMAGE` pins one image for every repo |
 | `PREVIEW_RUN_TIMEOUT_MS` / `PREVIEW_INSTALL_TIMEOUT_MS` | `120000` / `900000` | Wall-clock limits for one side's run, and for a dependency install |
 | `PREVIEW_MEMORY` / `PREVIEW_CPUS` | `2g` / `1` | Resource caps per sandbox container |
-| `PREVIEW_DEPS_MAX_AGE_HOURS` / `PREVIEW_DEPS_KEEP` | `48` / `6` | Installed dependencies are cached in Docker volumes (often hundreds of MB each); after every preview, caches unused this long are removed and only this many are kept |
+| `PREVIEW_DEPS_MAX_AGE_HOURS` / `PREVIEW_DEPS_KEEP` | `48` / `6` | Installed dependencies are cached in Docker volumes (often hundreds of MB each); after every preview, caches unused this long are removed and only this many are kept. Package downloads go to one shared volume, `graphreview-preview-downloads`, which reinstalls read from first |
 | `PREVIEW_CONCURRENCY` | `1` | Files previewed at once (each runs two containers) |
 
 ### Closed networks
 
-All optional — set them only on a network where the public services aren't
-reachable and an internal mirror or proxy stands in:
+Most of it needs no settings: preview installs reuse your user-level
+`.npmrc` / `.yarnrc` / `.yarnrc.yml` / pip config, certificates your OS trusts
+(and any `cafile`/`cert` those configs name) are trusted, downloads are cached,
+and a preview image that can't be pulled falls back to the closest local one.
+See **"Private registries, company certificates and offline networks"** in
+[`README.md`](README.md) for the short list of what you do need to do.
+
+These variables cover the rest; all are optional:
 
 | Var | Purpose |
 |---|---|
 | `GITHUB_API_URL` / `GITHUB_WEB_URL` | GitHub Enterprise Server or an internal proxy (defaults `https://api.github.com` / `https://github.com`) |
 | `GITLAB_API_URL` / `GITLAB_WEB_URL` | Self-hosted GitLab (defaults to gitlab.com) |
-| `NODE_EXTRA_CA_CERTS` | A file of internal CA certificates. Node uses it for the AI endpoint and the GitHub/GitLab APIs, and preview installs get it combined with the public roots |
-| `NPM_CONFIG_REGISTRY` | npm registry mirror — for installing GraphReview itself, and for preview dependency installs |
-| `PIP_INDEX_URL` | PyPI mirror for Python preview installs |
-| `PREVIEW_IMAGE_REGISTRY` | Registry/namespace prefix for the preview images, e.g. `mirror.corp/library` |
-| `HTTPS_PROXY` / `NO_PROXY` | Passed to preview installs as well |
+| `PREVIEW_IMAGE_REGISTRY` | Registry/namespace prefix for the preview images, e.g. `mirror.corp/library` (not needed with a Docker `registry-mirrors` setting) |
+| `NODE_EXTRA_CA_CERTS` | Extra CA file, for CAs not in the OS store or your npm/pip config |
+| `NPM_CONFIG_*`, `PIP_*`, `YARN_NPM_*`, `HTTPS_PROXY` / `NO_PROXY` | Passed on to preview installs, for registries configured through the environment instead of config files |
 
-git uses its own configuration (`git config http.sslCAInfo …`,
-`http.proxy`) for clones. Fonts are bundled, so neither GraphReview nor the
-browser needs to reach Google Fonts.
+git clones use git's own configuration (`git config http.sslCAInfo …`,
+`http.proxy`; Git for Windows uses the Windows certificate store by default).
+Fonts are bundled, so neither GraphReview nor the browser needs to reach
+Google Fonts.
 
 ## 8. Other known caveats worth knowing before you rely on this
 

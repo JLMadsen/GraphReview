@@ -23,10 +23,9 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { rootCertificates } from "node:tls";
-import { getDataDir } from "@/lib/runtime/paths";
+import { CONTAINER_CA_FILE, CONTAINER_HOME, hostPackageConfig } from "./host-config";
 import { DEFAULT_NODE_MAJOR } from "./node-version";
 import type { PreviewHarnessResult, PreviewRuntime } from "./types";
 
@@ -162,6 +161,64 @@ async function ensureImage(image: string, log: Logger): Promise<void> {
   pulled.add(image);
 }
 
+/** `node:22-bookworm-slim` → { repo: "node", version: [22], suffix: "-bookworm-slim" }. */
+function parseImage(image: string): { repo: string; version: number[]; suffix: string } | null {
+  const colon = image.lastIndexOf(":");
+  if (colon <= image.lastIndexOf("/")) return null;
+  const tag = /^(\d+(?:\.\d+)*)(.*)$/.exec(image.slice(colon + 1));
+  if (!tag) return null;
+  return { repo: image.slice(0, colon), version: tag[1].split(".").map(Number), suffix: tag[2] };
+}
+
+function compareVersions(a: number[], b: number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+export interface ResolvedImage {
+  image: string;
+  /** Set when a different image had to stand in, saying which and why. */
+  note?: string;
+}
+
+/**
+ * The image to run: `wanted` if it is here or can be pulled. Offline (or on a
+ * mirror that lacks it), the closest version of the same image already on
+ * this machine stands in — the nearest newer one, else the newest older one,
+ * preferring the same variant (`-bookworm-slim`) — and the result says so.
+ */
+export async function resolveImage(wanted: string, log: Logger): Promise<ResolvedImage> {
+  try {
+    await ensureImage(wanted, log);
+    return { image: wanted };
+  } catch (error) {
+    const target = parseImage(wanted);
+    const listed = await docker(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"]);
+    const local = listed.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .map((image) => ({ image, parsed: parseImage(image) }))
+      .filter((c): c is { image: string; parsed: NonNullable<ReturnType<typeof parseImage>> } =>
+        Boolean(target && c.parsed && c.parsed.repo === target.repo)
+      );
+    if (!target || local.length === 0) throw error;
+    const sameVariant = local.filter((c) => c.parsed.suffix === target.suffix);
+    const pool = sameVariant.length > 0 ? sameVariant : local;
+    const newer = pool.filter((c) => compareVersions(c.parsed.version, target.version) >= 0);
+    const pick = newer.length > 0
+      ? newer.sort((a, b) => compareVersions(a.parsed.version, b.parsed.version))[0]
+      : pool.sort((a, b) => compareVersions(b.parsed.version, a.parsed.version))[0];
+    pulled.add(pick.image);
+    const reason = (error as Error).message.trim().split("\n").pop()?.slice(0, 160) ?? "";
+    const note = `Ran on ${pick.image}: ${wanted} isn't on this machine and couldn't be pulled (${reason}).`;
+    log(note);
+    return { image: pick.image, note };
+  }
+}
+
 export function imageFor(runtime: PreviewRuntime): string {
   return runtime === "python" ? PYTHON_IMAGE : NODE_IMAGE;
 }
@@ -211,24 +268,26 @@ function startAttached(id: string, timeoutMs: number, log?: Logger): Promise<Exe
 // Online steps (installs): GraphReview's own network settings, carried over
 // ---------------------------------------------------------------------------
 
-/** Where the CA bundle lands inside an install container. */
-const CONTAINER_CA_FILE = "/tmp/graphreview-ca.crt";
+/** One volume shared by every install: npm/pnpm/yarn/pip download caches and corepack's package managers. */
+const DOWNLOADS_VOLUME = "graphreview-preview-downloads";
 
 /**
  * Settings an install container inherits from GraphReview's environment, when set there:
  * package registries (npm, yarn, corepack, pip) and proxies. Empty values are
- * dropped — an empty `NPM_CONFIG_REGISTRY` would break npm, not reset it.
+ * dropped — an empty `NPM_CONFIG_REGISTRY` would break npm, not reset it — and
+ * so are settings that name a path on this machine (cache, prefix, …).
  *
  * Upper-case `NPM_CONFIG_*` only: npm itself injects dozens of lower-case
  * `npm_config_*` variables (cache, prefix, user config — host paths) into
  * every process it starts, GraphReview included, and those must not leak in.
  */
 const FORWARDED_ENV = /^(NPM_CONFIG_\w+|YARN_NPM_\w+|COREPACK_NPM_\w+|PIP_\w+|HTTPS?_PROXY|https?_proxy|NO_PROXY|no_proxy)$/;
+const HOST_PATH_ENV = /^(NPM_CONFIG_(CACHE|PREFIX|USERCONFIG|GLOBALCONFIG|STORE_DIR|CAFILE|TMP)|PIP_(CACHE_DIR|CONFIG_FILE|CERT|TARGET|SRC))$/;
 
 function forwardedEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (FORWARDED_ENV.test(key) && value?.trim()) env[key] = value.trim();
+    if (FORWARDED_ENV.test(key) && !HOST_PATH_ENV.test(key) && value?.trim()) env[key] = value.trim();
   }
   // corepack fetches pnpm/yarn themselves from a registry of its own setting.
   const registry = env.NPM_CONFIG_REGISTRY;
@@ -237,21 +296,12 @@ function forwardedEnv(): Record<string, string> {
 }
 
 /**
- * A full CA bundle for install containers when `NODE_EXTRA_CA_CERTS` is set:
- * Node's public root certificates plus the extra ones. `NODE_EXTRA_CA_CERTS`
- * usually holds only the internal CAs, and pip/curl/git need a bundle that
- * *replaces* their own, so the public roots have to be in it too. Written to
- * the data folder; `null` when no extra CAs are configured.
+ * Runs `script` in a container that may go online, set up the way this
+ * machine's own package managers are (./host-config.ts: the user's
+ * `.npmrc` / `.yarnrc(.yml)` / pip config as its `$HOME`, plus a CA bundle
+ * with the OS-trusted and configured internal CAs), with registry/proxy
+ * variables from GraphReview's environment and the shared download cache.
  */
-async function caBundle(): Promise<string | null> {
-  const file = process.env.NODE_EXTRA_CA_CERTS?.trim();
-  if (!file || !existsSync(file)) return null;
-  const bundle = path.join(getDataDir(), "preview-ca-bundle.crt");
-  await writeFile(bundle, [...rootCertificates, await readFile(file, "utf8")].join("\n"), "utf8");
-  return bundle;
-}
-
-/** Runs `script` in a container that may go online, with the worker's CA bundle and registry settings. */
 async function runOnline(options: {
   image: string;
   mounts: string[];
@@ -260,9 +310,22 @@ async function runOnline(options: {
   timeoutMs: number;
   before?: (id: string) => Promise<void>;
 }): Promise<ExecResult & { timedOut: boolean }> {
-  const env: Record<string, string> = { CI: "1", ...forwardedEnv() };
-  const ca = await caBundle();
-  if (ca) {
+  const host = await hostPackageConfig();
+  const env: Record<string, string> = {
+    CI: "1",
+    ...host.env,
+    ...forwardedEnv(),
+    // Downloads land in the shared volume and are preferred over the network,
+    // so a reinstall (new lockfile, another Node version) is mostly offline.
+    npm_config_cache: "/downloads/npm",
+    npm_config_prefer_offline: "true",
+    npm_config_store_dir: "/downloads/pnpm",
+    YARN_CACHE_FOLDER: "/downloads/yarn",
+    PIP_CACHE_DIR: "/downloads/pip",
+    COREPACK_HOME: "/downloads/corepack",
+  };
+  if (host.homeDir) env.HOME = CONTAINER_HOME;
+  if (host.caBundle) {
     // A full bundle (public roots + internal CAs), so it can replace each tool's own.
     Object.assign(env, {
       NODE_EXTRA_CA_CERTS: CONTAINER_CA_FILE,
@@ -272,15 +335,25 @@ async function runOnline(options: {
       GIT_SSL_CAINFO: CONTAINER_CA_FILE,
     });
   }
-  const args = [...options.mounts.flatMap((m) => ["-v", m])];
+  const args = [...options.mounts, `${DOWNLOADS_VOLUME}:/downloads`].flatMap((m) => ["-v", m]);
   if (options.workdir) args.push("-w", options.workdir);
   for (const [key, value] of Object.entries(env)) args.push("-e", `${key}=${value}`);
   args.push(options.image, "sh", "-c", options.script);
   return withContainer(args, async (id) => {
-    if (ca) await dockerOk(["cp", ca, `${id}:${CONTAINER_CA_FILE}`], "docker cp (CA bundle)");
+    if (host.caBundle) await dockerOk(["cp", host.caBundle, `${id}:${CONTAINER_CA_FILE}`], "docker cp (CA bundle)");
+    if (host.homeDir) await dockerOk(["cp", `${host.homeDir}${path.sep}.`, `${id}:${CONTAINER_HOME}`], "docker cp (package config)");
     await options.before?.(id);
     return startAttached(id, options.timeoutMs);
   });
+}
+
+/** One log line on what the install containers pick up from this machine (first install of a run only). */
+let hostConfigLogged = 0;
+async function logHostConfig(log: Logger): Promise<void> {
+  if (Date.now() - hostConfigLogged < 60_000) return;
+  hostConfigLogged = Date.now();
+  const { summary } = await hostPackageConfig();
+  if (summary.length > 0) log(`installs use ${summary.join(", ")}`);
 }
 
 async function volumeExists(name: string): Promise<boolean> {
@@ -294,9 +367,9 @@ async function volumeExists(name: string): Promise<boolean> {
 const HARNESS_VOLUME = `graphreview-preview-harness-${HARNESS_VERSION}`;
 let harnessReady = false;
 
-async function ensureHarnessVolume(log: Logger): Promise<void> {
+async function ensureHarnessVolume(image: string, log: Logger): Promise<void> {
   if (harnessReady) return;
-  await ensureImage(NODE_IMAGE, log);
+  await ensureImage(image, log);
   const script = [
     "set -e",
     "if [ -f /harness/.ready ]; then exit 0; fi",
@@ -307,7 +380,7 @@ async function ensureHarnessVolume(log: Logger): Promise<void> {
   ].join("\n");
   if (!(await volumeExists(HARNESS_VOLUME))) log("installing the preview harness (first run only)");
   const result = await runOnline({
-    image: NODE_IMAGE,
+    image,
     mounts: [`${HARNESS_VOLUME}:/harness`],
     script,
     timeoutMs: INSTALL_TIMEOUT_MS,
@@ -419,6 +492,7 @@ async function installInto(options: {
   if (probe.code === 0) return { volume, status: "cached" };
 
   log(`installing ${runtime === "python" ? "Python" : "npm"} dependencies (cached for next time)`);
+  await logHostConfig(log);
   const install = runtime === "python" ? pythonInstallCommand(projectDir) : nodeInstallCommand(projectDir);
   const script = `cd ${workdir} && (${install}) && touch ${marker}`;
   try {
@@ -531,7 +605,7 @@ export async function runHarness(options: RunHarnessOptions): Promise<PreviewHar
   const { runtime, treeDir, jobDir, projectRoot, deps, log } = options;
   const image = options.image ?? imageFor(runtime);
   await ensureImage(image, log);
-  if (runtime === "node") await ensureHarnessVolume(log);
+  if (runtime === "node") await ensureHarnessVolume(image, log);
 
   const workdir = path.posix.join("/src", projectRoot.split(path.sep).join("/"));
   const args = [

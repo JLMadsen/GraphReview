@@ -321,6 +321,7 @@ function Footnotes({ result }: { result: PreviewResult }) {
     );
   }
   if (result.mocksNote) notes.push(result.mocksNote);
+  if (result.runtimeNote) notes.push(result.runtimeNote);
   const stubbed = [...new Set([...result.before.stubbedModules, ...result.after.stubbedModules])];
   if (stubbed.length > 0) {
     notes.push(

@@ -22,7 +22,10 @@ import { materializeTree, mergeBaseOf, projectRootFor, readFileAt, runtimeForPat
 import {
   assertDockerAvailable,
   harnessScript,
+  imageFor,
   nodeImageFor,
+  resolveImage,
+  type ResolvedImage,
   prepareDeps,
   pruneDepsVolumes,
   runHarness,
@@ -326,19 +329,23 @@ export async function runPreviewJob(
   }
   // Both sides run on one image — the newer Node either side asks for — so
   // a difference in output is the code's, not the runtime's.
-  let image: string | undefined;
+  let wantedImage = imageFor(runtime);
   if (runtime === "node") {
     const majors = await Promise.all(
       [baseSha, headSha].map((sha) => requiredNodeMajor((p) => readFileAt(repoDir, sha, p), data.filePath))
     );
     const declared = majors.filter((m): m is number => m !== undefined);
-    image = nodeImageFor(declared.length > 0 ? Math.max(...declared) : DEFAULT_NODE_MAJOR);
-    log(`sandbox image ${image}${declared.length > 0 ? "" : " (the repo doesn't say which Node it needs)"}`);
+    wantedImage = nodeImageFor(declared.length > 0 ? Math.max(...declared) : DEFAULT_NODE_MAJOR);
+    log(`sandbox image ${wantedImage}${declared.length > 0 ? "" : " (the repo doesn't say which Node it needs)"}`);
   }
 
   const detected = await detectChangedSymbols(data.filePath, runtime, before, after);
   const symbols = detected.runnable;
   log(`${symbols.length} changed function(s)/component(s), ${detected.skipped.length} skipped`);
+
+  // Offline or on a mirror without it, the closest image on this machine stands in (noted in the result).
+  const resolvedImage: ResolvedImage = symbols.length > 0 ? await resolveImage(wantedImage, log) : { image: wantedImage };
+  const image = resolvedImage.image;
 
   // 3. inputs
   const inputs: PreviewInputs = {};
@@ -510,6 +517,7 @@ export async function runPreviewJob(
     inputsSource,
     inputs,
     ...(inputsNote ? { inputsNote } : {}),
+    ...(resolvedImage.note ? { runtimeNote: resolvedImage.note } : {}),
     mocks,
     // Mocks reused from the repo cache were made by the model too.
     mocksSource: mocksSource === "none" && mergeCalls(beforeRun, afterRun).some((c) => c.mocked) ? "ai" : mocksSource,

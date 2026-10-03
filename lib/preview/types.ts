@@ -145,6 +145,8 @@ export interface PreviewResult {
   inputs: PreviewInputs;
   /** Set when AI input generation failed and defaults were used instead. */
   inputsNote?: string;
+  /** Set when the wanted sandbox image couldn't be pulled and a local one stood in. */
+  runtimeNote?: string;
   /** Server responses the renders were given (record → mock → replay). */
   mocks: PreviewMocks;
   mocksSource: "ai" | "user" | "none";
