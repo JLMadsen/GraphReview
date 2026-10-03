@@ -214,6 +214,11 @@ export async function detectChangedSymbols(
 
   const consider = (decl: Declaration, change: PreviewChange, via?: string) => {
     const label = decl.exportName && decl.exportName !== decl.name ? `${decl.name} (as ${decl.exportName})` : decl.name;
+    // Next.js route handlers and middleware answer HTTP requests: nothing to render, no plain inputs to call them with.
+    if (/(^|\/)(route|middleware|instrumentation)\.(t|j)sx?$/.test(filePath)) {
+      if (decl.callable && decl.exportName) skipped.push({ name: label, reason: "a Next.js route handler or middleware — it answers HTTP requests" });
+      return;
+    }
     if (decl.isClass) {
       skipped.push({ name: label, reason: "a class — only functions and components are run" });
       return;

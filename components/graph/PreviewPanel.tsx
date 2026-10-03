@@ -59,7 +59,9 @@ function glance(value: unknown): string {
     // Tagged values the harness revives ({"$undefined": true}, {"$date": "…"}, …).
     if (keys.length === 1 && keys[0].startsWith("$")) {
       const inner = (value as Record<string, unknown>)[keys[0]];
-      return keys[0] === "$undefined" ? "undefined" : `${keys[0].slice(1)}(${glance(inner)})`;
+      if (keys[0] === "$undefined") return "undefined";
+      if (keys[0] === "$fn" || keys[0] === "$function") return "ƒ";
+      return `${keys[0].slice(1)}(${glance(inner)})`;
     }
     return keys.length === 0 ? "{}" : `{${keys.slice(0, 3).join(", ")}${keys.length > 3 ? ", …" : ""}}`;
   }
@@ -148,11 +150,11 @@ export function PreviewPanel({ repoId, target, filePath, initialSymbol }: Previe
 
   const start = () => {
     if (hasEdits && result) {
-      void run({ ...result.inputs, ...edited });
+      void run({ ...result.inputs, ...edited }, result.mocks);
       setEdited({});
     } else {
       // Hand-edited inputs stick across re-runs; otherwise the model mocks up fresh ones.
-      void run(result?.inputsSource === "user" ? result.inputs : undefined);
+      void run(result?.inputsSource === "user" ? result.inputs : undefined, result?.mocks);
     }
   };
 
@@ -300,6 +302,14 @@ function ErrorLine({ text }: { text: string }) {
 /** Quiet notes that qualify the result rather than being it. */
 function Footnotes({ result }: { result: PreviewResult }) {
   const notes: string[] = [];
+  const mocked = (result.serverCalls ?? []).filter((c) => c.mocked);
+  if (mocked.length > 0) {
+    const names = mocked.map((c) => (c.kind === "action" ? c.name : `${c.method} ${c.url ? new URL(c.url).pathname : ""}`));
+    notes.push(
+      `Server responses ${result.mocksSource === "user" ? "reused" : "mocked by the model"} (the sandbox has no server): ${names.slice(0, 6).join(", ")}${names.length > 6 ? ` and ${names.length - 6} more` : ""}.`
+    );
+  }
+  if (result.mocksNote) notes.push(result.mocksNote);
   const stubbed = [...new Set([...result.before.stubbedModules, ...result.after.stubbedModules])];
   if (stubbed.length > 0) {
     notes.push(

@@ -29,8 +29,8 @@ import type { PreviewHarnessResult, PreviewRuntime } from "./types";
 export const RESULT_MARKER = "@@GRAPHREVIEW_PREVIEW_RESULT@@";
 
 /** Bump when the harness's own package set changes, to force a fresh harness volume. */
-const HARNESS_VERSION = "1";
-const HARNESS_PACKAGES = ["esbuild@0.25", "react@19", "react-dom@19", "postcss@8"];
+const HARNESS_VERSION = "2";
+const HARNESS_PACKAGES = ["esbuild@0.25", "react@19", "react-dom@19", "postcss@8", "happy-dom@15", "@happy-dom/global-registrator@15"];
 
 /**
  * The registry/namespace part of `NODE_BASE_IMAGE` (the app's own base image),

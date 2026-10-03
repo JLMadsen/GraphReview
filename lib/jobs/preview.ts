@@ -11,11 +11,11 @@
 //
 // Kept out of lib/jobs' barrel: it pulls in lib/ai and lib/analysis.
 
-import { copyFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { UnrecoverableError } from "bullmq";
-import { generatePreviewInputs, type AiProviderConfig } from "@/lib/ai";
+import { generatePreviewInputs, generatePreviewMocks, type AiProviderConfig } from "@/lib/ai";
 import { decrypt } from "@/lib/crypto";
 import { getActiveAiProvider, getRepoById, type RepoRecord } from "@/lib/neo4j";
 import { materializeTree, mergeBaseOf, projectRootFor, readFileAt, runtimeForPath } from "@/lib/preview/checkout";
@@ -26,16 +26,20 @@ import {
   pruneDepsVolumes,
   runHarness,
   SandboxUnavailableError,
+  type PreparedDeps,
 } from "@/lib/preview/sandbox";
+import { relatedSources } from "@/lib/preview/related";
 import { detectChangedSymbols } from "@/lib/preview/symbols";
 import type {
   PreviewCaseInput,
   PreviewCaseOutcome,
   PreviewHarnessResult,
   PreviewInputs,
+  PreviewMocks,
   PreviewProgress,
   PreviewResult,
   PreviewRuntime,
+  PreviewServerCall,
   PreviewSide,
   PreviewSideSummary,
   PreviewSymbol,
@@ -50,6 +54,51 @@ import { ensureCommitsInCache, validateLocalRepoPath } from "./source";
 
 /** Redis hash: dependency cache volume → when a preview last used it (ms). Survives worker restarts, unlike memory. */
 const DEPS_LAST_USED_KEY = "graphreview:preview:deps-last-used";
+
+/**
+ * Redis hash per repo: server call key → mocked JSON response. A repo's files
+ * mostly call the same things (every page checks the session), so a mock made
+ * for one file is reused by every later preview in the repo instead of asking
+ * the model again. Entries expire with the hash after 30 days unused.
+ */
+function mockCacheKey(repoId: string): string {
+  return `graphreview:preview:mocks:${repoId}`;
+}
+const MOCK_CACHE_TTL_S = 30 * 24 * 60 * 60;
+
+async function readMockCache(repoId: string): Promise<PreviewMocks> {
+  try {
+    const stored = await getRedisConnection().hgetall(mockCacheKey(repoId));
+    const out: PreviewMocks = {};
+    for (const [key, value] of Object.entries(stored)) {
+      try {
+        out[key] = JSON.parse(value);
+      } catch {
+        /* skip a corrupt entry */
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+async function writeMockCache(repoId: string, mocks: PreviewMocks): Promise<void> {
+  const entries = Object.entries(mocks);
+  if (entries.length === 0) return;
+  try {
+    const redis = getRedisConnection();
+    await redis.hset(mockCacheKey(repoId), Object.fromEntries(entries.map(([k, v]) => [k, JSON.stringify(v)])));
+    await redis.expire(mockCacheKey(repoId), MOCK_CACHE_TTL_S);
+  } catch {
+    /* the cache is an optimisation */
+  }
+}
+
+/** A provider refusing for quota/rate reasons, as opposed to a broken request. */
+function isQuotaError(error: unknown): boolean {
+  return /\b(429|quota|rate.?limit|resource.?exhausted|too many requests)\b/i.test(String((error as Error)?.message ?? error));
+}
 
 /**
  * Records which dependency caches this run used, then removes the ones that
@@ -71,6 +120,9 @@ async function recordAndPruneDeps(used: Array<string | undefined>, log: JobLogge
     log(`dependency cache cleanup skipped: ${(error as Error).message}`);
   }
 }
+
+/** Record → mock → replay rounds: each can reveal calls the previous one gated (a session check, then the page's data). */
+const MAX_MOCK_ROUNDS = 3;
 
 /** Per case, inside the container. Whole-container limits live in sandbox.ts. */
 const CASE_TIMEOUT_MS = 10_000;
@@ -147,13 +199,24 @@ function summarize(
   };
 }
 
+/** A side's checkout and dependencies, kept so the side can run again (with mocks) without redoing them. */
+interface PreparedSide {
+  treeDir: string;
+  jobDir: string;
+  projectRoot: string;
+  prepared: PreparedDeps;
+}
+
 interface SideRun {
   harness: PreviewHarnessResult | null;
   deps: string;
   /** The dependency cache volume this side ran with, if any. */
   depsVolume?: string;
   fatal?: string;
+  prepared?: PreparedSide;
 }
+
+const NO_SIDE: SideRun = { harness: null, deps: "none" };
 
 async function runSide(options: {
   side: PreviewSide;
@@ -163,42 +226,82 @@ async function runSide(options: {
   filePath: string;
   symbols: PreviewSymbol[];
   inputs: PreviewInputs;
+  mocks: PreviewMocks;
   scratch: string;
   log: JobLogger;
+  /** Reuse an earlier run's checkout and dependencies. */
+  reuse?: PreparedSide;
 }): Promise<SideRun> {
-  const { side, runtime, repoDir, sha, filePath, symbols, inputs, scratch } = options;
+  const { side, runtime, repoDir, sha, filePath, symbols, inputs, mocks, scratch, reuse } = options;
   const log: JobLogger = (message) => options.log(`${side}: ${message}`);
-  const treeDir = path.join(scratch, side);
-  const jobDir = path.join(scratch, `${side}-job`);
-  let deps = "none";
-  let depsVolume: string | undefined;
+  let deps = reuse?.prepared.status ?? "none";
+  let depsVolume = reuse?.prepared.volume;
   try {
-    log(`writing the tree at ${sha.slice(0, 7)}`);
-    await materializeTree(repoDir, sha, treeDir, scratch);
-    const projectRoot = projectRootFor(treeDir, filePath, runtime);
-    const prepared = await prepareDeps(runtime, treeDir, projectRoot, log);
-    deps = prepared.status;
-    depsVolume = prepared.volume;
-
-    await mkdir(jobDir, { recursive: true });
-    const script = harnessScript(runtime);
-    await copyFile(script, path.join(jobDir, path.basename(script)));
+    let prepared = reuse;
+    if (!prepared) {
+      const treeDir = path.join(scratch, side);
+      const jobDir = path.join(scratch, `${side}-job`);
+      log(`writing the tree at ${sha.slice(0, 7)}`);
+      await materializeTree(repoDir, sha, treeDir, scratch);
+      const projectRoot = projectRootFor(treeDir, filePath, runtime);
+      const installed = await prepareDeps(runtime, treeDir, projectRoot, log);
+      deps = installed.status;
+      depsVolume = installed.volume;
+      await mkdir(jobDir, { recursive: true });
+      const script = harnessScript(runtime);
+      await copyFile(script, path.join(jobDir, path.basename(script)));
+      prepared = { treeDir, jobDir, projectRoot, prepared: installed };
+    }
     const spec = {
       side,
       file: filePath,
-      projectRoot,
+      projectRoot: prepared.projectRoot,
       caseTimeoutMs: CASE_TIMEOUT_MS,
       symbols: symbols.map((s) => ({ name: s.name, kind: s.kind, cases: inputs[s.name] ?? [] })),
+      mocks,
     };
-    await writeFile(path.join(jobDir, "spec.json"), JSON.stringify(spec));
-    log("running in the sandbox");
-    const harness = await runHarness({ runtime, treeDir, jobDir, projectRoot, deps: prepared, log });
-    return { harness, deps, depsVolume };
+    await writeFile(path.join(prepared.jobDir, "spec.json"), JSON.stringify(spec));
+    log(Object.keys(mocks).length > 0 ? `running in the sandbox with ${Object.keys(mocks).length} mocked server response(s)` : "running in the sandbox");
+    const harness = await runHarness({
+      runtime,
+      treeDir: prepared.treeDir,
+      jobDir: prepared.jobDir,
+      projectRoot: prepared.projectRoot,
+      deps: prepared.prepared,
+      log,
+    });
+    return { harness, deps, depsVolume, prepared };
   } catch (error) {
     if (error instanceof SandboxUnavailableError) throw error;
     log(`failed: ${(error as Error).message}`);
-    return { harness: null, deps, depsVolume, fatal: (error as Error).message };
+    return { harness: null, deps, depsVolume, fatal: (error as Error).message, prepared: reuse };
   }
+}
+
+/** Server calls from both sides, merged by key (counts added, "mocked" if either side had a mock). */
+function mergeCalls(...runs: SideRun[]): PreviewServerCall[] {
+  const merged = new Map<string, PreviewServerCall>();
+  for (const run of runs) {
+    for (const call of run.harness?.serverCalls ?? []) {
+      const existing = merged.get(call.key);
+      if (existing) {
+        existing.count += call.count;
+        existing.mocked ||= call.mocked;
+      } else merged.set(call.key, { ...call });
+    }
+  }
+  return [...merged.values()];
+}
+
+/** The source of the module defining a server action, read from whichever side has it. */
+async function actionSource(call: PreviewServerCall, sides: SideRun[]): Promise<string | undefined> {
+  if (!call.module) return undefined;
+  for (const side of sides) {
+    if (!side.prepared) continue;
+    const text = await readFile(path.join(side.prepared.treeDir, call.module), "utf8").catch(() => null);
+    if (text) return text;
+  }
+  return undefined;
 }
 
 export async function runPreviewJob(
@@ -290,22 +393,82 @@ export async function runPreviewJob(
     for (const symbol of needInputs) inputs[symbol.name] ??= defaultCases(symbol);
   }
 
-  // 4 + 5. prepare and run both sides
+  // 4 + 5. prepare and run both sides; then record → mock → replay: server
+  // calls the renders made (server actions, fetch) get mocked answers from the
+  // model, and both sides run again with them.
   const scratch = await mkdtemp(path.join(os.tmpdir(), "graphreview-preview-"));
-  let beforeRun: SideRun = { harness: null, deps: "none" };
-  let afterRun: SideRun = { harness: null, deps: "none" };
+  let beforeRun: SideRun = NO_SIDE;
+  let afterRun: SideRun = NO_SIDE;
+  // The repo's cached mocks first, then whatever this run was given (edited or reused) on top.
+  let mocks: PreviewMocks = { ...(await readMockCache(data.repoId)), ...(data.mocks ?? {}) };
+  let mocksSource: PreviewResult["mocksSource"] = data.mocks && Object.keys(data.mocks).length > 0 ? "user" : "none";
+  let mocksNote: string | undefined;
   try {
     if (symbols.length > 0) {
       progress("preparing", "checking out both sides and running them in the sandbox");
-      const common = { runtime, repoDir, filePath: data.filePath, inputs, scratch, log };
-      [beforeRun, afterRun] = await Promise.all([
-        before === null
-          ? Promise.resolve<SideRun>({ harness: null, deps: "none" })
-          : runSide({ ...common, side: "before", sha: baseSha, symbols: symbols.filter((s) => s.change !== "added") }),
-        after === null
-          ? Promise.resolve<SideRun>({ harness: null, deps: "none" })
-          : runSide({ ...common, side: "after", sha: headSha, symbols: symbols.filter((s) => s.change !== "removed") }),
-      ]);
+      const runBoth = (reuseBefore?: PreparedSide, reuseAfter?: PreparedSide) => {
+        const common = { runtime, repoDir, filePath: data.filePath, inputs, mocks, scratch, log };
+        return Promise.all([
+          before === null
+            ? Promise.resolve<SideRun>(NO_SIDE)
+            : runSide({ ...common, side: "before", sha: baseSha, symbols: symbols.filter((s) => s.change !== "added"), reuse: reuseBefore }),
+          after === null
+            ? Promise.resolve<SideRun>(NO_SIDE)
+            : runSide({ ...common, side: "after", sha: headSha, symbols: symbols.filter((s) => s.change !== "removed"), reuse: reuseAfter }),
+        ]);
+      };
+      [beforeRun, afterRun] = await runBoth();
+
+      // Each round can reveal more calls: once a session check passes, the page loads its data.
+      for (let round = 1; round <= MAX_MOCK_ROUNDS; round++) {
+        const unmocked = mergeCalls(beforeRun, afterRun).filter((c) => !(c.key in mocks));
+        if (unmocked.length === 0) break;
+        const config = await loadAiConfig();
+        if (!config) {
+          mocksNote = `${unmocked.length} server call(s) had no answer (no AI provider configured to mock them).`;
+          break;
+        }
+        progress("inputs", `mocking ${unmocked.length} server response(s): ${unmocked.slice(0, 4).map((c) => c.name ?? c.key).join(", ")}`);
+        try {
+          const sides = [afterRun, beforeRun];
+          const treeDir = (afterRun.prepared ?? beforeRun.prepared)?.treeDir;
+          const actionModules = [...new Set(unmocked.map((c) => c.module).filter((m): m is string => Boolean(m)))];
+          const callerSources = treeDir ? await relatedSources(treeDir, actionModules, [data.filePath], [data.filePath]).catch(() => []) : [];
+          const result = await generatePreviewMocks(config, {
+            filePath: data.filePath,
+            fileSource: after ?? before ?? undefined,
+            callerSources,
+            calls: await Promise.all(
+              unmocked.map(async (c) => ({
+                key: c.key,
+                kind: c.kind,
+                args: c.args,
+                url: c.url,
+                method: c.method,
+                body: c.body,
+                source: c.kind === "action" ? await actionSource(c, sides) : undefined,
+              }))
+            ),
+          });
+          log(
+            `server mocks (round ${round}): ${Object.keys(result.mocks).length} of ${unmocked.length}, with ${callerSources.length} related file(s), ` +
+              `${result.usage.promptTokens}+${result.usage.completionTokens} tokens`
+          );
+          if (result.parseFailed) log(`unreadable AI answer (mocks): ${(result.rawAnswer ?? "").replace(/\s+/g, " ")}`);
+          if (Object.keys(result.mocks).length === 0) break;
+          mocks = { ...mocks, ...result.mocks };
+          await writeMockCache(data.repoId, result.mocks);
+          if (mocksSource === "none") mocksSource = "ai";
+          progress("running", "rendering again with the mocked server responses");
+          [beforeRun, afterRun] = await runBoth(beforeRun.prepared, afterRun.prepared);
+        } catch (error) {
+          mocksNote = isQuotaError(error)
+            ? "The AI provider refused (quota or rate limit), so some server calls had no mocked answer and those parts render as if the server were down. Try again later."
+            : `Mocking the server responses failed (${(error as Error).message}).`;
+          log(mocksNote);
+          break;
+        }
+      }
     }
   } catch (error) {
     if (error instanceof SandboxUnavailableError) throw new UnrecoverableError(error.message);
@@ -350,6 +513,11 @@ export async function runPreviewJob(
     inputsSource,
     inputs,
     ...(inputsNote ? { inputsNote } : {}),
+    mocks,
+    // Mocks reused from the repo cache were made by the model too.
+    mocksSource: mocksSource === "none" && mergeCalls(beforeRun, afterRun).some((c) => c.mocked) ? "ai" : mocksSource,
+    serverCalls: mergeCalls(beforeRun, afterRun),
+    ...(mocksNote ? { mocksNote } : {}),
     durationMs: Date.now() - started,
   };
 }

@@ -124,7 +124,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ rep
       // Keeps any inputs the user edited for that file's last run.
       const previous = (await getPreviewJob(repoId, target, file.filePath))?.returnvalue;
       const inputs = previous?.inputsSource === "user" ? previous.inputs : undefined;
-      if ((await enqueuePreview({ repoId, target, filePath: file.filePath, inputs })).enqueued) enqueued += 1;
+      // Server responses are reused too: they only depend on what the code calls, and new calls still get mocked.
+      const mocks = previous?.mocks && Object.keys(previous.mocks).length > 0 ? previous.mocks : undefined;
+      if ((await enqueuePreview({ repoId, target, filePath: file.filePath, inputs, mocks })).enqueued) enqueued += 1;
     }
     return NextResponse.json({ enqueued });
   } catch (err) {

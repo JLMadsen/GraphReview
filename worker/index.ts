@@ -83,7 +83,7 @@ const LABEL_CONCURRENCY = Number(process.env.LABEL_CONCURRENCY ?? 1);
 const APP_MAP_CONCURRENCY = Number(process.env.APP_MAP_CONCURRENCY ?? 1);
 
 /** Before/after previews (DESIGN.md §6.9): each runs two sandbox containers already, so one file at a time by default. */
-const PREVIEW_CONCURRENCY = Number(process.env.PREVIEW_CONCURRENCY ?? 1);
+const PREVIEW_CONCURRENCY = Math.max(1, Number(process.env.PREVIEW_CONCURRENCY) || 1);
 
 /**
  * Optional periodic staleness sweep. The normal refresh trigger is "on

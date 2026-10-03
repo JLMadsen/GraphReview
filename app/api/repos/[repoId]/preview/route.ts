@@ -32,6 +32,7 @@ const bodySchema = z.object({
   path: z.string().min(1),
   ...targetFields,
   inputs: z.record(z.string(), casesSchema).optional(),
+  mocks: z.record(z.string(), z.unknown()).optional(),
 });
 
 const querySchema = z.object({ path: z.string().min(1), ...targetFields });
@@ -72,7 +73,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ rep
     if (repo.provider === "local" && target.kind === "pr") {
       return errorResponse("A pull request can't be previewed on a repo with no git-host link — compare two refs instead.", 400);
     }
-    const result = await enqueuePreview({ repoId, target, filePath, inputs: parsed.data.inputs });
+    const result = await enqueuePreview({ repoId, target, filePath, inputs: parsed.data.inputs, mocks: parsed.data.mocks });
     return NextResponse.json({ jobId: result.jobId, enqueued: result.enqueued });
   } catch (err) {
     if (isRedisUnavailable(err)) {

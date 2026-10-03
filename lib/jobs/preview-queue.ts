@@ -11,7 +11,7 @@
 import { createHash } from "node:crypto";
 import { Queue } from "bullmq";
 import type { Job, JobState, JobsOptions } from "bullmq";
-import type { PreviewInputs, PreviewProgress, PreviewResult, PreviewScanResult } from "@/lib/preview/types";
+import type { PreviewInputs, PreviewMocks, PreviewProgress, PreviewResult, PreviewScanResult } from "@/lib/preview/types";
 import { getRedisConnection, isPendingJobState } from "./queue";
 import { reviewTargetKey, type ReviewTarget } from "./review-queue";
 
@@ -24,6 +24,8 @@ export interface PreviewJobData {
   filePath: string;
   /** Inputs the user edited; symbols without an entry still get AI inputs. */
   inputs?: PreviewInputs;
+  /** Server responses to reuse (from the last run, or edited); new calls still get mocked. */
+  mocks?: PreviewMocks;
 }
 
 export type PreviewJobResult = PreviewResult;

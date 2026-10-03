@@ -4,7 +4,7 @@
 // run on open, starts a run on demand, and polls while one is pending.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PreviewInputs, PreviewResult, PreviewStatusDTO } from "@/lib/preview/types";
+import type { PreviewInputs, PreviewMocks, PreviewResult, PreviewStatusDTO } from "@/lib/preview/types";
 import type { ReviewTargetDTO } from "./types";
 
 const POLL_MS = 1500;
@@ -22,7 +22,7 @@ export interface UsePreviewResult {
   /** A request (GET or POST) failed outright. */
   error: string | null;
   pending: boolean;
-  run: (inputs?: PreviewInputs) => Promise<void>;
+  run: (inputs?: PreviewInputs, mocks?: PreviewMocks) => Promise<void>;
   logs: string[];
 }
 
@@ -70,7 +70,7 @@ export function usePreview(repoId: string, target: ReviewTargetDTO, filePath: st
   }, [enabled, load]);
 
   const run = useCallback(
-    async (inputs?: PreviewInputs) => {
+    async (inputs?: PreviewInputs, mocks?: PreviewMocks) => {
       if (timer.current) clearTimeout(timer.current);
       const gen = ++generation.current;
       setError(null);
@@ -80,7 +80,7 @@ export function usePreview(repoId: string, target: ReviewTargetDTO, filePath: st
         const res = await fetch(`/api/repos/${repoId}/preview`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ path: filePath, ...JSON.parse(targetKey), inputs }),
+          body: JSON.stringify({ path: filePath, ...JSON.parse(targetKey), inputs, mocks }),
         });
         const json = (await res.json().catch(() => null)) as { error?: string } | null;
         if (!res.ok) throw new Error(json?.error ?? `Request failed (${res.status}).`);

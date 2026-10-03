@@ -72,7 +72,32 @@ export interface PreviewHarnessResult {
   cssNote?: string;
   /** The module couldn't even be loaded. */
   fatal?: string;
+  /** Server actions and fetch requests the code made, mocked or not. */
+  serverCalls?: PreviewServerCall[];
 }
+
+/**
+ * A call to the server the code made while rendering: a Next.js server
+ * action (replaced by a stub in client code) or a fetch request. Neither can
+ * reach a server in the sandbox, so they're answered from mocks.
+ */
+export interface PreviewServerCall {
+  /** `action <file>#<name>` or `fetch <METHOD> <path>` — also the key in {@link PreviewMocks}. */
+  key: string;
+  kind: "action" | "fetch";
+  count: number;
+  /** Answered from a mock this run. */
+  mocked: boolean;
+  module?: string;
+  name?: string;
+  args?: string;
+  method?: string;
+  url?: string;
+  body?: string;
+}
+
+/** Mocked server responses by call key: what each action returns / each request's JSON body. */
+export type PreviewMocks = Record<string, unknown>;
 
 /** What happened to one side as a whole. */
 export interface PreviewSideSummary {
@@ -120,6 +145,13 @@ export interface PreviewResult {
   inputs: PreviewInputs;
   /** Set when AI input generation failed and defaults were used instead. */
   inputsNote?: string;
+  /** Server responses the renders were given (record → mock → replay). */
+  mocks: PreviewMocks;
+  mocksSource: "ai" | "user" | "none";
+  /** Why some server calls went unanswered, when they did. */
+  mocksNote?: string;
+  /** Server calls the code made in the final run, both sides together. */
+  serverCalls: PreviewServerCall[];
   durationMs: number;
 }
 

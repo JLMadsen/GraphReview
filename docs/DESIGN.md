@@ -439,6 +439,42 @@ Nothing renders until **Preview all** or **Run** is pressed (✦, since the inpu
   - For components, the app's global stylesheet (`globals.css`, `index.css`, … in the usual folders) is run through the repo's own PostCSS config, which is how Tailwind classes get styled, and added to the bundled CSS.
 - **Python** (`python-harness.py`): imports the file by dotted name from the deepest matching root (so relative imports work), and calls each function on a deep copy of the arguments. `repr()` is the comparison format, which is what makes `2` vs `2.0` visible. Each case has a `SIGALRM` timeout, and prints are captured per case.
 
+#### Working on any React / Next.js app (generalised 2026-10-02)
+The goal is that ordinary React and Next.js repos preview without anyone adapting the sandbox to them. So the harness mimics, in general terms, what the framework and the browser would provide, and every rule below was found by running **Preview all** with AI inputs across a corpus. The corpus is GraphReview PR #1 plus five MultiTool commit ranges: about 90 changed components in two very different Next.js apps.
+
+- **Bundling:** only the repo's own code is bundled (above). A CommonJS package imported from ESM goes through a small wrapper that returns the default bundlers return. Node otherwise hands back the whole `module.exports`, so `import Image from "next/image"` would be an object and React reports "element type is invalid".
+- **Next.js semantics:**
+  - A `"use client"` file starts a client boundary. A `"use server"` module imported from inside one becomes callable references, as Next's bundler does, so server code (DB clients, secret checks) never runs in client code.
+  - `next/headers` (`cookies()`, `headers()`, `draftMode()`) gets a stand-in request, for the repo's code and for packages alike (Node module hooks).
+  - `next/font/*` returns stand-in fonts.
+  - Route files get awaitable `params` / `searchParams`, and the stand-in router reports the route's real pathname and params (`app/comparator/[id]/page.tsx` → `/comparator/example-id`). Apps derive page permissions from the pathname.
+  - Route handlers and middleware aren't previewed.
+- **Environment:** values from committed `.env.example`-style files, then a typed placeholder for every `process.env` key the repo's code reads. Runtime switches and feature flags are left alone. `import.meta.env` is defined, Vite-style.
+- **Providers:**
+  - Renders are wrapped in the providers that the root layout and the layouts on the file's route path put around pages (`<ThemeProvider><AuthProvider>{children}</AuthProvider></ThemeProvider>`).
+  - Every other `…Provider` the repo exports is indexed and added on demand when a render throws "must be used within XProvider". react-query's provider is added for "No QueryClient set".
+  - A compound part (`SheetContent`) is wrapped in its parent from the same file.
+  - All providers are bundled in the same split build, so they share context instances with the component.
+- **Rendering:** client components render with `react-dom/client` inside happy-dom, so effects run, and portals (dialogs, popovers) and CSS-in-JS styles are captured. Async server components and Next server files use `react-dom/server`, and Next server files don't get a DOM, so server-only guards behave. Each renderer is the other's fallback, but **a fallback that renders nothing doesn't count**: the original error is reported instead.
+- **Props:** callback props given as `{}` become no-ops (the model is also asked to write `{"$fn":true}`). Component props (`icon`, `as`, `…Icon`) become the named lucide icon or a placeholder glyph.
+- **Server data: record → mock → replay.** Most pages are empty without their data: a session check that never resolves renders `null` around the whole app. So the first render **records** every server action called (through the client-boundary stubs) and every `fetch`. Then `generatePreviewMocks` (`lib/ai/preview-mocks.ts`) writes realistic responses. It's given each action's source, the repo type files the action and the component import, and the callers (providers first, via `lib/preview/related.ts`). The render is replayed with those responses.
+  - Up to 3 rounds, since passing a session check reveals the page's own data calls.
+  - Mocks are cached per repo in Redis (`graphreview:preview:mocks:<repoId>`, 30 days), so the model is asked about each call once per repo, not once per file. They're stored with the run and reused by "Run again" and **Preview all**.
+  - A provider refusing (quota, rate limit) is reported as such.
+- **Measured on the corpus** (first case, after side):
+
+  | Round | Fully render | Show real UI | Legitimately small (a closed dialog's trigger, a toggle row) | Empty or failing |
+  |---|---|---|---|---|
+  | Before any of this | 29 of 92 | — | — | — |
+  | After record → mock → replay and the fixes above | 75 of 90 | 51 | 16 | 23 |
+
+  Of the 23, 15 are honest, named failures.
+- **Limits that remain:**
+  - WebGL maps and 3D (no GPU; reported as such).
+  - Network requests from libraries that use neither a server action nor `fetch`.
+  - Mocked data occasionally off (enum values, missing fields), and only as good as the provider's model.
+  - Components that need app-specific props deep inside. A quota-limited provider leaves calls unmocked, and those pages render as if the server were down.
+
 #### UI (`PreviewPanel`, `usePreview`; redesigned 2026-10-02)
 One changed symbol at a time, exceptions first. The first version showed every case as a pair of small frames with raw JSON headers, and the user found it messy and of little value.
 - **Header:** the result in words ("1 component looks different, 2 functions behave differently" / "Everything behaves the same"), then where the inputs came from, the two commits and the run time, then **Run**.

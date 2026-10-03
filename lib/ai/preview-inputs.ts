@@ -83,7 +83,10 @@ export function buildPreviewInputsSystemPrompt(language: PreviewInputsInput["lan
     "- Pick cases that show what the change does: the edge or path the diff touches, not only the",
     "  happy path. Include one plain, typical case.",
     "- Arguments that are objects must be complete enough that the function doesn't crash on a missing",
-    "  field it reads. For callbacks or other values JSON can't hold, pick the closest plain value.",
+    "  field it reads. Functions and callbacks (onClick, onChange, render props…) are written {\"$fn\":true}.",
+    "  For other values JSON can't hold, pick the closest plain value.",
+    "- For a component, fill in every required prop with realistic data (lists with a few items, not empty),",
+    "  so the render shows the component populated; one case may show the empty state.",
     python
       ? '- Python values JSON can\'t hold: {"$tuple":[...]}, {"$set":[...]}, {"$bytes":"text"}. A JSON 1.0 stays a float, 1 an int.'
       : '- JS values JSON can\'t hold: {"$undefined":true}, {"$date":"2024-01-31T00:00:00Z"}, {"$map":[[k,v]]}, {"$set":[...]}, {"$bigint":"1"}, {"$nan":true}, {"$infinity":1}, {"$promise":<value>}.\n' +

@@ -87,6 +87,7 @@ services:
       PREVIEW_CPUS: ${PREVIEW_CPUS:-}
       PREVIEW_DEPS_MAX_AGE_HOURS: ${PREVIEW_DEPS_MAX_AGE_HOURS:-}
       PREVIEW_DEPS_KEEP: ${PREVIEW_DEPS_KEEP:-}
+      PREVIEW_CONCURRENCY: ${PREVIEW_CONCURRENCY:-}
       # The app's own mirror settings, reused by the sandbox: its images come
       # from NODE_BASE_IMAGE's registry, and its dependency installs get these
       # registries plus the CA certificates baked into this image (CA_CERT_DIR).

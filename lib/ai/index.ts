@@ -186,3 +186,11 @@ export {
   checkPrIntent,
 } from "./pr-intent";
 export type { PrIntentFile, PrIntentInput, PrIntentResult, PrIntentVerdict } from "./pr-intent";
+
+export {
+  PREVIEW_MOCKS_TASK_MARKER,
+  buildPreviewMocksSystemPrompt,
+  generatePreviewMocks,
+  normalizePreviewMocks,
+} from "./preview-mocks";
+export type { PreviewMockCall, PreviewMocksInput, PreviewMocksResult } from "./preview-mocks";
