@@ -2,7 +2,7 @@
 //
 // One function owns module membership: `writeModuleTier`. The analysis job
 // calls it with fresh folder clusters; `regroupRepo` calls it with clusters
-// rebuilt from the graph already stored in Neo4j, after the user accepted a
+// rebuilt from the graph already stored in the database, after the user accepted a
 // merge or unmerged one. Either way it:
 //
 //   1. resolves which component owns each file (./ownership.ts — merged
@@ -38,26 +38,14 @@ import {
   setRepoDomainsStale,
   syncMergeSuggestions,
   upsertComponent,
-} from "@/lib/neo4j";
-import type { ComponentRecord, LostFolder } from "@/lib/neo4j";
+} from "@/lib/db";
+import type { ComponentRecord, LostFolder } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import { computeMergeSuggestions, type HeuristicModule } from "./merge-heuristics";
 import { folderOfPattern, isUnderFolder, resolveOwnership } from "./ownership";
 
-/** Node upserts can run in parallel (each targets its own id); see analyze.ts. */
-const NEO4J_WRITE_CONCURRENCY = 16;
 /** How many lost folders a merged module remembers for rename detection. */
 const MAX_LOST_FOLDERS = 10;
-
-async function mapWithConcurrency<T>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T) => Promise<void>
-): Promise<void> {
-  for (let i = 0; i < items.length; i += limit) {
-    await Promise.all(items.slice(i, i + limit).map(fn));
-  }
-}
 
 /**
  * The folder pattern a module cluster was derived from. `ModuleCluster.name`
@@ -108,9 +96,9 @@ export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTie
   const ownership = resolveOwnership(repoId, folderClusters, mergedModules);
 
   // --- folder modules --------------------------------------------------
-  await mapWithConcurrency(ownership.liveFolderModules, NEO4J_WRITE_CONCURRENCY, async ({ id, cluster }) => {
-    // `upsertComponent` fully replaces the node's properties, so anything the
-    // user curated (descriptions live only in Neo4j and are edited in-app)
+  for (const { id, cluster } of ownership.liveFolderModules) {
+    // `upsertComponent` fully replaces the stored record, so anything the
+    // user curated (descriptions live only in the database and are edited in-app)
     // has to be read back and carried across, or every re-analysis would
     // silently wipe it. A component the user has taken ownership of also
     // keeps its name; only its path patterns are refreshed.
@@ -126,7 +114,7 @@ export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTie
       origin: "folder",
     });
     await linkComponentToRepo(id, repoId);
-  });
+  }
 
   // --- merged modules --------------------------------------------------
   const liveMerged: ComponentRecord[] = [];
@@ -202,7 +190,7 @@ export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTie
     (c) => c.createdBy === "auto" && c.origin !== "merge" && !liveIds.has(c.id)
   );
   if (stale.length > 0) log(`pruning ${stale.length} module(s) with no files left`);
-  await mapWithConcurrency(stale, NEO4J_WRITE_CONCURRENCY, (c) => deleteComponent(c.id));
+  for (const c of stale) await deleteComponent(c.id);
 
   // --- domain inheritance -----------------------------------------------
   // A module without a domain whose files used to sit in modules that had
@@ -277,7 +265,7 @@ export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTie
 }
 
 /**
- * Re-applies module membership from the graph already stored in Neo4j — no
+ * Re-applies module membership from the graph already stored in the database — no
  * checkout, no parsing. Runs after the user accepts a merge suggestion or
  * unmerges a module, so the change shows up immediately.
  */

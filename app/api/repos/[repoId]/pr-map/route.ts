@@ -22,7 +22,7 @@ import {
   type PrMapChangedFile,
   type ReviewTarget,
 } from "@/lib/jobs";
-import { getPrMapGrouping, getRepoById, prMapFilesKey } from "@/lib/neo4j";
+import { getPrMapGrouping, getRepoById, prMapFilesKey } from "@/lib/db";
 import type { PrMapResponseDTO } from "@/components/graph/pr-map-types";
 
 export const dynamic = "force-dynamic";

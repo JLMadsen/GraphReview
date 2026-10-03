@@ -17,7 +17,7 @@ import {
   getAppMapJobLogs,
   type AppMapProgress,
 } from "@/lib/jobs";
-import { getActiveAiProvider, getAppMapRecords, getRepoById } from "@/lib/neo4j";
+import { getActiveAiProvider, getAppMapRecords, getRepoById } from "@/lib/db";
 import {
   isAppMapLevel,
   type AppMapJobStateDTO,
@@ -31,13 +31,6 @@ const bodySchema = z.object({ level: z.enum(["architecture", "features", "module
 
 function errorResponse(error: string, status: number, code?: string): NextResponse {
   return NextResponse.json(code ? { error, code } : { error }, { status });
-}
-
-function isRedisUnavailable(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EPIPE|max retries per request|Connection is closed|Stream isn't writeable|Redis/i.test(
-    message
-  );
 }
 
 async function isAiConfigured(): Promise<boolean> {
@@ -62,9 +55,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ rep
     const result = await enqueueAppMap(repoId, parsed.data.level);
     return NextResponse.json({ jobId: result.jobId, enqueued: result.enqueued });
   } catch (err) {
-    if (isRedisUnavailable(err)) {
-      return errorResponse("The job queue is unavailable — is Redis running?", 503, "queue_unavailable");
-    }
     console.error(`POST /api/repos/${repoId}/app-map/job failed:`, err);
     return errorResponse(err instanceof Error ? err.message : "Failed to start the app map run.", 500);
   }
@@ -121,19 +111,14 @@ export async function GET(request: Request, { params }: { params: Promise<{ repo
     let progress: AppMapProgress | undefined;
     let error: string | undefined;
     let finishedAt: string | undefined;
-    try {
-      const job = await getAppMapJob(repoId);
-      if (job) {
-        state = toState(await job.getState());
-        level = job.data.level;
-        progress = toProgress(job.progress);
-        if (state === "failed" && job.failedReason === APP_MAP_CANCELLED_REASON) state = "cancelled";
-        else if (state === "failed") error = job.failedReason || "The app map run failed.";
-        if (job.finishedOn) finishedAt = new Date(job.finishedOn).toISOString();
-      }
-    } catch (queueError) {
-      if (!isRedisUnavailable(queueError)) throw queueError;
-      error = "The job queue is unavailable — live progress could not be read.";
+    const job = await getAppMapJob(repoId);
+    if (job) {
+      state = toState(await job.getState());
+      level = job.data.level;
+      progress = toProgress(job.progress);
+      if (state === "failed" && job.failedReason === APP_MAP_CANCELLED_REASON) state = "cancelled";
+      else if (state === "failed") error = job.failedReason || "The app map run failed.";
+      if (job.finishedOn) finishedAt = new Date(job.finishedOn).toISOString();
     }
 
     let logs: string[] | undefined;
@@ -161,9 +146,6 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
   try {
     return NextResponse.json(await cancelAppMap(repoId));
   } catch (err) {
-    if (isRedisUnavailable(err)) {
-      return errorResponse("The job queue is unavailable — is Redis running?", 503, "queue_unavailable");
-    }
     return errorResponse(err instanceof Error ? err.message : "Failed to cancel the app map run.", 500);
   }
 }

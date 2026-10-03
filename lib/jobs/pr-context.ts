@@ -14,7 +14,7 @@
 import { getCommitCiStatus as getGitHubCiStatus, getFileAtRef as getGitHubFile } from "@/lib/github";
 import type { CiStatus } from "@/lib/github";
 import { getCommitCiStatus as getGitLabCiStatus, getFileAtRef as getGitLabFile } from "@/lib/gitlab";
-import type { RepoRecord } from "@/lib/neo4j";
+import type { RepoRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import { resolveGitHubAccess } from "./github-access";
 import { resolveGitLabAccess } from "./gitlab-access";

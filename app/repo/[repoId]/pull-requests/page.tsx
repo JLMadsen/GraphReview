@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "cn";
 import type { PullRequestListState, PullRequestSummary } from "@/lib/github";
 import { getRepoPullRequests } from "@/lib/jobs";
-import { getRepoById } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/db";
 import {
   DatabaseErrorNotice,
   GitHubErrorNotice,

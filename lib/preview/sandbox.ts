@@ -1,11 +1,9 @@
 // The Docker sandbox the before/after preview runs PR code in (DESIGN.md §6.9).
 //
-// Everything goes through the `docker` CLI (the worker image ships it, and
-// Compose hands the worker the host's Docker socket). Nothing is bind-
-// mounted from the worker's filesystem — a host path means something
-// different to the Docker daemon than to a worker that itself runs in a
-// container — so files travel with `docker cp`, and the only mounts are
-// named volumes the daemon owns:
+// Everything goes through the `docker` CLI on this machine. Nothing is
+// bind-mounted from the host's filesystem (host paths are awkward across
+// Docker Desktop's VM boundary on Windows/macOS), so files travel with
+// `docker cp`, and the only mounts are named volumes the daemon owns:
 //
 //   graphreview-preview-harness-<v>   esbuild/react/postcss for the Node harness
 //   graphreview-preview-deps-<hash>   one repo's installed dependencies,
@@ -14,16 +12,21 @@
 //
 // A run container gets no network, capped memory/CPU/processes and a wall-
 // clock limit. Installs are the only step that goes online, and they carry
-// the worker's own CA bundle (CA_CERT_DIR, baked into its image) and
-// registry/proxy settings, so a closed-network setup needs nothing extra.
+// GraphReview's own CA settings (`NODE_EXTRA_CA_CERTS`) and registry/proxy
+// settings, so a closed-network setup needs nothing extra.
+//
+// Docker is optional: without it, `getDockerStatus()` says why and the UI
+// disables previews; nothing else in the app needs it.
 //
 // Server-only (spawns processes). Worker-only in practice.
 
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { rootCertificates } from "node:tls";
+import { getDataDir } from "@/lib/runtime/paths";
 import type { PreviewHarnessResult, PreviewRuntime } from "./types";
 
 export const RESULT_MARKER = "@@GRAPHREVIEW_PREVIEW_RESULT@@";
@@ -33,15 +36,13 @@ const HARNESS_VERSION = "2";
 const HARNESS_PACKAGES = ["esbuild@0.25", "react@19", "react-dom@19", "postcss@8", "happy-dom@15", "@happy-dom/global-registrator@15"];
 
 /**
- * The registry/namespace part of `NODE_BASE_IMAGE` (the app's own base image),
- * e.g. `mirror.corp/library/` from `mirror.corp/library/node:20-alpine`, so a
- * closed-network setup pulls the sandbox images from the same mirror without
- * any extra setting. Empty for the default Docker Hub `node:20-alpine`.
+ * `PREVIEW_IMAGE_REGISTRY` — a registry/namespace prefix such as
+ * `mirror.corp/library` for closed networks, so the sandbox images come from
+ * an internal mirror instead of Docker Hub. Empty by default.
  */
 function mirrorPrefix(): string {
-  const base = process.env.NODE_BASE_IMAGE?.trim() ?? "";
-  const slash = base.lastIndexOf("/");
-  return slash >= 0 ? base.slice(0, slash + 1) : "";
+  const prefix = process.env.PREVIEW_IMAGE_REGISTRY?.trim() ?? "";
+  return prefix && !prefix.endsWith("/") ? `${prefix}/` : prefix;
 }
 
 // Not the app's Alpine image: native npm/pip packages mostly ship glibc builds.
@@ -82,7 +83,7 @@ function docker(args: string[], timeoutMs = 60_000): Promise<ExecResult> {
       { timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, windowsHide: true },
       (error, stdout, stderr) => {
         if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-          reject(new SandboxUnavailableError("The docker CLI is not installed where the worker runs."));
+          reject(new SandboxUnavailableError(DOCKER_MISSING));
           return;
         }
         const code = error ? (typeof error.code === "number" ? error.code : 1) : 0;
@@ -100,15 +101,44 @@ async function dockerOk(args: string[], what: string, timeoutMs?: number): Promi
   return result.stdout;
 }
 
+const DOCKER_MISSING =
+  "Previews run the changed code in Docker containers, and Docker isn't installed. Install Docker Desktop " +
+  "(or Docker Engine) to use them — everything else in GraphReview works without it.";
+const DOCKER_STOPPED = "Docker is installed but not running. Start Docker Desktop (or the Docker engine) to run previews.";
+
+/** Whether previews can run here, and if not, a fixable reason. */
+export interface DockerStatus {
+  available: boolean;
+  reason?: string;
+}
+
+/** How long a Docker probe result is reused — the UI asks on every poll. */
+const DOCKER_STATUS_TTL_MS = 15_000;
+let dockerStatusCache: { at: number; status: Promise<DockerStatus> } | undefined;
+
+async function probeDocker(): Promise<DockerStatus> {
+  try {
+    const result = await docker(["version", "--format", "{{.Server.Version}}"], 15_000);
+    return result.code === 0 ? { available: true } : { available: false, reason: DOCKER_STOPPED };
+  } catch (error) {
+    if (error instanceof SandboxUnavailableError) return { available: false, reason: error.message };
+    return { available: false, reason: (error as Error).message };
+  }
+}
+
+/** Probes Docker (cached for a few seconds). Never throws. */
+export function getDockerStatus(): Promise<DockerStatus> {
+  if (!dockerStatusCache || Date.now() - dockerStatusCache.at > DOCKER_STATUS_TTL_MS) {
+    dockerStatusCache = { at: Date.now(), status: probeDocker() };
+  }
+  return dockerStatusCache.status;
+}
+
 /** Throws {@link SandboxUnavailableError} with a fixable message when Docker can't be reached. */
 export async function assertDockerAvailable(): Promise<void> {
-  const result = await docker(["version", "--format", "{{.Server.Version}}"], 15_000);
-  if (result.code !== 0) {
-    throw new SandboxUnavailableError(
-      "Docker isn't reachable from the worker, so the preview can't run. Start Docker, and under " +
-        "Docker Compose make sure the worker has /var/run/docker.sock mounted (docker/docker-compose.yml)."
-    );
-  }
+  dockerStatusCache = undefined;
+  const status = await getDockerStatus();
+  if (!status.available) throw new SandboxUnavailableError(status.reason ?? DOCKER_STOPPED);
 }
 
 const pulled = new Set<string>();
@@ -169,20 +199,20 @@ function startAttached(id: string, timeoutMs: number, log?: Logger): Promise<Exe
 }
 
 // ---------------------------------------------------------------------------
-// Online steps (installs): the worker's own network settings, carried over
+// Online steps (installs): GraphReview's own network settings, carried over
 // ---------------------------------------------------------------------------
 
-/** Where the worker's CA bundle lands inside an install container. */
+/** Where the CA bundle lands inside an install container. */
 const CONTAINER_CA_FILE = "/tmp/graphreview-ca.crt";
 
 /**
- * Settings an install container inherits from the worker, when set there:
+ * Settings an install container inherits from GraphReview's environment, when set there:
  * package registries (npm, yarn, corepack, pip) and proxies. Empty values are
  * dropped — an empty `NPM_CONFIG_REGISTRY` would break npm, not reset it.
  *
  * Upper-case `NPM_CONFIG_*` only: npm itself injects dozens of lower-case
  * `npm_config_*` variables (cache, prefix, user config — host paths) into
- * every process it starts, the worker included, and those must not leak in.
+ * every process it starts, GraphReview included, and those must not leak in.
  */
 const FORWARDED_ENV = /^(NPM_CONFIG_\w+|YARN_NPM_\w+|COREPACK_NPM_\w+|PIP_\w+|HTTPS?_PROXY|https?_proxy|NO_PROXY|no_proxy)$/;
 
@@ -198,14 +228,18 @@ function forwardedEnv(): Record<string, string> {
 }
 
 /**
- * The worker's CA bundle: under Docker Compose it is the system bundle with
- * every certificate from `CA_CERT_DIR` appended at build time, and
- * `NODE_EXTRA_CA_CERTS` points at it (docker/Dockerfile). Outside Docker
- * this is whatever the user set, or nothing.
+ * A full CA bundle for install containers when `NODE_EXTRA_CA_CERTS` is set:
+ * Node's public root certificates plus the extra ones. `NODE_EXTRA_CA_CERTS`
+ * usually holds only the internal CAs, and pip/curl/git need a bundle that
+ * *replaces* their own, so the public roots have to be in it too. Written to
+ * the data folder; `null` when no extra CAs are configured.
  */
-function caBundle(): string | null {
+async function caBundle(): Promise<string | null> {
   const file = process.env.NODE_EXTRA_CA_CERTS?.trim();
-  return file && existsSync(file) ? file : null;
+  if (!file || !existsSync(file)) return null;
+  const bundle = path.join(getDataDir(), "preview-ca-bundle.crt");
+  await writeFile(bundle, [...rootCertificates, await readFile(file, "utf8")].join("\n"), "utf8");
+  return bundle;
 }
 
 /** Runs `script` in a container that may go online, with the worker's CA bundle and registry settings. */
@@ -218,7 +252,7 @@ async function runOnline(options: {
   before?: (id: string) => Promise<void>;
 }): Promise<ExecResult & { timedOut: boolean }> {
   const env: Record<string, string> = { CI: "1", ...forwardedEnv() };
-  const ca = caBundle();
+  const ca = await caBundle();
   if (ca) {
     // A full bundle (public roots + internal CAs), so it can replace each tool's own.
     Object.assign(env, {

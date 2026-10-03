@@ -21,8 +21,8 @@ import {
   setComponentDescription,
   setMergeSuggestionStatus,
   upsertComponent,
-} from "@/lib/neo4j";
-import type { ComponentRecord, MergeSuggestionRecord } from "@/lib/neo4j";
+} from "@/lib/db";
+import type { ComponentRecord, MergeSuggestionRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import { regroupRepo, type ModuleTierCounts } from "./module-tier";
 import { folderOfPattern, isUnderFolder } from "./ownership";

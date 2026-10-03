@@ -1,18 +1,17 @@
-// BullMQ queue for the before/after preview (DESIGN.md §6.9).
+// Queue for the before/after preview (DESIGN.md §6.9).
 //
 // One job per (repo, review target, file): pressing "Run" again replaces the
 // previous run of that file. `attempts: 1` like every other on-demand queue —
 // a run spends a model call and container time, and a retry would only
-// repeat whatever went wrong. The result lives in the job's return value
-// (Redis), not Neo4j: previews are cheap to redo and go stale with every push.
+// repeat whatever went wrong. The result lives in the job's return value,
+// not the graph tables: previews are cheap to redo and go stale with every push.
 //
-// Server-only: opens a Redis connection (reused from ./queue.ts).
+// Server-only.
 
 import { createHash } from "node:crypto";
-import { Queue } from "bullmq";
-import type { Job, JobState, JobsOptions } from "bullmq";
+import { Queue, type Job, type JobState, type JobsOptions } from "./runner";
 import type { PreviewInputs, PreviewMocks, PreviewProgress, PreviewResult, PreviewScanResult } from "@/lib/preview/types";
-import { getRedisConnection, isPendingJobState } from "./queue";
+import { isPendingJobState } from "./queue";
 import { reviewTargetKey, type ReviewTarget } from "./review-queue";
 
 export const PREVIEW_QUEUE_NAME = "preview";
@@ -42,13 +41,12 @@ let queueSingleton: Queue<PreviewJobData, PreviewJobResult> | undefined;
 
 export function getPreviewQueue(): Queue<PreviewJobData, PreviewJobResult> {
   queueSingleton ??= new Queue<PreviewJobData, PreviewJobResult>(PREVIEW_QUEUE_NAME, {
-    connection: getRedisConnection(),
     defaultJobOptions: PREVIEW_JOB_OPTIONS,
   });
   return queueSingleton;
 }
 
-/** `preview-<hash>` of repo + target + file — `-`, never `:` (BullMQ rejects it in custom ids). */
+/** `preview-<hash>` of repo + target + file. */
 export function previewJobId(repoId: string, target: ReviewTarget, filePath: string): string {
   const digest = createHash("sha1").update(`${repoId}|${reviewTargetKey(target)}|${filePath}`).digest("hex").slice(0, 16);
   return `preview-${digest}`;
@@ -76,7 +74,7 @@ export async function enqueuePreview(
   return { enqueued: true, jobId, previousState };
 }
 
-/** Must run before `closeQueues()`, which tears down the shared connections. */
+/** Graceful shutdown for the worker entrypoint. */
 export async function closePreviewQueue(): Promise<void> {
   if (!queueSingleton) return;
   const queue = queueSingleton;
@@ -105,7 +103,6 @@ let scanQueueSingleton: Queue<PreviewScanJobData, PreviewScanResult> | undefined
 
 export function getPreviewScanQueue(): Queue<PreviewScanJobData, PreviewScanResult> {
   scanQueueSingleton ??= new Queue<PreviewScanJobData, PreviewScanResult>(PREVIEW_SCAN_QUEUE_NAME, {
-    connection: getRedisConnection(),
     defaultJobOptions: PREVIEW_JOB_OPTIONS,
   });
   return scanQueueSingleton;

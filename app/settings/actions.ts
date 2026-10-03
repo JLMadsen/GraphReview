@@ -25,7 +25,7 @@ import {
   setActiveAiProvider,
   updateAiProvider,
   upsertSettings,
-} from "@/lib/neo4j";
+} from "@/lib/db";
 import type {
   ClearGithubPatState,
   ClearGitlabPatState,

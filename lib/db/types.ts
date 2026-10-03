@@ -1,13 +1,7 @@
-// Typed shapes for every node label and relationship property bag defined
-// in the Neo4j schema. These are intentionally local to lib/neo4j/ (not
-// types/) since this task is scoped to the Neo4j data-access layer only —
-// promote them to types/ later if/when other layers want to import the
-// canonical shapes directly instead of going through the repository
-// functions.
+// Typed shapes for every stored entity and relationship property bag.
 //
-// Timestamps are stored and returned as ISO-8601 strings (not Neo4j's
-// native temporal type) to keep the driver boundary plain-JSON-friendly
-// for route handlers and BullMQ job payloads.
+// Timestamps are stored and returned as ISO-8601 strings to keep the
+// storage boundary plain-JSON-friendly for route handlers and job payloads.
 
 export type RepoProvider = "local" | "github" | "gitlab";
 
@@ -83,7 +77,7 @@ export type MergeSuggestionKind = "merge" | "extend" | "move-file";
 export type MergeSuggestionStatus = "open" | "rejected";
 
 /**
- * `(:MergeSuggestion)` — a proposed change to the module tier, computed by
+ * A merge suggestion — a proposed change to the module tier, computed by
  * free heuristics after every analysis (DESIGN.md §6.3).
  *
  * - `merge`: turn the folders in `members` into one new feature module.
@@ -170,12 +164,11 @@ export interface FindingRecord {
    * What was reviewed, as a stable string key: `pr:<number>` for a pull
    * request, or `refs:<baseRef>...<headRef>` for an ad-hoc ref comparison.
    *
-   * `Finding` only has a nullable `prId`, which cannot identify a
+   * A finding only has a nullable `prId`, which cannot identify a
    * ref-comparison review at all — two different ref comparisons of the same
    * repo would be indistinguishable, and "overwrite, don't version"
    * needs an exact identity for *what* is being overwritten. `targetKey` is
-   * that identity; `prId` stays alongside it purely so the `FOR ->
-   * (:PullRequest)` edge and the property list still hold for PR reviews.
+   * that identity; `prId` stays alongside it for PR reviews.
    */
   targetKey: string;
   /** Nullable — absent for a finding generated from an ad-hoc ref comparison rather than a PR. */
@@ -197,7 +190,7 @@ export interface FindingRecord {
    * The commits this finding's review was run against — recorded so a later
    * read can tell whether the branch/PR has moved since (see
    * `lib/jobs/review-freshness.ts`). Stored on the finding itself, not just
-   * in the BullMQ job result, because job records age out and findings don't.
+   * in the job result, because job records age out and findings don't.
    * All three are absent on findings written before this existed ("legacy"),
    * and `reviewedBaseSha` can be absent alone if the base couldn't be resolved.
    */
@@ -214,9 +207,7 @@ export interface FindingRecord {
   resolvedAt?: string;
 }
 
-// Note: `SettingsRecord` is intentionally defined in settings.ts, not here
-// — the integration contract for that module specifies its exact shape
-// there (singleton `(:Settings {id: "global"})`), and re-declaring
+// Note: `SettingsRecord` is defined in settings.ts, not here — re-declaring
 // it in both places would create a duplicate-export collision in index.ts.
 
 /** `(File)-[:IMPORTS {kind}]->(File)` */

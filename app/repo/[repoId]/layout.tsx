@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { TriangleAlert } from "lucide-react";
 import { getRepoDto } from "@/lib/jobs";
 import type { RepoDto } from "@/lib/jobs";
-import { getRepoById } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/db";
 import { PROVIDER_NAMES, RepoStatusText, providerIcon } from "@/app/repo-status-badge";
 import { ReanalyzeButton } from "./reanalyze-button";
 

@@ -165,12 +165,19 @@ export interface PreviewProgress {
 export type PreviewJobState = "none" | "queued" | "running" | "completed" | "failed";
 
 /** `GET /api/repos/[repoId]/preview` */
+/** Whether previews can run on this machine (they need Docker), and if not, why. */
+export interface PreviewSandboxDTO {
+  available: boolean;
+  reason?: string;
+}
+
 export interface PreviewStatusDTO {
   state: PreviewJobState;
   progress?: PreviewProgress;
   result?: PreviewResult;
   error?: string;
   logs?: string[];
+  sandbox?: PreviewSandboxDTO;
 }
 
 // ---------------------------------------------------------------------------
@@ -209,4 +216,5 @@ export interface PreviewScanDTO {
   state: PreviewJobState;
   files: PreviewScanFileDTO[];
   error?: string;
+  sandbox?: PreviewSandboxDTO;
 }

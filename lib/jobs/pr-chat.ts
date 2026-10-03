@@ -27,9 +27,9 @@ import {
   listChatMessages,
   listComponentsByRepoId,
   listFindingsByTargetKey,
-  runRead,
-} from "@/lib/neo4j";
-import type { ChatMessageRecord, ComponentRecord, FindingWithComponent, RepoRecord } from "@/lib/neo4j";
+  getComponentOverview,
+} from "@/lib/db";
+import type { ChatMessageRecord, ComponentRecord, FindingWithComponent, RepoRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import { loadAiConfigOrNull } from "./merge-naming";
 import { loadPrContext, readFileAtCommit, searchCode } from "./pr-context";
@@ -258,20 +258,10 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
       if (!query) return missing(name);
       const component = findComponent(tc, query);
       if (!component) return { text: `No component matches "${query}".`, summary: `no component "${query}"` };
-      const result = await runRead(
-        `
-        MATCH (c:Component {id: $id})
-        OPTIONAL MATCH (f:File)-[:BELONGS_TO]->(c)
-        OPTIONAL MATCH (c)-[:DEPENDS_ON]->(dep:Component)
-        OPTIONAL MATCH (user:Component)-[:DEPENDS_ON]->(c)
-        RETURN collect(DISTINCT f.path) AS files, collect(DISTINCT dep.name) AS deps, collect(DISTINCT user.name) AS users
-        `,
-        { id: component.id }
-      );
-      const row = result.records[0];
-      const files = ((row?.get("files") as string[]) ?? []).sort();
-      const deps = (row?.get("deps") as string[]) ?? [];
-      const users = (row?.get("users") as string[]) ?? [];
+      const overview = await getComponentOverview(component.id);
+      const files = overview.files.sort();
+      const deps = overview.deps;
+      const users = overview.users;
       const changed = ctx ? files.filter((f) => ctx.files.some((c) => c.path === f)) : null;
       return {
         text: [

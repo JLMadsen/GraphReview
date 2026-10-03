@@ -18,7 +18,7 @@
 // Folders imported by many modules are shared foundation and are never
 // suggested as part of a feature.
 
-import type { LostFolder, MergeSuggestionKind } from "@/lib/neo4j/types";
+import type { LostFolder, MergeSuggestionKind } from "@/lib/db/types";
 import { folderOfPattern, folderPattern, isUnderFolder } from "./ownership";
 
 /** Suggestions below this score are not shown. */

@@ -1,4 +1,4 @@
-import { getActiveAiProviderId, getSettings, listAiProviders } from "@/lib/neo4j";
+import { getActiveAiProviderId, getSettings, listAiProviders } from "@/lib/db";
 import { SettingsForm } from "./settings-form";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ChecklistEditor } from "@/components/graph/ChecklistEditor";

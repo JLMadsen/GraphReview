@@ -21,7 +21,7 @@ import type { PullRequestFile } from "@/lib/github";
 import { compareRefs as compareGitLabRefs, listMergeRequestFiles } from "@/lib/gitlab";
 import { listLocalFilePatches, resolveGitHubAccess, resolveGitLabAccess } from "@/lib/jobs";
 import { readFileAtCommit } from "@/lib/jobs/pr-context";
-import { getRepoById } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/db";
 import type { FileDiffResponseDTO } from "@/components/graph/types";
 
 export const dynamic = "force-dynamic";

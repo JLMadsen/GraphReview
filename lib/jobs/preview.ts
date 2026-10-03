@@ -14,10 +14,10 @@
 import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { UnrecoverableError } from "bullmq";
+import { UnrecoverableError } from "./runner";
 import { generatePreviewInputs, generatePreviewMocks, type AiProviderConfig } from "@/lib/ai";
 import { decrypt } from "@/lib/crypto";
-import { getActiveAiProvider, getRepoById, type RepoRecord } from "@/lib/neo4j";
+import { getActiveAiProvider, getRepoById, type RepoRecord } from "@/lib/db";
 import { materializeTree, mergeBaseOf, projectRootFor, readFileAt, runtimeForPath } from "@/lib/preview/checkout";
 import {
   assertDockerAvailable,
@@ -46,50 +46,38 @@ import type {
   PreviewSymbolResult,
 } from "@/lib/preview/types";
 import type { JobLogger } from "./analyze";
+import { readKv, writeKv } from "@/lib/db";
 import { loadPrContext } from "./pr-context";
 import type { PreviewJobData } from "./preview-queue";
 import type { ReviewTarget } from "./review-queue";
-import { getRedisConnection } from "./queue";
 import { ensureCommitsInCache, validateLocalRepoPath } from "./source";
 
-/** Redis hash: dependency cache volume → when a preview last used it (ms). Survives worker restarts, unlike memory. */
-const DEPS_LAST_USED_KEY = "graphreview:preview:deps-last-used";
+/** Dependency cache volume → when a preview last used it (ms). Survives restarts, unlike memory. */
+const DEPS_LAST_USED_KEY = "preview:deps-last-used";
 
 /**
- * Redis hash per repo: server call key → mocked JSON response. A repo's files
- * mostly call the same things (every page checks the session), so a mock made
- * for one file is reused by every later preview in the repo instead of asking
- * the model again. Entries expire with the hash after 30 days unused.
+ * Per repo: server call key → mocked JSON response. A repo's files mostly
+ * call the same things (every page checks the session), so a mock made for
+ * one file is reused by every later preview in the repo instead of asking
+ * the model again. The cache expires after 30 days without a write.
  */
 function mockCacheKey(repoId: string): string {
-  return `graphreview:preview:mocks:${repoId}`;
+  return `preview:mocks:${repoId}`;
 }
 const MOCK_CACHE_TTL_S = 30 * 24 * 60 * 60;
 
 async function readMockCache(repoId: string): Promise<PreviewMocks> {
   try {
-    const stored = await getRedisConnection().hgetall(mockCacheKey(repoId));
-    const out: PreviewMocks = {};
-    for (const [key, value] of Object.entries(stored)) {
-      try {
-        out[key] = JSON.parse(value);
-      } catch {
-        /* skip a corrupt entry */
-      }
-    }
-    return out;
+    return readKv<PreviewMocks>(mockCacheKey(repoId)) ?? {};
   } catch {
     return {};
   }
 }
 
 async function writeMockCache(repoId: string, mocks: PreviewMocks): Promise<void> {
-  const entries = Object.entries(mocks);
-  if (entries.length === 0) return;
+  if (Object.keys(mocks).length === 0) return;
   try {
-    const redis = getRedisConnection();
-    await redis.hset(mockCacheKey(repoId), Object.fromEntries(entries.map(([k, v]) => [k, JSON.stringify(v)])));
-    await redis.expire(mockCacheKey(repoId), MOCK_CACHE_TTL_S);
+    writeKv(mockCacheKey(repoId), { ...(await readMockCache(repoId)), ...mocks }, MOCK_CACHE_TTL_S);
   } catch {
     /* the cache is an optimisation */
   }
@@ -107,15 +95,12 @@ function isQuotaError(error: unknown): boolean {
  */
 async function recordAndPruneDeps(used: Array<string | undefined>, log: JobLogger): Promise<void> {
   try {
-    const redis = getRedisConnection();
-    const now = String(Date.now());
-    for (const volume of new Set(used.filter((v): v is string => Boolean(v)))) {
-      await redis.hset(DEPS_LAST_USED_KEY, volume, now);
-    }
-    const stored = await redis.hgetall(DEPS_LAST_USED_KEY);
-    const lastUsed = new Map(Object.entries(stored).map(([k, v]) => [k, Number(v)] as const));
+    const lastUsed = new Map(Object.entries(readKv<Record<string, number>>(DEPS_LAST_USED_KEY) ?? {}));
+    const now = Date.now();
+    for (const volume of new Set(used.filter((v): v is string => Boolean(v)))) lastUsed.set(volume, now);
     const removed = await pruneDepsVolumes(lastUsed, log);
-    if (removed.length > 0) await redis.hdel(DEPS_LAST_USED_KEY, ...removed);
+    for (const volume of removed) lastUsed.delete(volume);
+    writeKv(DEPS_LAST_USED_KEY, Object.fromEntries(lastUsed));
   } catch (error) {
     log(`dependency cache cleanup skipped: ${(error as Error).message}`);
   }

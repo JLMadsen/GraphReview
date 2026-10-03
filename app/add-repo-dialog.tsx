@@ -2,9 +2,9 @@
 
 // "Add repo" dialog for the landing page.
 //
-// Three ingestion flows behind one dialog: a path under the bind-mounted
-// local-repos folder, or a GitHub/GitLab URL the app clones itself
-// (into `repo_cache`). All POST to /api/repos, which creates the node and
+// Three ingestion flows behind one dialog: a git repo already on this
+// machine, or a GitHub/GitLab URL the app clones itself (into its clone
+// cache). All POST to /api/repos, which creates the repo and
 // immediately queues the first analysis — so on success we just
 // refresh the server-rendered list and the new repo shows up as
 // "Analyzing…".
@@ -53,8 +53,8 @@ export function AddRepoDialog() {
   const [candidates, setCandidates] = useState<LocalRepoCandidate[]>([]);
   const [candidatesLoaded, setCandidatesLoaded] = useState(false);
 
-  // Populated from the local-repos root so the user can pick a repo
-  // instead of typing its full path — fetched once per time the dialog
+  // Populated from repos found in the usual checkout folders so the user can
+  // pick one instead of typing its full path — fetched once per time the dialog
   // opens rather than on every keystroke.
   useEffect(() => {
     if (!open) return;
@@ -187,8 +187,8 @@ export function AddRepoDialog() {
                       Select a detected repo…
                     </option>
                     {candidates.map((candidate) => (
-                      <option key={candidate.path} value={candidate.path}>
-                        {candidate.name}
+                      <option key={candidate.path} value={candidate.path} title={candidate.path}>
+                        {candidate.name} — {candidate.path}
                       </option>
                     ))}
                   </select>
@@ -205,18 +205,14 @@ export function AddRepoDialog() {
                 value={localPath}
                 onChange={(event) => setLocalPath(event.target.value)}
                 placeholder={
-                  candidates.length > 0 ? "…or type a path manually" : "my-project"
+                  candidates.length > 0 ? "…or type a path manually" : "/full/path/to/repo"
                 }
                 autoComplete="off"
               />
               <p className="text-xs leading-relaxed text-muted-foreground">
-                Must be a repo inside the folder mounted at{" "}
-                <span className="rounded bg-secondary px-1 py-0.5 font-mono text-[11px] text-foreground/80">
-                  LOCAL_REPOS_PATH
-                </span>
-                . Relative paths resolve from there.
+                The full path to a git repo on this machine. GraphReview only reads it.
                 {candidatesLoaded && candidates.length === 0
-                  ? " No git repos were detected directly under that folder — enter the path manually."
+                  ? " No repos were found in the usual folders (~/code, ~/Documents/GitHub, …) — enter the path manually."
                   : null}
               </p>
             </TabsContent>

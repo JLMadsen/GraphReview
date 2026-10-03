@@ -12,7 +12,7 @@
 
 import { compareRefs, listPullRequestFiles } from "@/lib/github";
 import { compareRefs as compareGitLabRefs, listMergeRequestFiles } from "@/lib/gitlab";
-import type { RepoRecord } from "@/lib/neo4j";
+import type { RepoRecord } from "@/lib/db";
 import { resolveGitHubAccess } from "./github-access";
 import { resolveGitLabAccess } from "./gitlab-access";
 import { listLocalFilePatches, toLocalFilePatch, type LocalFilePatch } from "./local-git";

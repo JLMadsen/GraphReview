@@ -1,7 +1,8 @@
 // lib/crypto — credential encrypt/decrypt helpers.
 //
-// AES-256-GCM, keyed by the `SESSION_SECRET` env var. `SESSION_SECRET` is an
-// arbitrary user-supplied string (see docker/.env.example),
+// AES-256-GCM, keyed by a secret: the `SESSION_SECRET` env var when set,
+// otherwise a random one generated on first use and kept in `secret.key` in
+// the data folder (lib/runtime/paths.ts). The secret is an arbitrary string,
 // not guaranteed to be 32 bytes, so it is never used as the AES key
 // directly. Instead it is stretched into a 256-bit key with `scryptSync`
 // (a deliberately slow KDF — appropriate here since the key is derived once
@@ -15,13 +16,15 @@
 // Output format (`encrypt`'s return value): base64( iv[12] || authTag[16] || ciphertext ).
 // Self-contained and versionless — `decrypt` slices it back apart using the
 // fixed 12/16-byte header lengths, so no separate storage of iv/tag is
-// needed by callers (e.g. the `Settings` node).
+// needed by callers (e.g. the stored settings).
 //
-// This module has no Neo4j or GitHub dependency — it is pure crypto over
-// strings, used by callers (e.g. app/settings' server action, lib/github,
-// lib/ai) that read/write the `Settings` node.
+// Pure crypto over strings, used by callers (e.g. app/settings' server
+// action, lib/github, lib/ai) that read/write the stored settings.
 
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { getDataDir } from "@/lib/runtime/paths";
 
 const ALGORITHM = "aes-256-gcm";
 const KEY_LENGTH = 32; // 256 bits
@@ -35,19 +38,33 @@ let cachedKey: Buffer | undefined;
 let cachedSecret: string | undefined;
 
 /**
- * Derives (and caches) the 256-bit AES key from `SESSION_SECRET`.
- * Throws a clear error if `SESSION_SECRET` is missing or empty rather than
- * silently falling back to a weak/default key.
+ * The secret keying credential encryption: `SESSION_SECRET` when set,
+ * otherwise the install's own random secret, created on first use. Losing
+ * or changing it makes saved credentials unreadable (they're re-entered in
+ * Settings), never readable with a guessable default.
  */
-function getKey(): Buffer {
-  const secret = process.env.SESSION_SECRET;
-  if (!secret) {
-    throw new Error(
-      "lib/crypto: SESSION_SECRET env var is not set. A real secret is " +
-        "required to encrypt/decrypt credential fields " +
-        "— refusing to fall back to a weak or default key."
-    );
+function getSecret(): string {
+  const fromEnv = process.env.SESSION_SECRET;
+  if (fromEnv) return fromEnv;
+
+  const file = path.join(getDataDir(), "secret.key");
+  if (existsSync(file)) {
+    const stored = readFileSync(file, "utf8").trim();
+    if (stored) return stored;
   }
+  const generated = randomBytes(32).toString("base64url");
+  // `wx` fails if another caller won the race; read theirs back instead.
+  try {
+    writeFileSync(file, `${generated}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    return generated;
+  } catch {
+    return readFileSync(file, "utf8").trim();
+  }
+}
+
+/** Derives (and caches) the 256-bit AES key from {@link getSecret}. */
+function getKey(): Buffer {
+  const secret = getSecret();
 
   // Re-derive only if the secret changes (e.g. across tests); otherwise
   // reuse the cached key to avoid paying the scrypt cost on every call.

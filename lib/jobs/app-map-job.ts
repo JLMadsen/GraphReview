@@ -13,7 +13,7 @@
 // draw. Kept out of lib/jobs' barrel (it pulls in lib/ai), like ./label.ts.
 
 import path from "node:path";
-import { UnrecoverableError } from "bullmq";
+import { UnrecoverableError } from "./runner";
 import {
   APP_MAP_TOKEN_BUDGET,
   explainAppCards,
@@ -23,7 +23,7 @@ import {
   type AppMapAiFolder,
   type TokenUsage,
 } from "@/lib/ai";
-import { getAppMapRecords, getRepoById, saveAppMapRecord } from "@/lib/neo4j";
+import { getAppMapRecords, getRepoById, saveAppMapRecord } from "@/lib/db";
 import { APP_LAYERS, type AppMapLevel, type AppMapNodeDTO } from "@/components/graph/app-map-types";
 import type { JobLogger } from "./analyze";
 import {

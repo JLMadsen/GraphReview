@@ -15,7 +15,7 @@ import {
   describeAddedComponents,
   synthesizeAddedComponents,
 } from "@/lib/jobs/added-components";
-import { getRepoById } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/db";
 import type { AddedComponentsResponseDTO } from "@/components/graph/types";
 
 export const dynamic = "force-dynamic";

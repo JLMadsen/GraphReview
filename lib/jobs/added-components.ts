@@ -21,7 +21,7 @@ import {
 import { describeModules } from "@/lib/ai";
 import type { AiProviderConfig, LabelInput, LabelModuleInput } from "@/lib/ai";
 import { decrypt } from "@/lib/crypto";
-import { getActiveAiProvider } from "@/lib/neo4j";
+import { getActiveAiProvider } from "@/lib/db";
 
 /** Sample paths sent per component — same budget as the real labeling job (./label.ts). */
 const SAMPLE_FILES_PER_COMPONENT = 3;

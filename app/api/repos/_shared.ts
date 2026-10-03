@@ -6,8 +6,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import type { ReviewTarget } from "@/lib/jobs";
-import { getRepoById } from "@/lib/neo4j";
-import type { RepoRecord } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/db";
+import type { RepoRecord } from "@/lib/db";
 
 export interface ApiErrorBody {
   error: string;

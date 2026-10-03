@@ -147,6 +147,7 @@ export function PreviewPanel({ repoId, target, filePath, initialSymbol }: Previe
   );
   const current = symbols.find((s) => s.name === selected) ?? symbols[0];
   const hasEdits = Object.keys(edited).length > 0;
+  const sandboxDown = status?.sandbox?.available === false;
 
   const start = () => {
     if (hasEdits && result) {
@@ -162,8 +163,12 @@ export function PreviewPanel({ repoId, target, filePath, initialSymbol }: Previe
     <button
       type="button"
       onClick={start}
-      disabled={pending}
-      title="Render the changed components and run the changed functions at the base and at the head, on the same inputs, in a Docker sandbox"
+      disabled={pending || sandboxDown}
+      title={
+        sandboxDown
+          ? status?.sandbox?.reason
+          : "Render the changed components and run the changed functions at the base and at the head, on the same inputs, in a Docker sandbox"
+      }
       className="flex shrink-0 items-center gap-1.5 rounded-sm border border-border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-secondary disabled:opacity-50"
     >
       {pending ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden /> : <Play className="size-3.5" aria-hidden />}
@@ -184,6 +189,7 @@ export function PreviewPanel({ repoId, target, filePath, initialSymbol }: Previe
               mocked-up inputs.
             </p>
             {runButton}
+            {sandboxDown && <p className="max-w-md leading-relaxed text-warning">{status?.sandbox?.reason}</p>}
           </>
         )}
         {error && <ErrorLine text={error} />}

@@ -1,9 +1,8 @@
-// Barrel for lib/neo4j/. Re-exports the driver singleton, schema
-// migrations, shared entity types, and every per-entity repository
-// module's typed functions. See README.md for scope.
+// Barrel for lib/db/. Re-exports the connection lifecycle, shared entity
+// types, and every per-entity repository module's typed functions. See
+// README.md for scope.
 
-export * from "./client";
-export * from "./schema";
+export { closeDb, getDb } from "./client";
 export * from "./types";
 
 export * from "./repo";
@@ -20,3 +19,4 @@ export * from "./pr-map";
 export * from "./app-map";
 export * from "./settings";
 export * from "./ai-provider";
+export * from "./kv";

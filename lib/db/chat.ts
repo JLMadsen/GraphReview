@@ -4,7 +4,7 @@
 // the PR has moved on since.
 
 import { randomUUID } from "node:crypto";
-import { runRead, runWrite } from "./client";
+import { all, get, pack, run, transaction, unpack } from "./client";
 
 export interface ChatStepRecord {
   tool: string;
@@ -58,29 +58,25 @@ function toMessage(props: Record<string, unknown>): ChatMessageRecord {
 }
 
 export async function listChatMessages(repoId: string, targetKey: string): Promise<ChatMessageRecord[]> {
-  const result = await runRead(
-    `MATCH (m:ChatMessage {repoId: $repoId, targetKey: $targetKey}) RETURN m ORDER BY m.createdAt, m.seq`,
-    { repoId, targetKey }
-  );
-  return result.records.map((r) => toMessage(r.get("m").properties));
+  return all<{ data: string }>(
+    `SELECT data FROM chat_messages WHERE repo_id = ? AND target_key = ? ORDER BY created_at, seq`,
+    repoId,
+    targetKey
+  ).map((row) => toMessage(unpack(row.data)));
 }
 
 export async function addChatMessage(
   input: Omit<ChatMessageRecord, "id" | "createdAt" | "steps" | "componentIds" | "files"> &
     Partial<Pick<ChatMessageRecord, "steps" | "componentIds" | "files">>
 ): Promise<ChatMessageRecord> {
-  const result = await runWrite(
-    `
-    OPTIONAL MATCH (prev:ChatMessage {repoId: $repoId, targetKey: $targetKey})
-    WITH coalesce(max(prev.seq), 0) + 1 AS seq
-    CREATE (m:ChatMessage {
-      id: $id, repoId: $repoId, targetKey: $targetKey, role: $role, content: $content,
-      steps: $steps, componentIds: $componentIds, files: $files, focusComponentId: $focusComponentId,
-      headSha: $headSha, model: $model, error: $error, createdAt: $now, seq: seq
-    })
-    RETURN m
-    `,
-    {
+  return transaction(() => {
+    const last = get<{ seq: number | null }>(
+      `SELECT MAX(seq) AS seq FROM chat_messages WHERE repo_id = ? AND target_key = ?`,
+      input.repoId,
+      input.targetKey
+    );
+    const seq = Number(last?.seq ?? 0) + 1;
+    const props = {
       id: randomUUID(),
       repoId: input.repoId,
       targetKey: input.targetKey,
@@ -89,25 +85,26 @@ export async function addChatMessage(
       steps: JSON.stringify(input.steps ?? []),
       componentIds: input.componentIds ?? [],
       files: input.files ?? [],
-      focusComponentId: input.focusComponentId ?? null,
-      headSha: input.headSha ?? null,
-      model: input.model ?? null,
-      error: input.error ?? null,
-      now: new Date().toISOString(),
-    }
-  );
-  return toMessage(result.records[0].get("m").properties);
+      focusComponentId: input.focusComponentId,
+      headSha: input.headSha,
+      model: input.model,
+      error: input.error,
+      createdAt: new Date().toISOString(),
+      seq,
+    };
+    run(
+      `INSERT INTO chat_messages (id, repo_id, target_key, seq, created_at, data) VALUES (?, ?, ?, ?, ?, ?)`,
+      props.id,
+      props.repoId,
+      props.targetKey,
+      seq,
+      props.createdAt,
+      pack(props)
+    );
+    return toMessage(JSON.parse(pack(props)));
+  });
 }
 
 export async function clearChatMessages(repoId: string, targetKey: string): Promise<number> {
-  const result = await runWrite(
-    `
-    MATCH (m:ChatMessage {repoId: $repoId, targetKey: $targetKey})
-    WITH m, count(*) AS ignored
-    DELETE m
-    RETURN count(ignored) AS deleted
-    `,
-    { repoId, targetKey }
-  );
-  return Number(result.records[0]?.get("deleted") ?? 0);
+  return run(`DELETE FROM chat_messages WHERE repo_id = ? AND target_key = ?`, repoId, targetKey);
 }

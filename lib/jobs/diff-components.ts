@@ -9,7 +9,7 @@
 //
 // Server-only — it queries Neo4j directly.
 
-import { runRead } from "@/lib/neo4j";
+import { listComponentNeighbourSummaries, lookupFileOwners } from "@/lib/db";
 
 /** The result of resolving changed paths against the stored graph. */
 export interface DiffComponentMatch {
@@ -30,13 +30,8 @@ export interface DiffComponentMatch {
 }
 
 /**
- * Resolves each changed path to a `(:File)` node (if any) and its owning
- * `Component` (via `BELONGS_TO`), in one round-trip.
- *
- * No listing function in `lib/neo4j/file.ts` covers this "file path ->
- * owning component, bulk" shape, so this uses `runRead` directly — see
- * `app/api/repos/[repoId]/graph/route.ts`'s comment for why that is an
- * intended use of `lib/neo4j/client.ts`.
+ * Resolves each changed path to a stored file (if any) and its owning
+ * component (via `BELONGS_TO`).
  */
 export async function matchFilesToComponents(
   repoId: string,
@@ -51,15 +46,7 @@ export async function matchFilesToComponents(
   };
   if (paths.length === 0) return empty;
 
-  const result = await runRead(
-    `
-    UNWIND $paths AS path
-    OPTIONAL MATCH (f:File {repoId: $repoId, path: path})
-    OPTIONAL MATCH (f)-[:BELONGS_TO]->(c:Component)
-    RETURN path, f.id AS fileId, c.id AS componentId
-    `,
-    { repoId, paths: [...paths] }
-  );
+  const rows = await lookupFileOwners(repoId, paths);
 
   const touchedFiles: string[] = [];
   const unmatchedFiles: string[] = [];
@@ -67,11 +54,7 @@ export async function matchFilesToComponents(
   const componentIdByPath = new Map<string, string>();
   const pathsByComponentId = new Map<string, string[]>();
 
-  for (const record of result.records) {
-    const path = record.get("path") as string;
-    const fileId = record.get("fileId") as string | null;
-    const componentId = record.get("componentId") as string | null;
-
+  for (const { path, fileId, componentId } of rows) {
     if (!fileId) {
       unmatchedFiles.push(path);
       continue;
@@ -127,14 +110,8 @@ export interface ComponentReviewContext {
 }
 
 /**
- * Loads the "lightweight structural context" for a set of components in a
- * single query.
- *
- * Both directions of `DEPENDS_ON` are collected in the same statement. The
- * two `OPTIONAL MATCH`es do form a cartesian product per component, but
- * `collect(DISTINCT …)` folds it back down, and at component-graph scale
- * (tens to low hundreds of nodes) that is far cheaper than a round-trip
- * per component.
+ * Loads the "lightweight structural context" for a set of components:
+ * their names, descriptions and both directions of `DEPENDS_ON`.
  *
  * Components in `componentIds` that no longer exist are simply absent from
  * the result — callers should treat the returned array as authoritative
@@ -146,26 +123,5 @@ export async function getComponentReviewContexts(
 ): Promise<ComponentReviewContext[]> {
   if (componentIds.length === 0) return [];
 
-  const result = await runRead(
-    `
-    UNWIND $componentIds AS componentId
-    MATCH (c:Component {id: componentId, repoId: $repoId})
-    OPTIONAL MATCH (c)-[:DEPENDS_ON]->(downstream:Component)
-    OPTIONAL MATCH (upstream:Component)-[:DEPENDS_ON]->(c)
-    RETURN c.id AS id,
-           c.name AS name,
-           c.description AS description,
-           collect(DISTINCT downstream.name) AS dependsOn,
-           collect(DISTINCT upstream.name) AS dependents
-    `,
-    { repoId, componentIds: [...componentIds] }
-  );
-
-  return result.records.map((record) => ({
-    id: record.get("id") as string,
-    name: record.get("name") as string,
-    description: (record.get("description") as string | null) ?? undefined,
-    dependsOn: (record.get("dependsOn") as string[]).filter(Boolean),
-    dependents: (record.get("dependents") as string[]).filter(Boolean),
-  }));
+  return listComponentNeighbourSummaries(repoId, componentIds);
 }

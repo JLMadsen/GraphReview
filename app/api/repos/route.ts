@@ -22,17 +22,17 @@ import {
   validateLocalRepoPath,
   type RepoDto,
 } from "@/lib/jobs";
-import { upsertRepo } from "@/lib/neo4j";
+import { upsertRepo } from "@/lib/db";
 import { apiError, errorMessage } from "./_shared";
 
-// Every response depends on live Neo4j/Redis state, so nothing here may be
+// Every response depends on live database state, so nothing here may be
 // prerendered or cached at build time.
 export const dynamic = "force-dynamic";
 
 const addRepoSchema = z.discriminatedUnion("provider", [
   z.object({
     provider: z.literal("local"),
-    /** Absolute (or relative to the local-repos root) path — validated against the bind mount below. */
+    /** Absolute path (or relative to `LOCAL_REPOS_ROOT` when that is set) — validated below. */
     localPath: z.string().trim().min(1, "localPath is required."),
     name: z.string().trim().min(1).optional(),
   }),
@@ -77,9 +77,8 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   let repoInput: Parameters<typeof upsertRepo>[0];
   if (input.provider === "local") {
-    // Security boundary: a local source must resolve inside the
-    // read-only bind mount. `validateLocalRepoPath` rejects `..` escapes and
-    // absolute paths pointing elsewhere, and confirms the directory exists.
+    // `validateLocalRepoPath` resolves the path (confining it to
+    // `LOCAL_REPOS_ROOT` when that is set) and confirms the directory exists.
     let resolved: string;
     try {
       resolved = await validateLocalRepoPath(input.localPath);

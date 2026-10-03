@@ -10,7 +10,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { enqueuePreview, getPreviewJob, getPreviewJobLogs, type ReviewTarget } from "@/lib/jobs";
-import { getRepoById } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/db";
+import { getDockerStatus } from "@/lib/preview/sandbox";
 import type { PreviewJobState, PreviewProgress, PreviewStatusDTO } from "@/lib/preview/types";
 
 export const dynamic = "force-dynamic";
@@ -52,13 +53,6 @@ function cleanPath(value: string): string | null {
   return clean && !clean.includes("..") && !clean.startsWith("-") ? clean : null;
 }
 
-function isRedisUnavailable(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EPIPE|max retries per request|Connection is closed|Stream isn't writeable|Redis/i.test(
-    message
-  );
-}
-
 export async function POST(request: Request, { params }: { params: Promise<{ repoId: string }> }) {
   const { repoId } = await params;
   const parsed = bodySchema.safeParse(await request.json().catch(() => undefined));
@@ -73,12 +67,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ rep
     if (repo.provider === "local" && target.kind === "pr") {
       return errorResponse("A pull request can't be previewed on a repo with no git-host link — compare two refs instead.", 400);
     }
+    const sandbox = await getDockerStatus();
+    if (!sandbox.available) return errorResponse(sandbox.reason ?? "Docker isn't available.", 409, "sandbox_unavailable");
     const result = await enqueuePreview({ repoId, target, filePath, inputs: parsed.data.inputs, mocks: parsed.data.mocks });
     return NextResponse.json({ jobId: result.jobId, enqueued: result.enqueued });
   } catch (err) {
-    if (isRedisUnavailable(err)) {
-      return errorResponse("The job queue is unavailable — is Redis running?", 503, "queue_unavailable");
-    }
     console.error(`POST /api/repos/${repoId}/preview failed:`, err);
     return errorResponse(err instanceof Error ? err.message : "Failed to start the preview.", 500);
   }
@@ -119,19 +112,16 @@ export async function GET(request: Request, { params }: { params: Promise<{ repo
     return errorResponse("Query must include ?path= plus ?prNumber= or ?baseRef=&headRef=.", 400);
   }
   try {
-    const job = await getPreviewJob(repoId, target, filePath);
-    if (!job) return NextResponse.json({ state: "none" } satisfies PreviewStatusDTO);
+    const [job, sandbox] = await Promise.all([getPreviewJob(repoId, target, filePath), getDockerStatus()]);
+    if (!job) return NextResponse.json({ state: "none", sandbox } satisfies PreviewStatusDTO);
     const state = toState(await job.getState());
-    const body: PreviewStatusDTO = { state };
+    const body: PreviewStatusDTO = { state, sandbox };
     if (state === "queued" || state === "running") body.progress = toProgress(job.progress);
     if (state === "completed" && job.returnvalue) body.result = job.returnvalue;
     if (state === "failed") body.error = job.failedReason || "The preview failed.";
     if (url.searchParams.get("logs") === "1") body.logs = await getPreviewJobLogs(repoId, target, filePath);
     return NextResponse.json(body);
   } catch (err) {
-    if (isRedisUnavailable(err)) {
-      return errorResponse("The job queue is unavailable — is Redis running?", 503, "queue_unavailable");
-    }
     console.error(`GET /api/repos/${repoId}/preview failed:`, err);
     return errorResponse(err instanceof Error ? err.message : "Failed to read the preview.", 500);
   }

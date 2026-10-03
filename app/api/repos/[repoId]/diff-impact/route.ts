@@ -22,7 +22,7 @@ import {
   type GitHubUnavailableReason,
   type GitLabUnavailableReason,
 } from "@/lib/jobs";
-import { getRepoById } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/db";
 import type { DiffImpactResponseDTO } from "@/components/graph/types";
 
 export const dynamic = "force-dynamic";

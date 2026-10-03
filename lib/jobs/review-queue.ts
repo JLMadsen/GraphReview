@@ -1,22 +1,16 @@
-// BullMQ queue definition for the AI review feature.
+// Queue definition for the AI review feature (jobs run by ./runner.ts).
 //
 // Split from `./queue.ts` (which owns the static-analysis queue) rather than
 // merged into it: the two have genuinely different policies — analysis is
 // cheap, idempotent and retried three times, while a review job spends money
 // on LLM calls and must never be retried automatically.
 //
-// Server-only: opens a Redis connection. Route handlers and `worker/` only.
-//
-// The connections themselves are reused from `./queue.ts` — one bounded-retry
-// producer connection for the request path, one `maxRetriesPerRequest: null`
-// blocking connection for the worker (see the long comments there for why
-// those two differ).
+// Server-only. Route handlers and `worker/` only.
 
 import { createHash } from "node:crypto";
-import { Queue } from "bullmq";
-import type { Job, JobState, JobsOptions } from "bullmq";
+import { Queue, type Job, type JobState, type JobsOptions } from "./runner";
 import type { ReviewEffort } from "@/lib/ai/effort";
-import { getRedisConnection, isPendingJobState } from "./queue";
+import { isPendingJobState } from "./queue";
 
 /** Queue name — must match on both sides (app enqueues, worker consumes). */
 export const REVIEW_QUEUE_NAME = "review";
@@ -116,7 +110,7 @@ export function getReviewQueue(): ReviewQueue {
   if (!reviewQueueSingleton) {
     reviewQueueSingleton = new Queue<ReviewJobData, ReviewJobResult>(
       REVIEW_QUEUE_NAME,
-      { connection: getRedisConnection(), defaultJobOptions: REVIEW_JOB_OPTIONS }
+      { defaultJobOptions: REVIEW_JOB_OPTIONS }
     );
   }
   return reviewQueueSingleton;
@@ -135,12 +129,11 @@ export function reviewTargetKey(target: ReviewTarget): string {
 }
 
 /**
- * Deterministic BullMQ job id for a review target — what makes enqueueing
+ * Deterministic job id for a review target — what makes enqueueing
  * idempotent, exactly as `analysisJobId` does for analysis.
  *
- * The target key cannot be embedded literally: BullMQ rejects custom job ids
- * containing `:` (it uses that as a Redis key delimiter), and a ref name can
- * additionally contain `/` and other characters. Hashing sidesteps every one
+ * The target key isn't embedded literally: a ref name can contain `/`,
+ * `:` and other characters that make for unreadable ids. Hashing sidesteps every one
  * of those — 12 hex characters of SHA-1 is ample given the id is already
  * namespaced by `repoId`, and collisions are only ever *within* one repo's
  * review targets.
@@ -199,7 +192,7 @@ export interface EnqueueReviewResult {
  * Same two-step dance as `enqueueAnalysis`: a still-pending job short-
  * circuits (re-running while the first run is in flight would just duplicate
  * LLM spend), while a *finished* job's id is explicitly removed first —
- * BullMQ would otherwise silently drop the `add()` forever, since a completed
+ * the runner would otherwise silently drop the `add()` forever, since a completed
  * job keeps occupying its id until retention evicts it. Removing it is also
  * what makes a re-run a real re-run: findings are overwritten, not versioned,
  * and rewritten by the job itself, not by anything here.
@@ -227,10 +220,6 @@ export async function enqueueReview(
 
 /**
  * Graceful shutdown for the worker entrypoint and tests.
- *
- * Kept separate from `closeQueues()` in ./queue.ts, which also tears down
- * the shared Redis connections this queue borrows — so callers must close
- * this queue *first*. `worker/index.ts` does exactly that.
  */
 export async function closeReviewQueue(): Promise<void> {
   if (!reviewQueueSingleton) return;

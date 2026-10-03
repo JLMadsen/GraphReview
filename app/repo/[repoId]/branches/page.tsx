@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { GitBranch, GitCompare, Shield, Star } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { getRepoBranches } from "@/lib/jobs";
-import { getRepoById } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/db";
 import {
   DatabaseErrorNotice,
   GitHubErrorNotice,

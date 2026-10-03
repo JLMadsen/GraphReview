@@ -1,85 +1,51 @@
 // The analysis job body.
 //
 // Pipeline: resolve the repo's source on disk → `analyzeRepo()` from
-// lib/analysis → persist the resulting graph through lib/neo4j's typed
+// lib/analysis → persist the resulting graph through lib/db's typed
 // repository functions → record `lastAnalyzedAt`/`lastAnalyzedSha`.
 //
 // Kept out of `worker/index.ts` on purpose: the worker entrypoint is just
-// BullMQ plumbing, while this is the actual unit of work, importable from a
+// job-runner plumbing, while this is the actual unit of work, importable from a
 // script or test without starting a queue consumer.
 
-import { UnrecoverableError } from "bullmq";
+import { UnrecoverableError } from "./runner";
 import { analyzeRepo, DEFAULT_MODULE_DEPTH } from "@/lib/analysis";
 import type { AnalysisResult } from "@/lib/analysis";
 import {
+  clearRepoFileImports,
+  deleteFiles,
   getRepoById,
-  linkFileImport,
+  linkFileImports,
   listFilesByRepoId,
   markRepoAnalyzed,
-  deleteFile,
-  runWrite,
-  upsertFile,
-} from "@/lib/neo4j";
+  upsertFiles,
+} from "@/lib/db";
 import { writeModuleTier } from "./module-tier";
 import type { AnalysisJobResult } from "./queue";
 import { LocalPathOutsideRootError, prepareRepoSource } from "./source";
 
 export type JobLogger = (message: string) => void;
 
-/** How many Neo4j writes to keep in flight. The repository layer runs one statement per call, so persistence is round-trip bound; a small fixed fan-out keeps a big repo from taking minutes without flooding the driver's pool. Safe for node upserts (each targets its own `id`, so parallel MERGEs don't contend). */
-const NEO4J_WRITE_CONCURRENCY = 16;
-
-/**
- * Concurrency for writes that create a *relationship* (`BELONGS_TO`,
- * `IMPORTS`, `DEPENDS_ON`) rather than just a node. These MERGE two
- * existing nodes together, and it's common for many edges to share an
- * endpoint (a widely-imported file, a heavily-depended-on component) — run
- * more than one of those in parallel under Neo4j Community's pessimistic
- * (Forseti) locking and you get real deadlocks, not just contention, once a
- * repo has more than a couple hundred edges. Serial is the only fully safe
- * option without moving to batched `UNWIND` writes.
- */
-const NEO4J_RELATIONSHIP_WRITE_CONCURRENCY = 1;
-
 function fileNodeId(repoId: string, filePath: string): string {
   return `${repoId}:${filePath}`;
 }
 
-async function mapWithConcurrency<T>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T) => Promise<void>
-): Promise<void> {
-  for (let i = 0; i < items.length; i += limit) {
-    await Promise.all(items.slice(i, i + limit).map(fn));
-  }
-}
-
 /**
- * Drops the file-level import edges of a repo's graph before they are rewritten.
- *
- * Done as one set-based statement rather than per-node `clearFileImports`
- * calls: re-analysis must also remove edges whose *source* file no longer
- * exists, and one statement per repo is both cheaper and atomic. This is the
- * only raw statement in this module — every node write below goes through
- * the typed repository functions.
+ * Drops the file-level import edges of a repo's graph before they are
+ * rewritten — including edges whose *source* file no longer exists.
  *
  * Note the deliberate trade-off: for the duration of a re-analysis the
- * repo's edges are missing rather than stale. The stale-while-revalidate
- * promise is about *not blocking* the reviewer, and a job takes seconds, so
- * a short edgeless window is preferred over the alternative (keeping removed
- * edges around until the very end and having to diff them precisely).
+ * repo's edges are missing rather than stale. A job takes seconds, so a
+ * short edgeless window is preferred over keeping removed edges around
+ * until the very end and having to diff them precisely.
  */
 async function clearDerivedEdges(repoId: string): Promise<void> {
-  await runWrite(
-    `MATCH (:File {repoId: $repoId})-[rel:IMPORTS]->(:File) DELETE rel`,
-    { repoId }
-  );
+  await clearRepoFileImports(repoId);
   // DEPENDS_ON is replaced by writeModuleTier (./module-tier.ts).
 }
 
 /**
- * Removes `File` nodes that the latest analysis no longer sees (deleted or
+ * Removes stored files that the latest analysis no longer sees (deleted or
  * renamed in the repo). Modules left with no files are pruned by
  * writeModuleTier (./module-tier.ts), which also owns the rule that
  * re-analysis never touches the domain tier beyond removing empty domains.
@@ -91,7 +57,7 @@ async function pruneRemovedFiles(
 ): Promise<void> {
   const staleFiles = (await listFilesByRepoId(repoId)).filter((file) => !liveFileIds.has(file.id));
   if (staleFiles.length > 0) log(`pruning ${staleFiles.length} removed file(s)`);
-  await mapWithConcurrency(staleFiles, NEO4J_WRITE_CONCURRENCY, (file) => deleteFile(file.id));
+  await deleteFiles(staleFiles.map((file) => file.id));
 }
 
 interface PersistCounts {
@@ -102,7 +68,7 @@ interface PersistCounts {
   openSuggestions: number;
 }
 
-/** Writes an {@link AnalysisResult} into Neo4j as the component/file graph. */
+/** Writes an {@link AnalysisResult} into the database as the component/file graph. */
 export async function persistAnalysis(
   repoId: string,
   sha: string,
@@ -116,30 +82,26 @@ export async function persistAnalysis(
 
   await clearDerivedEdges(repoId);
 
-  // --- File nodes -----------------------------------------------------
-  await mapWithConcurrency(result.files, NEO4J_WRITE_CONCURRENCY, async (file) => {
-    await upsertFile({
+  // --- Files ----------------------------------------------------------
+  await upsertFiles(
+    result.files.map((file) => ({
       id: fileNodeId(repoId, file.file),
       repoId,
       path: file.file,
       language: file.language,
       loc: file.loc,
       lastSeenCommit: sha,
-    });
-  });
-  log(`upserted ${result.files.length} file node(s)`);
+    }))
+  );
+  log(`upserted ${result.files.length} file(s)`);
 
   // --- IMPORTS --------------------------------------------------------
-  await mapWithConcurrency(
-    result.edges,
-    NEO4J_RELATIONSHIP_WRITE_CONCURRENCY,
-    async (edge) => {
-      await linkFileImport(
-        fileNodeId(repoId, edge.from),
-        fileNodeId(repoId, edge.to),
-        { kind: edge.kind }
-      );
-    }
+  await linkFileImports(
+    result.edges.map((edge) => ({
+      fromFileId: fileNodeId(repoId, edge.from),
+      toFileId: fileNodeId(repoId, edge.to),
+      kind: edge.kind,
+    }))
   );
   log(`wrote ${result.edges.length} file import edge(s)`);
 
@@ -164,10 +126,10 @@ export async function persistAnalysis(
 }
 
 /**
- * Runs one full analysis for a repo. Throws on failure — BullMQ's retry
- * policy owns what happens next; nothing here swallows an error.
+ * Runs one full analysis for a repo. Throws on failure — the job runner's
+ * retry policy owns what happens next; nothing here swallows an error.
  * Failures that retrying cannot possibly fix (repo deleted, path outside the
- * bind mount) are raised as `UnrecoverableError` so they fail fast instead of
+ * allowed folder) are raised as `UnrecoverableError` so they fail fast instead of
  * burning three attempts.
  */
 export async function runAnalysisJob(

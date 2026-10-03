@@ -7,9 +7,9 @@
 // staleness comparison. Deriving it means it can't drift out of sync with
 // reality the way a persisted `status` column would after a crashed worker.
 
-import type { JobState } from "bullmq";
-import { listRepos } from "@/lib/neo4j";
-import type { RepoProvider, RepoRecord } from "@/lib/neo4j";
+import type { JobState } from "./runner";
+import { listRepos } from "@/lib/db";
+import type { RepoProvider, RepoRecord } from "@/lib/db";
 import {
   enqueueAnalysis,
   getAnalysisJobFailure,
@@ -35,7 +35,7 @@ export interface RepoDto {
   lastAnalyzedAt?: string;
   lastAnalyzedSha?: string;
   status: RepoStatus;
-  /** Set when `status === "error"`: the BullMQ job's `failedReason` for the most recent failed analysis. */
+  /** Set when `status === "error"`: the analysis job's `failedReason` for the most recent failed analysis. */
   lastError?: string;
 }
 
@@ -72,7 +72,7 @@ export async function computeRepoStatus(
   try {
     jobState = await getAnalysisJobState(repo.id);
   } catch (error) {
-    // Redis unreachable — report on what we do know rather than failing the
+    // Job store unreadable — report on what we do know rather than failing the
     // whole render (the settings page takes the same degrade-don't-crash line).
     console.error(
       `[repo-status] could not read job state for repo ${repo.id}: ${(error as Error).message}`

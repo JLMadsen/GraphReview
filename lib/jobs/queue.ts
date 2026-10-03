@@ -1,13 +1,14 @@
-// BullMQ queue definitions shared by the `app` (producer) and `worker`
-// (consumer) processes.
+// The static-analysis queue, shared by route handlers (which enqueue) and
+// the workers started from instrumentation.ts (which consume). Jobs live in
+// the app's SQLite database (./runner.ts).
 //
-// Server-only: this reads `REDIS_URL` and opens a Redis connection, so it
-// must never be imported from a client component. Route handlers, server
-// components and `worker/` are the only intended callers.
+// Server-only: never import from a client component.
 
-import { Queue } from "bullmq";
-import type { JobState, JobsOptions } from "bullmq";
-import { Redis } from "ioredis";
+import { Queue, isPendingJobState } from "./runner";
+import type { JobState, JobsOptions } from "./runner";
+
+export { isPendingJobState };
+export type { JobState };
 
 /** Queue name — must match on both sides (app enqueues, worker consumes). */
 export const ANALYSIS_QUEUE_NAME = "analysis";
@@ -15,12 +16,12 @@ export const ANALYSIS_QUEUE_NAME = "analysis";
 /** Job name inside the analysis queue. One job type for now (v1 has no AI jobs yet). */
 export const ANALYSIS_JOB_NAME = "analyze-repo";
 
-/** Typed payload of an analysis job. Deliberately minimal — everything else is looked up from Neo4j by the worker, so a queued job can never carry a stale copy of the repo record. */
+/** Typed payload of an analysis job. Deliberately minimal — everything else is looked up from the database by the worker, so a queued job can never carry a stale copy of the repo record. */
 export interface AnalysisJobData {
   repoId: string;
 }
 
-/** What a completed analysis job returns, for `docker logs` visibility and job introspection. */
+/** What a completed analysis job returns, for log visibility and job introspection. */
 export interface AnalysisJobResult {
   repoId: string;
   sha: string;
@@ -35,23 +36,6 @@ export interface AnalysisJobResult {
 
 export type AnalysisQueue = Queue<AnalysisJobData, AnalysisJobResult>;
 
-/**
- * Job states in which a job is still going to run (or is running). Used for
- * the idempotent-enqueue check below: re-enqueueing while one of these holds
- * would be pointless duplicate work.
- */
-const PENDING_STATES: ReadonlySet<string> = new Set<JobState>([
-  "waiting",
-  "waiting-children",
-  "active",
-  "delayed",
-  "prioritized",
-]);
-
-export function isPendingJobState(state: JobState | "unknown"): boolean {
-  return PENDING_STATES.has(state);
-}
-
 /** Default retry/retention policy for analysis jobs (failures retry, they are not swallowed). */
 const ANALYSIS_JOB_OPTIONS: JobsOptions = {
   attempts: 3,
@@ -63,73 +47,13 @@ const ANALYSIS_JOB_OPTIONS: JobsOptions = {
   removeOnFail: { age: 7 * 24 * 60 * 60, count: 50 },
 };
 
-function redisUrl(): string {
-  const url = process.env.REDIS_URL;
-  if (!url) {
-    throw new Error(
-      "Missing required environment variable: REDIS_URL. See docker/.env.example."
-    );
-  }
-  return url;
-}
-
-let connectionSingleton: Redis | undefined;
-let blockingConnectionSingleton: Redis | undefined;
-
-/**
- * Connection for *producing* — enqueueing and reading job state from route
- * handlers and server components.
- *
- * `maxRetriesPerRequest` is deliberately finite here. BullMQ's own advice
- * (`null`) applies to the worker's blocking commands; on the request path it
- * would mean a command issued while Redis is down never settles, which would
- * hang a page render forever instead of degrading to "status unknown". With
- * a bounded retry the command rejects after a few seconds and the callers in
- * repo-status.ts/staleness.ts fall back gracefully.
- */
-export function getRedisConnection(): Redis {
-  if (!connectionSingleton) {
-    connectionSingleton = new Redis(redisUrl(), {
-      maxRetriesPerRequest: 3,
-      enableReadyCheck: false,
-      connectTimeout: 5_000,
-      retryStrategy: (times) => Math.min(times * 500, 2_000),
-    });
-    // ioredis emits `error` on every failed reconnect; without a listener
-    // Node treats it as an unhandled 'error' event and kills the process.
-    connectionSingleton.on("error", (error: Error) => {
-      console.error(`[jobs] redis connection error: ${error.message}`);
-    });
-  }
-  return connectionSingleton;
-}
-
-/**
- * Connection for the worker's *blocking* commands. BullMQ requires
- * `maxRetriesPerRequest: null` on these (it throws otherwise) — a blocking
- * `BZPOPMIN` that gave up after N retries would silently stop the worker
- * from picking up jobs.
- */
-export function getBlockingRedisConnection(): Redis {
-  if (!blockingConnectionSingleton) {
-    blockingConnectionSingleton = new Redis(redisUrl(), {
-      maxRetriesPerRequest: null,
-      enableReadyCheck: false,
-    });
-    blockingConnectionSingleton.on("error", (error: Error) => {
-      console.error(`[jobs] redis (blocking) connection error: ${error.message}`);
-    });
-  }
-  return blockingConnectionSingleton;
-}
-
 let analysisQueueSingleton: AnalysisQueue | undefined;
 
 export function getAnalysisQueue(): AnalysisQueue {
   if (!analysisQueueSingleton) {
     analysisQueueSingleton = new Queue<AnalysisJobData, AnalysisJobResult>(
       ANALYSIS_QUEUE_NAME,
-      { connection: getRedisConnection(), defaultJobOptions: ANALYSIS_JOB_OPTIONS }
+      { defaultJobOptions: ANALYSIS_JOB_OPTIONS }
     );
   }
   return analysisQueueSingleton;
@@ -137,12 +61,8 @@ export function getAnalysisQueue(): AnalysisQueue {
 
 /**
  * Deterministic job id per repo — this is what makes enqueueing idempotent:
- * BullMQ silently ignores an `add()` for a job id that already exists, so at
- * most one analysis job per repo can ever be pending at a time.
- *
- * Uses `-` rather than `:` as the separator: BullMQ uses `:` internally as
- * a Redis key delimiter and rejects custom job ids that contain one
- * ("Custom Id cannot contain :"), which previously made every enqueue fail.
+ * `add()` with a job id that already exists is a no-op, so at most one
+ * analysis job per repo can ever be pending at a time.
  */
 export function analysisJobId(repoId: string): string {
   return `analysis-${repoId}`;
@@ -158,7 +78,7 @@ export async function getAnalysisJobState(
  * The reason the most recent analysis job for a repo failed, if any.
  *
  * `getAnalysisJobState` only returns a bare state string — this instead
- * loads the actual BullMQ `Job`, whose `failedReason` carries the thrown
+ * loads the actual `Job`, whose `failedReason` carries the thrown
  * error's message. Used to surface *why* a repo's status is `error`
  * instead of just that it is.
  */
@@ -199,8 +119,8 @@ export interface EnqueueAnalysisResult {
 /**
  * Enqueues a static-analysis job for a repo, at most once at a time.
  *
- * BullMQ's job-id dedup only covers jobs that still exist in Redis; a
- * *finished* job keeps occupying its id until it is evicted, and a plain
+ * Job-id dedup covers every job still stored; a *finished* job keeps
+ * occupying its id until retention evicts it, and a plain
  * `add()` with that id would be silently dropped forever. So a finished job
  * with our deterministic id is explicitly removed first, while a job that is
  * still pending/active short-circuits with `enqueued: false`.
@@ -228,15 +148,5 @@ export async function enqueueAnalysis(
 
 /** Graceful shutdown for the worker entrypoint and tests. */
 export async function closeQueues(): Promise<void> {
-  if (analysisQueueSingleton) {
-    const queue = analysisQueueSingleton;
-    analysisQueueSingleton = undefined;
-    await queue.close();
-  }
-  for (const connection of [connectionSingleton, blockingConnectionSingleton]) {
-    if (!connection) continue;
-    await connection.quit().catch(() => connection.disconnect());
-  }
-  connectionSingleton = undefined;
-  blockingConnectionSingleton = undefined;
+  analysisQueueSingleton = undefined;
 }

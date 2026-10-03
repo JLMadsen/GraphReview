@@ -17,8 +17,8 @@ import {
   getStoredImportGraph,
   listFilesByComponentId,
   upsertComponent,
-} from "@/lib/neo4j";
-import type { ComponentRecord } from "@/lib/neo4j";
+} from "@/lib/db";
+import type { ComponentRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import { readReadmeSnippet } from "./label";
 import { MergeActionError } from "./merges";

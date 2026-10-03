@@ -1,24 +1,23 @@
-// Resolving a `(:Repo)` record to a directory on disk that can be analyzed.
+// Resolving a stored repo to a directory on disk that can be analyzed.
 //
 // Three ingestion paths behind one interface:
-//   - `provider: "local"` — a repo already cloned under the read-only bind
-//     mount (`LOCAL_REPOS_PATH` on the host → `/data/local-repos` in the
-//     container). Escaping that folder is a security boundary, not a
-//     convenience check: the path is user input from the "add repo" dialog
-//     and would otherwise let anyone read arbitrary container-visible files
-//     into the graph.
+//   - `provider: "local"` — a repo already cloned somewhere on this machine,
+//     read in place and never written to. Optionally confined to
+//     `LOCAL_REPOS_ROOT` (see `resolveLocalRepoPath`).
 //   - `provider: "github"` / `provider: "gitlab"` — an app-managed clone in
-//     the `repo_cache` volume at `/data/repos/<repoId>`.
+//     the clone cache (`<data folder>/repos/<repoId>`).
 //
 // Server-only (spawns `git`, reads env vars) — never import from a client
 // component.
 
 import { existsSync } from "node:fs";
+import os from "node:os";
 import { mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { simpleGit } from "simple-git";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
-import type { RepoProvider, RepoRecord } from "@/lib/neo4j";
+import type { RepoProvider, RepoRecord } from "@/lib/db";
+import { getDataDir } from "@/lib/runtime/paths";
 import { getStoredGitHubToken, gitHubCloneUrl, parseGitHubUrl } from "./github-access";
 import { getStoredGitLabToken, gitLabCloneUrl, parseGitLabUrl } from "./gitlab-access";
 
@@ -27,16 +26,9 @@ type RemoteProvider = Exclude<RepoProvider, "local">;
 
 // A `git` subprocess that decides to ask for credentials would hang forever
 // here — there is no terminal attached to a Next.js route handler or a
-// BullMQ worker. Fail the command instead, so a private repo without a
+// background job. Fail the command instead, so a private repo without a
 // configured PAT surfaces as a job error rather than a stuck process.
 process.env.GIT_TERMINAL_PROMPT = "0";
-
-/** Container-side mount point of the `LOCAL_REPOS_PATH` bind mount. */
-export const DOCKER_LOCAL_REPOS_MOUNT = "/data/local-repos";
-/** Container-side mount point of the `repo_cache` volume. */
-export const DOCKER_REPO_CACHE_DIR = "/data/repos";
-/** Fallback clone root when running outside Docker (`npm run dev` + `npm run worker`). */
-export const DEV_REPO_CACHE_DIR = ".data/repos";
 
 /** Idle timeout for a git subprocess that should be quick (`ls-remote`, `rev-parse`). */
 const QUICK_GIT_TIMEOUT_MS = 20_000;
@@ -138,33 +130,20 @@ function withFriendlyAuthError<T>(promise: Promise<T>, provider: RemoteProvider,
 }
 
 /**
- * Root the "local path" ingestion path is confined to.
- *
- * Under Docker the host folder is bind-mounted at a fixed container path, so
- * that is preferred when it exists; outside Docker (plain `npm run dev`)
- * `LOCAL_REPOS_PATH` is itself a real host path and is used directly.
- * `LOCAL_REPOS_ROOT` overrides both for anyone with a different layout.
+ * The folder local repos are confined to, when one is configured
+ * (`LOCAL_REPOS_ROOT`). Unset by default: GraphReview runs on your own
+ * machine as you, so any folder you can read is fair game.
  */
-export function getLocalReposRoot(): string {
+export function getLocalReposRoot(): string | undefined {
   const explicit = process.env.LOCAL_REPOS_ROOT;
-  if (explicit) return path.resolve(explicit);
-  if (existsSync(DOCKER_LOCAL_REPOS_MOUNT)) return DOCKER_LOCAL_REPOS_MOUNT;
-
-  const hostPath = process.env.LOCAL_REPOS_PATH;
-  if (hostPath) return path.resolve(hostPath);
-
-  throw new Error(
-    "No local-repos root configured: set LOCAL_REPOS_PATH (see docker/.env.example) " +
-      "or LOCAL_REPOS_ROOT to the folder your local repos live under."
-  );
+  return explicit ? path.resolve(explicit) : undefined;
 }
 
-/** Root of the app-managed clone cache (the `repo_cache` volume), overridable via `REPO_CACHE_DIR`. */
+/** Root of the app-managed clone cache: `REPO_CACHE_DIR`, or `repos/` in the data folder. */
 export function getRepoCacheRoot(): string {
   const explicit = process.env.REPO_CACHE_DIR;
   if (explicit) return path.resolve(explicit);
-  if (existsSync(DOCKER_REPO_CACHE_DIR)) return DOCKER_REPO_CACHE_DIR;
-  return path.resolve(process.cwd(), DEV_REPO_CACHE_DIR);
+  return path.join(getDataDir(), "repos");
 }
 
 export function repoCacheDir(repoId: string): string {
@@ -182,24 +161,34 @@ export class LocalPathOutsideRootError extends Error {
 }
 
 /**
- * Resolves a user-supplied local path (absolute, or relative to the root) to
- * an absolute path, refusing anything that escapes the local-repos root.
+ * Resolves a user-supplied local path to an absolute path.
  *
- * Containment is checked lexically after `path.resolve`, which collapses
- * `..` segments — so `../../etc` and an absolute `/etc/passwd` are both
- * rejected. Symlinks are deliberately *not* resolved away: symlinking a
- * repo into the folder is a supported workflow, so following a
- * symlink out of the root is an explicit admin choice on the host side, not
- * an injection through this API.
+ * Without `LOCAL_REPOS_ROOT` the path must be absolute (`~/` is expanded).
+ * With it, a relative path is taken relative to that folder, and anything
+ * that escapes it is refused: containment is checked lexically after
+ * `path.resolve`, which collapses `..` segments. Symlinks are deliberately
+ * *not* resolved away — symlinking a repo into the folder is a supported
+ * workflow.
  */
 export function resolveLocalRepoPath(localPath: string): string {
-  const root = getLocalReposRoot();
-  const resolvedRoot = path.resolve(root);
-  const candidate = path.resolve(resolvedRoot, localPath);
+  const expanded = localPath.startsWith("~/") || localPath.startsWith("~\\")
+    ? path.join(os.homedir(), localPath.slice(2))
+    : localPath === "~"
+      ? os.homedir()
+      : localPath;
 
-  const relative = path.relative(resolvedRoot, candidate);
+  const root = getLocalReposRoot();
+  if (!root) {
+    if (!path.isAbsolute(expanded)) {
+      throw new Error(`Local repo path "${localPath}" must be absolute (e.g. ${path.join(os.homedir(), "code", "my-app")}).`);
+    }
+    return path.resolve(expanded);
+  }
+
+  const candidate = path.resolve(root, expanded);
+  const relative = path.relative(root, candidate);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new LocalPathOutsideRootError(localPath, resolvedRoot);
+    throw new LocalPathOutsideRootError(localPath, root);
   }
   return candidate;
 }

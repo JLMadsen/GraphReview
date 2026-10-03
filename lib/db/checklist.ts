@@ -3,8 +3,8 @@
 //
 // Items live in GraphReview's own settings, not in the reviewed repo:
 //
-// - `(:ChecklistItem {scope: "global"})` — defaults that apply to every repo;
-// - `(:ChecklistItem {scope: <repoId>})` — items one repo adds on top;
+// - items with `scope: "global"` — defaults that apply to every repo;
+// - items with `scope: <repoId>` — items one repo adds on top;
 // - `Repo.disabledChecklistItemIds` — global items one repo switches off.
 //
 // Deterministic items (CI, description, size, …) are evaluated on every
@@ -13,7 +13,8 @@
 // answered for — a push makes them stale rather than wrong.
 
 import { randomUUID } from "node:crypto";
-import { runRead, runWrite } from "./client";
+import { all, get, pack, run, transaction, unpack } from "./client";
+import { readRepoDocument, writeRepoDocument } from "./repo";
 
 export type ChecklistItemKind =
   | "ci"
@@ -106,127 +107,120 @@ const DEFAULT_ITEMS: Array<Omit<ChecklistItemRecord, "id" | "scope" | "enabled" 
 
 /** Seeds the global defaults the first time the checklist is used. */
 export async function ensureDefaultChecklist(): Promise<void> {
-  const result = await runRead(`MATCH (m:ChecklistMeta {id: "global"}) RETURN m.seeded AS seeded`);
-  if (result.records[0]?.get("seeded") === true) return;
+  if (get(`SELECT 1 FROM kv WHERE key = 'checklist.seeded'`)) return;
   const now = new Date().toISOString();
-  await runWrite(
-    `
-    MERGE (m:ChecklistMeta {id: "global"})
-    ON CREATE SET m.seeded = false
-    WITH m WHERE m.seeded = false
-    SET m.seeded = true
-    WITH m
-    UNWIND $items AS item
-    CREATE (c:ChecklistItem)
-    SET c = item
-    `,
-    {
-      items: DEFAULT_ITEMS.map((item, index) => ({
+  transaction(() => {
+    if (get(`SELECT 1 FROM kv WHERE key = 'checklist.seeded'`)) return;
+    run(`INSERT INTO kv (key, value) VALUES ('checklist.seeded', 'true')`);
+    DEFAULT_ITEMS.forEach((item, index) =>
+      writeItem({
         id: randomUUID(),
         scope: "global",
         kind: item.kind,
         label: item.label,
-        question: item.question ?? null,
-        threshold: item.limit ?? null,
-        patterns: item.patterns ?? null,
+        question: item.question,
+        threshold: item.limit,
+        patterns: item.patterns,
         enabled: true,
         order: index,
         createdAt: now,
-      })),
-    }
+      })
+    );
+  });
+}
+
+/** Stored shape: `limit` is kept as `threshold`. */
+function writeItem(props: Record<string, unknown>): void {
+  run(
+    `INSERT INTO checklist_items (id, scope, data) VALUES (?, ?, ?)
+     ON CONFLICT (id) DO UPDATE SET scope = excluded.scope, data = excluded.data`,
+    props.id as string,
+    props.scope as string,
+    pack(props)
   );
+}
+
+function readItemProps(id: string): Record<string, unknown> | undefined {
+  const row = get<{ data: string }>(`SELECT data FROM checklist_items WHERE id = ?`, id);
+  return row ? unpack(row.data) : undefined;
 }
 
 /** Global items plus the repo's own (when `repoId` is given), in display order. */
 export async function listChecklistItems(repoId?: string): Promise<ChecklistItemRecord[]> {
   await ensureDefaultChecklist();
-  const result = await runRead(
-    `
-    MATCH (c:ChecklistItem)
-    WHERE c.scope = "global" OR c.scope = $repoId
-    RETURN c
-    ORDER BY CASE WHEN c.scope = "global" THEN 0 ELSE 1 END, c.order, c.createdAt
-    `,
-    { repoId: repoId ?? null }
+  const rows = all<{ data: string }>(
+    `SELECT data FROM checklist_items WHERE scope = 'global' OR scope = ?`,
+    repoId ?? null
   );
-  return result.records.map((r) => toItem(r.get("c").properties));
+  return rows
+    .map((row) => toItem(unpack(row.data)))
+    .sort(
+      (a, b) =>
+        (a.scope === "global" ? 0 : 1) - (b.scope === "global" ? 0 : 1) ||
+        a.order - b.order ||
+        (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0)
+    );
 }
 
 export async function getChecklistItem(id: string): Promise<ChecklistItemRecord | null> {
-  const result = await runRead(`MATCH (c:ChecklistItem {id: $id}) RETURN c`, { id });
-  const record = result.records[0];
-  return record ? toItem(record.get("c").properties) : null;
+  const props = readItemProps(id);
+  return props ? toItem(props) : null;
 }
 
 export type ChecklistItemInput = Pick<ChecklistItemRecord, "scope" | "kind" | "label"> &
   Partial<Pick<ChecklistItemRecord, "question" | "limit" | "patterns" | "enabled">>;
 
 export async function createChecklistItem(input: ChecklistItemInput): Promise<ChecklistItemRecord> {
-  const result = await runWrite(
-    `
-    OPTIONAL MATCH (existing:ChecklistItem {scope: $scope})
-    WITH coalesce(max(existing.order), -1) + 1 AS nextOrder
-    CREATE (c:ChecklistItem {
-      id: $id, scope: $scope, kind: $kind, label: $label, question: $question,
-      threshold: $limit, patterns: $patterns, enabled: $enabled, order: nextOrder, createdAt: $now
-    })
-    RETURN c
-    `,
-    {
+  return transaction(() => {
+    const orders = all<{ data: string }>(`SELECT data FROM checklist_items WHERE scope = ?`, input.scope).map(
+      (row) => toItem(unpack(row.data)).order
+    );
+    const props = {
       id: randomUUID(),
       scope: input.scope,
       kind: input.kind,
       label: input.label,
-      question: input.question ?? null,
-      limit: input.limit ?? null,
-      patterns: input.patterns ?? null,
+      question: input.question,
+      threshold: input.limit,
+      patterns: input.patterns,
       enabled: input.enabled ?? true,
-      now: new Date().toISOString(),
-    }
-  );
-  return toItem(result.records[0].get("c").properties);
+      order: orders.length ? Math.max(...orders) + 1 : 0,
+      createdAt: new Date().toISOString(),
+    };
+    writeItem(props);
+    return toItem(JSON.parse(pack(props)));
+  });
 }
 
 export async function updateChecklistItem(
   id: string,
   patch: Partial<Pick<ChecklistItemRecord, "label" | "question" | "limit" | "patterns" | "enabled">>
 ): Promise<ChecklistItemRecord | null> {
-  const result = await runWrite(
-    `
-    MATCH (c:ChecklistItem {id: $id})
-    SET c.label = coalesce($label, c.label),
-        c.question = CASE WHEN $hasQuestion THEN $question ELSE c.question END,
-        c.threshold = CASE WHEN $hasLimit THEN $limit ELSE c.threshold END,
-        c.patterns = CASE WHEN $hasPatterns THEN $patterns ELSE c.patterns END,
-        c.enabled = coalesce($enabled, c.enabled)
-    RETURN c
-    `,
-    {
-      id,
-      label: patch.label ?? null,
-      hasQuestion: "question" in patch,
-      question: patch.question ?? null,
-      hasLimit: "limit" in patch,
-      limit: patch.limit ?? null,
-      hasPatterns: "patterns" in patch,
-      patterns: patch.patterns ?? null,
-      enabled: patch.enabled ?? null,
-    }
-  );
-  const record = result.records[0];
-  return record ? toItem(record.get("c").properties) : null;
+  return transaction(() => {
+    const props = readItemProps(id);
+    if (!props) return null;
+    const next: Record<string, unknown> = { ...props };
+    if (patch.label != null) next.label = patch.label;
+    if ("question" in patch) next.question = patch.question ?? undefined;
+    if ("limit" in patch) next.threshold = patch.limit ?? undefined;
+    if ("patterns" in patch) next.patterns = patch.patterns ?? undefined;
+    if (patch.enabled != null) next.enabled = patch.enabled;
+    writeItem(next);
+    return toItem(JSON.parse(pack(next)));
+  });
 }
 
 /** Deletes an item and its stored answers. */
 export async function deleteChecklistItem(id: string): Promise<void> {
-  await runWrite(`MATCH (a:ChecklistAnswer {itemId: $id}) DELETE a`, { id });
-  await runWrite(`MATCH (c:ChecklistItem {id: $id}) DETACH DELETE c`, { id });
+  transaction(() => {
+    run(`DELETE FROM checklist_answers WHERE item_id = ?`, id);
+    run(`DELETE FROM checklist_items WHERE id = ?`, id);
+  });
 }
 
 /** Global items this repo has switched off. */
 export async function getDisabledChecklistItemIds(repoId: string): Promise<string[]> {
-  const result = await runRead(`MATCH (r:Repo {id: $repoId}) RETURN r.disabledChecklistItemIds AS ids`, { repoId });
-  return (result.records[0]?.get("ids") as string[] | null) ?? [];
+  return (readRepoDocument(repoId)?.disabledChecklistItemIds as string[] | undefined) ?? [];
 }
 
 export async function setChecklistItemDisabledForRepo(
@@ -234,14 +228,12 @@ export async function setChecklistItemDisabledForRepo(
   itemId: string,
   disabled: boolean
 ): Promise<void> {
-  await runWrite(
-    `
-    MATCH (r:Repo {id: $repoId})
-    WITH r, [x IN coalesce(r.disabledChecklistItemIds, []) WHERE x <> $itemId] AS rest
-    SET r.disabledChecklistItemIds = CASE WHEN $disabled THEN rest + $itemId ELSE rest END
-    `,
-    { repoId, itemId, disabled }
-  );
+  transaction(() => {
+    const doc = readRepoDocument(repoId);
+    if (!doc) return;
+    const rest = ((doc.disabledChecklistItemIds as string[] | undefined) ?? []).filter((x) => x !== itemId);
+    writeRepoDocument({ ...doc, disabledChecklistItemIds: disabled ? [...rest, itemId] : rest });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -253,12 +245,12 @@ function answerId(repoId: string, targetKey: string, itemId: string): string {
 }
 
 export async function listChecklistAnswers(repoId: string, targetKey: string): Promise<ChecklistAnswerRecord[]> {
-  const result = await runRead(
-    `MATCH (a:ChecklistAnswer {repoId: $repoId, targetKey: $targetKey}) RETURN a`,
-    { repoId, targetKey }
-  );
-  return result.records.map((r) => {
-    const p = r.get("a").properties as Record<string, unknown>;
+  return all<{ data: string }>(
+    `SELECT data FROM checklist_answers WHERE repo_id = ? AND target_key = ?`,
+    repoId,
+    targetKey
+  ).map((row) => {
+    const p = unpack(row.data);
     return {
       repoId: p.repoId as string,
       targetKey: p.targetKey as string,
@@ -274,26 +266,17 @@ export async function listChecklistAnswers(repoId: string, targetKey: string): P
 
 export async function saveChecklistAnswers(answers: readonly ChecklistAnswerRecord[]): Promise<void> {
   if (answers.length === 0) return;
-  await runWrite(
-    `
-    UNWIND $rows AS row
-    MERGE (a:ChecklistAnswer {id: row.id})
-    SET a.repoId = row.repoId, a.targetKey = row.targetKey, a.itemId = row.itemId,
-        a.status = row.status, a.detail = row.detail, a.headSha = row.headSha,
-        a.model = row.model, a.checkedAt = row.checkedAt
-    `,
-    {
-      rows: answers.map((a) => ({
-        id: answerId(a.repoId, a.targetKey, a.itemId),
-        repoId: a.repoId,
-        targetKey: a.targetKey,
-        itemId: a.itemId,
-        status: a.status,
-        detail: a.detail,
-        headSha: a.headSha ?? null,
-        model: a.model ?? null,
-        checkedAt: a.checkedAt,
-      })),
+  transaction(() => {
+    for (const a of answers) {
+      run(
+        `INSERT INTO checklist_answers (id, repo_id, target_key, item_id, data) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET data = excluded.data`,
+        answerId(a.repoId, a.targetKey, a.itemId),
+        a.repoId,
+        a.targetKey,
+        a.itemId,
+        pack(a)
+      );
     }
-  );
+  });
 }

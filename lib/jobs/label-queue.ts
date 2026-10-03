@@ -1,4 +1,4 @@
-// BullMQ queue definition for AI-assisted labeling.
+// Queue definition for AI-assisted labeling (jobs run by ./runner.ts).
 //
 // Split from `./queue.ts` and `./review-queue.ts` for the same reason those
 // two are split from each other: the policies differ. Labeling spends money
@@ -9,13 +9,11 @@
 // nobody asked for). Nothing enqueues this except a user pressing "Generate
 // labels".
 //
-// Server-only: opens a Redis connection. Route handlers and `worker/` only.
-// The connections themselves are reused from `./queue.ts`.
+// Server-only. Route handlers and `worker/` only.
 
 import { createHash } from "node:crypto";
-import { Queue } from "bullmq";
-import type { Job, JobState, JobsOptions } from "bullmq";
-import { getRedisConnection, isPendingJobState } from "./queue";
+import { Queue, clearFlag, hasFlag, setFlag, type Job, type JobState, type JobsOptions } from "./runner";
+import { isPendingJobState } from "./queue";
 
 /** Queue name — must match on both sides (app enqueues, worker consumes). */
 export const LABEL_QUEUE_NAME = "label";
@@ -110,7 +108,6 @@ let labelQueueSingleton: LabelQueue | undefined;
 export function getLabelQueue(): LabelQueue {
   if (!labelQueueSingleton) {
     labelQueueSingleton = new Queue<LabelJobData, LabelJobResult>(LABEL_QUEUE_NAME, {
-      connection: getRedisConnection(),
       defaultJobOptions: LABEL_JOB_OPTIONS,
     });
   }
@@ -118,11 +115,7 @@ export function getLabelQueue(): LabelQueue {
 }
 
 /**
- * Deterministic BullMQ job id — one labeling run per repo at a time.
- *
- * `-` rather than `:` as the separator: BullMQ rejects custom job ids
- * containing `:` ("Custom Id cannot contain :"), which once made every
- * enqueue in this codebase fail silently. Repo ids are
+ * Deterministic job id — one labeling run per repo at a time. Repo ids are
  * UUIDs, but nothing enforces that at the type level, so anything outside
  * `[A-Za-z0-9_-]` is hashed rather than trusted.
  */
@@ -164,15 +157,15 @@ export async function getLabelJobLogs(repoId: string): Promise<string[]> {
 // Cancellation
 // ---------------------------------------------------------------------------
 //
-// BullMQ can't stop an *active* job from another process: the worker holds
-// its lock. So cancelling is cooperative — the app sets a short-lived Redis
-// flag, the worker polls it while the job runs and aborts the job's model
-// calls when it appears (worker/index.ts). A job still *waiting* in the
+// A running job can't be stopped from outside, so cancelling is cooperative —
+// the request sets a short-lived flag (./runner.ts), the worker polls it
+// while the job runs and aborts the job's model calls when it appears
+// (worker/index.ts). A job still *waiting* in the
 // queue has no worker yet and is simply removed.
 
-/** Redis key the worker polls while a repo's labeling job is active. */
+/** Flag the worker polls while a repo's labeling job is active. */
 function labelCancelKey(repoId: string): string {
-  return `graphreview:${labelJobId(repoId)}:cancel`;
+  return `${labelJobId(repoId)}:cancel`;
 }
 
 /** Long enough to outlive any single model call; short enough that a stray flag can't linger. */
@@ -191,7 +184,7 @@ export async function cancelLabel(repoId: string): Promise<CancelLabelResult> {
   const jobId = labelJobId(repoId);
   const state = await queue.getJobState(jobId);
   if (state === "active") {
-    await getRedisConnection().set(labelCancelKey(repoId), "1", "EX", CANCEL_FLAG_TTL_SECONDS);
+    await setFlag(labelCancelKey(repoId), CANCEL_FLAG_TTL_SECONDS);
     return { outcome: "requested" };
   }
   if (isPendingJobState(state)) {
@@ -200,7 +193,7 @@ export async function cancelLabel(repoId: string): Promise<CancelLabelResult> {
       return { outcome: "removed" };
     } catch {
       // Picked up by the worker between the two calls — cancel it running.
-      await getRedisConnection().set(labelCancelKey(repoId), "1", "EX", CANCEL_FLAG_TTL_SECONDS);
+      await setFlag(labelCancelKey(repoId), CANCEL_FLAG_TTL_SECONDS);
       return { outcome: "requested" };
     }
   }
@@ -208,11 +201,11 @@ export async function cancelLabel(repoId: string): Promise<CancelLabelResult> {
 }
 
 export async function isLabelCancelRequested(repoId: string): Promise<boolean> {
-  return (await getRedisConnection().exists(labelCancelKey(repoId))) === 1;
+  return hasFlag(labelCancelKey(repoId));
 }
 
 export async function clearLabelCancel(repoId: string): Promise<void> {
-  await getRedisConnection().del(labelCancelKey(repoId));
+  await clearFlag(labelCancelKey(repoId));
 }
 
 export interface EnqueueLabelResult {
@@ -228,7 +221,7 @@ export interface EnqueueLabelResult {
  *
  * Same two-step dance as `enqueueAnalysis`/`enqueueReview`: a still-pending
  * job short-circuits (a second run would just duplicate LLM spend), while a
- * *finished* job's id is explicitly removed first — BullMQ would otherwise
+ * *finished* job's id is explicitly removed first — the runner would otherwise
  * silently drop the `add()` forever, since a completed job keeps occupying
  * its id until retention evicts it.
  */
@@ -258,9 +251,7 @@ export async function enqueueLabel(
 }
 
 /**
- * Graceful shutdown for the worker entrypoint and tests. Like
- * `closeReviewQueue`, this must run *before* `closeQueues()`, which tears
- * down the shared Redis connections this queue borrows.
+ * Graceful shutdown for the worker entrypoint and tests.
  */
 export async function closeLabelQueue(): Promise<void> {
   if (!labelQueueSingleton) return;

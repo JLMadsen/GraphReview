@@ -9,7 +9,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getFindingById, setFindingResolved } from "@/lib/neo4j";
+import { getFindingById, setFindingResolved } from "@/lib/db";
 import { apiError, errorMessage } from "../../../../_shared";
 
 export const dynamic = "force-dynamic";

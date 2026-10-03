@@ -18,7 +18,7 @@
 
 import { randomUUID } from "node:crypto";
 import { checkImpact, type AiProviderConfig, type ImpactContract, type ImpactUsage } from "@/lib/ai";
-import { runRead, type TargetFindingInput } from "@/lib/neo4j";
+import { listImportsByPath, type TargetFindingInput } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import { matchFilesToComponents } from "./diff-components";
 import type { GrepHit, HeadSource } from "./head-source";
@@ -56,18 +56,7 @@ function dirOf(filePath: string): string {
 async function loadImports(repoId: string, paths: readonly string[]): Promise<Map<string, Set<string>>> {
   const out = new Map<string, Set<string>>();
   if (paths.length === 0) return out;
-  const result = await runRead(
-    `
-    UNWIND $paths AS p
-    MATCH (f:File {repoId: $repoId, path: p})
-    OPTIONAL MATCH (f)-[:IMPORTS]->(g:File)
-    RETURN p AS path, collect(DISTINCT g.path) AS imports
-    `,
-    { repoId, paths: [...paths] }
-  );
-  for (const record of result.records) {
-    out.set(record.get("path") as string, new Set((record.get("imports") as string[]).filter(Boolean)));
-  }
+  for (const [path, imports] of await listImportsByPath(repoId, paths)) out.set(path, new Set(imports));
   return out;
 }
 

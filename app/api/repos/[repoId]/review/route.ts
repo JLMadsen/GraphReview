@@ -34,7 +34,7 @@ import {
   type FindingCategory,
   type FindingKind,
   type FindingScope,
-} from "@/lib/neo4j";
+} from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -136,23 +136,6 @@ function errorResponse(
   return NextResponse.json(code ? { error, code } : { error }, { status });
 }
 
-/**
- * Whether the failure looks like "Redis is unreachable" rather than a real
- * application error.
- *
- * The producer connection is configured with a *bounded* retry
- * (`maxRetriesPerRequest: 3`, see lib/jobs/queue.ts) precisely so a request
- * made while Redis is down rejects in a few seconds instead of hanging a
- * route handler forever — this turns that rejection into a 503 rather than
- * a misleading 500.
- */
-function isRedisUnavailable(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EPIPE|max retries per request|Connection is closed|Stream isn't writeable|Redis/i.test(
-    message
-  );
-}
-
 /** The active saved provider must have all three fields present for a review to be possible (base URL + key + model are one unit). */
 async function isAiConfigured(): Promise<boolean> {
   const provider = await getActiveAiProvider();
@@ -226,14 +209,6 @@ export async function POST(
     };
     return NextResponse.json(body);
   } catch (err) {
-    if (isRedisUnavailable(err)) {
-      console.error(`POST /api/repos/${repoId}/review — redis unavailable:`, err);
-      return errorResponse(
-        "The job queue is unavailable — is Redis running?",
-        503,
-        "queue_unavailable"
-      );
-    }
     console.error(`POST /api/repos/${repoId}/review failed:`, err);
     return errorResponse(
       err instanceof Error ? err.message : "Failed to enqueue the review.",
@@ -340,20 +315,11 @@ export async function GET(
     let progress: ReviewProgress | undefined;
     let error: string | undefined;
 
-    try {
-      const job = await getReviewJob(repoId, targetKey);
-      if (job) {
-        state = toReviewState(await job.getState());
-        progress = toProgress(job.progress);
-        if (state === "failed") error = job.failedReason || "The review job failed.";
-      }
-    } catch (queueError) {
-      // Redis being down must not hide findings that are already in Neo4j —
-      // degrade to "no live job state" and say why, rather than 5xx-ing a
-      // read that can still answer most of the question.
-      if (!isRedisUnavailable(queueError)) throw queueError;
-      console.error(`GET /api/repos/${repoId}/review — redis unavailable:`, queueError);
-      error = "The job queue is unavailable — live progress could not be read.";
+    const job = await getReviewJob(repoId, targetKey);
+    if (job) {
+      state = toReviewState(await job.getState());
+      progress = toProgress(job.progress);
+      if (state === "failed") error = job.failedReason || "The review job failed.";
     }
 
     // A job only lives as long as its retention window (24h for a completed

@@ -11,8 +11,8 @@
 // deliberately non-blocking: it never waits for the analysis, it only
 // reports whether the stored graph is behind and kicks off the job.
 
-import { getRepoById } from "@/lib/neo4j";
-import type { RepoRecord } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/db";
+import type { RepoRecord } from "@/lib/db";
 import { enqueueAnalysis } from "./queue";
 import { readCurrentSha } from "./source";
 
@@ -101,9 +101,8 @@ export async function checkAndEnqueueIfStale(
 }
 
 /**
- * Enqueue without letting a Redis outage break the caller's render — the
- * failure is logged, and the repo simply reports as stale until the queue is
- * reachable again.
+ * Enqueue without letting a failure break the caller's render — the
+ * failure is logged, and the repo simply reports as stale.
  */
 async function enqueueSafely(repoId: string): Promise<boolean> {
   try {

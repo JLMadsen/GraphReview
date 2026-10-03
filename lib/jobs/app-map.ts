@@ -17,7 +17,7 @@
 // they sit under a known folder, and the rest fall back to the heuristic.
 
 import path from "node:path";
-import { getFileOwnerMap, getStoredImportGraph, listComponentsByRepoId } from "@/lib/neo4j";
+import { getFileOwnerMap, getStoredImportGraph, listComponentsByRepoId } from "@/lib/db";
 import {
   APP_LAYERS,
   APP_LAYER_ORDER,

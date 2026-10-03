@@ -1,16 +1,16 @@
-// Worker process entrypoint.
+// The background job workers.
 //
-// Same image as `app`, different command (`npm run worker`). It has no HTTP
-// surface: it consumes the `analysis`, `review`, `label` and `app-map` queues defined
-// in lib/jobs/ and writes results through lib/neo4j. Everything it does is
-// logged to stdout, since `docker logs graphreview-worker` is the only way
-// anyone observes it.
+// Started once per process from instrumentation.ts, alongside the web
+// server: they consume the `analysis`, `review`, `label`, `app-map` and
+// `preview` queues defined in lib/jobs/ (stored in SQLite, see
+// lib/jobs/runner.ts) and write results through lib/db. Everything they do
+// is logged to stdout, and each job's own lines are mirrored into its job
+// log so the UI can show them.
 //
-// Errors are never swallowed — a throwing job is handed back to BullMQ,
+// Errors are never swallowed — a throwing job is handed back to the runner,
 // which applies the retry/backoff policy from lib/jobs/queue.ts.
 
-import { Worker } from "bullmq";
-import type { Job } from "bullmq";
+import { Worker, recoverInterruptedJobs, type Job } from "@/lib/jobs/runner";
 import {
   ANALYSIS_QUEUE_NAME,
   APP_MAP_QUEUE_NAME,
@@ -20,13 +20,6 @@ import {
   REVIEW_QUEUE_NAME,
   clearAppMapCancel,
   clearLabelCancel,
-  closeAppMapQueue,
-  closeLabelQueue,
-  closePreviewQueue,
-  closePreviewScanQueue,
-  closeQueues,
-  closeReviewQueue,
-  getBlockingRedisConnection,
   isAppMapCancelRequested,
   isLabelCancelRequested,
   listRepoDtos,
@@ -54,7 +47,7 @@ import { runAppMapJob } from "@/lib/jobs/app-map-job";
 import { runPreviewJob } from "@/lib/jobs/preview";
 import { runPreviewScanJob } from "@/lib/jobs/preview-scan";
 import type { PreviewScanResult } from "@/lib/preview/types";
-import { closeDriver, runMigrations } from "@/lib/neo4j";
+import { getDb } from "@/lib/db";
 
 /** One job at a time: static analysis is CPU-bound (tree-sitter parsing) and a second concurrent run would just contend for the same core. */
 const CONCURRENCY = Number(process.env.ANALYSIS_CONCURRENCY ?? 1);
@@ -63,8 +56,7 @@ const CONCURRENCY = Number(process.env.ANALYSIS_CONCURRENCY ?? 1);
  * One review job at a time as well. A review is I/O-bound rather than
  * CPU-bound, but it already fans out to several concurrent model calls
  * internally, and running two whole reviews at once would multiply that
- * fan-out against a provider that may be a single local model server — and
- * against Neo4j's serial finding writes.
+ * fan-out against a provider that may be a single local model server.
  */
 const REVIEW_CONCURRENCY = Number(process.env.REVIEW_CONCURRENCY ?? 1);
 
@@ -73,9 +65,7 @@ const LABEL_CANCEL_POLL_MS = 1000;
 
 /**
  * One labeling job at a time, for the same reasons as a review — it spends
- * model calls against a provider that may be a single local server, and its
- * domain-tier writes are relationship writes, which Neo4j Community insists
- * on seeing serially.
+ * model calls against a provider that may be a single local server.
  */
 const LABEL_CONCURRENCY = Number(process.env.LABEL_CONCURRENCY ?? 1);
 
@@ -102,19 +92,28 @@ function logError(message: string): void {
 }
 
 /**
- * Mirrors a job-scoped log line into BullMQ's own per-job log (`job.log()`,
- * stored in Redis under the job's retention window) alongside the stdout
- * write every call site already does. This is what lets the UI's hover-to-
- * see-progress affordance read back what the worker was doing — `docker
- * logs` is the only channel today, and it isn't reachable from the app.
- * Best-effort: a Redis hiccup here must never fail the job over a nice-to-
- * have.
+ * Mirrors a job-scoped log line into the job's own log (`job.log()`, kept
+ * for the job's retention window) alongside the stdout write every call
+ * site already does. This is what lets the UI's hover-to-see-progress
+ * affordance read back what the worker was doing. Best-effort: a hiccup
+ * here must never fail the job over a nice-to-have.
  */
 function mirrorToJobLog(job: { log: (row: string) => Promise<number> }, message: string): void {
   void job.log(message).catch(() => undefined);
 }
 
-async function main(): Promise<void> {
+const STARTED_KEY = Symbol.for("graphreview.worker.started");
+
+/**
+ * Starts every queue's worker. Safe to call more than once per process —
+ * Next.js may evaluate instrumentation in more than one bundle — only the
+ * first call does anything.
+ */
+export async function startWorker(): Promise<void> {
+  const g = globalThis as typeof globalThis & { [STARTED_KEY]?: boolean };
+  if (g[STARTED_KEY]) return;
+  g[STARTED_KEY] = true;
+
   log(
     `starting — queue "${ANALYSIS_QUEUE_NAME}" (concurrency ${CONCURRENCY}), ` +
       `queue "${REVIEW_QUEUE_NAME}" (concurrency ${REVIEW_CONCURRENCY}), ` +
@@ -123,15 +122,14 @@ async function main(): Promise<void> {
       `queue "${PREVIEW_QUEUE_NAME}" (concurrency ${PREVIEW_CONCURRENCY})`
   );
 
-  // Constraints are `IF NOT EXISTS`, so this is a no-op on an already
-  // migrated database (lib/neo4j/schema.ts).
-  try {
-    await runMigrations();
-    log("neo4j schema constraints ensured");
-  } catch (error) {
-    // Don't exit: Neo4j may still be starting up alongside us in Compose.
-    // The first job will fail loudly and retry if it really is unreachable.
-    logError(`could not run neo4j migrations at startup: ${(error as Error).message}`);
+  // Opening the database applies any pending schema migrations.
+  getDb();
+
+  // Jobs left running by a previous run of the app (stopped or crashed
+  // mid-job): analysis is retried, AI jobs are marked interrupted.
+  const recovered = recoverInterruptedJobs();
+  if (recovered.requeued || recovered.failed) {
+    log(`recovered interrupted jobs: ${recovered.requeued} re-queued, ${recovered.failed} marked failed`);
   }
 
   const worker = new Worker<AnalysisJobData, AnalysisJobResult>(
@@ -146,7 +144,7 @@ async function main(): Promise<void> {
         mirrorToJobLog(job, message);
       });
     },
-    { connection: getBlockingRedisConnection(), concurrency: CONCURRENCY }
+    { concurrency: CONCURRENCY }
   );
 
   worker.on("completed", (job, result) => {
@@ -165,9 +163,8 @@ async function main(): Promise<void> {
     if (error.stack) console.error(error.stack);
   });
 
-  // Connection-level problems (Redis down, etc.) — surfaced rather than
-  // crashing the process, so Compose doesn't restart-loop the container
-  // while Redis is still coming up.
+  // Problems claiming jobs (e.g. a locked database) — surfaced rather than
+  // crashing the app.
   worker.on("error", (error) => {
     logError(`worker error: ${error.message}`);
   });
@@ -188,7 +185,7 @@ async function main(): Promise<void> {
         mirrorToJobLog(job, message);
       });
     },
-    { connection: getBlockingRedisConnection(), concurrency: REVIEW_CONCURRENCY }
+    { concurrency: REVIEW_CONCURRENCY }
   );
 
   reviewWorker.on("completed", (job, result) => {
@@ -218,8 +215,8 @@ async function main(): Promise<void> {
       const { repoId, force } = job.data;
       log(`label job ${job.id} started — repo ${repoId}${force ? " (force)" : ""}`);
 
-      // Cooperative cancellation (see lib/jobs/label-queue.ts): the app sets
-      // a Redis flag, this polls it and aborts the run's model calls.
+      // Cooperative cancellation (see lib/jobs/label-queue.ts): the request
+      // sets a flag, this polls it and aborts the run's model calls.
       const abort = new AbortController();
       const poll = setInterval(() => {
         isLabelCancelRequested(repoId)
@@ -247,7 +244,7 @@ async function main(): Promise<void> {
         await clearLabelCancel(repoId).catch(() => undefined);
       }
     },
-    { connection: getBlockingRedisConnection(), concurrency: LABEL_CONCURRENCY }
+    { concurrency: LABEL_CONCURRENCY }
   );
 
   labelWorker.on("completed", (job, result) => {
@@ -304,7 +301,7 @@ async function main(): Promise<void> {
         await clearAppMapCancel(repoId).catch(() => undefined);
       }
     },
-    { connection: getBlockingRedisConnection(), concurrency: APP_MAP_CONCURRENCY }
+    { concurrency: APP_MAP_CONCURRENCY }
   );
 
   appMapWorker.on("completed", (job, result) => {
@@ -337,7 +334,7 @@ async function main(): Promise<void> {
         }
       );
     },
-    { connection: getBlockingRedisConnection(), concurrency: PREVIEW_CONCURRENCY }
+    { concurrency: PREVIEW_CONCURRENCY }
   );
   previewWorker.on("completed", (job, result) => {
     const cases = result.symbols.reduce((n, s) => n + s.cases.length, 0);
@@ -364,7 +361,7 @@ async function main(): Promise<void> {
         log(`preview-scan job ${job.id} · ${message}`);
         mirrorToJobLog(job, message);
       }),
-    { connection: getBlockingRedisConnection(), concurrency: 2 }
+    { concurrency: 2 }
   );
   previewScanWorker.on("failed", (job, error) => {
     logError(`preview-scan job ${job?.id ?? "?"} failed: ${error.message}`);
@@ -373,31 +370,7 @@ async function main(): Promise<void> {
     logError(`preview-scan worker error: ${error.message}`);
   });
 
-  const sweep = startStalenessSweep();
-
-  const shutdown = async (signal: string): Promise<void> => {
-    log(`received ${signal} — shutting down`);
-    if (sweep) clearInterval(sweep);
-    try {
-      await Promise.all([worker.close(), reviewWorker.close(), labelWorker.close(), appMapWorker.close(), previewWorker.close(), previewScanWorker.close()]);
-      // The review and label queues borrow ./queue.ts's Redis connections, so
-      // they have to be closed before `closeQueues()` tears those down.
-      await closeReviewQueue();
-      await closeLabelQueue();
-      await closeAppMapQueue();
-      await closePreviewQueue();
-      await closePreviewScanQueue();
-      await closeQueues();
-      await closeDriver();
-    } catch (error) {
-      logError(`error during shutdown: ${(error as Error).message}`);
-    } finally {
-      process.exit(0);
-    }
-  };
-
-  process.on("SIGTERM", () => void shutdown("SIGTERM"));
-  process.on("SIGINT", () => void shutdown("SIGINT"));
+  startStalenessSweep();
 
   log("ready — waiting for jobs");
 }
@@ -411,7 +384,7 @@ function startStalenessSweep(): NodeJS.Timeout | undefined {
     return undefined;
   }
   log(`staleness sweep enabled — every ${SWEEP_INTERVAL_MS}ms`);
-  return setInterval(() => {
+  const timer = setInterval(() => {
     // `listRepoDtos` computes each repo's status, which itself performs the
     // staleness check and enqueues when needed (lib/jobs/repo-status.ts).
     listRepoDtos({ autoEnqueue: true })
@@ -425,10 +398,6 @@ function startStalenessSweep(): NodeJS.Timeout | undefined {
         logError(`staleness sweep failed: ${(error as Error).message}`);
       });
   }, SWEEP_INTERVAL_MS);
+  timer.unref();
+  return timer;
 }
-
-main().catch((error: unknown) => {
-  logError(`fatal: ${(error as Error).message}`);
-  console.error(error);
-  process.exit(1);
-});

@@ -9,8 +9,8 @@
 
 import { decrypt } from "@/lib/crypto";
 import { GitLabApiError } from "@/lib/gitlab";
-import { getSettings } from "@/lib/neo4j";
-import type { RepoRecord } from "@/lib/neo4j";
+import { getSettings } from "@/lib/db";
+import type { RepoRecord } from "@/lib/db";
 
 export interface GitLabProjectRef {
   /**
@@ -100,7 +100,7 @@ export async function getStoredGitLabToken(): Promise<string | null> {
     return decrypt(encrypted);
   } catch {
     console.warn(
-      "[gitlab-access] stored GitLab PAT could not be decrypted — has SESSION_SECRET changed? Re-enter it in Settings."
+      "[gitlab-access] stored GitLab PAT could not be decrypted — has the secret key (SESSION_SECRET or secret.key in the data folder) changed? Re-enter it in Settings."
     );
     return null;
   }

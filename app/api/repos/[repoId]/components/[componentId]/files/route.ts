@@ -21,8 +21,8 @@ import {
   getComponentById,
   listChildComponents,
   listFilesByComponentId,
-} from "@/lib/neo4j";
-import type { FileRecord } from "@/lib/neo4j";
+} from "@/lib/db";
+import type { FileRecord } from "@/lib/db";
 import { apiError, errorMessage } from "@/app/api/repos/_shared";
 import type { ComponentFilesResponseDTO } from "@/components/graph/types";
 

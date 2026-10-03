@@ -19,7 +19,7 @@
 // job and for tests.
 
 import path from "node:path";
-import { listPrMapComponents, listPrMapImports } from "@/lib/neo4j";
+import { listPrMapComponents, listPrMapImports } from "@/lib/db";
 import type {
   PrMapEdgeDTO,
   PrMapFileDTO,

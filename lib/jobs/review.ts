@@ -18,7 +18,7 @@
 // because a route imported `@/lib/jobs` to enqueue something.
 
 import { randomUUID } from "node:crypto";
-import { UnrecoverableError } from "bullmq";
+import { UnrecoverableError } from "./runner";
 import {
   DEFAULT_REVIEW_EFFORT,
   REVIEW_EFFORT_SETTINGS,
@@ -46,9 +46,9 @@ import {
   replaceFindingsForTargetComponent,
   savePrMapGrouping,
   upsertPullRequest,
-} from "@/lib/neo4j";
-import type { RepoRecord } from "@/lib/neo4j";
-import type { FindingAssessment, TargetFindingInput } from "@/lib/neo4j";
+} from "@/lib/db";
+import type { RepoRecord } from "@/lib/db";
+import type { FindingAssessment, TargetFindingInput } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import {
   getComponentReviewContexts,
@@ -134,7 +134,7 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
     apiKey = decrypt(provider.apiKeyEncrypted as string);
   } catch {
     throw new UnrecoverableError(
-      "The stored AI API key could not be decrypted — has SESSION_SECRET changed? Re-enter it in Settings."
+      "The stored AI API key could not be decrypted — has the secret key (SESSION_SECRET or secret.key in the data folder) changed? Re-enter it in Settings."
     );
   }
 
@@ -642,7 +642,7 @@ export async function runReviewJob(
   const publishProgress = async (): Promise<void> => {
     progress.running = [...running.values()];
     try {
-      // Progress is advisory (a live counter) — a Redis hiccup writing
+      // Progress is advisory (a live counter) — a hiccup writing
       // it must never take down a job that is otherwise succeeding.
       await job?.updateProgress({ ...progress });
     } catch {
@@ -655,10 +655,8 @@ export async function runReviewJob(
   let findingsWritten = 0;
   let nextIndex = 0;
   // Persistence is funnelled through this promise chain so that, however
-  // many model calls finish at once, only one relationship-creating Neo4j
-  // write is ever in flight. Neo4j Community deadlocks otherwise — every
-  // finding for a component MERGEs an edge onto the same component node.
-  // See NEO4J_RELATIONSHIP_WRITE_CONCURRENCY in ./analyze.ts.
+  // many model calls finish at once, findings are written one component at
+  // a time and in completion order.
   let writeChain: Promise<unknown> = Promise.resolve();
   /** A few finding summaries per component, for the PR map pass. */
   const summariesByComponent = new Map<string, string[]>();

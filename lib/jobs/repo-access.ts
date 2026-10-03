@@ -11,7 +11,7 @@
 import { listBranches as listGitHubBranches, listCommits as listGitHubCommits, listPullRequests } from "@/lib/github";
 import type { Branch, CommitSummary, PullRequestListState, PullRequestSummary, RateLimitInfo } from "@/lib/github";
 import { listBranches as listGitLabBranches, listCommits as listGitLabCommits, listMergeRequests } from "@/lib/gitlab";
-import type { RepoRecord } from "@/lib/neo4j";
+import type { RepoRecord } from "@/lib/db";
 import { describeGitHubError, resolveGitHubAccess, type GitHubUnavailableReason } from "./github-access";
 import { describeGitLabError, resolveGitLabAccess, type GitLabUnavailableReason } from "./gitlab-access";
 import { listLocalBranches, listLocalCommits } from "./local-git";

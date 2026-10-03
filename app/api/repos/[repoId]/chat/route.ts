@@ -17,7 +17,7 @@ import { reviewTargetKey, type ReviewTarget } from "@/lib/jobs";
 import { loadAiConfigOrNull } from "@/lib/jobs/merge-naming";
 import { loadPrContext } from "@/lib/jobs/pr-context";
 import { REPO_CHAT_THREAD_KEY, runChatTurn } from "@/lib/jobs/pr-chat";
-import { clearChatMessages, listChatMessages } from "@/lib/neo4j";
+import { clearChatMessages, listChatMessages } from "@/lib/db";
 import {
   apiError,
   errorMessage,

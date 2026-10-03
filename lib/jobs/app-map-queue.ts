@@ -1,19 +1,17 @@
-// BullMQ queue for the app map's AI runs (DESIGN.md §6.5).
+// Queue for the app map's AI runs (DESIGN.md §6.5).
 //
 // Same policy as the label queue (./label-queue.ts), for the same reasons:
 // a run spends model calls, so it is `attempts: 1` and never retried, and it
 // is strictly on demand — nothing enqueues it except someone pressing
 // "Explain with AI" on the App map. One run per repo at a time (whatever the
-// level), cancellable cooperatively through a Redis flag the worker polls.
+// level), cancellable cooperatively through a flag the worker polls.
 //
-// Server-only: opens a Redis connection. The connections are reused from
-// ./queue.ts.
+// Server-only.
 
 import { createHash } from "node:crypto";
-import { Queue } from "bullmq";
-import type { Job, JobState, JobsOptions } from "bullmq";
+import { Queue, clearFlag, hasFlag, setFlag, type Job, type JobState, type JobsOptions } from "./runner";
 import type { AppMapLevel, AppMapPhaseDTO } from "@/components/graph/app-map-types";
-import { getRedisConnection, isPendingJobState } from "./queue";
+import { isPendingJobState } from "./queue";
 
 export const APP_MAP_QUEUE_NAME = "app-map";
 export const APP_MAP_JOB_NAME = "app-map-repo";
@@ -59,13 +57,12 @@ let queueSingleton: AppMapQueue | undefined;
 
 export function getAppMapQueue(): AppMapQueue {
   queueSingleton ??= new Queue<AppMapJobData, AppMapJobResult>(APP_MAP_QUEUE_NAME, {
-    connection: getRedisConnection(),
     defaultJobOptions: APP_MAP_JOB_OPTIONS,
   });
   return queueSingleton;
 }
 
-/** `appmap-<repoId>` — `-`, never `:` (BullMQ rejects it in custom ids). */
+/** `appmap-<repoId>`. */
 export function appMapJobId(repoId: string): string {
   const safe = /^[A-Za-z0-9_-]+$/.test(repoId)
     ? repoId
@@ -83,7 +80,7 @@ export async function getAppMapJobLogs(repoId: string): Promise<string[]> {
 }
 
 function cancelKey(repoId: string): string {
-  return `graphreview:${appMapJobId(repoId)}:cancel`;
+  return `${appMapJobId(repoId)}:cancel`;
 }
 
 export async function cancelAppMap(
@@ -92,7 +89,7 @@ export async function cancelAppMap(
   const queue = getAppMapQueue();
   const jobId = appMapJobId(repoId);
   const state = await queue.getJobState(jobId);
-  const flag = () => getRedisConnection().set(cancelKey(repoId), "1", "EX", 60 * 60);
+  const flag = () => setFlag(cancelKey(repoId), 60 * 60);
   if (state === "active") {
     await flag();
     return { outcome: "requested" };
@@ -110,11 +107,11 @@ export async function cancelAppMap(
 }
 
 export async function isAppMapCancelRequested(repoId: string): Promise<boolean> {
-  return (await getRedisConnection().exists(cancelKey(repoId))) === 1;
+  return hasFlag(cancelKey(repoId));
 }
 
 export async function clearAppMapCancel(repoId: string): Promise<void> {
-  await getRedisConnection().del(cancelKey(repoId));
+  await clearFlag(cancelKey(repoId));
 }
 
 /** Enqueues a run unless one is already pending (then `enqueued: false`). See `enqueueLabel` for the remove-first dance. */
@@ -132,7 +129,7 @@ export async function enqueueAppMap(
   return { enqueued: true, jobId, previousState };
 }
 
-/** Must run before `closeQueues()`, which tears down the shared connections. */
+/** Graceful shutdown for the worker entrypoint. */
 export async function closeAppMapQueue(): Promise<void> {
   if (!queueSingleton) return;
   const queue = queueSingleton;
