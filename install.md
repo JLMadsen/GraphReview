@@ -106,6 +106,12 @@ diff-impact view — AI review and labeling just show a "not configured" note.
 
 ## 6. Optional features
 
+- **Busy or flaky providers.** A 429/5xx or network error is retried up to
+  3 times (2 s, 5 s, 12 s, or the provider's `Retry-After`). A component whose
+  call still fails shows as "Review of … failed"; **Retry N failed** in the
+  review header (or **Retry** on the finding) re-runs only those parts and
+  keeps every other finding — unless the branch moved since, in which case
+  it's a full review.
 - **Multiple AI providers, hot-swappable.** Save a local model and a hosted
   one side by side and flip the active toggle — no restart needed.
 - **Running your own local AI model.** Any OpenAI-compatible
@@ -135,7 +141,8 @@ diff-impact view — AI review and labeling just show a "not configured" note.
   ```
   Point Settings at `http://localhost:4010/v1` with any API key. Special
   tokens in a prompt: `MOCK_FAIL` → HTTP 500, `MOCK_GARBAGE` → unparseable
-  response; `MOCK_DELAY_MS` env var simulates latency. On Windows, `tsx`
+  response; `MOCK_DELAY_MS` env var simulates latency, and `MOCK_UNAVAILABLE=<n>`
+  makes the next n requests answer 503 "model overloaded" (for testing retries). On Windows, `tsx`
   can leave a child process behind after you stop it — kill the PID still
   listening on the port.
 - **Smoke tests** (plain scripts, from a checkout):

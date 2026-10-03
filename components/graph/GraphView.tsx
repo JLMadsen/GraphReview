@@ -670,6 +670,7 @@ export function GraphView({
             rerunning={review.rerunning}
             canRerun={review.canRerun}
             onRerun={review.rerun}
+            onRetryFailed={review.retryFailed}
             selectedComponentId={selectedNodeId}
             onSelectComponent={selectComponentLink}
             onSetResolved={review.setResolved}

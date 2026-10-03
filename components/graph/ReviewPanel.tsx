@@ -103,6 +103,8 @@ export interface ReviewPanelProps {
   rerunning: boolean;
   canRerun: boolean;
   onRerun: () => void;
+  /** Re-run only what failed (model call errors), keeping the other findings. */
+  onRetryFailed: () => void;
   /** Mirrors the canvas selection, so the matching group is highlighted. */
   selectedComponentId?: string | null;
   /** Clicking a finding selects its component in the graph — same mechanism as tapping the node. */
@@ -153,12 +155,15 @@ function FindingRow({
   onSelectComponent,
   onViewDiff,
   onSetResolved,
+  onRetry,
 }: {
   finding: FindingDTO;
   selected: boolean;
   onSelectComponent: (componentId: string | null) => void;
   onViewDiff: (finding: FindingDTO) => void;
   onSetResolved: (findingId: string, resolved: boolean) => void;
+  /** Present when failed calls can be retried right now. */
+  onRetry?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const location = formatLocation(finding);
@@ -247,7 +252,20 @@ function FindingRow({
           </p>
         )}
       </div>
-      {isResolvable(finding) && (
+      {finding.callFailed ? (
+        onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="h-fit shrink-0 rounded-sm px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            title="Run the failed parts of this review again — every other finding is kept"
+          >
+            <span className="flex items-center gap-1">
+              <RotateCcw className="size-3" aria-hidden /> Retry
+            </span>
+          </button>
+        )
+      ) : isResolvable(finding) && (
         <button
           type="button"
           onClick={() => onSetResolved(finding.id, !resolved)}
@@ -462,6 +480,7 @@ export function ReviewPanel({
   rerunning,
   canRerun,
   onRerun,
+  onRetryFailed,
   selectedComponentId,
   onSelectComponent,
   onSetResolved,
@@ -544,6 +563,9 @@ export function ReviewPanel({
   };
 
   const running = state === "queued" || state === "running";
+  /** Placeholders for model calls that never completed — what "Retry failed" re-runs. */
+  const failedCount = findings.filter((finding) => finding.callFailed).length;
+  const retryFromRow = aiConfigured && canRerun ? onRetryFailed : undefined;
   const total = progress?.total ?? 0;
   const done = (progress?.completed ?? 0) + (progress?.failed ?? 0);
   const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
@@ -609,6 +631,20 @@ export function ReviewPanel({
           )}
 
           <div className="ml-auto flex items-center gap-1">
+            {aiConfigured && failedCount > 0 && !running && (
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                onClick={onRetryFailed}
+                disabled={!canRerun}
+                className="text-destructive hover:text-destructive"
+                title="Run only the parts whose model call failed again (the provider was busy or erroring) — every other finding is kept"
+              >
+                <RotateCcw aria-hidden />
+                Retry {failedCount} failed
+              </Button>
+            )}
             {aiConfigured && (
               <Button
                 type="button"
@@ -723,6 +759,7 @@ export function ReviewPanel({
                     onSelectComponent={onSelectComponent}
                     onViewDiff={setDiffFinding}
                     onSetResolved={onSetResolved}
+                    onRetry={retryFromRow}
                   />
                 </ul>
               </div>
@@ -737,6 +774,7 @@ export function ReviewPanel({
                     onSelectComponent={onSelectComponent}
                     onViewDiff={setDiffFinding}
                     onSetResolved={onSetResolved}
+                    onRetry={retryFromRow}
                   />
                 ))}
               </ul>
@@ -760,6 +798,7 @@ export function ReviewPanel({
                         onSelectComponent={onSelectComponent}
                         onViewDiff={setDiffFinding}
                         onSetResolved={onSetResolved}
+                        onRetry={retryFromRow}
                       />
                     ))}
                   </ul>
@@ -794,6 +833,7 @@ export function ReviewPanel({
                       onSelectComponent={onSelectComponent}
                       onViewDiff={setDiffFinding}
                       onSetResolved={onSetResolved}
+                      onRetry={retryFromRow}
                     />
                   ))}
                 </ul>

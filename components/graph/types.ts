@@ -222,6 +222,8 @@ export interface FindingDTO {
   createdAt: string;
   /** ISO-8601 time a reviewer resolved this finding; absent while open. */
   resolvedAt?: string;
+  /** The model call behind it never completed (provider error, timeout) — "Retry failed" re-runs it. */
+  callFailed?: boolean;
 }
 
 /**

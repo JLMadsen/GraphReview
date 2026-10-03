@@ -205,6 +205,12 @@ export interface FindingRecord {
    * that replaces the findings, so fresh ones start unresolved.
    */
   resolvedAt?: string;
+  /**
+   * Set when the model call behind this finding never completed (provider
+   * error, timeout, network) — the finding is a placeholder saying so, not
+   * a judgement of the code. "Retry failed" re-runs exactly these.
+   */
+  callFailed?: boolean;
 }
 
 // Note: `SettingsRecord` is defined in settings.ts, not here — re-declaring

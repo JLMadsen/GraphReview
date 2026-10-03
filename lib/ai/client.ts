@@ -17,6 +17,12 @@
 //     the request is retried once with the renamed field;
 //   - gateways that return `message.content` as an array of text parts.
 //
+// Transient failures — 429 (rate limit), 500/502/503/504 ("model overloaded,
+// try again later") and network errors — are retried up to
+// TRANSIENT_RETRIES times with growing waits, honouring `Retry-After`. Only
+// then does the caller see the error (a review records the component as
+// failed, and "Retry failed" can re-run it later).
+//
 // Requests go through undici's own `fetch` with a dedicated dispatcher rather
 // than the global `fetch`: Node's built-in one gives up if response headers
 // haven't arrived within 5 minutes, and a non-streaming call to a local model
@@ -165,6 +171,42 @@ function extractResult(body: unknown, endpoint: string, rawText: string): ChatCo
  * the caller wants; use `parse.ts` to pull structured data back out of the
  * returned text.
  */
+/** Retries for a transient failure, after the first attempt. */
+const TRANSIENT_RETRIES = 3;
+/** Wait before retry n (0-based) when the provider gives no `Retry-After`: 2 s, 5 s, 12 s. */
+const RETRY_DELAYS_MS = [2_000, 5_000, 12_000];
+/** Longest `Retry-After` honoured; a provider asking for more is treated as a hard failure. */
+const MAX_RETRY_AFTER_MS = 60_000;
+
+function isTransientStatus(status: number): boolean {
+  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
+/** `Retry-After` in ms (seconds or an HTTP date), or `undefined`. */
+function retryAfterMs(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(header);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+}
+
+/** Resolves after `ms`, or rejects as soon as `signal` aborts. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export async function chatCompletion(
   config: AiProviderConfig,
   messages: ChatMessage[],
@@ -186,7 +228,9 @@ export async function chatCompletion(
   if (options.temperature !== undefined) requestBody.temperature = options.temperature;
   if (options.maxTokens !== undefined) requestBody.max_tokens = options.maxTokens;
 
-  // Each adaptation happens at most once, so this loop runs at most 3 times.
+  // Each adaptation happens at most once, and transient failures are retried
+  // at most TRANSIENT_RETRIES times, so this loop is bounded.
+  let transientRetries = 0;
   for (let adaptations = 0; ; adaptations++) {
     let response: Awaited<ReturnType<typeof undiciFetch>>;
     try {
@@ -201,13 +245,28 @@ export async function chatCompletion(
         signal: options.signal,
       });
     } catch (err) {
+      if (!options.signal?.aborted && transientRetries < TRANSIENT_RETRIES) {
+        await sleep(RETRY_DELAYS_MS[transientRetries++], options.signal);
+        adaptations--;
+        continue;
+      }
       throw new AiClientError(
-        `AI request failed (network error): ${err instanceof Error ? err.message : String(err)}`,
+        `AI request failed (network error${transientRetries > 0 ? `, after ${transientRetries} retries` : ""}): ${err instanceof Error ? err.message : String(err)}`,
         { status: 0, endpoint, cause: err }
       );
     }
 
     const rawText = await response.text();
+
+    if (!response.ok && isTransientStatus(response.status) && transientRetries < TRANSIENT_RETRIES) {
+      const wait = retryAfterMs(response.headers.get("retry-after")) ?? RETRY_DELAYS_MS[transientRetries];
+      if (wait <= MAX_RETRY_AFTER_MS) {
+        transientRetries++;
+        await sleep(wait, options.signal);
+        adaptations--;
+        continue;
+      }
+    }
 
     if (!response.ok) {
       if (response.status === 400 && adaptations < 2) {
@@ -221,7 +280,8 @@ export async function chatCompletion(
           continue;
         }
       }
-      throw new AiClientError(`AI request failed (${response.status}): ${rawText.slice(0, 500)}`, {
+      const retried = transientRetries > 0 ? ` after ${transientRetries} retr${transientRetries === 1 ? "y" : "ies"}` : "";
+      throw new AiClientError(`AI request failed (${response.status})${retried}: ${rawText.slice(0, 500)}`, {
         status: response.status,
         endpoint,
       });

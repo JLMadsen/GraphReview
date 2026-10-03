@@ -35,7 +35,20 @@ function toFindingRecord(props: Record<string, unknown>): FindingRecord {
     reviewedHeadSha: (props.reviewedHeadSha as string | undefined) ?? undefined,
     reviewedAt: (props.reviewedAt as string | undefined) ?? undefined,
     resolvedAt: (props.resolvedAt as string | undefined) ?? undefined,
+    callFailed: props.callFailed === true || isLegacyFailurePlaceholder(props) ? true : undefined,
   };
+}
+
+/**
+ * Failure placeholders written before `callFailed` existed: an `unknown`
+ * finding whose rationale is the job's "call did not complete" text.
+ */
+function isLegacyFailurePlaceholder(props: Record<string, unknown>): boolean {
+  return (
+    props.assessment === "unknown" &&
+    typeof props.rationale === "string" &&
+    /^The AI (review|intent-check) call (for this component )?did not complete:/.test(props.rationale)
+  );
 }
 
 function findingRows(rows: Array<{ data: unknown }>): FindingRecord[] {

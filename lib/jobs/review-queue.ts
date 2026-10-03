@@ -29,6 +29,8 @@ export interface ReviewJobData {
   target: ReviewTarget;
   /** Absent on jobs queued before effort levels existed — the worker treats that as `DEFAULT_REVIEW_EFFORT`. */
   effort?: ReviewEffort;
+  /** `"failed"`: re-run only the components (and intent check) whose model call failed last time, keeping every other finding. */
+  only?: "failed";
 }
 
 /**
@@ -200,7 +202,8 @@ export interface EnqueueReviewResult {
 export async function enqueueReview(
   repoId: string,
   target: ReviewTarget,
-  effort?: ReviewEffort
+  effort?: ReviewEffort,
+  options: { only?: "failed" } = {}
 ): Promise<EnqueueReviewResult> {
   const queue = getReviewQueue();
   const targetKey = reviewTargetKey(target);
@@ -214,7 +217,11 @@ export async function enqueueReview(
     await queue.remove(jobId).catch(() => undefined);
   }
 
-  await queue.add(REVIEW_JOB_NAME, { repoId, target, ...(effort ? { effort } : {}) }, { jobId });
+  await queue.add(
+    REVIEW_JOB_NAME,
+    { repoId, target, ...(effort ? { effort } : {}), ...(options.only ? { only: options.only } : {}) },
+    { jobId }
+  );
   return { enqueued: true, jobId, targetKey, previousState };
 }
 

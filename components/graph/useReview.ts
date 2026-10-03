@@ -98,6 +98,8 @@ const IDLE_SNAPSHOT: ReviewSnapshot = {
 export interface UseReviewResult extends ReviewSnapshot {
   /** Deliberate re-run: removes the finished job and enqueues a fresh one. */
   rerun: () => void;
+  /** Re-runs only the parts whose model call failed (provider error, timeout), keeping every other finding. */
+  retryFailed: () => void;
   /** Whether a re-run is even possible right now. */
   canRerun: boolean;
   /** Marks a below-match finding resolved (or reopens it). Optimistic; reverts with a notice if the server refuses. */
@@ -123,6 +125,9 @@ export function useReview(
   // re-run POSTs even when the target is already `completed`. A ref rather
   // than state because reading it must not itself be a render input.
   const forceRunRef = useRef(false);
+  // Set alongside `forceRunRef` by `retryFailed()`: the POST asks for the
+  // failed parts only.
+  const onlyFailedRef = useRef(false);
   // Monotonic: every effect run claims an id, and any async continuation
   // whose id is no longer current silently returns. This is what makes a
   // target switch mid-poll safe without cancelling via AbortController
@@ -152,6 +157,8 @@ export function useReview(
     const runId = ++runIdRef.current;
     const force = forceRunRef.current;
     forceRunRef.current = false;
+    const onlyFailed = onlyFailedRef.current;
+    onlyFailedRef.current = false;
 
     const currentTarget = targetRef.current;
     if (!targetKey || !currentTarget) {
@@ -182,7 +189,11 @@ export function useReview(
         const res = await fetch(enqueueUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...currentTarget, effort: effortRef.current }),
+          body: JSON.stringify({
+            ...currentTarget,
+            effort: effortRef.current,
+            ...(onlyFailed ? { only: "failed" } : {}),
+          }),
         });
         const json = (await res.json().catch(() => null)) as unknown;
         if (!live()) return false;
@@ -363,6 +374,12 @@ export function useReview(
     setRerunNonce((n) => n + 1);
   }, []);
 
+  const retryFailed = useCallback(() => {
+    forceRunRef.current = true;
+    onlyFailedRef.current = true;
+    setRerunNonce((n) => n + 1);
+  }, []);
+
   const setResolved = useCallback(
     (findingId: string, resolved: boolean) => {
       const applyResolved = (resolvedAt: string | undefined) =>
@@ -409,7 +426,7 @@ export function useReview(
     !snapshot.rerunning;
 
   return useMemo(
-    () => ({ ...snapshot, rerun, canRerun, setResolved }),
-    [snapshot, rerun, canRerun, setResolved]
+    () => ({ ...snapshot, rerun, retryFailed, canRerun, setResolved }),
+    [snapshot, rerun, retryFailed, canRerun, setResolved]
   );
 }

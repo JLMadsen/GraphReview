@@ -43,6 +43,9 @@
  *   MOCK_GARBAGE  -> non-JSON prose (exercises the parse-failure path)
  *
  * Env: MOCK_DELAY_MS (default 900) — simulated latency before each answer.
+ *      MOCK_UNAVAILABLE=<n> — the next n chat requests answer 503 "model
+ *      overloaded" (Gemini's wording), then normal service resumes: exercises
+ *      the client's transient retries and the review's "Retry failed".
  * Dependency-free (`node:http`).
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -61,6 +64,9 @@ import { PR_INTENT_TASK_MARKER } from "./pr-intent";
 
 export const DEFAULT_MOCK_PORT = 4010;
 export const DEFAULT_MOCK_DELAY_MS = 900;
+
+/** Requests still to answer with 503 (`MOCK_UNAVAILABLE`). */
+let unavailableLeft = Math.max(0, Number(process.env.MOCK_UNAVAILABLE) || 0);
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
 
 export type MockOutcome = "ok" | "concern" | "defect";
@@ -191,6 +197,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
     const model = isRecord(payload) && typeof payload.model === "string" ? payload.model : "mock-review-1";
 
     if (ctx.delayMs > 0) await sleep(ctx.delayMs);
+
+    if (unavailableLeft > 0) {
+      unavailableLeft--;
+      sendJson(res, 503, {
+        error: {
+          code: 503,
+          message: "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.",
+          status: "UNAVAILABLE",
+        },
+      });
+      return done(503, `MOCK_UNAVAILABLE (${unavailableLeft} left)`);
+    }
 
     const prompt = messages.map((m) => m.content).join("\n");
     if (prompt.includes("MOCK_FAIL")) {

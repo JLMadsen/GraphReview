@@ -63,6 +63,8 @@ export interface FindingDto {
   createdAt: string;
   /** ISO-8601 time a reviewer resolved this finding; absent while open. */
   resolvedAt?: string;
+  /** The model call behind it never completed — a placeholder that "Retry failed" re-runs. */
+  callFailed?: boolean;
 }
 
 /** Lifecycle of a review target, collapsed from the job runner's states. `"none"` means "never reviewed". */
@@ -173,6 +175,12 @@ export async function POST(
   }
   const effort = rawEffort ?? DEFAULT_REVIEW_EFFORT;
 
+  // Optional: `"failed"` re-runs only what failed last time (lib/jobs/review.ts).
+  const rawOnly = (rawBody as { only?: unknown }).only;
+  if (rawOnly !== undefined && rawOnly !== "failed") {
+    return errorResponse('only must be "failed" when given.', 400);
+  }
+
   try {
     const repo = await getRepoById(repoId);
     if (!repo) return errorResponse("Repo not found.", 404);
@@ -198,7 +206,7 @@ export async function POST(
       );
     }
 
-    const result = await enqueueReview(repoId, target, effort);
+    const result = await enqueueReview(repoId, target, effort, rawOnly === "failed" ? { only: "failed" } : {});
     // A new run is about to stamp new shas on the findings; whatever "where
     // does the branch point" answer is cached must not be compared to them.
     invalidateReviewFreshness(repoId, result.targetKey);
@@ -377,6 +385,7 @@ export async function GET(
         model: finding.model,
         createdAt: finding.createdAt,
         ...(finding.resolvedAt ? { resolvedAt: finding.resolvedAt } : {}),
+        ...(finding.callFailed ? { callFailed: true } : {}),
       })),
       aiConfigured,
     };
