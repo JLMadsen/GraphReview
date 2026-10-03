@@ -10,6 +10,20 @@ delete that folder to start from scratch.
 
 Requires Node.js 22.13+ (`node:sqlite`).
 
+## Building while the user's copy runs
+
+The user may be running GraphReview from this checkout (`npx graphreview`
+linked to it, or `npm start`), which serves `.next/`. Never `npm run build`
+into it while that's running — check `~/.graphreview/instance.json` for a live
+pid. To verify a build, use a separate folder:
+
+```bash
+GRAPHREVIEW_DIST_DIR=.next-check npx next build
+```
+
+`npm pack` builds into `.next/` (prepack), so only pack when the user's copy
+isn't running from here, and tell them to restart it afterwards.
+
 ## Packaging
 
 The app ships as an npm package run with `npx graphreview`
