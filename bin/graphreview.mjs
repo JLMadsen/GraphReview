@@ -7,12 +7,13 @@
 // GRAPHREVIEW_HOME to change it). The server listens on 127.0.0.1 only.
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { applyConfigEnv, loadConfigEnv } from "../lib/runtime/config-env.mjs";
 
 const require = createRequire(import.meta.url);
 const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -83,6 +84,23 @@ if (!existsSync(path.join(pkgRoot, ".next", "BUILD_ID"))) {
 
 const dataDir = options.data ?? (process.env.GRAPHREVIEW_HOME ? path.resolve(process.env.GRAPHREVIEW_HOME) : path.join(os.homedir(), ".graphreview"));
 mkdirSync(dataDir, { recursive: true });
+
+// --- settings file -----------------------------------------------------------
+// ~/.graphreview/config.env, created with commented-out examples on first
+// start. Applied to this process's environment (which the app inherits) before
+// anything reads it — NODE_EXTRA_CA_CERTS only works if Node sees it at startup.
+
+const config = loadConfigEnv(dataDir);
+const appliedSettings = applyConfigEnv(process.env, config.values);
+if (config.created) {
+  console.log(`Created ${config.file} — edit it to use a self-hosted GitLab/GitHub, a registry mirror or company certificates.`);
+}
+const caFile = process.env.NODE_EXTRA_CA_CERTS;
+if (caFile && !(existsSync(caFile) && statSync(caFile).isFile())) {
+  console.warn(`graphreview: NODE_EXTRA_CA_CERTS points at ${caFile}, which isn't a file — it is ignored.`);
+  delete process.env.NODE_EXTRA_CA_CERTS;
+  appliedSettings.splice(appliedSettings.indexOf("NODE_EXTRA_CA_CERTS") >>> 0, 1);
+}
 
 // --- one instance per data folder -------------------------------------------
 // Two servers on one database would each run workers and each treat the
@@ -233,7 +251,10 @@ child.stdout.on("data", (chunk) => {
   process.stdout.write(chunk);
   if (!announced && /Ready in|started server/i.test(String(chunk))) {
     announced = true;
-    console.log(`\n  GraphReview is running at ${url}\n  Data: ${dataDir}\n  Press Ctrl+C to stop.\n`);
+    const settings = appliedSettings.length > 0 ? appliedSettings.join(", ") : "none set";
+    console.log(
+      `\n  GraphReview is running at ${url}\n  Data: ${dataDir}\n  Settings: ${config.file} (${settings})\n  Press Ctrl+C to stop.\n`
+    );
     if (options.open) openBrowser(url);
   }
 });

@@ -17,6 +17,7 @@ import path from "node:path";
 import { simpleGit } from "simple-git";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 import type { RepoProvider, RepoRecord } from "@/lib/db";
+import { gitCaBundle } from "@/lib/runtime/ca";
 import { getDataDir } from "@/lib/runtime/paths";
 import { getStoredGitHubToken, gitHubCloneUrl, parseGitHubUrl } from "./github-access";
 import { getStoredGitLabToken, gitLabCloneUrl, parseGitLabUrl } from "./gitlab-access";
@@ -44,6 +45,11 @@ const QUICK_GIT_TIMEOUT_MS = 20_000;
 /** Idle timeout for a clone/fetch, which can legitimately be quiet for a while on a big repo. */
 const SLOW_GIT_TIMEOUT_MS = 10 * 60_000;
 
+function gitCaConfig(): string[] {
+  const bundle = gitCaBundle();
+  return bundle ? [`http.sslCAInfo=${bundle}`, "http.schannelUseSSLCAInfo=true"] : [];
+}
+
 function gitOptions(
   baseDir: string,
   timeoutMs: number,
@@ -56,7 +62,11 @@ function gitOptions(
     timeout: { block: timeoutMs },
     // Empty `credential.helper` clears any configured helper (see the note on
     // GIT_ASKPASS above). simple-git refuses to touch this key unless told to.
-    config: ["credential.helper=", ...config],
+    // A company CA file (NODE_EXTRA_CA_CERTS, e.g. from config.env) is
+    // trusted too — as one bundle with the public roots and the OS store's
+    // extras, since git replaces its own bundle with it (and with
+    // schannelUseSSLCAInfo, Git for Windows' schannel backend uses it as well).
+    config: ["credential.helper=", ...gitCaConfig(), ...config],
     unsafe: { allowUnsafeCredentialHelper: true },
   };
 }

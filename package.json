@@ -18,6 +18,7 @@
     "public/",
     "lib/analysis/languages/**/*.scm",
     "lib/preview/harness/",
+    "lib/runtime/config-env.mjs",
     "next.config.mjs",
     "README.md",
     "LICENSE"

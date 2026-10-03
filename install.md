@@ -77,6 +77,7 @@ Everything is in the data folder (`~/.graphreview` by default):
 | `graphreview.db` (+ `-wal`, `-shm`) | The SQLite database: repos, the component graph, findings, settings, saved AI providers, job queue |
 | `repos/` | Clones of GitHub/GitLab repos (local repos are read in place, never copied) |
 | `secret.key` | Random key that encrypts saved tokens and API keys in the database. Generated on first use. Lose it and saved credentials have to be re-entered — nothing else is affected |
+| `config.env` | Your settings (self-hosted GitLab/GitHub, registry mirror, certificates, …) — see section 7. Created on first start with examples commented out |
 
 Back up or move GraphReview by copying the folder while it's stopped.
 Deleting it resets GraphReview completely.
@@ -159,7 +160,13 @@ diff-impact view — AI review and labeling just show a "not configured" note.
 ## 7. Configuration (env vars)
 
 Nothing is required. Tokens and AI providers are entered in **Settings**,
-not env vars. Set any of these in the environment GraphReview starts in:
+not env vars. The settings below go in **`~/.graphreview/config.env`** — one
+`NAME=value` per line, created on first start with the common ones listed and
+commented out (`.data/config.env` under `npm run dev`). Restart GraphReview
+after editing it; each start prints which settings it used. A variable that
+is also set in the environment you start GraphReview from wins over the file.
+(`GRAPHREVIEW_HOME` itself has to be an environment variable or `--data`,
+since it decides where the file is.)
 
 ### General
 
@@ -202,7 +209,7 @@ These variables cover the rest; all are optional:
 | `GITHUB_API_URL` / `GITHUB_WEB_URL` | GitHub Enterprise Server or an internal proxy (defaults `https://api.github.com` / `https://github.com`) |
 | `GITLAB_API_URL` / `GITLAB_WEB_URL` | Self-hosted GitLab (defaults to gitlab.com) |
 | `PREVIEW_IMAGE_REGISTRY` | Registry/namespace prefix for the preview images, e.g. `mirror.corp/library` (not needed with a Docker `registry-mirrors` setting) |
-| `NODE_EXTRA_CA_CERTS` | Extra CA file, for CAs not in the OS store or your npm/pip config |
+| `NODE_EXTRA_CA_CERTS` | Extra CA file (`.pem`/`.crt`), for CAs not in the OS store or your npm/pip config. Trusted by GraphReview, its git clones and preview installs |
 | `NPM_CONFIG_*`, `PIP_*`, `YARN_NPM_*`, `HTTPS_PROXY` / `NO_PROXY` | Passed on to preview installs, for registries configured through the environment instead of config files |
 
 git clones use git's own configuration (`git config http.sslCAInfo …`,

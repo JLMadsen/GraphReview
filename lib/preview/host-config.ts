@@ -29,6 +29,7 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import tls from "node:tls";
+import { systemOnlyCertificates } from "@/lib/runtime/ca";
 import { getDataDir } from "@/lib/runtime/paths";
 
 /** Where the CA bundle lands inside an install container. */
@@ -124,20 +125,6 @@ function rewriteConfig(text: string, separator: "=" | ":"): Rewritten {
 // ---------------------------------------------------------------------------
 // Certificates
 // ---------------------------------------------------------------------------
-
-const normalize = (pem: string) => pem.replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
-
-/** OS-trusted certificates that Node's built-in (Mozilla) list doesn't have — where corporate CAs live. */
-function systemOnlyCertificates(): string[] {
-  const getCA = (tls as unknown as { getCACertificates?: (type: string) => string[] }).getCACertificates;
-  if (typeof getCA !== "function") return [];
-  try {
-    const bundled = new Set(tls.rootCertificates.map(normalize));
-    return getCA("system").filter((pem) => !bundled.has(normalize(pem)));
-  } catch {
-    return [];
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Staging
