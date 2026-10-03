@@ -16,6 +16,14 @@ export function readKv<T>(key: string): T | undefined {
   }
 }
 
+/** Deletes expired entries. Called once at startup. */
+export function purgeExpiredKv(): number {
+  return run(
+    `DELETE FROM kv WHERE key LIKE 'kv:%' AND json_extract(value, '$.expiresAt') <= ?`,
+    Date.now()
+  );
+}
+
 /** Stores `value` under `key`, optionally expiring `ttlSeconds` from now. */
 export function writeKv(key: string, value: unknown, ttlSeconds?: number): void {
   run(

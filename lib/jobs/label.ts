@@ -29,7 +29,6 @@ import {
   getActiveAiProvider,
   getRepoById,
   linkComponentChildOf,
-  linkComponentToRepo,
   listModuleLabelInputs,
   setComponentDescription,
   setRepoDomainsStale,
@@ -319,7 +318,6 @@ export async function runLabelJob(
       pathPatterns: [],
       tier: "domain",
     });
-    await linkComponentToRepo(domainId, repoId);
     for (const moduleId of domain.moduleIds) {
       await linkComponentChildOf(moduleId, domainId);
     }

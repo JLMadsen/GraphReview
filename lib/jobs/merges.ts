@@ -15,7 +15,6 @@ import {
   getComponentById,
   getFileOwnerMap,
   getMergeSuggestion,
-  linkComponentToRepo,
   listMergeSuggestions,
   reassignFindingsWithoutFile,
   setComponentDescription,
@@ -104,7 +103,6 @@ async function applySuggestion(
       absorbedModuleIds: absorbed,
       absorbedDescriptions: await withAbsorbedDescriptions(undefined, absorbed),
     });
-    await linkComponentToRepo(componentId, repoId);
     await deleteMergeSuggestion(suggestion.id);
     log(`created merged module "${suggestion.name}" from ${suggestion.members.join(", ")}`);
     return { componentId, created: true };

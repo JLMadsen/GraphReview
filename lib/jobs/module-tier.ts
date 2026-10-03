@@ -29,7 +29,6 @@ import {
   getFileOwnerMap,
   getStoredImportGraph,
   linkComponentChildOf,
-  linkComponentToRepo,
   listComponentsByRepoId,
   listMergedModules,
   relinkFindings,
@@ -113,7 +112,6 @@ export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTie
       tier: "module",
       origin: "folder",
     });
-    await linkComponentToRepo(id, repoId);
   }
 
   // --- merged modules --------------------------------------------------

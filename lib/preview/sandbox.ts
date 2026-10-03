@@ -118,7 +118,9 @@ let dockerStatusCache: { at: number; status: Promise<DockerStatus> } | undefined
 
 async function probeDocker(): Promise<DockerStatus> {
   try {
-    const result = await docker(["version", "--format", "{{.Server.Version}}"], 15_000);
+    // Short: this runs inside the preview endpoints' request handlers, and a
+    // daemon that is still starting can hang `docker version` for a long time.
+    const result = await docker(["version", "--format", "{{.Server.Version}}"], 4_000);
     return result.code === 0 ? { available: true } : { available: false, reason: DOCKER_STOPPED };
   } catch (error) {
     if (error instanceof SandboxUnavailableError) return { available: false, reason: error.message };

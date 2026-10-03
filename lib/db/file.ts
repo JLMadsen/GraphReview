@@ -1,7 +1,7 @@
 // Typed repository functions for files, plus the relationships they own:
 // BELONGS_TO (-> Component) and IMPORTS (-> File).
 
-import { all, chunked, get, pack, placeholders, run, transaction, unpack } from "./client";
+import { all, chunked, compareText, get, pack, placeholders, run, transaction, unpack } from "./client";
 import type { FileRecord, ImportsProps } from "./types";
 
 function toFileRecord(props: Record<string, unknown>): FileRecord {
@@ -227,7 +227,6 @@ export async function listRelatedFiles(
       rows.push({ path: row.path, componentName: row.componentName, relation: row.relation, same: row.componentId === componentId ? 1 : 0 });
     }
   }
-  const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-  rows.sort((a, b) => cmp(a.relation, b.relation) || a.same - b.same || cmp(a.path, b.path));
+  rows.sort((a, b) => compareText(a.relation, b.relation) || a.same - b.same || compareText(a.path, b.path));
   return rows.map(({ path, componentName, relation }) => ({ path, componentName, relation }));
 }

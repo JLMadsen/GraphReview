@@ -13,7 +13,7 @@
 // answered for — a push makes them stale rather than wrong.
 
 import { randomUUID } from "node:crypto";
-import { all, get, pack, run, transaction, unpack } from "./client";
+import { all, compareText, get, pack, run, transaction, unpack } from "./client";
 import { readRepoDocument, writeRepoDocument } from "./repo";
 
 export type ChecklistItemKind =
@@ -158,7 +158,7 @@ export async function listChecklistItems(repoId?: string): Promise<ChecklistItem
       (a, b) =>
         (a.scope === "global" ? 0 : 1) - (b.scope === "global" ? 0 : 1) ||
         a.order - b.order ||
-        (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0)
+        compareText(a.createdAt, b.createdAt)
     );
 }
 

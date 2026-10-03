@@ -430,6 +430,11 @@ export async function hasFlag(key: string): Promise<boolean> {
   return row !== undefined && Number(row.value) > Date.now();
 }
 
+/** Deletes expired flags. Called once at startup. */
+export function purgeExpiredFlags(): number {
+  return run(`DELETE FROM kv WHERE key LIKE 'flag:%' AND CAST(value AS INTEGER) <= ?`, Date.now());
+}
+
 export async function clearFlag(key: string): Promise<void> {
   run(`DELETE FROM kv WHERE key = ?`, `flag:${key}`);
 }

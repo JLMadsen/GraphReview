@@ -160,3 +160,13 @@ export function applyPatch<T extends object>(existing: T | undefined, patch: obj
   }
   return out as T;
 }
+
+/**
+ * Orders strings by code unit, as SQL and Cypher `ORDER BY` do (unlike
+ * `localeCompare`). `null`/`undefined` sort last.
+ */
+export function compareText(a: string | null | undefined, b: string | null | undefined): number {
+  if (a == null) return b == null ? 0 : 1;
+  if (b == null) return -1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}

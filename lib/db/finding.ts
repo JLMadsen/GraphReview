@@ -10,7 +10,7 @@
 // edges): deleting a component never deletes its findings, and
 // `relinkFindings` (merge.ts) moves them when modules change.
 
-import { all, get, pack, placeholders, run, transaction, unpack } from "./client";
+import { all, compareText, get, pack, placeholders, run, transaction, unpack } from "./client";
 import type { FindingCategory, FindingRecord } from "./types";
 
 function toFindingRecord(props: Record<string, unknown>): FindingRecord {
@@ -163,15 +163,13 @@ export async function listFindingsByTargetKey(repoId: string, targetKey: string)
     repoId,
     targetKey
   );
-  const nullsLast = (a: string | null | undefined, b: string | null | undefined) =>
-    a == null ? (b == null ? 0 : 1) : b == null ? -1 : a < b ? -1 : a > b ? 1 : 0;
   return rows
     .map((row) => ({ record: toFindingRecord(unpack(row.data)), componentName: row.componentName }))
     .sort(
       (a, b) =>
-        nullsLast(a.componentName, b.componentName) ||
-        nullsLast(a.record.filePath, b.record.filePath) ||
-        nullsLast(a.record.createdAt, b.record.createdAt)
+        compareText(a.componentName, b.componentName) ||
+        compareText(a.record.filePath, b.record.filePath) ||
+        compareText(a.record.createdAt, b.record.createdAt)
     )
     .map(({ record, componentName }) => ({ ...record, componentName: componentName ?? "" }));
 }

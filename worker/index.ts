@@ -10,7 +10,7 @@
 // Errors are never swallowed — a throwing job is handed back to the runner,
 // which applies the retry/backoff policy from lib/jobs/queue.ts.
 
-import { Worker, recoverInterruptedJobs, type Job } from "@/lib/jobs/runner";
+import { Worker, purgeExpiredFlags, recoverInterruptedJobs, type Job } from "@/lib/jobs/runner";
 import {
   ANALYSIS_QUEUE_NAME,
   APP_MAP_QUEUE_NAME,
@@ -47,7 +47,7 @@ import { runAppMapJob } from "@/lib/jobs/app-map-job";
 import { runPreviewJob } from "@/lib/jobs/preview";
 import { runPreviewScanJob } from "@/lib/jobs/preview-scan";
 import type { PreviewScanResult } from "@/lib/preview/types";
-import { getDb } from "@/lib/db";
+import { getDb, purgeExpiredKv } from "@/lib/db";
 
 /** One job at a time: static analysis is CPU-bound (tree-sitter parsing) and a second concurrent run would just contend for the same core. */
 const CONCURRENCY = Number(process.env.ANALYSIS_CONCURRENCY ?? 1);
@@ -124,6 +124,9 @@ export async function startWorker(): Promise<void> {
 
   // Opening the database applies any pending schema migrations.
   getDb();
+  // Expired cancel flags and caches are only ignored on read; drop them here.
+  purgeExpiredFlags();
+  purgeExpiredKv();
 
   // Jobs left running by a previous run of the app (stopped or crashed
   // mid-job): analysis is retried, AI jobs are marked interrupted.

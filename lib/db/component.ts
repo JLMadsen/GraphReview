@@ -1,7 +1,7 @@
 // Typed repository functions for components, plus the relationships they
-// own: DEPENDS_ON and CHILD_OF. (PART_OF is implied by `repoId`.)
+// own: DEPENDS_ON and CHILD_OF. (A component's repo is its `repoId`.)
 
-import { all, get, pack, run, unpack } from "./client";
+import { all, compareText, get, pack, run, unpack } from "./client";
 import type { ComponentRecord, DependsOnProps } from "./types";
 
 export function toComponentRecord(props: Record<string, unknown>): ComponentRecord {
@@ -120,15 +120,6 @@ export async function unlinkComponentChildOf(childComponentId: string, parentCom
   run(`DELETE FROM component_parents WHERE child_id = ? AND parent_id = ?`, childComponentId, parentComponentId);
 }
 
-/**
- * `(Component)-[:PART_OF]->(Repo)`. Membership is the component's `repoId`
- * column, so there is nothing to write; kept so callers didn't change.
- */
-export async function linkComponentToRepo(componentId: string, repoId: string): Promise<void> {
-  void componentId;
-  void repoId;
-}
-
 // ---------------------------------------------------------------------------
 // Repo-wide reads for the graph view and the review/chat context.
 // ---------------------------------------------------------------------------
@@ -241,6 +232,6 @@ export async function listComponentNeighbours(
       return { name: c.name, description: c.description, direction: row.direction };
     })
     .sort((a, b) =>
-      a.direction === b.direction ? (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) : a.direction < b.direction ? -1 : 1
+      compareText(a.direction, b.direction) || compareText(a.name, b.name)
     );
 }

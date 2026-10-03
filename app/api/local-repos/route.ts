@@ -82,7 +82,9 @@ export async function GET(): Promise<NextResponse> {
   const candidates: LocalRepoCandidate[] = [];
   for (const found of await Promise.all(folders.map(reposIn))) {
     for (const candidate of found) {
-      const key = process.platform === "win32" ? candidate.path.toLowerCase() : candidate.path;
+      // Windows and macOS file systems are case-insensitive by default, so
+      // `~/code` and `~/Code` list the same repos.
+      const key = process.platform === "linux" ? candidate.path : candidate.path.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
       candidates.push(candidate);

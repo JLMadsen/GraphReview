@@ -3,7 +3,7 @@
 // following their files) and the merge-suggestion repository.
 
 import { createHash } from "node:crypto";
-import { all, get, pack, placeholders, run, transaction, unpack, chunked } from "./client";
+import { all, chunked, compareText, get, pack, placeholders, run, transaction, unpack } from "./client";
 import { componentRows } from "./component";
 import { readRepoFindings, writeFinding } from "./finding";
 import type {
@@ -116,8 +116,8 @@ export async function getDomainByModule(repoId: string): Promise<Map<string, str
  * Makes findings follow their files (DESIGN.md §6.3):
  *
  *   1. a finding with a `filePath` moves to whichever component owns that file now;
- *   2. a finding without one, whose component is gone, moves to the merged
- *      module that absorbed that component.
+ *   2. any other finding whose component is gone (no file path, or its file
+ *      is gone too) moves to the merged module that absorbed that component.
  *
  * Returns how many findings changed component.
  */
@@ -143,10 +143,12 @@ export async function relinkFindings(repoId: string): Promise<number> {
     let moved = 0;
     for (const finding of readRepoFindings(repoId)) {
       let target: string | undefined;
-      if (finding.filePath) {
-        const owner = owners.get(finding.filePath);
-        if (owner && owner !== finding.componentId) target = owner;
+      const owner = finding.filePath ? owners.get(finding.filePath) : undefined;
+      if (owner) {
+        if (owner !== finding.componentId) target = owner;
       } else if (!existing.has(finding.componentId)) {
+        // No file to follow (none recorded, or it's gone): fall back to the
+        // merged module that absorbed the finding's vanished component.
         target = merged.find((m) => (m.absorbedModuleIds ?? []).includes(finding.componentId))?.id;
       }
       if (target) {
@@ -214,7 +216,7 @@ function writeSuggestion(record: MergeSuggestionRecord): void {
 export async function listMergeSuggestions(repoId: string): Promise<MergeSuggestionRecord[]> {
   return all<{ data: string }>(`SELECT data FROM merge_suggestions WHERE repo_id = ?`, repoId)
     .map((row) => toSuggestion(unpack(row.data)))
-    .sort((a, b) => b.score - a.score || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    .sort((a, b) => b.score - a.score || compareText(a.key, b.key));
 }
 
 export async function getMergeSuggestion(repoId: string, id: string): Promise<MergeSuggestionRecord | null> {

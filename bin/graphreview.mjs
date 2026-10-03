@@ -113,28 +113,64 @@ function openBrowser(url) {
   }
 }
 
-if (existsSync(lockFile)) {
+/** Whether a GraphReview server answers at `url` (the pid alone can belong to an unrelated process by now). */
+async function answers(url) {
   try {
-    const running = JSON.parse(readFileSync(lockFile, "utf8"));
-    if (running.pid && isAlive(running.pid)) {
-      console.log(`GraphReview is already running at ${running.url} (pid ${running.pid}).`);
-      if (options.open) openBrowser(running.url);
-      process.exit(0);
-    }
+    const res = await fetch(url, { signal: AbortSignal.timeout(3000), redirect: "manual" });
+    return res.status < 500;
+  } catch {
+    return false;
+  }
+}
+
+if (existsSync(lockFile)) {
+  let running;
+  try {
+    running = JSON.parse(readFileSync(lockFile, "utf8"));
   } catch {
     /* unreadable lock — treat as stale */
+  }
+  if (running?.pid && running.url && isAlive(running.pid) && (await answers(running.url))) {
+    console.log(`GraphReview is already running at ${running.url} (pid ${running.pid}).`);
+    if (options.open) openBrowser(running.url);
+    process.exit(0);
   }
 }
 
 // --- port ------------------------------------------------------------------
 
-function isFree(port) {
+function canBind(port, host) {
   return new Promise((resolve) => {
     const server = net.createServer();
     server.once("error", () => resolve(false));
     server.once("listening", () => server.close(() => resolve(true)));
-    server.listen(port, "127.0.0.1");
+    server.listen(port, host);
   });
+}
+
+function somethingListens(port) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ port, host: "127.0.0.1" });
+    socket.setTimeout(1000);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("timeout", () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once("error", () => resolve(false));
+  });
+}
+
+/**
+ * Free for us: bindable on 127.0.0.1 *and* nobody answering there. Windows and
+ * macOS let us bind 127.0.0.1 while another process listens on 0.0.0.0 (e.g. a
+ * Docker-published port), and then either server may get the browser's requests.
+ */
+async function isFree(port) {
+  return (await canBind(port, "127.0.0.1")) && !(await somethingListens(port));
 }
 
 async function pickPort() {

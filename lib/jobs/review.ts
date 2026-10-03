@@ -40,7 +40,6 @@ import {
   deleteFindingsForTargetExceptComponents,
   getActiveAiProvider,
   getRepoById,
-  linkPullRequestToRepo,
   prMapFilesKey,
   replaceFindingsForTargetCategory,
   replaceFindingsForTargetComponent,
@@ -206,7 +205,6 @@ async function persistPullRequestNode(
       createdAt: pr.createdAt,
       updatedAt: pr.updatedAt,
     });
-    await linkPullRequestToRepo(id, repo.id);
     return id;
   } catch (error) {
     log(`could not persist PullRequest node ${id}: ${(error as Error).message}`);

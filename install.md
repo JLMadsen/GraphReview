@@ -40,7 +40,9 @@ graphreview
 
 - **The server listens on 127.0.0.1 only.** GraphReview has no login — it
   is a single-user tool for your own machine, so it isn't reachable from
-  other machines.
+  other machines. It also refuses requests addressed to any other host name
+  and state-changing requests from other websites (`middleware.ts`), so a
+  page you visit can't drive it through your browser.
 - **One instance per data folder.** Starting it again while it's running just
   points you at the running one (two servers on one database would each run
   workers and trip over each other's jobs).
@@ -162,6 +164,7 @@ not env vars. Set any of these in the environment GraphReview starts in:
 | `REVIEW_CONCURRENCY` / `LABEL_CONCURRENCY` / `APP_MAP_CONCURRENCY` | `1` | Parallel AI jobs of each kind |
 | `STALENESS_SWEEP_INTERVAL_MS` | `0` (off) | Periodic background staleness re-check; the normal trigger is "on view" |
 | `GRAPHREVIEW_NO_WORKER` | unset | `1` serves the UI without processing jobs |
+| `GRAPHREVIEW_ALLOWED_HOSTS` | unset | Comma-separated extra host names to answer to besides localhost/127.0.0.1 (e.g. when reaching `npm run dev` by a LAN name) |
 
 ### Before/after preview sandbox
 

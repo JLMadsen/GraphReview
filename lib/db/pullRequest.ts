@@ -1,5 +1,5 @@
-// Typed repository functions for pull requests, plus the relationships they
-// own: BELONGS_TO (-> Repo, implied by `repoId`) and CHANGES (-> File).
+// Typed repository functions for pull requests, plus the relationship they
+// own: CHANGES (-> File). A PR's repo is its `repoId`.
 
 import { all, get, pack, run, unpack } from "./client";
 import type { ChangesProps, PullRequestRecord } from "./types";
@@ -70,12 +70,6 @@ export async function listPullRequestsByRepoId(
 
 export async function deletePullRequest(id: string): Promise<void> {
   run(`DELETE FROM pull_requests WHERE id = ?`, id);
-}
-
-/** `(PullRequest)-[:BELONGS_TO]->(Repo)`. Implied by `repoId`; kept so callers didn't change. */
-export async function linkPullRequestToRepo(pullRequestId: string, repoId: string): Promise<void> {
-  void pullRequestId;
-  void repoId;
 }
 
 /** `(PullRequest)-[:CHANGES {additions, deletions}]->(File)` — one edge per file touched by the PR. */
