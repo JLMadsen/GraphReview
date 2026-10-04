@@ -270,6 +270,38 @@ git clones use git's own configuration (`git config http.sslCAInfo …`,
 Fonts are bundled, so neither GraphReview nor the browser needs to reach
 Google Fonts.
 
+### Air-gapped machines: the offline bundle
+
+For a machine with no internet and no npm registry, every
+[GitHub release](https://github.com/JLMadsen/GraphReview/releases) carries:
+
+| Asset | What |
+|---|---|
+| `graphreview-<version>-linux-x64.tar.gz` | GraphReview with all its dependencies and Node.js. Needs only `git` and glibc 2.28+ (Debian 10, Ubuntu 20.04, RHEL 8 or newer) |
+| `graphreview-preview-image-node22.tar.gz` | The Docker image previews run in, for `docker load` (only for previews) |
+| `SHA256SUMS` | Checksums, to verify the copies after moving them |
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing
+tar -xzf graphreview-<version>-linux-x64.tar.gz
+./graphreview-<version>-linux-x64/graphreview
+```
+
+To have it on `PATH`: `ln -s "$PWD/graphreview-<version>-linux-x64/graphreview" ~/.local/bin/`.
+Data stays in `~/.graphreview`, so upgrading is unpacking the new version
+and pointing the link at it.
+
+Repos: add local checkouts (no token needed), or point `GITLAB_*` /
+`GITHUB_*` at the git host on your network (above).
+
+Previews need Docker plus `docker load -i graphreview-preview-image-node22.tar.gz`
+once. The preview harness is included in the bundle, so it needs no registry. A repo that asks for
+another Node version runs on the closest image that's loaded, and the preview
+says so. **Installing the previewed repo's own dependencies still needs an
+npm registry mirror** (`NPM_CONFIG_REGISTRY` or your `~/.npmrc`). Without one,
+previews of repos with dependencies fail at the install step. Python previews
+also need the `python:3.12-slim` image and a PyPI mirror.
+
 ## 8. Other known caveats worth knowing before you rely on this
 
 - **Private GitHub/GitLab repos need a PAT in Settings.** GraphReview never

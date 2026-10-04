@@ -1,0 +1,86 @@
+# Release: push a tag that matches package.json's version (`npm version
+# minor && git push --follow-tags`) and this
+#   1. builds the offline bundle for Linux x64 and starts it with no network,
+#   2. creates the GitHub Release with the bundle, the preview image and
+#      checksums attached,
+#   3. publishes the package to npm (needs the NPM_TOKEN repository secret).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  offline-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Check the tag matches package.json
+        run: |
+          version="v$(node -p "require('./package.json').version")"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match package.json ($version)"
+            exit 1
+          fi
+      - run: npm ci
+      - name: Build the offline bundle
+        run: .github/scripts/offline-bundle.sh dist
+      - name: Start it with no network
+        run: .github/scripts/offline-smoke-test.sh dist/graphreview-*-linux-x64.tar.gz
+      - name: Save the preview image
+        run: |
+          major=$(sed -n 's/^export const DEFAULT_NODE_MAJOR = \([0-9]*\);/\1/p' lib/preview/node-version.ts)
+          docker pull "node:${major}-bookworm-slim"
+          docker save "node:${major}-bookworm-slim" | gzip > "dist/graphreview-preview-image-node${major}.tar.gz"
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dist/
+          if-no-files-found: error
+
+  github-release:
+    needs: offline-bundle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "GraphReview ${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            --notes "**Online:** \`npx graphreview\`
+
+          **Offline (Linux x64):** download \`graphreview-${GITHUB_REF_NAME#v}-linux-x64.tar.gz\`, copy it over, \`tar -xzf\` it and run \`./graphreview\`. Node.js is included; git is needed. For before/after previews also \`docker load -i\` the preview image. See README.txt in the bundle."
+
+  npm:
+    needs: offline-bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      # prepack runs the production build.
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

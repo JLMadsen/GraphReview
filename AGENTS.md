@@ -34,3 +34,11 @@ an empty folder and running `npx graphreview --no-open --data <tmp dir>`.
 Never `npm publish` without the user asking. `npm pack` packs the working
 copy, not the commit: `bin/graphreview.mjs` must have LF line endings (a CRLF
 shebang breaks it on macOS/Linux) — `git checkout -- bin` restores them.
+
+Releases are cut by pushing a `v<version>` tag matching package.json
+(.github/workflows/release.yml): it builds the Linux x64 offline bundle
+(.github/scripts/offline-bundle.sh), starts it with no network
+(offline-smoke-test.sh), creates the GitHub Release and publishes to npm
+(NPM_TOKEN secret). Never push a release tag without the user asking. To try
+the bundle locally, run both scripts inside a `node:22-bookworm` container
+on a copy of the working tree, without node_modules or `.next*`.

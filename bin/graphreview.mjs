@@ -215,6 +215,11 @@ const grammarDir = path.join(path.dirname(require.resolve("@vscode/tree-sitter-w
 // without NODE_EXTRA_CA_CERTS. Node 22.15+ / 23.8+.
 const supportsSystemCa = major > 23 || (major === 23 && minor >= 8) || (major === 22 && minor >= 15);
 
+// The offline bundle ships the preview harness's packages pre-installed
+// (.github/scripts/offline-bundle.sh); the npm package doesn't.
+const harnessDir = path.join(pkgRoot, "preview-harness");
+const bundledHarness = existsSync(path.join(harnessDir, "node_modules")) ? { GRAPHREVIEW_PREVIEW_HARNESS_DIR: harnessDir } : {};
+
 const child = spawn(
   process.execPath,
   [
@@ -232,6 +237,7 @@ const child = spawn(
     cwd: pkgRoot,
     stdio: ["ignore", "pipe", "inherit"],
     env: {
+      ...bundledHarness,
       ...process.env,
       NODE_ENV: "production",
       NEXT_TELEMETRY_DISABLED: "1",

@@ -49,3 +49,6 @@ next-env.d.ts
 # `npm pack` output
 /graphreview-*.tgz
 /.claude/worktrees
+
+# offline release bundles (.github/scripts/offline-bundle.sh)
+/dist/

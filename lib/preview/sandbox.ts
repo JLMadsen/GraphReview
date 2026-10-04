@@ -26,14 +26,23 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { CONTAINER_CA_FILE, CONTAINER_HOME, hostPackageConfig } from "./host-config";
+import harnessPackages from "./harness/packages.json";
 import { DEFAULT_NODE_MAJOR } from "./node-version";
 import type { PreviewHarnessResult, PreviewRuntime } from "./types";
 
 export const RESULT_MARKER = "@@GRAPHREVIEW_PREVIEW_RESULT@@";
 
-/** Bump when the harness's own package set changes, to force a fresh harness volume. */
-const HARNESS_VERSION = "2";
-const HARNESS_PACKAGES = ["esbuild@0.25", "react@19", "react-dom@19", "postcss@8", "happy-dom@15", "@happy-dom/global-registrator@15"];
+// The harness's own packages. Also read by the offline release bundle
+// (.github/scripts/offline-bundle.sh), which installs them ahead of time.
+// Bump `version` when the package set changes, to force a fresh harness volume.
+const HARNESS_VERSION = harnessPackages.version;
+const HARNESS_PACKAGES = harnessPackages.packages;
+/**
+ * `GRAPHREVIEW_PREVIEW_HARNESS_DIR` — a folder with those packages already
+ * installed (`<dir>/node_modules`). The offline bundle's launcher sets it, so
+ * the harness volume is filled from it instead of from a registry.
+ */
+const HARNESS_SEED_DIR = process.env.GRAPHREVIEW_PREVIEW_HARNESS_DIR?.trim() || undefined;
 
 /**
  * `PREVIEW_IMAGE_REGISTRY` — a registry/namespace prefix such as
@@ -370,20 +379,31 @@ let harnessReady = false;
 async function ensureHarnessVolume(image: string, log: Logger): Promise<void> {
   if (harnessReady) return;
   await ensureImage(image, log);
+  // Seeded: the packages were copied in (docker cp, before start) from the
+  // offline bundle, so there is nothing to download.
+  const seed = HARNESS_SEED_DIR && existsSync(path.join(HARNESS_SEED_DIR, "node_modules")) ? HARNESS_SEED_DIR : undefined;
+  const install = seed
+    ? "test -d /harness/node_modules"
+    : `npm install --no-audit --no-fund --loglevel=error ${HARNESS_PACKAGES.join(" ")}`;
   const script = [
     "set -e",
     "if [ -f /harness/.ready ]; then exit 0; fi",
     "cd /harness",
     "echo '{\"name\":\"graphreview-preview-harness\",\"private\":true}' > package.json",
-    `npm install --no-audit --no-fund --loglevel=error ${HARNESS_PACKAGES.join(" ")}`,
+    install,
     "touch /harness/.ready",
   ].join("\n");
-  if (!(await volumeExists(HARNESS_VOLUME))) log("installing the preview harness (first run only)");
+  if (!(await volumeExists(HARNESS_VOLUME))) {
+    log(seed ? "setting up the bundled preview harness (first run only)" : "installing the preview harness (first run only)");
+  }
   const result = await runOnline({
     image,
     mounts: [`${HARNESS_VOLUME}:/harness`],
     script,
     timeoutMs: INSTALL_TIMEOUT_MS,
+    // Copied on every first use per run, not only into a new volume, so a
+    // volume left half-made by an interrupted setup is completed too.
+    before: seed ? (id) => copyIn(id, seed, "/harness") : undefined,
   });
   if (result.code !== 0) {
     throw new Error(`Installing the preview harness failed: ${result.stderr.trim().slice(-600)}`);
