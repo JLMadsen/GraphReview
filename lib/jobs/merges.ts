@@ -15,14 +15,13 @@ import {
   getComponentById,
   getFileOwnerMap,
   getMergeSuggestion,
-  linkComponentToRepo,
   listMergeSuggestions,
   reassignFindingsWithoutFile,
   setComponentDescription,
   setMergeSuggestionStatus,
   upsertComponent,
-} from "@/lib/neo4j";
-import type { ComponentRecord, MergeSuggestionRecord } from "@/lib/neo4j";
+} from "@/lib/db";
+import type { ComponentRecord, MergeSuggestionRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import { regroupRepo, type ModuleTierCounts } from "./module-tier";
 import { folderOfPattern, isUnderFolder } from "./ownership";
@@ -104,7 +103,6 @@ async function applySuggestion(
       absorbedModuleIds: absorbed,
       absorbedDescriptions: await withAbsorbedDescriptions(undefined, absorbed),
     });
-    await linkComponentToRepo(componentId, repoId);
     await deleteMergeSuggestion(suggestion.id);
     log(`created merged module "${suggestion.name}" from ${suggestion.members.join(", ")}`);
     return { componentId, created: true };

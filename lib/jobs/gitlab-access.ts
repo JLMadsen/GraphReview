@@ -1,4 +1,4 @@
-// Bridge between a stored `(:Repo)` record and lib/gitlab — the GitLab
+// Bridge between a stored repo record and lib/gitlab — the GitLab
 // counterpart to github-access.ts (see that module's header comment for the
 // general shape this mirrors: lib/gitlab is credential-free, this module
 // joins it to the decrypted PAT and the repo's stored URL).
@@ -9,8 +9,8 @@
 
 import { decrypt } from "@/lib/crypto";
 import { GitLabApiError } from "@/lib/gitlab";
-import { getSettings } from "@/lib/neo4j";
-import type { RepoRecord } from "@/lib/neo4j";
+import { getSettings } from "@/lib/db";
+import type { RepoRecord } from "@/lib/db";
 
 export interface GitLabProjectRef {
   /**
@@ -82,7 +82,7 @@ export function gitLabCloneUrl(ref: GitLabProjectRef): string {
   return `${GITLAB_WEB_URL}/${ref.path}.git`;
 }
 
-/** Canonical `<GITLAB_WEB_URL>/<path>` page URL — what gets stored on `(:Repo).url` and shown in the UI. */
+/** Canonical `<GITLAB_WEB_URL>/<path>` page URL — what gets stored on `Repo.url` and shown in the UI. */
 export function gitLabRepoWebUrl(ref: GitLabProjectRef): string {
   return `${GITLAB_WEB_URL}/${ref.path}`;
 }
@@ -100,7 +100,7 @@ export async function getStoredGitLabToken(): Promise<string | null> {
     return decrypt(encrypted);
   } catch {
     console.warn(
-      "[gitlab-access] stored GitLab PAT could not be decrypted — has SESSION_SECRET changed? Re-enter it in Settings."
+      "[gitlab-access] stored GitLab PAT could not be decrypted — has the secret key (SESSION_SECRET or secret.key in the data folder) changed? Re-enter it in Settings."
     );
     return null;
   }

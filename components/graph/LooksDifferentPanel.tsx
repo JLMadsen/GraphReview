@@ -56,6 +56,7 @@ export function LooksDifferentPanel({
     .filter((r) => r.pending || (r.looks !== "same" && r.looks !== undefined))
     .concat(showAllUnrun ? notRun : notRun.slice(0, UNRUN_SHOWN));
   const hiddenUnrun = showAllUnrun ? 0 : Math.max(0, notRun.length - UNRUN_SHOWN);
+  const sandboxDown = scan.sandbox?.available === false;
 
   return (
     <section className="mt-3 border-t border-border pt-2.5 text-[11px]">
@@ -79,8 +80,12 @@ export function LooksDifferentPanel({
         <button
           type="button"
           onClick={() => void previewAll()}
-          disabled={pending || starting}
-          title="Render every changed component before and after, in the Docker sandbox"
+          disabled={pending || starting || sandboxDown}
+          title={
+            sandboxDown
+              ? scan.sandbox?.reason
+              : "Render every changed component before and after, in the Docker sandbox"
+          }
           className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
         >
           {pending || starting ? <LoaderCircle className="size-3 animate-spin" aria-hidden /> : <Play className="size-3" aria-hidden />}
@@ -90,6 +95,7 @@ export function LooksDifferentPanel({
       </div>
 
       {error && <p className="mt-1 text-destructive">{error}</p>}
+      {sandboxDown && !anyRun && <p className="mt-1 leading-snug text-muted-foreground">{scan.sandbox?.reason}</p>}
 
       <ul className="mt-1.5 space-y-0.5">
         {listed.map((row) => (

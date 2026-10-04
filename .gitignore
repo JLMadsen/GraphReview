@@ -15,6 +15,7 @@
 
 # next.js
 /.next/
+/.next-*/
 /out/
 
 # production
@@ -24,8 +25,7 @@
 .DS_Store
 *.pem
 
-# app-managed repo clones when running outside Docker (REPO_CACHE_DIR
-# fallback — inside Compose these live in the `repo_cache` volume)
+# `npm run dev` data folder: SQLite database, clone cache, credential key
 /.data/
 
 # debug
@@ -46,7 +46,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# internal CA certificates for the Docker build (see docker/certs/README.md)
-/docker/certs/*
-!/docker/certs/README.md
+# `npm pack` output
+/graphreview-*.tgz
 /.claude/worktrees

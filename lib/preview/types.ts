@@ -145,6 +145,8 @@ export interface PreviewResult {
   inputs: PreviewInputs;
   /** Set when AI input generation failed and defaults were used instead. */
   inputsNote?: string;
+  /** Set when the wanted sandbox image couldn't be pulled and a local one stood in. */
+  runtimeNote?: string;
   /** Server responses the renders were given (record → mock → replay). */
   mocks: PreviewMocks;
   mocksSource: "ai" | "user" | "none";
@@ -165,12 +167,19 @@ export interface PreviewProgress {
 export type PreviewJobState = "none" | "queued" | "running" | "completed" | "failed";
 
 /** `GET /api/repos/[repoId]/preview` */
+/** Whether previews can run on this machine (they need Docker), and if not, why. */
+export interface PreviewSandboxDTO {
+  available: boolean;
+  reason?: string;
+}
+
 export interface PreviewStatusDTO {
   state: PreviewJobState;
   progress?: PreviewProgress;
   result?: PreviewResult;
   error?: string;
   logs?: string[];
+  sandbox?: PreviewSandboxDTO;
 }
 
 // ---------------------------------------------------------------------------
@@ -209,4 +218,5 @@ export interface PreviewScanDTO {
   state: PreviewJobState;
   files: PreviewScanFileDTO[];
   error?: string;
+  sandbox?: PreviewSandboxDTO;
 }

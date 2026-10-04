@@ -20,7 +20,7 @@ import {
   getFileOwnerMap,
   listMergeSuggestions,
   listMergedModules,
-} from "@/lib/neo4j";
+} from "@/lib/db";
 import { folderOfPattern, isUnderFolder } from "@/lib/jobs/ownership";
 import { acceptAllMergeSuggestions } from "@/lib/jobs/merges";
 import { apiError, errorMessage, loadRepo } from "@/app/api/repos/_shared";

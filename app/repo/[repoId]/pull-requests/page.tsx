@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "cn";
 import type { PullRequestListState, PullRequestSummary } from "@/lib/github";
 import { getRepoPullRequests } from "@/lib/jobs";
-import { getRepoById } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/db";
 import {
   DatabaseErrorNotice,
   GitHubErrorNotice,
@@ -98,7 +98,7 @@ export default async function PullRequestsPage({
   ]);
   const state = parseState(rawState);
 
-  // Neo4j down is a degraded state, not a 404 — see the same handling in the
+  // An unreadable database is a degraded state, not a 404 — see the same handling in the
   // repo layout.
   let repo: Awaited<ReturnType<typeof getRepoById>> = null;
   let dbError: string | null = null;

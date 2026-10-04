@@ -37,7 +37,7 @@ via community detection as a secondary action.
   produces module/domain-tier `Component`s.
 
 Out of scope here: LLM-assisted component labeling (calls out to
-`lib/ai/`), and persisting the resulting graph (calls out to `lib/neo4j/`).
+`lib/ai/`), and persisting the resulting graph (calls out to `lib/db/`).
 
 ## Usage
 
@@ -52,7 +52,7 @@ const result = await analyzeRepo("/data/repos/<repoId>", { moduleDepth: 2 });
 ```
 
 The module is self-contained — a directory path in, an in-memory result out. It
-imports nothing from `lib/neo4j`, `lib/github`, `lib/ai` or `lib/jobs`.
+imports nothing from `lib/db`, `lib/github`, `lib/ai` or `lib/jobs`.
 
 ## Layout
 

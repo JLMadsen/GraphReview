@@ -2,9 +2,10 @@ import { notFound } from "next/navigation";
 import { TriangleAlert } from "lucide-react";
 import { getRepoDto } from "@/lib/jobs";
 import type { RepoDto } from "@/lib/jobs";
-import { getRepoById } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/db";
 import { PROVIDER_NAMES, RepoStatusText, providerIcon } from "@/app/repo-status-badge";
 import { ReanalyzeButton } from "./reanalyze-button";
+import { RepoDeleteButton } from "../../repo-delete-button";
 
 /**
  * Repo detail shell.
@@ -29,7 +30,7 @@ export default async function RepoDetailLayout({
   const { repoId } = await params;
   if (!repoId) notFound();
 
-  // Neo4j being unreachable is a different failure from "this repo doesn't
+  // An unreadable database is a different failure from "this repo doesn't
   // exist": only the latter is a 404. The former degrades to a bare header so
   // the tabs still work once the database comes back.
   //
@@ -96,6 +97,7 @@ export default async function RepoDetailLayout({
             </span>
             <RepoStatusText status={repo.status} lastAnalyzedSha={repo.lastAnalyzedSha} repoId={repo.id} />
             {repo.status !== "analyzing" ? <ReanalyzeButton repoId={repo.id} /> : null}
+            <RepoDeleteButton repoId={repo.id} repoName={repo.name} local={repo.provider === "local"} redirectTo="/" />
           </div>
         ) : null}
       </div>

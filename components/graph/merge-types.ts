@@ -1,6 +1,6 @@
 // Wire shapes for feature merges (DESIGN.md §6.3) — the contract between
 // app/api/repos/[repoId]/merges/** and the Graph tab. Duplicated from
-// lib/neo4j's types rather than imported, for the same client/server
+// lib/db's types rather than imported, for the same client/server
 // boundary reason as ./types.ts.
 
 export type MergeSuggestionKindDTO = "merge" | "extend" | "move-file";

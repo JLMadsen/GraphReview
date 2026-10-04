@@ -1,6 +1,6 @@
 // Public return types for lib/github. These are deliberately trimmed,
 // stable shapes rather than raw Octokit response types.
-// Downstream code (lib/neo4j repository functions, route
+// Downstream code (lib/db repository functions, route
 // handlers) should depend on these, not on `@octokit/*` types directly.
 
 /** REST rate-limit info read from `x-ratelimit-*` response headers ("REST rate-limit headers are surfaced in the UI"). */
@@ -19,7 +19,7 @@ export interface RateLimitInfo {
  * Every REST-backed function returns its data wrapped like this instead of
  * bare, so a caller can surface rate-limit info without a separate
  * out-of-band "last call" accessor (which would be unsafe under concurrent
- * calls from BullMQ workers using different tokens/repos at once). GraphQL
+ * calls from background jobs using different tokens/repos at once). GraphQL
  * calls set `rateLimit: null`: `@octokit/graphql` does not
  * expose REST-style rate-limit headers on success responses.
  */

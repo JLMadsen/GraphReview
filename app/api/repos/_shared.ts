@@ -6,8 +6,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import type { ReviewTarget } from "@/lib/jobs";
-import { getRepoById } from "@/lib/neo4j";
-import type { RepoRecord } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/db";
+import type { RepoRecord } from "@/lib/db";
 
 export interface ApiErrorBody {
   error: string;
@@ -32,7 +32,7 @@ export async function loadRepo(
   } catch (error) {
     return {
       response: apiError(
-        `Could not reach the graph database: ${(error as Error).message}`,
+        `Could not read the database: ${(error as Error).message}`,
         503
       ),
     };

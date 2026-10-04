@@ -20,6 +20,7 @@ import {
   getReviewJob,
   getReviewJobLogs,
   invalidateReviewFreshness,
+  latestReviewedRevision,
   reviewTargetKey,
   type ReviewFreshness,
   type ReviewProgress,
@@ -33,8 +34,9 @@ import {
   type FindingAssessment,
   type FindingCategory,
   type FindingKind,
+  type FindingResponse,
   type FindingScope,
-} from "@/lib/neo4j";
+} from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -42,7 +44,7 @@ export const dynamic = "force-dynamic";
 // Response contract
 // ---------------------------------------------------------------------------
 
-/** One persisted `(:Finding)`, flattened for the graph UI. Deliberately *not* the raw `FindingRecord`: `repoId`/`targetKey`/`prId` are request context the client already has, while `componentName` (joined from the component node) is what a finding list actually renders. */
+/** One persisted finding, flattened for the graph UI. Deliberately *not* the raw `FindingRecord`: `repoId`/`targetKey`/`prId` are request context the client already has, while `componentName` (joined from the component node) is what a finding list actually renders. */
 export interface FindingDto {
   id: string;
   componentId: string;
@@ -63,9 +65,13 @@ export interface FindingDto {
   createdAt: string;
   /** ISO-8601 time a reviewer resolved this finding; absent while open. */
   resolvedAt?: string;
+  /** The model call behind it never completed — a placeholder that "Retry failed" re-runs. */
+  callFailed?: boolean;
+  /** Replies from coding agents (MCP), oldest first. */
+  responses?: FindingResponse[];
 }
 
-/** Lifecycle of a review target, collapsed from BullMQ's finer-grained job states. `"none"` means "never reviewed". */
+/** Lifecycle of a review target, collapsed from the job runner's states. `"none"` means "never reviewed". */
 export type ReviewState = "none" | "queued" | "running" | "completed" | "failed";
 
 export interface ReviewStatusResponse {
@@ -136,23 +142,6 @@ function errorResponse(
   return NextResponse.json(code ? { error, code } : { error }, { status });
 }
 
-/**
- * Whether the failure looks like "Redis is unreachable" rather than a real
- * application error.
- *
- * The producer connection is configured with a *bounded* retry
- * (`maxRetriesPerRequest: 3`, see lib/jobs/queue.ts) precisely so a request
- * made while Redis is down rejects in a few seconds instead of hanging a
- * route handler forever — this turns that rejection into a 503 rather than
- * a misleading 500.
- */
-function isRedisUnavailable(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EPIPE|max retries per request|Connection is closed|Stream isn't writeable|Redis/i.test(
-    message
-  );
-}
-
 /** The active saved provider must have all three fields present for a review to be possible (base URL + key + model are one unit). */
 async function isAiConfigured(): Promise<boolean> {
   const provider = await getActiveAiProvider();
@@ -190,6 +179,12 @@ export async function POST(
   }
   const effort = rawEffort ?? DEFAULT_REVIEW_EFFORT;
 
+  // Optional: `"failed"` re-runs only what failed last time (lib/jobs/review.ts).
+  const rawOnly = (rawBody as { only?: unknown }).only;
+  if (rawOnly !== undefined && rawOnly !== "failed") {
+    return errorResponse('only must be "failed" when given.', 400);
+  }
+
   try {
     const repo = await getRepoById(repoId);
     if (!repo) return errorResponse("Repo not found.", 404);
@@ -215,7 +210,7 @@ export async function POST(
       );
     }
 
-    const result = await enqueueReview(repoId, target, effort);
+    const result = await enqueueReview(repoId, target, effort, rawOnly === "failed" ? { only: "failed" } : {});
     // A new run is about to stamp new shas on the findings; whatever "where
     // does the branch point" answer is cached must not be compared to them.
     invalidateReviewFreshness(repoId, result.targetKey);
@@ -226,14 +221,6 @@ export async function POST(
     };
     return NextResponse.json(body);
   } catch (err) {
-    if (isRedisUnavailable(err)) {
-      console.error(`POST /api/repos/${repoId}/review — redis unavailable:`, err);
-      return errorResponse(
-        "The job queue is unavailable — is Redis running?",
-        503,
-        "queue_unavailable"
-      );
-    }
     console.error(`POST /api/repos/${repoId}/review failed:`, err);
     return errorResponse(
       err instanceof Error ? err.message : "Failed to enqueue the review.",
@@ -246,7 +233,7 @@ export async function POST(
 // GET — status + findings
 // ---------------------------------------------------------------------------
 
-/** Collapses BullMQ's job states onto the five the UI knows about. */
+/** Collapses the job runner's states onto the five the UI knows about. */
 function toReviewState(jobState: string): ReviewState {
   switch (jobState) {
     case "waiting":
@@ -265,7 +252,7 @@ function toReviewState(jobState: string): ReviewState {
   }
 }
 
-/** BullMQ's `job.progress` is typed as `number | object` and is whatever the job last wrote. Accept it only when it structurally matches the progress contract, so a client never sees a half-shaped object. */
+/** A job's `progress` is whatever the job last wrote. Accept it only when it structurally matches the progress contract, so a client never sees a half-shaped object. */
 function toProgress(raw: unknown): ReviewProgress | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const candidate = raw as Partial<ReviewProgress>;
@@ -285,29 +272,6 @@ function toProgress(raw: unknown): ReviewProgress | undefined {
     completionTokens: candidate.completionTokens ?? 0,
     running: Array.isArray(candidate.running) ? candidate.running : [],
     unmatchedFiles: candidate.unmatchedFiles ?? 0,
-  };
-}
-
-/**
- * The revision the persisted findings were produced from: the most recent
- * stamped run. Legacy findings (no `reviewedHeadSha`) are ignored, so a target
- * with only legacy findings yields `undefined` and gets no `freshness` at all.
- * Mixed shas can only exist after a run that failed part-way; the newest
- * stamp wins, since that is the run whose findings are on screen.
- */
-function latestReviewedRevision(
-  findings: readonly { reviewedHeadSha?: string; reviewedBaseSha?: string; reviewedAt?: string }[]
-): { headSha: string; baseSha?: string; reviewedAt?: string } | undefined {
-  let best: (typeof findings)[number] | undefined;
-  for (const finding of findings) {
-    if (!finding.reviewedHeadSha) continue;
-    if (!best || (finding.reviewedAt ?? "") > (best.reviewedAt ?? "")) best = finding;
-  }
-  if (!best?.reviewedHeadSha) return undefined;
-  return {
-    headSha: best.reviewedHeadSha,
-    ...(best.reviewedBaseSha ? { baseSha: best.reviewedBaseSha } : {}),
-    ...(best.reviewedAt ? { reviewedAt: best.reviewedAt } : {}),
   };
 }
 
@@ -340,20 +304,11 @@ export async function GET(
     let progress: ReviewProgress | undefined;
     let error: string | undefined;
 
-    try {
-      const job = await getReviewJob(repoId, targetKey);
-      if (job) {
-        state = toReviewState(await job.getState());
-        progress = toProgress(job.progress);
-        if (state === "failed") error = job.failedReason || "The review job failed.";
-      }
-    } catch (queueError) {
-      // Redis being down must not hide findings that are already in Neo4j —
-      // degrade to "no live job state" and say why, rather than 5xx-ing a
-      // read that can still answer most of the question.
-      if (!isRedisUnavailable(queueError)) throw queueError;
-      console.error(`GET /api/repos/${repoId}/review — redis unavailable:`, queueError);
-      error = "The job queue is unavailable — live progress could not be read.";
+    const job = await getReviewJob(repoId, targetKey);
+    if (job) {
+      state = toReviewState(await job.getState());
+      progress = toProgress(job.progress);
+      if (state === "failed") error = job.failedReason || "The review job failed.";
     }
 
     // A job only lives as long as its retention window (24h for a completed
@@ -411,6 +366,8 @@ export async function GET(
         model: finding.model,
         createdAt: finding.createdAt,
         ...(finding.resolvedAt ? { resolvedAt: finding.resolvedAt } : {}),
+        ...(finding.callFailed ? { callFailed: true } : {}),
+        ...(finding.responses ? { responses: finding.responses } : {}),
       })),
       aiConfigured,
     };

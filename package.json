@@ -1,24 +1,42 @@
 {
   "name": "graphreview",
   "version": "0.1.0",
-  "private": true,
+  "description": "Review pull requests against a component graph of your codebase, with optional AI review. Runs locally.",
+  "license": "GPL-3.0-only",
+  "bin": {
+    "graphreview": "bin/graphreview.mjs"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "files": [
+    "bin/",
+    ".next/",
+    "!.next/cache/",
+    "!.next/trace",
+    "!.next/types/",
+    "public/",
+    "lib/analysis/languages/**/*.scm",
+    "lib/preview/harness/",
+    "lib/runtime/config-env.mjs",
+    "next.config.mjs",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "dev": "next dev -p 3470",
     "build": "next build",
-    "start": "next start",
+    "start": "node bin/graphreview.mjs",
     "lint": "eslint",
-    "worker": "tsx worker/index.ts",
-    "docker:build": "docker compose -f docker/docker-compose.yml --env-file docker/.env build && docker image prune -f",
-    "docker": "npm run docker:build && docker compose -f docker/docker-compose.yml --env-file docker/.env up",
-    "docker:up": "docker compose -f docker/docker-compose.yml --env-file docker/.env up"
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
+    "@modelcontextprotocol/sdk": "^1.32.0",
     "@octokit/graphql": "^9.0.5",
     "@octokit/rest": "^22.0.1",
     "@vscode/tree-sitter-wasm": "^0.3.1",
     "@xyflow/react": "^12.12.0",
-    "bullmq": "^6.3.6",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.3.0",
     "cytoscape": "^3.34.3",
@@ -26,9 +44,7 @@
     "cytoscape-fcose": "^2.2.0",
     "elkjs": "^0.12.0",
     "geist": "^1.7.2",
-    "ioredis": "^6.0.0",
     "lucide-react": "^0.475.0",
-    "neo4j-driver": "^6.2.0",
     "next": "15.5.25",
     "react": "19.1.0",
     "react-dom": "19.1.0",
@@ -42,7 +58,7 @@
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
     "@types/cytoscape": "^3.21.9",
-    "@types/node": "^20",
+    "@types/node": "^22.20.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

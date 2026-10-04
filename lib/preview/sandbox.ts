@@ -1,11 +1,9 @@
 // The Docker sandbox the before/after preview runs PR code in (DESIGN.md §6.9).
 //
-// Everything goes through the `docker` CLI (the worker image ships it, and
-// Compose hands the worker the host's Docker socket). Nothing is bind-
-// mounted from the worker's filesystem — a host path means something
-// different to the Docker daemon than to a worker that itself runs in a
-// container — so files travel with `docker cp`, and the only mounts are
-// named volumes the daemon owns:
+// Everything goes through the `docker` CLI on this machine. Nothing is
+// bind-mounted from the host's filesystem (host paths are awkward across
+// Docker Desktop's VM boundary on Windows/macOS), so files travel with
+// `docker cp`, and the only mounts are named volumes the daemon owns:
 //
 //   graphreview-preview-harness-<v>   esbuild/react/postcss for the Node harness
 //   graphreview-preview-deps-<hash>   one repo's installed dependencies,
@@ -14,8 +12,11 @@
 //
 // A run container gets no network, capped memory/CPU/processes and a wall-
 // clock limit. Installs are the only step that goes online, and they carry
-// the worker's own CA bundle (CA_CERT_DIR, baked into its image) and
-// registry/proxy settings, so a closed-network setup needs nothing extra.
+// GraphReview's own CA settings (`NODE_EXTRA_CA_CERTS`) and registry/proxy
+// settings, so a closed-network setup needs nothing extra.
+//
+// Docker is optional: without it, `getDockerStatus()` says why and the UI
+// disables previews; nothing else in the app needs it.
 //
 // Server-only (spawns processes). Worker-only in practice.
 
@@ -24,6 +25,8 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { CONTAINER_CA_FILE, CONTAINER_HOME, hostPackageConfig } from "./host-config";
+import { DEFAULT_NODE_MAJOR } from "./node-version";
 import type { PreviewHarnessResult, PreviewRuntime } from "./types";
 
 export const RESULT_MARKER = "@@GRAPHREVIEW_PREVIEW_RESULT@@";
@@ -33,19 +36,23 @@ const HARNESS_VERSION = "2";
 const HARNESS_PACKAGES = ["esbuild@0.25", "react@19", "react-dom@19", "postcss@8", "happy-dom@15", "@happy-dom/global-registrator@15"];
 
 /**
- * The registry/namespace part of `NODE_BASE_IMAGE` (the app's own base image),
- * e.g. `mirror.corp/library/` from `mirror.corp/library/node:20-alpine`, so a
- * closed-network setup pulls the sandbox images from the same mirror without
- * any extra setting. Empty for the default Docker Hub `node:20-alpine`.
+ * `PREVIEW_IMAGE_REGISTRY` — a registry/namespace prefix such as
+ * `mirror.corp/library` for closed networks, so the sandbox images come from
+ * an internal mirror instead of Docker Hub. Empty by default.
  */
 function mirrorPrefix(): string {
-  const base = process.env.NODE_BASE_IMAGE?.trim() ?? "";
-  const slash = base.lastIndexOf("/");
-  return slash >= 0 ? base.slice(0, slash + 1) : "";
+  const prefix = process.env.PREVIEW_IMAGE_REGISTRY?.trim() ?? "";
+  return prefix && !prefix.endsWith("/") ? `${prefix}/` : prefix;
 }
 
-// Not the app's Alpine image: native npm/pip packages mostly ship glibc builds.
-const NODE_IMAGE = process.env.PREVIEW_NODE_IMAGE?.trim() || `${mirrorPrefix()}node:20-bookworm-slim`;
+// Debian, not Alpine: native npm/pip packages mostly ship glibc builds.
+/** `PREVIEW_NODE_IMAGE` pins one image for every repo; otherwise it follows the repo's Node version (./node-version.ts). */
+const NODE_IMAGE_OVERRIDE = process.env.PREVIEW_NODE_IMAGE?.trim() || undefined;
+/** The image for a Node major, unless `PREVIEW_NODE_IMAGE` pins one. */
+export function nodeImageFor(major: number): string {
+  return NODE_IMAGE_OVERRIDE ?? `${mirrorPrefix()}node:${major}-bookworm-slim`;
+}
+const NODE_IMAGE = nodeImageFor(DEFAULT_NODE_MAJOR);
 const PYTHON_IMAGE = process.env.PREVIEW_PYTHON_IMAGE?.trim() || `${mirrorPrefix()}python:3.12-slim`;
 /** A positive number from the environment, else `fallback` — Compose passes unset optional vars as "". */
 function envMs(name: string, fallback: number): number {
@@ -82,7 +89,7 @@ function docker(args: string[], timeoutMs = 60_000): Promise<ExecResult> {
       { timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, windowsHide: true },
       (error, stdout, stderr) => {
         if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-          reject(new SandboxUnavailableError("The docker CLI is not installed where the worker runs."));
+          reject(new SandboxUnavailableError(DOCKER_MISSING));
           return;
         }
         const code = error ? (typeof error.code === "number" ? error.code : 1) : 0;
@@ -100,15 +107,46 @@ async function dockerOk(args: string[], what: string, timeoutMs?: number): Promi
   return result.stdout;
 }
 
+const DOCKER_MISSING =
+  "Previews run the changed code in Docker containers, and Docker isn't installed. Install Docker Desktop " +
+  "(or Docker Engine) to use them — everything else in GraphReview works without it.";
+const DOCKER_STOPPED = "Docker is installed but not running. Start Docker Desktop (or the Docker engine) to run previews.";
+
+/** Whether previews can run here, and if not, a fixable reason. */
+export interface DockerStatus {
+  available: boolean;
+  reason?: string;
+}
+
+/** How long a Docker probe result is reused — the UI asks on every poll. */
+const DOCKER_STATUS_TTL_MS = 15_000;
+let dockerStatusCache: { at: number; status: Promise<DockerStatus> } | undefined;
+
+async function probeDocker(): Promise<DockerStatus> {
+  try {
+    // Short: this runs inside the preview endpoints' request handlers, and a
+    // daemon that is still starting can hang `docker version` for a long time.
+    const result = await docker(["version", "--format", "{{.Server.Version}}"], 4_000);
+    return result.code === 0 ? { available: true } : { available: false, reason: DOCKER_STOPPED };
+  } catch (error) {
+    if (error instanceof SandboxUnavailableError) return { available: false, reason: error.message };
+    return { available: false, reason: (error as Error).message };
+  }
+}
+
+/** Probes Docker (cached for a few seconds). Never throws. */
+export function getDockerStatus(): Promise<DockerStatus> {
+  if (!dockerStatusCache || Date.now() - dockerStatusCache.at > DOCKER_STATUS_TTL_MS) {
+    dockerStatusCache = { at: Date.now(), status: probeDocker() };
+  }
+  return dockerStatusCache.status;
+}
+
 /** Throws {@link SandboxUnavailableError} with a fixable message when Docker can't be reached. */
 export async function assertDockerAvailable(): Promise<void> {
-  const result = await docker(["version", "--format", "{{.Server.Version}}"], 15_000);
-  if (result.code !== 0) {
-    throw new SandboxUnavailableError(
-      "Docker isn't reachable from the worker, so the preview can't run. Start Docker, and under " +
-        "Docker Compose make sure the worker has /var/run/docker.sock mounted (docker/docker-compose.yml)."
-    );
-  }
+  dockerStatusCache = undefined;
+  const status = await getDockerStatus();
+  if (!status.available) throw new SandboxUnavailableError(status.reason ?? DOCKER_STOPPED);
 }
 
 const pulled = new Set<string>();
@@ -121,6 +159,64 @@ async function ensureImage(image: string, log: Logger): Promise<void> {
     await dockerOk(["pull", image], `docker pull ${image}`, INSTALL_TIMEOUT_MS);
   }
   pulled.add(image);
+}
+
+/** `node:22-bookworm-slim` → { repo: "node", version: [22], suffix: "-bookworm-slim" }. */
+function parseImage(image: string): { repo: string; version: number[]; suffix: string } | null {
+  const colon = image.lastIndexOf(":");
+  if (colon <= image.lastIndexOf("/")) return null;
+  const tag = /^(\d+(?:\.\d+)*)(.*)$/.exec(image.slice(colon + 1));
+  if (!tag) return null;
+  return { repo: image.slice(0, colon), version: tag[1].split(".").map(Number), suffix: tag[2] };
+}
+
+function compareVersions(a: number[], b: number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+export interface ResolvedImage {
+  image: string;
+  /** Set when a different image had to stand in, saying which and why. */
+  note?: string;
+}
+
+/**
+ * The image to run: `wanted` if it is here or can be pulled. Offline (or on a
+ * mirror that lacks it), the closest version of the same image already on
+ * this machine stands in — the nearest newer one, else the newest older one,
+ * preferring the same variant (`-bookworm-slim`) — and the result says so.
+ */
+export async function resolveImage(wanted: string, log: Logger): Promise<ResolvedImage> {
+  try {
+    await ensureImage(wanted, log);
+    return { image: wanted };
+  } catch (error) {
+    const target = parseImage(wanted);
+    const listed = await docker(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"]);
+    const local = listed.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .map((image) => ({ image, parsed: parseImage(image) }))
+      .filter((c): c is { image: string; parsed: NonNullable<ReturnType<typeof parseImage>> } =>
+        Boolean(target && c.parsed && c.parsed.repo === target.repo)
+      );
+    if (!target || local.length === 0) throw error;
+    const sameVariant = local.filter((c) => c.parsed.suffix === target.suffix);
+    const pool = sameVariant.length > 0 ? sameVariant : local;
+    const newer = pool.filter((c) => compareVersions(c.parsed.version, target.version) >= 0);
+    const pick = newer.length > 0
+      ? newer.sort((a, b) => compareVersions(a.parsed.version, b.parsed.version))[0]
+      : pool.sort((a, b) => compareVersions(b.parsed.version, a.parsed.version))[0];
+    pulled.add(pick.image);
+    const reason = (error as Error).message.trim().split("\n").pop()?.slice(0, 160) ?? "";
+    const note = `Ran on ${pick.image}: ${wanted} isn't on this machine and couldn't be pulled (${reason}).`;
+    log(note);
+    return { image: pick.image, note };
+  }
 }
 
 export function imageFor(runtime: PreviewRuntime): string {
@@ -169,27 +265,29 @@ function startAttached(id: string, timeoutMs: number, log?: Logger): Promise<Exe
 }
 
 // ---------------------------------------------------------------------------
-// Online steps (installs): the worker's own network settings, carried over
+// Online steps (installs): GraphReview's own network settings, carried over
 // ---------------------------------------------------------------------------
 
-/** Where the worker's CA bundle lands inside an install container. */
-const CONTAINER_CA_FILE = "/tmp/graphreview-ca.crt";
+/** One volume shared by every install: npm/pnpm/yarn/pip download caches and corepack's package managers. */
+const DOWNLOADS_VOLUME = "graphreview-preview-downloads";
 
 /**
- * Settings an install container inherits from the worker, when set there:
+ * Settings an install container inherits from GraphReview's environment, when set there:
  * package registries (npm, yarn, corepack, pip) and proxies. Empty values are
- * dropped — an empty `NPM_CONFIG_REGISTRY` would break npm, not reset it.
+ * dropped — an empty `NPM_CONFIG_REGISTRY` would break npm, not reset it — and
+ * so are settings that name a path on this machine (cache, prefix, …).
  *
  * Upper-case `NPM_CONFIG_*` only: npm itself injects dozens of lower-case
  * `npm_config_*` variables (cache, prefix, user config — host paths) into
- * every process it starts, the worker included, and those must not leak in.
+ * every process it starts, GraphReview included, and those must not leak in.
  */
 const FORWARDED_ENV = /^(NPM_CONFIG_\w+|YARN_NPM_\w+|COREPACK_NPM_\w+|PIP_\w+|HTTPS?_PROXY|https?_proxy|NO_PROXY|no_proxy)$/;
+const HOST_PATH_ENV = /^(NPM_CONFIG_(CACHE|PREFIX|USERCONFIG|GLOBALCONFIG|STORE_DIR|CAFILE|TMP)|PIP_(CACHE_DIR|CONFIG_FILE|CERT|TARGET|SRC))$/;
 
 function forwardedEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (FORWARDED_ENV.test(key) && value?.trim()) env[key] = value.trim();
+    if (FORWARDED_ENV.test(key) && !HOST_PATH_ENV.test(key) && value?.trim()) env[key] = value.trim();
   }
   // corepack fetches pnpm/yarn themselves from a registry of its own setting.
   const registry = env.NPM_CONFIG_REGISTRY;
@@ -198,17 +296,12 @@ function forwardedEnv(): Record<string, string> {
 }
 
 /**
- * The worker's CA bundle: under Docker Compose it is the system bundle with
- * every certificate from `CA_CERT_DIR` appended at build time, and
- * `NODE_EXTRA_CA_CERTS` points at it (docker/Dockerfile). Outside Docker
- * this is whatever the user set, or nothing.
+ * Runs `script` in a container that may go online, set up the way this
+ * machine's own package managers are (./host-config.ts: the user's
+ * `.npmrc` / `.yarnrc(.yml)` / pip config as its `$HOME`, plus a CA bundle
+ * with the OS-trusted and configured internal CAs), with registry/proxy
+ * variables from GraphReview's environment and the shared download cache.
  */
-function caBundle(): string | null {
-  const file = process.env.NODE_EXTRA_CA_CERTS?.trim();
-  return file && existsSync(file) ? file : null;
-}
-
-/** Runs `script` in a container that may go online, with the worker's CA bundle and registry settings. */
 async function runOnline(options: {
   image: string;
   mounts: string[];
@@ -217,9 +310,22 @@ async function runOnline(options: {
   timeoutMs: number;
   before?: (id: string) => Promise<void>;
 }): Promise<ExecResult & { timedOut: boolean }> {
-  const env: Record<string, string> = { CI: "1", ...forwardedEnv() };
-  const ca = caBundle();
-  if (ca) {
+  const host = await hostPackageConfig();
+  const env: Record<string, string> = {
+    CI: "1",
+    ...host.env,
+    ...forwardedEnv(),
+    // Downloads land in the shared volume and are preferred over the network,
+    // so a reinstall (new lockfile, another Node version) is mostly offline.
+    npm_config_cache: "/downloads/npm",
+    npm_config_prefer_offline: "true",
+    npm_config_store_dir: "/downloads/pnpm",
+    YARN_CACHE_FOLDER: "/downloads/yarn",
+    PIP_CACHE_DIR: "/downloads/pip",
+    COREPACK_HOME: "/downloads/corepack",
+  };
+  if (host.homeDir) env.HOME = CONTAINER_HOME;
+  if (host.caBundle) {
     // A full bundle (public roots + internal CAs), so it can replace each tool's own.
     Object.assign(env, {
       NODE_EXTRA_CA_CERTS: CONTAINER_CA_FILE,
@@ -229,15 +335,25 @@ async function runOnline(options: {
       GIT_SSL_CAINFO: CONTAINER_CA_FILE,
     });
   }
-  const args = [...options.mounts.flatMap((m) => ["-v", m])];
+  const args = [...options.mounts, `${DOWNLOADS_VOLUME}:/downloads`].flatMap((m) => ["-v", m]);
   if (options.workdir) args.push("-w", options.workdir);
   for (const [key, value] of Object.entries(env)) args.push("-e", `${key}=${value}`);
   args.push(options.image, "sh", "-c", options.script);
   return withContainer(args, async (id) => {
-    if (ca) await dockerOk(["cp", ca, `${id}:${CONTAINER_CA_FILE}`], "docker cp (CA bundle)");
+    if (host.caBundle) await dockerOk(["cp", host.caBundle, `${id}:${CONTAINER_CA_FILE}`], "docker cp (CA bundle)");
+    if (host.homeDir) await dockerOk(["cp", `${host.homeDir}${path.sep}.`, `${id}:${CONTAINER_HOME}`], "docker cp (package config)");
     await options.before?.(id);
     return startAttached(id, options.timeoutMs);
   });
+}
+
+/** One log line on what the install containers pick up from this machine (first install of a run only). */
+let hostConfigLogged = 0;
+async function logHostConfig(log: Logger): Promise<void> {
+  if (Date.now() - hostConfigLogged < 60_000) return;
+  hostConfigLogged = Date.now();
+  const { summary } = await hostPackageConfig();
+  if (summary.length > 0) log(`installs use ${summary.join(", ")}`);
 }
 
 async function volumeExists(name: string): Promise<boolean> {
@@ -251,9 +367,9 @@ async function volumeExists(name: string): Promise<boolean> {
 const HARNESS_VOLUME = `graphreview-preview-harness-${HARNESS_VERSION}`;
 let harnessReady = false;
 
-async function ensureHarnessVolume(log: Logger): Promise<void> {
+async function ensureHarnessVolume(image: string, log: Logger): Promise<void> {
   if (harnessReady) return;
-  await ensureImage(NODE_IMAGE, log);
+  await ensureImage(image, log);
   const script = [
     "set -e",
     "if [ -f /harness/.ready ]; then exit 0; fi",
@@ -264,7 +380,7 @@ async function ensureHarnessVolume(log: Logger): Promise<void> {
   ].join("\n");
   if (!(await volumeExists(HARNESS_VOLUME))) log("installing the preview harness (first run only)");
   const result = await runOnline({
-    image: NODE_IMAGE,
+    image,
     mounts: [`${HARNESS_VOLUME}:/harness`],
     script,
     timeoutMs: INSTALL_TIMEOUT_MS,
@@ -332,9 +448,10 @@ export async function prepareDeps(
   runtime: PreviewRuntime,
   treeDir: string,
   projectRoot: string,
-  log: Logger
+  log: Logger,
+  /** The image both sides run on; defaults to the runtime's default image. Part of the cache key, since native modules differ per Node version. */
+  image: string = imageFor(runtime)
 ): Promise<PreparedDeps> {
-  const image = imageFor(runtime);
   const projectDir = path.join(treeDir, projectRoot);
   const key = await manifestHash(projectDir, runtime === "python" ? PYTHON_MANIFESTS : NODE_MANIFESTS, image);
   if (!key) return { status: "none" };
@@ -375,6 +492,7 @@ async function installInto(options: {
   if (probe.code === 0) return { volume, status: "cached" };
 
   log(`installing ${runtime === "python" ? "Python" : "npm"} dependencies (cached for next time)`);
+  await logHostConfig(log);
   const install = runtime === "python" ? pythonInstallCommand(projectDir) : nodeInstallCommand(projectDir);
   const script = `cd ${workdir} && (${install}) && touch ${marker}`;
   try {
@@ -478,14 +596,16 @@ export interface RunHarnessOptions {
   projectRoot: string;
   deps: PreparedDeps;
   log: Logger;
+  /** The image to run in (the one `prepareDeps` installed with); defaults to the runtime's default image. */
+  image?: string;
 }
 
 /** Runs one side in a fresh, offline container and parses the harness's result line. */
 export async function runHarness(options: RunHarnessOptions): Promise<PreviewHarnessResult> {
   const { runtime, treeDir, jobDir, projectRoot, deps, log } = options;
-  const image = imageFor(runtime);
+  const image = options.image ?? imageFor(runtime);
   await ensureImage(image, log);
-  if (runtime === "node") await ensureHarnessVolume(log);
+  if (runtime === "node") await ensureHarnessVolume(image, log);
 
   const workdir = path.posix.join("/src", projectRoot.split(path.sep).join("/"));
   const args = [

@@ -8,7 +8,7 @@
 // fetched into it on demand (the same mechanism the before/after preview
 // uses). Everything here is best-effort — `null` means "read the old way".
 
-import type { RepoRecord } from "@/lib/neo4j";
+import type { RepoRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import type { ReviewTarget } from "./review-queue";
 import { ensureCommitsInCache, gitIn, validateLocalRepoPath } from "./source";

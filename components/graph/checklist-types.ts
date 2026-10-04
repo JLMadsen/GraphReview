@@ -1,6 +1,6 @@
 // Wire shapes for the PR prerequisite checklist (DESIGN.md §6.6) — the
 // contract between app/api/repos/[repoId]/checklist, app/api/checklist/items
-// and the UI. Duplicated from lib/neo4j + lib/jobs rather than imported,
+// and the UI. Duplicated from lib/db + lib/jobs rather than imported,
 // for the same client/server boundary reason as ./types.ts.
 
 export type ChecklistItemKindDTO =

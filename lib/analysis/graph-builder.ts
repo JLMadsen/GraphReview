@@ -3,7 +3,7 @@
  *
  * `analyzeRepo` is the single entry point of this package. It is deliberately
  * self-contained: a local directory path goes in, an in-memory
- * {@link AnalysisResult} comes out. Persisting that to Neo4j, LLM-labeling the
+ * {@link AnalysisResult} comes out. Persisting that to the database, LLM-labeling the
  * clusters and the domain tier of §6.1 all happen elsewhere.
  */
 import { readFile, stat } from "node:fs/promises";

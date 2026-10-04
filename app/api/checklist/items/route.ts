@@ -11,8 +11,8 @@ import {
   getDisabledChecklistItemIds,
   getRepoById,
   listChecklistItems,
-} from "@/lib/neo4j";
-import type { ChecklistItemKind } from "@/lib/neo4j";
+} from "@/lib/db";
+import type { ChecklistItemKind } from "@/lib/db";
 import { apiError, errorMessage } from "@/app/api/repos/_shared";
 import type { ChecklistItemsResponseDTO } from "@/components/graph/checklist-types";
 

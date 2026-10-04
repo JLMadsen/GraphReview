@@ -9,9 +9,9 @@ This is the shared type layer referenced by:
 
 ## Scope
 
-- Neo4j entity types mirroring the schema (`Repo`, `Component`,
+- Database entity types mirroring the schema (`Repo`, `Component`,
   `File`, `PullRequest`, `RefSnapshot`, `Finding`, `Settings`) — the
-  canonical shapes `lib/neo4j/` repository functions return.
+  canonical shapes `lib/db/` repository functions return.
 - The static-analysis IR (`FileAnalysis`) — re-exported here or in
   `lib/analysis/ir.ts`, whichever a given consumer imports from directly.
 - API DTOs for `app/api/*` route handlers, so `app/` and any future

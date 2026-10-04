@@ -13,7 +13,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { enqueuePreview, ensurePreviewScan, getPreviewJob, type ReviewTarget } from "@/lib/jobs";
-import { getRepoById } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/db";
+import { symbolStatus } from "@/lib/preview/compare";
+import { getDockerStatus } from "@/lib/preview/sandbox";
 import type {
   PreviewJobState,
   PreviewResult,
@@ -40,13 +42,6 @@ function errorResponse(error: string, status: number, code?: string): NextRespon
   return NextResponse.json(code ? { error, code } : { error }, { status });
 }
 
-function isRedisUnavailable(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EPIPE|max retries per request|Connection is closed|Stream isn't writeable|Redis/i.test(
-    message
-  );
-}
-
 function toState(jobState: string): PreviewJobState {
   if (["waiting", "waiting-children", "delayed", "prioritized"].includes(jobState)) return "queued";
   if (jobState === "active") return "running";
@@ -58,10 +53,18 @@ function toState(jobState: string): PreviewJobState {
 function looksOf(result: PreviewResult, name: string): PreviewScanFileDTO["components"][number]["looks"] {
   const symbol = result.symbols.find((s) => s.name === name);
   if (!symbol) return undefined;
-  // Never rendered on either side (errors on both, even identical ones) isn't "looks the same".
-  const rendered = symbol.cases.some((c) => c.before?.html !== undefined || c.after?.html !== undefined);
-  if (!rendered) return "failed";
-  return symbol.cases.some((c) => c.differs) ? "different" : "same";
+  // A side that didn't render (load error, a throw, notFound()) is a failure,
+  // never "looks different" — see lib/preview/compare.ts.
+  switch (symbolStatus(symbol)) {
+    case "failed":
+    case "breaks":
+    case "recovers":
+      return "failed";
+    case "same":
+      return "same";
+    default:
+      return "different";
+  }
 }
 
 async function loadScan(repoId: string, target: ReviewTarget): Promise<{ state: PreviewJobState; scan?: PreviewScanResult; error?: string }> {
@@ -92,7 +95,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ repo
   try {
     const { target, response } = await loadTarget(request, repoId, false);
     if (!target) return response;
-    const { state, scan, error } = await loadScan(repoId, target);
+    const [{ state, scan, error }, sandbox] = await Promise.all([loadScan(repoId, target), getDockerStatus()]);
     const files: PreviewScanFileDTO[] = [];
     for (const file of scan?.files ?? []) {
       const job = await getPreviewJob(repoId, target, file.filePath);
@@ -104,9 +107,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ repo
         components: file.components.map((c) => ({ ...c, ...(result ? { looks: looksOf(result, c.name) } : {}) })),
       });
     }
-    return NextResponse.json({ state, files, ...(error ? { error } : {}) } satisfies PreviewScanDTO);
+    return NextResponse.json({ state, files, sandbox, ...(error ? { error } : {}) } satisfies PreviewScanDTO);
   } catch (err) {
-    if (isRedisUnavailable(err)) return errorResponse("The job queue is unavailable — is Redis running?", 503, "queue_unavailable");
     console.error(`GET /api/repos/${repoId}/preview/scan failed:`, err);
     return errorResponse(err instanceof Error ? err.message : "Failed to read the scan.", 500);
   }
@@ -119,6 +121,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ rep
     if (!target) return response;
     const { scan } = await loadScan(repoId, target);
     if (!scan) return errorResponse("The scan hasn't finished yet.", 409);
+    const sandbox = await getDockerStatus();
+    if (!sandbox.available) return errorResponse(sandbox.reason ?? "Docker isn't available.", 409, "sandbox_unavailable");
     let enqueued = 0;
     for (const file of scan.files) {
       // Keeps any inputs the user edited for that file's last run.
@@ -130,7 +134,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ rep
     }
     return NextResponse.json({ enqueued });
   } catch (err) {
-    if (isRedisUnavailable(err)) return errorResponse("The job queue is unavailable — is Redis running?", 503, "queue_unavailable");
     console.error(`POST /api/repos/${repoId}/preview/scan failed:`, err);
     return errorResponse(err instanceof Error ? err.message : "Failed to start the previews.", 500);
   }

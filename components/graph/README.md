@@ -85,7 +85,7 @@ On the rendering approach:
   effort level (lib/ai/effort.ts).
 
 The wrapper (`GraphCanvas`), its orchestrator (`GraphView`) and both
-sidebar panels are implemented against real `lib/neo4j`-backed data;
+sidebar panels are implemented against real `lib/db`-backed data;
 `cytoscape-popper` annotation popovers for `Finding`s are still
 follow-up work.
 

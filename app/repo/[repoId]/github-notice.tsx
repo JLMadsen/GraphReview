@@ -121,18 +121,18 @@ export function GitHubNotice({
   );
 }
 
-/** Neo4j unreachable — the tab still renders, it just has nothing to show yet. */
+/** Database unreadable — the tab still renders, it just has nothing to show yet. */
 export function DatabaseErrorNotice({ message }: { message: string }) {
   return (
     <NoticeCard
       icon={Database}
       tone="destructive"
-      title="Can't reach the graph database"
+      title="Can't read the database"
       detail={message}
     >
-      Check that the{" "}
-      <span className="font-mono text-foreground/80">neo4j</span> service is
-      running.
+      Check that GraphReview&apos;s data folder (
+      <span className="font-mono text-foreground/80">~/.graphreview</span> by
+      default) is readable and writable.
     </NoticeCard>
   );
 }

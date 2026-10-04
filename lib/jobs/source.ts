@@ -1,24 +1,24 @@
-// Resolving a `(:Repo)` record to a directory on disk that can be analyzed.
+// Resolving a stored repo to a directory on disk that can be analyzed.
 //
 // Three ingestion paths behind one interface:
-//   - `provider: "local"` — a repo already cloned under the read-only bind
-//     mount (`LOCAL_REPOS_PATH` on the host → `/data/local-repos` in the
-//     container). Escaping that folder is a security boundary, not a
-//     convenience check: the path is user input from the "add repo" dialog
-//     and would otherwise let anyone read arbitrary container-visible files
-//     into the graph.
+//   - `provider: "local"` — a repo already cloned somewhere on this machine,
+//     read in place and never written to. Optionally confined to
+//     `LOCAL_REPOS_ROOT` (see `resolveLocalRepoPath`).
 //   - `provider: "github"` / `provider: "gitlab"` — an app-managed clone in
-//     the `repo_cache` volume at `/data/repos/<repoId>`.
+//     the clone cache (`<data folder>/repos/<repoId>`).
 //
 // Server-only (spawns `git`, reads env vars) — never import from a client
 // component.
 
 import { existsSync } from "node:fs";
+import os from "node:os";
 import { mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { simpleGit } from "simple-git";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
-import type { RepoProvider, RepoRecord } from "@/lib/neo4j";
+import type { RepoProvider, RepoRecord } from "@/lib/db";
+import { gitCaBundle } from "@/lib/runtime/ca";
+import { getDataDir } from "@/lib/runtime/paths";
 import { getStoredGitHubToken, gitHubCloneUrl, parseGitHubUrl } from "./github-access";
 import { getStoredGitLabToken, gitLabCloneUrl, parseGitLabUrl } from "./gitlab-access";
 
@@ -26,22 +26,29 @@ import { getStoredGitLabToken, gitLabCloneUrl, parseGitLabUrl } from "./gitlab-a
 type RemoteProvider = Exclude<RepoProvider, "local">;
 
 // A `git` subprocess that decides to ask for credentials would hang forever
-// here — there is no terminal attached to a Next.js route handler or a
-// BullMQ worker. Fail the command instead, so a private repo without a
-// configured PAT surfaces as a job error rather than a stuck process.
+// here — nobody is watching a background job. Fail the command instead, so a
+// private (or misspelled) repo without a configured PAT surfaces as a job
+// error rather than a stuck process. On a desktop that takes more than
+// GIT_TERMINAL_PROMPT: Git for Windows' credential manager and GUI askpass
+// (or an editor's, inherited via GIT_ASKPASS) open a login window instead,
+// and the clone waits on it. So askpass answers with nothing, and
+// credential helpers are switched off for every command (`gitOptions`) —
+// GraphReview authenticates with the PAT from Settings only, never with the
+// user's own git credentials.
 process.env.GIT_TERMINAL_PROMPT = "0";
-
-/** Container-side mount point of the `LOCAL_REPOS_PATH` bind mount. */
-export const DOCKER_LOCAL_REPOS_MOUNT = "/data/local-repos";
-/** Container-side mount point of the `repo_cache` volume. */
-export const DOCKER_REPO_CACHE_DIR = "/data/repos";
-/** Fallback clone root when running outside Docker (`npm run dev` + `npm run worker`). */
-export const DEV_REPO_CACHE_DIR = ".data/repos";
+process.env.GIT_ASKPASS = "echo";
+process.env.SSH_ASKPASS = "echo";
+process.env.GCM_INTERACTIVE = "never";
 
 /** Idle timeout for a git subprocess that should be quick (`ls-remote`, `rev-parse`). */
 const QUICK_GIT_TIMEOUT_MS = 20_000;
 /** Idle timeout for a clone/fetch, which can legitimately be quiet for a while on a big repo. */
 const SLOW_GIT_TIMEOUT_MS = 10 * 60_000;
+
+function gitCaConfig(): string[] {
+  const bundle = gitCaBundle();
+  return bundle ? [`http.sslCAInfo=${bundle}`, "http.schannelUseSSLCAInfo=true"] : [];
+}
 
 function gitOptions(
   baseDir: string,
@@ -53,7 +60,14 @@ function gitOptions(
     maxConcurrentProcesses: 1,
     trimmed: true,
     timeout: { block: timeoutMs },
-    config,
+    // Empty `credential.helper` clears any configured helper (see the note on
+    // GIT_ASKPASS above). simple-git refuses to touch this key unless told to.
+    // A company CA file (NODE_EXTRA_CA_CERTS, e.g. from config.env) is
+    // trusted too — as one bundle with the public roots and the OS store's
+    // extras, since git replaces its own bundle with it (and with
+    // schannelUseSSLCAInfo, Git for Windows' schannel backend uses it as well).
+    config: ["credential.helper=", ...gitCaConfig(), ...config],
+    unsafe: { allowUnsafeCredentialHelper: true },
   };
 }
 
@@ -122,12 +136,17 @@ function providerLabel(provider: RemoteProvider): string {
 const AUTH_FAILURE_PATTERN =
   /could not read username|authentication failed|write access to repository not granted|status code: ?40[13]\b|remote: .*forbidden|repository not found/i;
 
+/** A clone/fetch the host refused for lack of (valid) credentials. Retrying can't fix it; a PAT in Settings can. */
+export class RepoAccessError extends Error {
+  override readonly name = "RepoAccessError";
+}
+
 function withFriendlyAuthError<T>(promise: Promise<T>, provider: RemoteProvider, hadToken: boolean): Promise<T> {
   return promise.catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     if (AUTH_FAILURE_PATTERN.test(message)) {
       const host = providerLabel(provider);
-      throw new Error(
+      throw new RepoAccessError(
         hadToken
           ? `${host} rejected the request (likely an invalid, expired, or insufficiently-scoped PAT — it needs repo read access for a private repository). Re-enter it in Settings.`
           : `This repository could not be reached without credentials — it's likely private. Add a ${host} PAT in Settings.`
@@ -138,33 +157,20 @@ function withFriendlyAuthError<T>(promise: Promise<T>, provider: RemoteProvider,
 }
 
 /**
- * Root the "local path" ingestion path is confined to.
- *
- * Under Docker the host folder is bind-mounted at a fixed container path, so
- * that is preferred when it exists; outside Docker (plain `npm run dev`)
- * `LOCAL_REPOS_PATH` is itself a real host path and is used directly.
- * `LOCAL_REPOS_ROOT` overrides both for anyone with a different layout.
+ * The folder local repos are confined to, when one is configured
+ * (`LOCAL_REPOS_ROOT`). Unset by default: GraphReview runs on your own
+ * machine as you, so any folder you can read is fair game.
  */
-export function getLocalReposRoot(): string {
+export function getLocalReposRoot(): string | undefined {
   const explicit = process.env.LOCAL_REPOS_ROOT;
-  if (explicit) return path.resolve(explicit);
-  if (existsSync(DOCKER_LOCAL_REPOS_MOUNT)) return DOCKER_LOCAL_REPOS_MOUNT;
-
-  const hostPath = process.env.LOCAL_REPOS_PATH;
-  if (hostPath) return path.resolve(hostPath);
-
-  throw new Error(
-    "No local-repos root configured: set LOCAL_REPOS_PATH (see docker/.env.example) " +
-      "or LOCAL_REPOS_ROOT to the folder your local repos live under."
-  );
+  return explicit ? path.resolve(explicit) : undefined;
 }
 
-/** Root of the app-managed clone cache (the `repo_cache` volume), overridable via `REPO_CACHE_DIR`. */
+/** Root of the app-managed clone cache: `REPO_CACHE_DIR`, or `repos/` in the data folder. */
 export function getRepoCacheRoot(): string {
   const explicit = process.env.REPO_CACHE_DIR;
   if (explicit) return path.resolve(explicit);
-  if (existsSync(DOCKER_REPO_CACHE_DIR)) return DOCKER_REPO_CACHE_DIR;
-  return path.resolve(process.cwd(), DEV_REPO_CACHE_DIR);
+  return path.join(getDataDir(), "repos");
 }
 
 export function repoCacheDir(repoId: string): string {
@@ -182,24 +188,34 @@ export class LocalPathOutsideRootError extends Error {
 }
 
 /**
- * Resolves a user-supplied local path (absolute, or relative to the root) to
- * an absolute path, refusing anything that escapes the local-repos root.
+ * Resolves a user-supplied local path to an absolute path.
  *
- * Containment is checked lexically after `path.resolve`, which collapses
- * `..` segments — so `../../etc` and an absolute `/etc/passwd` are both
- * rejected. Symlinks are deliberately *not* resolved away: symlinking a
- * repo into the folder is a supported workflow, so following a
- * symlink out of the root is an explicit admin choice on the host side, not
- * an injection through this API.
+ * Without `LOCAL_REPOS_ROOT` the path must be absolute (`~/` is expanded).
+ * With it, a relative path is taken relative to that folder, and anything
+ * that escapes it is refused: containment is checked lexically after
+ * `path.resolve`, which collapses `..` segments. Symlinks are deliberately
+ * *not* resolved away — symlinking a repo into the folder is a supported
+ * workflow.
  */
 export function resolveLocalRepoPath(localPath: string): string {
-  const root = getLocalReposRoot();
-  const resolvedRoot = path.resolve(root);
-  const candidate = path.resolve(resolvedRoot, localPath);
+  const expanded = localPath.startsWith("~/") || localPath.startsWith("~\\")
+    ? path.join(os.homedir(), localPath.slice(2))
+    : localPath === "~"
+      ? os.homedir()
+      : localPath;
 
-  const relative = path.relative(resolvedRoot, candidate);
+  const root = getLocalReposRoot();
+  if (!root) {
+    if (!path.isAbsolute(expanded)) {
+      throw new Error(`Local repo path "${localPath}" must be absolute (e.g. ${path.join(os.homedir(), "code", "my-app")}).`);
+    }
+    return path.resolve(expanded);
+  }
+
+  const candidate = path.resolve(root, expanded);
+  const relative = path.relative(root, candidate);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new LocalPathOutsideRootError(localPath, resolvedRoot);
+    throw new LocalPathOutsideRootError(localPath, root);
   }
   return candidate;
 }
@@ -296,7 +312,7 @@ type Logger = (message: string) => void;
  * Brings the repo's source on disk up to date and returns the directory to
  * analyze plus its exact commit SHA (recorded as `Repo.lastAnalyzedSha`).
  *
- * Local repos are read-only (the bind mount is `:ro`) — they are never
+ * Local repos are treated as read-only — they are never
  * fetched or mutated, only read at whatever commit the developer has checked
  * out. URL repos are cloned on first use and fast-forwarded to the remote's
  * default branch afterwards.

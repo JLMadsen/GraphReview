@@ -1,12 +1,12 @@
 // Ephemeral, non-persisted counterpart to lib/jobs/diff-components.ts's
-// `unmatchedFiles`: a PR can add files that have no `(:File)` node yet (the
+// `unmatchedFiles`: a PR can add files that have no stored file yet (the
 // persisted graph only reflects the last analysis of the default branch —
 // see analyze.ts), so they can't be resolved to a stored `Component`. This
 // module turns those paths into folder-clustered "added components" and
 // asks the AI provider for a one-sentence description each, exactly like
 // the real labeling job (./label.ts) does for the persisted module tier —
 // but for a handful of files, in one best-effort call, and never written to
-// Neo4j. `app/api/repos/[repoId]/diff-impact/route.ts` runs this
+// the database. `app/api/repos/[repoId]/diff-impact/route.ts` runs this
 // synchronously and the Graph tab renders the result as extra, green-styled
 // nodes for the duration of that PR view only.
 //
@@ -21,7 +21,7 @@ import {
 import { describeModules } from "@/lib/ai";
 import type { AiProviderConfig, LabelInput, LabelModuleInput } from "@/lib/ai";
 import { decrypt } from "@/lib/crypto";
-import { getActiveAiProvider } from "@/lib/neo4j";
+import { getActiveAiProvider } from "@/lib/db";
 
 /** Sample paths sent per component — same budget as the real labeling job (./label.ts). */
 const SAMPLE_FILES_PER_COMPONENT = 3;
@@ -38,7 +38,7 @@ function addedComponentId(repoId: string, name: string): string {
 }
 
 /**
- * Folder-clusters paths with no matching `(:File)` node into ephemeral
+ * Folder-clusters paths with no matching stored file into ephemeral
  * components, using the same clustering `analyzeRepo` uses for the real
  * module tier — just run over a handful of new paths instead of a whole
  * checkout, and never persisted.

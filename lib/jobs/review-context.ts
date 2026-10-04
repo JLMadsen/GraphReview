@@ -24,8 +24,8 @@ import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { ReviewEffortSettings, ReviewNeighbor, ReviewRelatedContext, ReviewRelatedFile } from "@/lib/ai";
-import { runRead } from "@/lib/neo4j";
-import type { RepoRecord } from "@/lib/neo4j";
+import { listComponentNeighbours, listRelatedFiles } from "@/lib/db";
+import type { RepoRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import type { HeadSource } from "./head-source";
 import { repoCacheDir, validateLocalRepoPath } from "./source";
@@ -45,28 +45,7 @@ const MAX_DECLARATION_INDENT = 4;
 // ---------------------------------------------------------------------------
 
 async function loadNeighbors(repoId: string, componentId: string): Promise<ReviewNeighbor[]> {
-  const result = await runRead(
-    `
-    MATCH (c:Component {id: $componentId, repoId: $repoId})
-    CALL {
-      WITH c
-      MATCH (c)-[:DEPENDS_ON]->(n:Component)
-      RETURN n, "dependsOn" AS direction
-      UNION
-      WITH c
-      MATCH (n:Component)-[:DEPENDS_ON]->(c)
-      RETURN n, "dependent" AS direction
-    }
-    RETURN n.name AS name, n.description AS description, direction
-    ORDER BY direction, name
-    `,
-    { repoId, componentId }
-  );
-  return result.records.map((record) => ({
-    name: record.get("name") as string,
-    description: (record.get("description") as string | null) ?? undefined,
-    direction: record.get("direction") as ReviewNeighbor["direction"],
-  }));
+  return listComponentNeighbours(repoId, componentId);
 }
 
 interface RelatedFileRef {
@@ -80,39 +59,13 @@ async function loadRelatedFiles(
   componentId: string,
   changedPaths: readonly string[]
 ): Promise<RelatedFileRef[]> {
-  const result = await runRead(
-    `
-    UNWIND $paths AS changedPath
-    MATCH (f:File {repoId: $repoId, path: changedPath})
-    CALL {
-      WITH f
-      MATCH (f)-[:IMPORTS]->(g:File)-[:BELONGS_TO]->(c:Component)
-      RETURN g, c, "imported" AS relation
-      UNION
-      WITH f
-      MATCH (g:File)-[:IMPORTS]->(f)
-      MATCH (g)-[:BELONGS_TO]->(c:Component)
-      RETURN g, c, "importer" AS relation
-    }
-    WITH g, c, relation
-    WHERE NOT g.path IN $paths
-    RETURN DISTINCT g.path AS path, c.name AS componentName, relation,
-           c.id = $componentId AS sameComponent
-    ORDER BY relation, sameComponent, path
-    `,
-    { repoId, componentId, paths: [...changedPaths] }
-  );
+  const rows = await listRelatedFiles(repoId, componentId, changedPaths);
   const seen = new Set<string>();
   const refs: RelatedFileRef[] = [];
-  for (const record of result.records) {
-    const filePath = record.get("path") as string;
-    if (seen.has(filePath)) continue;
-    seen.add(filePath);
-    refs.push({
-      path: filePath,
-      componentName: record.get("componentName") as string,
-      relation: record.get("relation") as RelatedFileRef["relation"],
-    });
+  for (const row of rows) {
+    if (seen.has(row.path)) continue;
+    seen.add(row.path);
+    refs.push(row);
   }
   return refs.slice(0, MAX_RELATED_FILES);
 }

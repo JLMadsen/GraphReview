@@ -3,7 +3,7 @@
 // three request shapes and resolves the changed files to the `Component`s
 // that own them via `BELONGS_TO`.
 //
-// This route is intentionally read-only against Neo4j — it does not upsert
+// This route is intentionally read-only against the database — it does not upsert
 // a `PullRequest`/`RefSnapshot` node or write `CHANGES` edges. Persisting
 // PR/ref-comparison data is the analysis/ingestion pipeline's job (outside
 // this task's owned paths); this endpoint only answers "what does this diff
@@ -22,7 +22,7 @@ import {
   type GitHubUnavailableReason,
   type GitLabUnavailableReason,
 } from "@/lib/jobs";
-import { getRepoById } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/db";
 import type { DiffImpactResponseDTO } from "@/components/graph/types";
 
 export const dynamic = "force-dynamic";

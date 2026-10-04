@@ -1,9 +1,8 @@
-// Barrel for lib/jobs — the BullMQ queue/job definitions plus the wiring
-// that turns a stored `(:Repo)` into analyzed graph data. See README.md
-// for scope.
+// Barrel for lib/jobs — the queue/job definitions plus the wiring that turns
+// a stored repo into analyzed graph data. See README.md for scope.
 //
-// Everything here is server-only: it reads env vars, opens a Redis
-// connection and spawns `git`. Import it from route handlers, server
+// Everything here is server-only: it reads env vars, opens the database
+// and spawns `git`. Import it from route handlers, server
 // components and `worker/` only — never from a client component.
 
 export {
@@ -16,14 +15,14 @@ export {
   getAnalysisJobLogs,
   getAnalysisJobState,
   getAnalysisQueue,
-  getBlockingRedisConnection,
-  getRedisConnection,
   isPendingJobState,
   type AnalysisJobData,
   type AnalysisJobResult,
   type AnalysisQueue,
   type EnqueueAnalysisResult,
 } from "./queue";
+
+export { cleanUpIfRepoRemoved, removeRepo } from "./repo-removal";
 
 export {
   checkAndEnqueueIfStale,
@@ -43,9 +42,6 @@ export {
 } from "./repo-status";
 
 export {
-  DEV_REPO_CACHE_DIR,
-  DOCKER_LOCAL_REPOS_MOUNT,
-  DOCKER_REPO_CACHE_DIR,
   LocalPathOutsideRootError,
   detectDefaultBranch,
   getLocalReposRoot,
@@ -207,6 +203,7 @@ export {
 export {
   checkReviewFreshness,
   invalidateReviewFreshness,
+  latestReviewedRevision,
   type ReviewFreshness,
   type ReviewedRevision,
 } from "./review-freshness";

@@ -2,8 +2,8 @@
 //
 // Fully self-contained: every function takes the PAT as an explicit `token`
 // parameter. Nothing here reads settings, decrypts credentials, or touches
-// Neo4j — that wiring ("read the stored token, decrypt it, pass it in")
-// belongs to a caller in a later integration step.
+// the database — that wiring ("read the stored token, decrypt it, pass it
+// in") belongs to lib/jobs/github-access.ts.
 //
 // REST calls go through `@octokit/rest`; the one GraphQL-only need (linked
 // issues via `closingIssuesReferences`) goes through `@octokit/graphql`.

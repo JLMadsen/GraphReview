@@ -6,7 +6,7 @@
 // `components/graph/GraphCanvas.tsx`).
 //
 // Unlike `graph/route.ts` and `diff-impact/route.ts`, no raw `runRead` is
-// needed here: `lib/neo4j/file.ts` already exposes exactly this query as
+// needed here: `lib/db/file.ts` already exposes exactly this query as
 // `listFilesByComponentId` (ordered by `f.path ASC`), so this route is a
 // thin repository call plus a repo-scoping check.
 //
@@ -21,8 +21,8 @@ import {
   getComponentById,
   listChildComponents,
   listFilesByComponentId,
-} from "@/lib/neo4j";
-import type { FileRecord } from "@/lib/neo4j";
+} from "@/lib/db";
+import type { FileRecord } from "@/lib/db";
 import { apiError, errorMessage } from "@/app/api/repos/_shared";
 import type { ComponentFilesResponseDTO } from "@/components/graph/types";
 

@@ -28,6 +28,7 @@ import type {
 } from "@/lib/preview/types";
 import { Segmented } from "./Segmented";
 import { Spark } from "./Spark";
+import { brokenSide, caseDiffers, symbolStatus, type PreviewSymbolStatus } from "@/lib/preview/compare";
 import type { ReviewTargetDTO } from "./types";
 import { usePreview } from "./usePreview";
 
@@ -81,28 +82,30 @@ function readableInput(item: PreviewCaseInput): string {
   return parts.length === 0 ? "no arguments" : parts.join(", ");
 }
 
-type SymbolStatus = "different" | "new" | "removed" | "same" | "failed";
+type SymbolStatus = PreviewSymbolStatus;
 
-function statusOf(symbol: PreviewSymbolResult): SymbolStatus {
-  // A component that never rendered (even failing identically on both sides) didn't run in any useful
-  // sense; a function throwing the same error before and after is a real, unchanged result.
-  const ran =
-    symbol.kind === "component"
-      ? symbol.cases.some((c) => c.before?.html !== undefined || c.after?.html !== undefined)
-      : symbol.cases.some((c) => c.before || c.after);
-  if (!ran) return "failed";
-  if (symbol.change === "added") return "new";
-  if (symbol.change === "removed") return "removed";
-  return symbol.cases.some((c) => c.differs) ? "different" : "same";
-}
+/** A component that never rendered (even failing identically on both sides) didn't run; one that renders on one side only fails there — neither "looks different". See lib/preview/compare.ts. */
+const statusOf = symbolStatus;
 
-const STATUS_ORDER: Record<SymbolStatus, number> = { different: 0, new: 1, removed: 2, failed: 3, same: 4 };
+const STATUS_ORDER: Record<SymbolStatus, number> = {
+  breaks: 0,
+  different: 1,
+  new: 2,
+  removed: 3,
+  recovers: 4,
+  failed: 5,
+  same: 6,
+};
 
 const STATUS_WORD: Record<SymbolStatus, { text: (kind: PreviewSymbolResult["kind"]) => string; className: string }> = {
   different: { text: (k) => (k === "component" ? "looks different" : "behaves differently"), className: "text-warning" },
   new: { text: () => "new", className: "text-success" },
   removed: { text: () => "removed", className: "text-destructive" },
   failed: { text: () => "didn't run", className: "text-destructive" },
+  // One side threw or didn't load — often notFound() or missing data in the
+  // sandbox rather than a real regression; the case shows the reason.
+  breaks: { text: (k) => (k === "component" ? "doesn't render after the change" : "doesn't run after the change"), className: "text-destructive" },
+  recovers: { text: (k) => (k === "component" ? "doesn't render before the change" : "doesn't run before the change"), className: "text-muted-foreground" },
   same: { text: () => "same", className: "text-muted-foreground" },
 };
 
@@ -113,6 +116,8 @@ function verdict(symbols: PreviewSymbolResult[]): { text: string; tone: "warn" |
   const parts: string[] = [];
   if (components > 0) parts.push(`${plural(components, "component", "components")} ${components === 1 ? "looks" : "look"} different`);
   if (functions > 0) parts.push(`${plural(functions, "function", "functions")} ${functions === 1 ? "behaves" : "behave"} differently`);
+  const breaking = symbols.filter((s) => statusOf(s) === "breaks").length;
+  if (breaking > 0) parts.unshift(`${plural(breaking, "symbol", "symbols")} ${breaking === 1 ? "doesn't" : "don't"} run after the change`);
   if (parts.length > 0) return { text: parts.join(", "), tone: "warn" };
   if (symbols.length === 0) return { text: "Nothing in this file can be rendered or called", tone: "quiet" };
   return { text: "Everything behaves the same", tone: "quiet" };
@@ -147,6 +152,7 @@ export function PreviewPanel({ repoId, target, filePath, initialSymbol }: Previe
   );
   const current = symbols.find((s) => s.name === selected) ?? symbols[0];
   const hasEdits = Object.keys(edited).length > 0;
+  const sandboxDown = status?.sandbox?.available === false;
 
   const start = () => {
     if (hasEdits && result) {
@@ -162,8 +168,12 @@ export function PreviewPanel({ repoId, target, filePath, initialSymbol }: Previe
     <button
       type="button"
       onClick={start}
-      disabled={pending}
-      title="Render the changed components and run the changed functions at the base and at the head, on the same inputs, in a Docker sandbox"
+      disabled={pending || sandboxDown}
+      title={
+        sandboxDown
+          ? status?.sandbox?.reason
+          : "Render the changed components and run the changed functions at the base and at the head, on the same inputs, in a Docker sandbox"
+      }
       className="flex shrink-0 items-center gap-1.5 rounded-sm border border-border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-secondary disabled:opacity-50"
     >
       {pending ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden /> : <Play className="size-3.5" aria-hidden />}
@@ -184,6 +194,7 @@ export function PreviewPanel({ repoId, target, filePath, initialSymbol }: Previe
               mocked-up inputs.
             </p>
             {runButton}
+            {sandboxDown && <p className="max-w-md leading-relaxed text-warning">{status?.sandbox?.reason}</p>}
           </>
         )}
         {error && <ErrorLine text={error} />}
@@ -310,6 +321,7 @@ function Footnotes({ result }: { result: PreviewResult }) {
     );
   }
   if (result.mocksNote) notes.push(result.mocksNote);
+  if (result.runtimeNote) notes.push(result.runtimeNote);
   const stubbed = [...new Set([...result.before.stubbedModules, ...result.after.stubbedModules])];
   if (stubbed.length > 0) {
     notes.push(
@@ -452,7 +464,10 @@ function InputsEditor({
 type CompareMode = "side" | "slider" | "overlay";
 
 function ComponentView({ symbol, result }: { symbol: PreviewSymbolResult; result: PreviewResult }) {
-  const firstDiffering = Math.max(0, symbol.cases.findIndex((c) => c.differs));
+  const firstDiffering = Math.max(
+    0,
+    symbol.cases.findIndex((c) => caseDiffers(symbol, c) || brokenSide(symbol, c) !== null)
+  );
   const [index, setIndex] = useState(firstDiffering);
   const [mode, setMode] = useState<CompareMode>("side");
   const [highlight, setHighlight] = useState(false);
@@ -471,11 +486,21 @@ function ComponentView({ symbol, result }: { symbol: PreviewSymbolResult; result
               type="button"
               onClick={() => setIndex(i)}
               aria-pressed={i === index}
-              title={c.differs ? "Renders differently" : "Renders the same"}
+              title={
+                brokenSide(symbol, c)
+                  ? `Doesn't render ${brokenSide(symbol, c)} the change`
+                  : caseDiffers(symbol, c)
+                    ? "Renders differently"
+                    : "Renders the same"
+              }
               className={cn(
                 "rounded-sm border px-2 py-0.5 text-[11px] transition-colors",
                 i === index ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground",
-                c.differs ? "border-warning/70" : "border-border"
+                brokenSide(symbol, c)
+                  ? "border-destructive/70"
+                  : caseDiffers(symbol, c)
+                    ? "border-warning/70"
+                    : "border-border"
               )}
             >
               {c.label}
@@ -754,8 +779,8 @@ function mutated(outcome: PreviewCaseOutcome | undefined): boolean {
 
 function FunctionView({ symbol }: { symbol: PreviewSymbolResult }) {
   const [showSame, setShowSame] = useState(false);
-  const differing = symbol.cases.filter((c) => c.differs);
-  const same = symbol.cases.filter((c) => !c.differs);
+  const differing = symbol.cases.filter((c) => caseDiffers(symbol, c) || brokenSide(symbol, c) !== null);
+  const same = symbol.cases.filter((c) => !differing.includes(c));
   const rows = showSame ? [...differing, ...same] : differing;
 
   return (
@@ -820,7 +845,16 @@ function FunctionRow({ item, change }: { item: PreviewCaseResult; change: Previe
   return (
     <>
       <tr className={cn("align-top", !(mutatedBefore || mutatedAfter) && "border-b border-border")}>
-        <td className={cn("py-1.5 pr-3", item.differs && "text-warning")}>{item.label}</td>
+        <td
+          className={cn(
+            "py-1.5 pr-3",
+            brokenSide({ kind: "function", change }, item)
+              ? "text-destructive"
+              : caseDiffers({ kind: "function", change }, item) && "text-warning"
+          )}
+        >
+          {item.label}
+        </td>
         <td className="py-1.5 pr-3">
           <span
             className="font-mono text-[11px] break-words text-muted-foreground"

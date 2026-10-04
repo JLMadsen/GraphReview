@@ -1,0 +1,3 @@
+# The npx entry point runs on macOS/Linux too: a CRLF shebang breaks it
+# (the kernel looks for an interpreter called "node\r").
+bin/* text eol=lf

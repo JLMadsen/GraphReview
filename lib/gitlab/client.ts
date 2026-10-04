@@ -2,7 +2,7 @@
 //
 // Fully self-contained: every function takes the PAT as an explicit `token`
 // parameter. Nothing here reads settings, decrypts credentials, or touches
-// Neo4j — that wiring belongs to lib/jobs/gitlab-access.ts, matching how
+// the database — that wiring belongs to lib/jobs/gitlab-access.ts, matching how
 // lib/jobs/github-access.ts wires up lib/github/client.ts.
 //
 // Uses a plain `fetch` client against GitLab REST API v4 rather than a

@@ -1,5 +1,7 @@
-import { getActiveAiProviderId, getSettings, listAiProviders } from "@/lib/neo4j";
+import { headers } from "next/headers";
+import { getActiveAiProviderId, getSettings, listAiProviders } from "@/lib/db";
 import { SettingsForm } from "./settings-form";
+import { McpCard } from "./mcp-card";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ChecklistEditor } from "@/components/graph/ChecklistEditor";
 
@@ -9,11 +11,11 @@ import { ChecklistEditor } from "@/components/graph/ChecklistEditor";
  * A single global (not per-repo) page for the GitHub PAT and AI provider
  * config, since both are instance-wide under the
  * single-local-admin model. AI provider config is a *list* of saved
- * providers (base URL/key/model each, lib/neo4j/ai-provider.ts) with one
+ * providers (base URL/key/model each, lib/db/ai-provider.ts) with one
  * marked active — so a user can keep e.g. a local model server and a hosted
  * one both configured and flip between them without re-entering credentials.
  * Credential fields are encrypted at rest via lib/crypto (see
- * app/settings/actions.ts) before being written to Neo4j (lib/neo4j).
+ * app/settings/actions.ts) before being written to the database (lib/db).
  *
  * This is a server component: it only ever reads whether a secret is
  * currently saved (a boolean) or plain metadata (name/base URL/model), never
@@ -24,9 +26,8 @@ import { ChecklistEditor } from "@/components/graph/ChecklistEditor";
  * Never prerender this page.
  *
  * Without this, Next statically renders `/settings` at *build* time and
- * serves it with `Cache-Control: s-maxage=31536000`. Inside the Docker
- * image build there is no Neo4j to reach, so `getSettings()` throws, the
- * `catch` below degrades to "nothing is saved", and that HTML is then
+ * serves it with `Cache-Control: s-maxage=31536000`. At build time there is
+ * no user database to read, so the page would render "nothing is saved", and that HTML is then
  * cached for a year — the page reports no stored PAT and no stored API key
  * no matter what is actually in the database, and the AI card's key field
  * offers a blank input instead of the masked "saved · Replace · Clear" row.
@@ -39,9 +40,8 @@ import { ChecklistEditor } from "@/components/graph/ChecklistEditor";
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
-  // Neo4j may not be reachable yet (e.g. first run before `docker compose
-  // up`, or mid-development). Degrade to an empty settings view rather than
-  // crashing the whole page.
+  // The database may fail to open (e.g. an unreadable data folder). Degrade
+  // to an empty settings view rather than crashing the whole page.
   let settings: Awaited<ReturnType<typeof getSettings>> | null = null;
   let providers: Awaited<ReturnType<typeof listAiProviders>> = [];
   let activeProviderId: string | null = null;
@@ -57,8 +57,12 @@ export default async function SettingsPage() {
     activeProviderId = null;
   }
 
+  // The MCP snippets use the address this page was reached on, so they carry
+  // this instance's real port (middleware.ts only lets loopback hosts through).
+  const mcpUrl = `http://${(await headers()).get("host") ?? "127.0.0.1:3470"}/api/mcp`;
+
   return (
-    <div className="mx-auto max-w-2xl space-y-8 px-6 py-10">
+    <div className="mx-auto max-w-[1800px] space-y-8 px-6 py-10">
       <div>
         <h1 className="text-2xl font-semibold tracking-[-0.02em]">Settings</h1>
         <p className="mt-1.5 text-sm text-muted-foreground">
@@ -67,34 +71,42 @@ export default async function SettingsPage() {
         </p>
       </div>
 
-      <SettingsForm
-        initialHasGithubPat={Boolean(settings?.githubPatEncrypted)}
-        initialHasGitlabPat={Boolean(settings?.gitlabPatEncrypted)}
-        initialProviders={providers.map((p) => ({
-          id: p.id,
-          name: p.name,
-          baseUrl: p.baseUrl,
-          model: p.model,
-          hasApiKey: Boolean(p.apiKeyEncrypted),
-        }))}
-        initialActiveProviderId={activeProviderId}
-      />
+      {/* Four columns on a wide screen — git-host PATs, AI providers, PR
+          checklist, MCP — two on a laptop, one on a phone. */}
+      <div className="grid items-start gap-5 lg:grid-cols-2 2xl:grid-cols-4">
+        <SettingsForm
+          initialHasGithubPat={Boolean(settings?.githubPatEncrypted)}
+          initialHasGitlabPat={Boolean(settings?.gitlabPatEncrypted)}
+          initialProviders={providers.map((p) => ({
+            id: p.id,
+            name: p.name,
+            baseUrl: p.baseUrl,
+            model: p.model,
+            hasApiKey: Boolean(p.apiKeyEncrypted),
+          }))}
+          initialActiveProviderId={activeProviderId}
+        />
 
-      {/* The PR prerequisite checklist's defaults (DESIGN.md §6.6). Each
-          repo can switch these off or add its own from the checklist card
-          in its Graph tab. */}
-      <Card className="[--card-spacing:--spacing(5)]">
-        <CardHeader>
-          <CardTitle className="text-sm font-semibold tracking-tight">PR checklist</CardTitle>
-          <CardDescription className="text-[13px] leading-relaxed">
-            Checks shown under the graph for every pull request or ref comparison. AI questions are answered
-            once per commit, after the AI review finishes. A failing check is only a badge.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ChecklistEditor />
-        </CardContent>
-      </Card>
+        {/* The PR prerequisite checklist's defaults (DESIGN.md §6.6). Each
+            repo can switch these off or add its own from the checklist card
+            in its Graph tab. */}
+        <Card className="min-w-0 [--card-spacing:--spacing(5)]">
+          <CardHeader>
+            <CardTitle className="text-sm font-semibold tracking-tight">PR checklist</CardTitle>
+            <CardDescription className="text-[13px] leading-relaxed">
+              Checks shown under the graph for every pull request or ref comparison. AI questions are answered
+              once per commit, after the AI review finishes. A failing check is only a badge.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ChecklistEditor />
+          </CardContent>
+        </Card>
+
+        <div className="min-w-0">
+          <McpCard url={mcpUrl} />
+        </div>
+      </div>
     </div>
   );
 }

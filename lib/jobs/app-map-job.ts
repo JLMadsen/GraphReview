@@ -6,14 +6,14 @@
 //               modules: nothing to group (the modules are the cards).
 //   explaining  a few cards per call: a real explanation, the files to open
 //               first, and a verb + sentence per outgoing connection.
-//   saving      one `(:AppMap)` node for the level, replacing the last run.
+//   saving      one app-map record for the level, replacing the last run.
 //
 // Cards and edges are assembled by lib/jobs/app-map.ts exactly as the read
 // path does, so the explain calls see the same connections the canvas will
 // draw. Kept out of lib/jobs' barrel (it pulls in lib/ai), like ./label.ts.
 
 import path from "node:path";
-import { UnrecoverableError } from "bullmq";
+import { UnrecoverableError } from "./runner";
 import {
   APP_MAP_TOKEN_BUDGET,
   explainAppCards,
@@ -23,7 +23,7 @@ import {
   type AppMapAiFolder,
   type TokenUsage,
 } from "@/lib/ai";
-import { getAppMapRecords, getRepoById, saveAppMapRecord } from "@/lib/neo4j";
+import { getAppMapRecords, getRepoById, saveAppMapRecord } from "@/lib/db";
 import { APP_LAYERS, type AppMapLevel, type AppMapNodeDTO } from "@/components/graph/app-map-types";
 import type { JobLogger } from "./analyze";
 import {

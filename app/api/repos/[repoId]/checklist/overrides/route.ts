@@ -6,7 +6,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getChecklistItem, setChecklistItemDisabledForRepo } from "@/lib/neo4j";
+import { getChecklistItem, setChecklistItemDisabledForRepo } from "@/lib/db";
 import { apiError, errorMessage, loadRepo } from "@/app/api/repos/_shared";
 
 export const dynamic = "force-dynamic";

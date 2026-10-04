@@ -1,5 +1,5 @@
 // The per-tab dispatch shared by the Branches and Pull-Requests-or-Merge-
-// Requests API routes and server pages: given a `(:Repo)` record, fetch its
+// Requests API routes and server pages: given a repo record, fetch its
 // branch/PR(MR) list from whichever source applies — local `.git`, the
 // GitHub API, or the GitLab API — and hand back one envelope shape the UI
 // already knows how to render regardless of which provider produced it.
@@ -11,7 +11,7 @@
 import { listBranches as listGitHubBranches, listCommits as listGitHubCommits, listPullRequests } from "@/lib/github";
 import type { Branch, CommitSummary, PullRequestListState, PullRequestSummary, RateLimitInfo } from "@/lib/github";
 import { listBranches as listGitLabBranches, listCommits as listGitLabCommits, listMergeRequests } from "@/lib/gitlab";
-import type { RepoRecord } from "@/lib/neo4j";
+import type { RepoRecord } from "@/lib/db";
 import { describeGitHubError, resolveGitHubAccess, type GitHubUnavailableReason } from "./github-access";
 import { describeGitLabError, resolveGitLabAccess, type GitLabUnavailableReason } from "./gitlab-access";
 import { listLocalBranches, listLocalCommits } from "./local-git";

@@ -1,7 +1,7 @@
 // Free, deterministic merge suggestions (DESIGN.md §6.3). Runs after every
-// analysis and regroup; no AI, no disk, no Neo4j — the caller hands in the
+// analysis and regroup; no AI, no disk, no database — the caller hands in the
 // file list, the import edges and who owns which file, and stores what
-// comes back as `(:MergeSuggestion)` nodes.
+// comes back as merge suggestions.
 //
 // Four kinds of signal:
 //
@@ -18,7 +18,7 @@
 // Folders imported by many modules are shared foundation and are never
 // suggested as part of a feature.
 
-import type { LostFolder, MergeSuggestionKind } from "@/lib/neo4j/types";
+import type { LostFolder, MergeSuggestionKind } from "@/lib/db/types";
 import { folderOfPattern, folderPattern, isUnderFolder } from "./ownership";
 
 /** Suggestions below this score are not shown. */

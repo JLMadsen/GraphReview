@@ -1,7 +1,7 @@
-// Bridge between a stored `(:Repo)` record and lib/github.
+// Bridge between a stored repo record and lib/github.
 //
 // lib/github is deliberately credential-free (every function takes an
-// explicit `token`), and lib/neo4j only stores the *encrypted* PAT. This
+// explicit `token`), and lib/db only stores the *encrypted* PAT. This
 // module is the one place that joins the two: read the Settings singleton,
 // decrypt the PAT with lib/crypto, parse owner/repo out of the stored GitHub
 // URL, and call the matching lib/github function.
@@ -13,8 +13,8 @@
 
 import { decrypt } from "@/lib/crypto";
 import { GitHubApiError } from "@/lib/github";
-import { getSettings } from "@/lib/neo4j";
-import type { RepoRecord } from "@/lib/neo4j";
+import { getSettings } from "@/lib/db";
+import type { RepoRecord } from "@/lib/db";
 
 export interface GitHubRepoRef {
   owner: string;
@@ -75,7 +75,7 @@ export function gitHubCloneUrl(ref: GitHubRepoRef): string {
   return `${GITHUB_WEB_URL}/${ref.owner}/${ref.repo}.git`;
 }
 
-/** Canonical `<GITHUB_WEB_URL>/<owner>/<repo>` page URL — what gets stored on `(:Repo).url` and shown in the UI. */
+/** Canonical `<GITHUB_WEB_URL>/<owner>/<repo>` page URL — what gets stored on `Repo.url` and shown in the UI. */
 export function gitHubRepoWebUrl(ref: GitHubRepoRef): string {
   return `${GITHUB_WEB_URL}/${ref.owner}/${ref.repo}`;
 }
@@ -93,7 +93,7 @@ export async function getStoredGitHubToken(): Promise<string | null> {
     return decrypt(encrypted);
   } catch {
     console.warn(
-      "[github-access] stored GitHub PAT could not be decrypted — has SESSION_SECRET changed? Re-enter it in Settings."
+      "[github-access] stored GitHub PAT could not be decrypted — has the secret key (SESSION_SECRET or secret.key in the data folder) changed? Re-enter it in Settings."
     );
     return null;
   }

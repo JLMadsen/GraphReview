@@ -7,8 +7,8 @@
 //
 // Kept out of lib/jobs' barrel: it pulls in lib/analysis.
 
-import { UnrecoverableError } from "bullmq";
-import { getRepoById } from "@/lib/neo4j";
+import { UnrecoverableError } from "./runner";
+import { getRepoById } from "@/lib/db";
 import { readFileAt } from "@/lib/preview/checkout";
 import { detectChangedSymbols } from "@/lib/preview/symbols";
 import type { PreviewScanResult } from "@/lib/preview/types";

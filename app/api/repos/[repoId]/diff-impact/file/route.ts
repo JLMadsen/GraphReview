@@ -8,7 +8,7 @@
 // Sibling of `../route.ts`: that endpoint maps changed paths onto
 // components, this one re-fetches the same diff source (PR files / ref
 // comparison / local git) and hands back one file's raw patch text — no
-// Neo4j write, no component matching.
+// database write, no component matching.
 //
 // With `?sha=<head commit>`, a path that is NOT part of the diff comes back
 // as the whole file at that commit (`content`) instead of a 404 — what an
@@ -21,7 +21,7 @@ import type { PullRequestFile } from "@/lib/github";
 import { compareRefs as compareGitLabRefs, listMergeRequestFiles } from "@/lib/gitlab";
 import { listLocalFilePatches, resolveGitHubAccess, resolveGitLabAccess } from "@/lib/jobs";
 import { readFileAtCommit } from "@/lib/jobs/pr-context";
-import { getRepoById } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/db";
 import type { FileDiffResponseDTO } from "@/components/graph/types";
 
 export const dynamic = "force-dynamic";

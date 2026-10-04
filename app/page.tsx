@@ -3,6 +3,7 @@ import { ChevronRight, Clock3, Plug, Waypoints } from "lucide-react";
 import { listRepoDtos, type RepoDto } from "@/lib/jobs";
 import { AddRepoDialog } from "./add-repo-dialog";
 import { ProviderBadge, RepoStatusBadge, providerIcon } from "./repo-status-badge";
+import { RepoDeleteButton } from "./repo-delete-button";
 import { RepoRetryButton } from "./repo-retry-button";
 import { RefreshWhileWorking } from "./refresh-while-working";
 
@@ -92,20 +93,21 @@ function RepoRow({ repo }: { repo: RepoDto }) {
         </div>
       </div>
 
-      {isError ? (
-        <div className="relative z-10 flex items-center justify-end gap-1 border-t border-border/70 px-4 py-2 pointer-events-none">
-          <div className="pointer-events-auto">
+      <div className="pointer-events-none relative z-10 flex items-center gap-1 border-t border-border/70 px-2 py-1.5">
+        <div className="pointer-events-auto">
+          <RepoDeleteButton repoId={repo.id} repoName={repo.name} local={repo.provider === "local"} compact />
+        </div>
+        {isError ? (
+          <div className="pointer-events-auto ml-auto pr-2">
             <RepoRetryButton repoId={repo.id} />
           </div>
-        </div>
-      ) : (
-        <div className="pointer-events-none relative z-10 flex items-center gap-1 border-t border-border/70 px-2 py-1.5">
+        ) : (
           <ChevronRight
             className="ml-auto mr-2 size-4 shrink-0 text-muted-foreground/30 transition-all group-hover/repo:translate-x-0.5 group-hover/repo:text-muted-foreground/70"
             aria-hidden
           />
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -150,8 +152,8 @@ function EmptyState({
 }
 
 export default async function RepoListPage() {
-  // Neo4j/Redis may not be up yet (first run, or mid-development). Degrade to
-  // an explanatory empty state instead of crashing the landing page.
+  // The database can fail to open (a locked or unreadable data folder).
+  // Degrade to an explanatory empty state instead of crashing the landing page.
   let repos: RepoDto[] = [];
   let loadError: string | null = null;
   try {
@@ -189,10 +191,10 @@ export default async function RepoListPage() {
           title="Can't load repositories"
           detail={loadError}
         >
-          The graph database or job queue isn&apos;t reachable. Check that the{" "}
-          <span className="font-mono text-foreground/80">neo4j</span> and{" "}
-          <span className="font-mono text-foreground/80">redis</span> services
-          are running.
+          GraphReview couldn&apos;t open its database. Check that its data folder
+          (<span className="font-mono text-foreground/80">~/.graphreview</span> by
+          default) is readable and writable, and that no other program has it
+          locked.
         </EmptyState>
       ) : repos.length === 0 ? (
         <EmptyState icon={Waypoints} title="No repos yet" action={<AddRepoDialog />}>

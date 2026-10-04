@@ -14,14 +14,18 @@
 import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { UnrecoverableError } from "bullmq";
+import { UnrecoverableError } from "./runner";
 import { generatePreviewInputs, generatePreviewMocks, type AiProviderConfig } from "@/lib/ai";
 import { decrypt } from "@/lib/crypto";
-import { getActiveAiProvider, getRepoById, type RepoRecord } from "@/lib/neo4j";
+import { getActiveAiProvider, getRepoById, type RepoRecord } from "@/lib/db";
 import { materializeTree, mergeBaseOf, projectRootFor, readFileAt, runtimeForPath } from "@/lib/preview/checkout";
 import {
   assertDockerAvailable,
   harnessScript,
+  imageFor,
+  nodeImageFor,
+  resolveImage,
+  type ResolvedImage,
   prepareDeps,
   pruneDepsVolumes,
   runHarness,
@@ -30,9 +34,10 @@ import {
 } from "@/lib/preview/sandbox";
 import { relatedSources } from "@/lib/preview/related";
 import { detectChangedSymbols } from "@/lib/preview/symbols";
+import { DEFAULT_NODE_MAJOR, requiredNodeMajor } from "@/lib/preview/node-version";
+import { caseDiffers } from "@/lib/preview/compare";
 import type {
   PreviewCaseInput,
-  PreviewCaseOutcome,
   PreviewHarnessResult,
   PreviewInputs,
   PreviewMocks,
@@ -46,50 +51,38 @@ import type {
   PreviewSymbolResult,
 } from "@/lib/preview/types";
 import type { JobLogger } from "./analyze";
+import { readKv, writeKv } from "@/lib/db";
 import { loadPrContext } from "./pr-context";
 import type { PreviewJobData } from "./preview-queue";
 import type { ReviewTarget } from "./review-queue";
-import { getRedisConnection } from "./queue";
 import { ensureCommitsInCache, validateLocalRepoPath } from "./source";
 
-/** Redis hash: dependency cache volume → when a preview last used it (ms). Survives worker restarts, unlike memory. */
-const DEPS_LAST_USED_KEY = "graphreview:preview:deps-last-used";
+/** Dependency cache volume → when a preview last used it (ms). Survives restarts, unlike memory. */
+const DEPS_LAST_USED_KEY = "preview:deps-last-used";
 
 /**
- * Redis hash per repo: server call key → mocked JSON response. A repo's files
- * mostly call the same things (every page checks the session), so a mock made
- * for one file is reused by every later preview in the repo instead of asking
- * the model again. Entries expire with the hash after 30 days unused.
+ * Per repo: server call key → mocked JSON response. A repo's files mostly
+ * call the same things (every page checks the session), so a mock made for
+ * one file is reused by every later preview in the repo instead of asking
+ * the model again. The cache expires after 30 days without a write.
  */
 function mockCacheKey(repoId: string): string {
-  return `graphreview:preview:mocks:${repoId}`;
+  return `preview:mocks:${repoId}`;
 }
 const MOCK_CACHE_TTL_S = 30 * 24 * 60 * 60;
 
 async function readMockCache(repoId: string): Promise<PreviewMocks> {
   try {
-    const stored = await getRedisConnection().hgetall(mockCacheKey(repoId));
-    const out: PreviewMocks = {};
-    for (const [key, value] of Object.entries(stored)) {
-      try {
-        out[key] = JSON.parse(value);
-      } catch {
-        /* skip a corrupt entry */
-      }
-    }
-    return out;
+    return readKv<PreviewMocks>(mockCacheKey(repoId)) ?? {};
   } catch {
     return {};
   }
 }
 
 async function writeMockCache(repoId: string, mocks: PreviewMocks): Promise<void> {
-  const entries = Object.entries(mocks);
-  if (entries.length === 0) return;
+  if (Object.keys(mocks).length === 0) return;
   try {
-    const redis = getRedisConnection();
-    await redis.hset(mockCacheKey(repoId), Object.fromEntries(entries.map(([k, v]) => [k, JSON.stringify(v)])));
-    await redis.expire(mockCacheKey(repoId), MOCK_CACHE_TTL_S);
+    writeKv(mockCacheKey(repoId), { ...(await readMockCache(repoId)), ...mocks }, MOCK_CACHE_TTL_S);
   } catch {
     /* the cache is an optimisation */
   }
@@ -107,15 +100,12 @@ function isQuotaError(error: unknown): boolean {
  */
 async function recordAndPruneDeps(used: Array<string | undefined>, log: JobLogger): Promise<void> {
   try {
-    const redis = getRedisConnection();
-    const now = String(Date.now());
-    for (const volume of new Set(used.filter((v): v is string => Boolean(v)))) {
-      await redis.hset(DEPS_LAST_USED_KEY, volume, now);
-    }
-    const stored = await redis.hgetall(DEPS_LAST_USED_KEY);
-    const lastUsed = new Map(Object.entries(stored).map(([k, v]) => [k, Number(v)] as const));
+    const lastUsed = new Map(Object.entries(readKv<Record<string, number>>(DEPS_LAST_USED_KEY) ?? {}));
+    const now = Date.now();
+    for (const volume of new Set(used.filter((v): v is string => Boolean(v)))) lastUsed.set(volume, now);
     const removed = await pruneDepsVolumes(lastUsed, log);
-    if (removed.length > 0) await redis.hdel(DEPS_LAST_USED_KEY, ...removed);
+    for (const volume of removed) lastUsed.delete(volume);
+    writeKv(DEPS_LAST_USED_KEY, Object.fromEntries(lastUsed));
   } catch (error) {
     log(`dependency cache cleanup skipped: ${(error as Error).message}`);
   }
@@ -175,11 +165,6 @@ export async function resolveCommits(
   return { repoDir, baseSha: await mergeBaseOf(repoDir, baseSha, headSha), headSha, changedFiles };
 }
 
-function sameOutcome(a: PreviewCaseOutcome | undefined, b: PreviewCaseOutcome | undefined): boolean {
-  if (!a || !b) return false;
-  return a.returned === b.returned && a.argsAfter === b.argsAfter && a.html === b.html && a.threw === b.threw;
-}
-
 function summarize(
   sha: string,
   harness: PreviewHarnessResult | null,
@@ -221,6 +206,8 @@ const NO_SIDE: SideRun = { harness: null, deps: "none" };
 async function runSide(options: {
   side: PreviewSide;
   runtime: PreviewRuntime;
+  /** The sandbox image (both sides share one); undefined = the runtime's default. */
+  image?: string;
   repoDir: string;
   sha: string;
   filePath: string;
@@ -232,7 +219,7 @@ async function runSide(options: {
   /** Reuse an earlier run's checkout and dependencies. */
   reuse?: PreparedSide;
 }): Promise<SideRun> {
-  const { side, runtime, repoDir, sha, filePath, symbols, inputs, mocks, scratch, reuse } = options;
+  const { side, runtime, image, repoDir, sha, filePath, symbols, inputs, mocks, scratch, reuse } = options;
   const log: JobLogger = (message) => options.log(`${side}: ${message}`);
   let deps = reuse?.prepared.status ?? "none";
   let depsVolume = reuse?.prepared.volume;
@@ -244,7 +231,7 @@ async function runSide(options: {
       log(`writing the tree at ${sha.slice(0, 7)}`);
       await materializeTree(repoDir, sha, treeDir, scratch);
       const projectRoot = projectRootFor(treeDir, filePath, runtime);
-      const installed = await prepareDeps(runtime, treeDir, projectRoot, log);
+      const installed = await prepareDeps(runtime, treeDir, projectRoot, log, image);
       deps = installed.status;
       depsVolume = installed.volume;
       await mkdir(jobDir, { recursive: true });
@@ -269,6 +256,7 @@ async function runSide(options: {
       projectRoot: prepared.projectRoot,
       deps: prepared.prepared,
       log,
+      image,
     });
     return { harness, deps, depsVolume, prepared };
   } catch (error) {
@@ -339,9 +327,25 @@ export async function runPreviewJob(
   if (before === null && after === null) {
     throw new UnrecoverableError(`${data.filePath} exists at neither ${baseSha.slice(0, 7)} nor ${headSha.slice(0, 7)}.`);
   }
+  // Both sides run on one image — the newer Node either side asks for — so
+  // a difference in output is the code's, not the runtime's.
+  let wantedImage = imageFor(runtime);
+  if (runtime === "node") {
+    const majors = await Promise.all(
+      [baseSha, headSha].map((sha) => requiredNodeMajor((p) => readFileAt(repoDir, sha, p), data.filePath))
+    );
+    const declared = majors.filter((m): m is number => m !== undefined);
+    wantedImage = nodeImageFor(declared.length > 0 ? Math.max(...declared) : DEFAULT_NODE_MAJOR);
+    log(`sandbox image ${wantedImage}${declared.length > 0 ? "" : " (the repo doesn't say which Node it needs)"}`);
+  }
+
   const detected = await detectChangedSymbols(data.filePath, runtime, before, after);
   const symbols = detected.runnable;
   log(`${symbols.length} changed function(s)/component(s), ${detected.skipped.length} skipped`);
+
+  // Offline or on a mirror without it, the closest image on this machine stands in (noted in the result).
+  const resolvedImage: ResolvedImage = symbols.length > 0 ? await resolveImage(wantedImage, log) : { image: wantedImage };
+  const image = resolvedImage.image;
 
   // 3. inputs
   const inputs: PreviewInputs = {};
@@ -407,7 +411,7 @@ export async function runPreviewJob(
     if (symbols.length > 0) {
       progress("preparing", "checking out both sides and running them in the sandbox");
       const runBoth = (reuseBefore?: PreparedSide, reuseAfter?: PreparedSide) => {
-        const common = { runtime, repoDir, filePath: data.filePath, inputs, mocks, scratch, log };
+        const common = { runtime, image, repoDir, filePath: data.filePath, inputs, mocks, scratch, log };
         return Promise.all([
           before === null
             ? Promise.resolve<SideRun>(NO_SIDE)
@@ -490,7 +494,7 @@ export async function runPreviewJob(
         input: c.input,
         ...(beforeCase ? { before: beforeCase } : {}),
         ...(afterCase ? { after: afterCase } : {}),
-        differs: !sameOutcome(beforeCase, afterCase),
+        differs: caseDiffers(symbol, { before: beforeCase, after: afterCase }),
       };
     });
     return {
@@ -513,6 +517,7 @@ export async function runPreviewJob(
     inputsSource,
     inputs,
     ...(inputsNote ? { inputsNote } : {}),
+    ...(resolvedImage.note ? { runtimeNote: resolvedImage.note } : {}),
     mocks,
     // Mocks reused from the repo cache were made by the model too.
     mocksSource: mocksSource === "none" && mergeCalls(beforeRun, afterRun).some((c) => c.mocked) ? "ai" : mocksSource,

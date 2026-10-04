@@ -22,17 +22,18 @@ import {
   validateLocalRepoPath,
   type RepoDto,
 } from "@/lib/jobs";
-import { upsertRepo } from "@/lib/neo4j";
+import { listRepos, upsertRepo } from "@/lib/db";
+import type { RepoRecord } from "@/lib/db";
 import { apiError, errorMessage } from "./_shared";
 
-// Every response depends on live Neo4j/Redis state, so nothing here may be
+// Every response depends on live database state, so nothing here may be
 // prerendered or cached at build time.
 export const dynamic = "force-dynamic";
 
 const addRepoSchema = z.discriminatedUnion("provider", [
   z.object({
     provider: z.literal("local"),
-    /** Absolute (or relative to the local-repos root) path — validated against the bind mount below. */
+    /** Absolute path (or relative to `LOCAL_REPOS_ROOT` when that is set) — validated below. */
     localPath: z.string().trim().min(1, "localPath is required."),
     name: z.string().trim().min(1).optional(),
   }),
@@ -59,6 +60,28 @@ export async function GET(): Promise<NextResponse> {
   }
 }
 
+/**
+ * What makes two repos the same: the provider plus the canonical web URL, or
+ * the resolved local path. Case-insensitive — GitHub and GitLab paths are,
+ * and so are Windows and macOS file systems by default.
+ */
+function sourceKey(repo: Pick<RepoRecord, "provider" | "url" | "localPath">): string {
+  const where = repo.provider === "local" ? path.resolve(repo.localPath ?? "") : (repo.url ?? "");
+  const normalized = repo.provider === "local" && process.platform === "linux" ? where : where.toLowerCase();
+  return `${repo.provider}|${normalized.replace(/[\\/]+$/, "").replace(/\.git$/, "")}`;
+}
+
+/** The 409 for a repo that's already been added, or `null` when it's new. */
+async function duplicateOf(candidate: Pick<RepoRecord, "provider" | "url" | "localPath">): Promise<NextResponse | null> {
+  const key = sourceKey(candidate);
+  const existing = (await listRepos()).find((repo) => sourceKey(repo) === key);
+  if (!existing) return null;
+  return NextResponse.json(
+    { error: `This repo is already added as "${existing.name}".`, code: "duplicate", repoId: existing.id },
+    { status: 409 }
+  );
+}
+
 export async function POST(request: Request): Promise<NextResponse> {
   const body = await request.json().catch(() => undefined);
   const parsed = addRepoSchema.safeParse(body);
@@ -77,9 +100,8 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   let repoInput: Parameters<typeof upsertRepo>[0];
   if (input.provider === "local") {
-    // Security boundary: a local source must resolve inside the
-    // read-only bind mount. `validateLocalRepoPath` rejects `..` escapes and
-    // absolute paths pointing elsewhere, and confirms the directory exists.
+    // `validateLocalRepoPath` resolves the path (confining it to
+    // `LOCAL_REPOS_ROOT` when that is set) and confirms the directory exists.
     let resolved: string;
     try {
       resolved = await validateLocalRepoPath(input.localPath);
@@ -87,6 +109,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       const status = error instanceof LocalPathOutsideRootError ? 403 : 400;
       return apiError(errorMessage(error), status);
     }
+    const duplicate = await duplicateOf({ provider: "local", localPath: resolved });
+    if (duplicate) return duplicate;
 
     repoInput = {
       id,
@@ -103,6 +127,8 @@ export async function POST(request: Request): Promise<NextResponse> {
         400
       );
     }
+    const duplicate = await duplicateOf({ provider: "gitlab", url: gitLabRepoWebUrl(ref) });
+    if (duplicate) return duplicate;
     repoInput = {
       id,
       name: input.name ?? ref.path,
@@ -121,6 +147,8 @@ export async function POST(request: Request): Promise<NextResponse> {
         400
       );
     }
+    const duplicate = await duplicateOf({ provider: "github", url: gitHubRepoWebUrl(ref) });
+    if (duplicate) return duplicate;
     repoInput = {
       id,
       name: input.name ?? `${ref.owner}/${ref.repo}`,
@@ -132,6 +160,11 @@ export async function POST(request: Request): Promise<NextResponse> {
       }),
     };
   }
+
+  // Checked again after the (slow) default-branch probe above: two quick
+  // submits of the same URL both pass the first check while they wait.
+  const duplicate = await duplicateOf(repoInput);
+  if (duplicate) return duplicate;
 
   let repo: Awaited<ReturnType<typeof upsertRepo>>;
   try {

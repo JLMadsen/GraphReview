@@ -28,6 +28,8 @@
 //      spend). It is re-checked when the target is (re)selected — the main
 //      effect re-runs — and when the tab becomes visible again; never on a
 //      timer.
+//   7. A coding agent answering a finding over MCP is pushed to the open
+//      dock as a server-sent event, and the settled review is refetched.
 //
 // ---------------------------------------------------------------------------
 // The dependency-array footgun this file is written around
@@ -62,7 +64,7 @@ import {
   type ReviewTargetDTO,
 } from "./types";
 
-/** Poll cadence while a job is queued/running. Mock calls take ~900ms, so this shows every component landing without hammering Neo4j. */
+/** Poll cadence while a job is queued/running. Mock calls take ~900ms, so this shows every component landing without hammering the server. */
 const POLL_INTERVAL_MS = 1200;
 /** Shorter first poll straight after an enqueue, so "queued" appears immediately rather than a second later. */
 const POST_SETTLE_MS = 350;
@@ -98,6 +100,8 @@ const IDLE_SNAPSHOT: ReviewSnapshot = {
 export interface UseReviewResult extends ReviewSnapshot {
   /** Deliberate re-run: removes the finished job and enqueues a fresh one. */
   rerun: () => void;
+  /** Re-runs only the parts whose model call failed (provider error, timeout), keeping every other finding. */
+  retryFailed: () => void;
   /** Whether a re-run is even possible right now. */
   canRerun: boolean;
   /** Marks a below-match finding resolved (or reopens it). Optimistic; reverts with a notice if the server refuses. */
@@ -123,6 +127,9 @@ export function useReview(
   // re-run POSTs even when the target is already `completed`. A ref rather
   // than state because reading it must not itself be a render input.
   const forceRunRef = useRef(false);
+  // Set alongside `forceRunRef` by `retryFailed()`: the POST asks for the
+  // failed parts only.
+  const onlyFailedRef = useRef(false);
   // Monotonic: every effect run claims an id, and any async continuation
   // whose id is no longer current silently returns. This is what makes a
   // target switch mid-poll safe without cancelling via AbortController
@@ -152,6 +159,8 @@ export function useReview(
     const runId = ++runIdRef.current;
     const force = forceRunRef.current;
     forceRunRef.current = false;
+    const onlyFailed = onlyFailedRef.current;
+    onlyFailedRef.current = false;
 
     const currentTarget = targetRef.current;
     if (!targetKey || !currentTarget) {
@@ -182,7 +191,11 @@ export function useReview(
         const res = await fetch(enqueueUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...currentTarget, effort: effortRef.current }),
+          body: JSON.stringify({
+            ...currentTarget,
+            effort: effortRef.current,
+            ...(onlyFailed ? { only: "failed" } : {}),
+          }),
         });
         const json = (await res.json().catch(() => null)) as unknown;
         if (!live()) return false;
@@ -232,10 +245,9 @@ export function useReview(
         if (!live()) return;
         // Success is decided by the HTTP status, never by "does the body
         // have an `error` field" — a 200 status response legitimately
-        // carries one (the endpoint degrades to "findings without live job
-        // state" when Redis is down and says so in `error`). Treating that
-        // as a failed request would throw away findings that are sitting
-        // right there in the same payload.
+        // carries one (a failed run's reason, next to the findings it
+        // already wrote). Treating that as a failed request would throw
+        // away findings that are sitting right there in the same payload.
         if (!res.ok || !json) {
           const failure = (json ?? {}) as ReviewErrorDTO;
           setSnapshot({
@@ -316,51 +328,70 @@ export function useReview(
     // ref or module scope, so no disable comment is needed to keep it out.)
   }, [repoId, targetKey, rerunNonce]);
 
+  // Refetches a settled review that is on screen and folds in its findings
+  // and freshness. One plain GET: never POSTs, never interrupts a run in
+  // flight (polling owns those), and is dropped if the target/run changed
+  // while it was travelling. Reads everything through refs, so it is stable.
+  const refreshSettled = useCallback(() => {
+    const current = snapshotRef.current;
+    const currentTarget = targetRef.current;
+    if (!currentTarget || current.status !== "ready" || isPending(current.state)) return;
+    const runId = runIdRef.current;
+    const url = `/api/repos/${encodeURIComponent(repoId)}/review?${reviewTargetQuery(currentTarget)}`;
+    void (async () => {
+      try {
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json().catch(() => null)) as ReviewStatusResponseDTO | null;
+        if (!data || runIdRef.current !== runId) return;
+        // Only fold in a still-settled review; a run started elsewhere in
+        // the meantime is picked up by the next explicit load, not here.
+        if (isPending(data.state)) return;
+        setSnapshot((prev) =>
+          prev.status === "ready" && !isPending(prev.state)
+            ? { ...prev, findings: data.findings, freshness: data.freshness }
+            : prev
+        );
+      } catch {
+        /* advisory — a failed refresh just leaves the last answer up */
+      }
+    })();
+  }, [repoId]);
+
   // Re-check freshness when the tab comes back into view: the usual way a
   // branch moves is that the user pushed from a terminal in another window.
-  // One plain GET, applied only to a completed review that is on screen — it
-  // never POSTs, never interrupts a run in flight, and is dropped if the
-  // target/run changed while it was travelling. Deps are the two primitives
-  // that identify the review; the state it writes is reached via functional
-  // update and read via `snapshotRef`.
+  // Never on a timer.
   useEffect(() => {
     if (!targetKey) return;
-
     const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
-      const current = snapshotRef.current;
-      const currentTarget = targetRef.current;
-      if (!currentTarget || current.status !== "ready" || current.state !== "completed") {
-        return;
-      }
-      const runId = runIdRef.current;
-      const url = `/api/repos/${encodeURIComponent(repoId)}/review?${reviewTargetQuery(currentTarget)}`;
-      void (async () => {
-        try {
-          const res = await fetch(url, { cache: "no-store" });
-          if (!res.ok) return;
-          const data = (await res.json().catch(() => null)) as ReviewStatusResponseDTO | null;
-          if (!data || runIdRef.current !== runId) return;
-          // Only fold in a still-completed review; a run started elsewhere in
-          // the meantime is picked up by the next explicit load, not here.
-          if (data.state !== "completed") return;
-          setSnapshot((prev) =>
-            prev.status === "ready" && prev.state === "completed"
-              ? { ...prev, findings: data.findings, freshness: data.freshness }
-              : prev
-          );
-        } catch {
-          /* advisory — a failed re-check just leaves the last answer up */
-        }
-      })();
+      if (document.visibilityState === "visible") refreshSettled();
     };
-
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [repoId, targetKey]);
+  }, [targetKey, refreshSettled]);
+
+  // Live updates when a finding changes outside the review job — a coding
+  // agent answering it over MCP. The server only says "something changed"
+  // (app/api/repos/[repoId]/review/events); the review GET stays the source
+  // of truth. EventSource reconnects by itself if the server restarts.
+  useEffect(() => {
+    const currentTarget = targetRef.current;
+    if (!targetKey || !currentTarget) return;
+    const source = new EventSource(
+      `/api/repos/${encodeURIComponent(repoId)}/review/events?${reviewTargetQuery(currentTarget)}`
+    );
+    source.addEventListener("findings", refreshSettled);
+    return () => source.close();
+  }, [repoId, targetKey, refreshSettled]);
 
   const rerun = useCallback(() => {
     forceRunRef.current = true;
+    setRerunNonce((n) => n + 1);
+  }, []);
+
+  const retryFailed = useCallback(() => {
+    forceRunRef.current = true;
+    onlyFailedRef.current = true;
     setRerunNonce((n) => n + 1);
   }, []);
 
@@ -410,7 +441,7 @@ export function useReview(
     !snapshot.rerunning;
 
   return useMemo(
-    () => ({ ...snapshot, rerun, canRerun, setResolved }),
-    [snapshot, rerun, canRerun, setResolved]
+    () => ({ ...snapshot, rerun, retryFailed, canRerun, setResolved }),
+    [snapshot, rerun, retryFailed, canRerun, setResolved]
   );
 }

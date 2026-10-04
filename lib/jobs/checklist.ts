@@ -23,8 +23,8 @@ import {
   listChecklistItems,
   listFindingsByTargetKey,
   saveChecklistAnswers,
-} from "@/lib/neo4j";
-import type { ChecklistItemRecord, ChecklistStatus, RepoRecord } from "@/lib/neo4j";
+} from "@/lib/db";
+import type { ChecklistItemRecord, ChecklistStatus, RepoRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import { loadAiConfigOrNull } from "./merge-naming";
 import { loadCiStatus, loadPrContext } from "./pr-context";

@@ -18,7 +18,7 @@
 // because a route imported `@/lib/jobs` to enqueue something.
 
 import { randomUUID } from "node:crypto";
-import { UnrecoverableError } from "bullmq";
+import { UnrecoverableError } from "./runner";
 import {
   DEFAULT_REVIEW_EFFORT,
   REVIEW_EFFORT_SETTINGS,
@@ -40,15 +40,15 @@ import {
   deleteFindingsForTargetExceptComponents,
   getActiveAiProvider,
   getRepoById,
-  linkPullRequestToRepo,
+  listFindingsByTargetKey,
   prMapFilesKey,
   replaceFindingsForTargetCategory,
   replaceFindingsForTargetComponent,
   savePrMapGrouping,
   upsertPullRequest,
-} from "@/lib/neo4j";
-import type { RepoRecord } from "@/lib/neo4j";
-import type { FindingAssessment, TargetFindingInput } from "@/lib/neo4j";
+} from "@/lib/db";
+import type { RepoRecord } from "@/lib/db";
+import type { FindingAssessment, TargetFindingInput } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import {
   getComponentReviewContexts,
@@ -94,7 +94,7 @@ import {
  */
 const MODEL_CONCURRENCY = 3;
 
-/** Stable `(:PullRequest)` node id for a repo + PR number — mirrors the `<repoId>:<kind>:<key>` convention `analyze.ts` uses for components and files. */
+/** Stable pull request record id for a repo + PR number — mirrors the `<repoId>:<kind>:<key>` convention `analyze.ts` uses for components and files. */
 function pullRequestNodeId(repoId: string, prNumber: number): string {
   return `${repoId}:pr:${prNumber}`;
 }
@@ -105,7 +105,7 @@ function pullRequestNodeId(repoId: string, prNumber: number): string {
 
 /**
  * Reads and decrypts the currently *active* saved AI provider (multiple
- * providers can be saved, lib/neo4j/ai-provider.ts, with one
+ * providers can be saved, lib/db/ai-provider.ts, with one
  * marked active at a time).
  *
  * All three fields are required and checked together: a half-configured
@@ -134,7 +134,7 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
     apiKey = decrypt(provider.apiKeyEncrypted as string);
   } catch {
     throw new UnrecoverableError(
-      "The stored AI API key could not be decrypted — has SESSION_SECRET changed? Re-enter it in Settings."
+      "The stored AI API key could not be decrypted — has the secret key (SESSION_SECRET or secret.key in the data folder) changed? Re-enter it in Settings."
     );
   }
 
@@ -152,7 +152,7 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
 export interface ResolvedTarget {
   files: LocalFilePatch[];
   intent: ReviewInput["intent"];
-  /** `(:PullRequest)` node id to hang `Finding -[:FOR]->` off, for PR targets only. */
+  /** pull request record id to hang `Finding -[:FOR]->` off, for PR targets only. */
   prId?: string;
   /** Human-readable description of the diff source, for the job log. */
   description: string;
@@ -177,8 +177,8 @@ function toIntentIssues(
 }
 
 /**
- * Persists the PR being reviewed as a `(:PullRequest)` node, so the
- * `Finding -[:FOR]-> (:PullRequest)` edge has something to point at.
+ * Persists the PR being reviewed as a pull request record, so findings'
+ * `prId` has something to point at.
  *
  * Best-effort by design: if this write fails, the review itself is still
  * perfectly valid — the findings just lose one edge — so it is logged and
@@ -206,7 +206,6 @@ async function persistPullRequestNode(
       createdAt: pr.createdAt,
       updatedAt: pr.updatedAt,
     });
-    await linkPullRequestToRepo(id, repo.id);
     return id;
   } catch (error) {
     log(`could not persist PullRequest node ${id}: ${(error as Error).message}`);
@@ -561,6 +560,7 @@ async function runIntentPass(args: {
         assessment: "unknown",
         confidence: 0,
         rationale: `The AI intent-check call did not complete: ${message}`,
+        callFailed: true,
       },
     };
   }
@@ -624,8 +624,36 @@ export async function runReviewJob(
       `${match.unmatchedFiles.length} changed path(s) matched no analyzed file`
   );
 
+  // --- "Retry failed": only the parts whose model call never completed ----
+  // Everything else the last run wrote stays as it is (and isn't paid for
+  // again). Only safe while the target is where that run left it — once the
+  // head moves, the kept findings describe other code, so it's a full run.
+  let retry: { componentIds: Set<string>; intent: boolean } | undefined;
+  if (data.only === "failed") {
+    const existing = await listFindingsByTargetKey(repoId, targetKey);
+    const failed = existing.filter((finding) => finding.callFailed);
+    const headSha = resolved.reviewed.headSha;
+    const sameHead = !headSha || existing.every((f) => !f.reviewedHeadSha || f.reviewedHeadSha === headSha);
+    if (failed.length === 0) {
+      log("retry requested but nothing failed — running the full review");
+    } else if (!sameHead) {
+      log("the target moved since the last review — running a full review instead of retrying failures");
+    } else {
+      retry = {
+        componentIds: new Set(failed.filter((f) => f.category === "change").map((f) => f.componentId)),
+        intent: failed.some((f) => f.category === "intent"),
+      };
+      log(
+        `retrying ${retry.componentIds.size} failed component(s)` +
+          (retry.intent ? " and the intent check" : "") +
+          "; keeping every other finding"
+      );
+    }
+  }
+  const toReview = retry ? contexts.filter((context) => retry.componentIds.has(context.id)) : contexts;
+
   const progress: ReviewProgress = {
-    total: contexts.length,
+    total: toReview.length,
     completed: 0,
     failed: 0,
     calls: 0,
@@ -642,7 +670,7 @@ export async function runReviewJob(
   const publishProgress = async (): Promise<void> => {
     progress.running = [...running.values()];
     try {
-      // Progress is advisory (a live counter) — a Redis hiccup writing
+      // Progress is advisory (a live counter) — a hiccup writing
       // it must never take down a job that is otherwise succeeding.
       await job?.updateProgress({ ...progress });
     } catch {
@@ -655,10 +683,8 @@ export async function runReviewJob(
   let findingsWritten = 0;
   let nextIndex = 0;
   // Persistence is funnelled through this promise chain so that, however
-  // many model calls finish at once, only one relationship-creating Neo4j
-  // write is ever in flight. Neo4j Community deadlocks otherwise — every
-  // finding for a component MERGEs an edge onto the same component node.
-  // See NEO4J_RELATIONSHIP_WRITE_CONCURRENCY in ./analyze.ts.
+  // many model calls finish at once, findings are written one component at
+  // a time and in completion order.
   let writeChain: Promise<unknown> = Promise.resolve();
   /** A few finding summaries per component, for the PR map pass. */
   const summariesByComponent = new Map<string, string[]>();
@@ -760,6 +786,7 @@ export async function runReviewJob(
           assessment: "unknown",
           confidence: 0,
           rationale: `The AI review call for this component did not complete: ${message}`,
+          callFailed: true,
           model: aiConfig.model,
           createdAt: new Date().toISOString(),
           ...revision,
@@ -790,12 +817,12 @@ export async function runReviewJob(
   };
 
   const runner = async (): Promise<void> => {
-    for (let index = nextIndex++; index < contexts.length; index = nextIndex++) {
-      await reviewOne(contexts[index]);
+    for (let index = nextIndex++; index < toReview.length; index = nextIndex++) {
+      await reviewOne(toReview[index]);
     }
   };
   await Promise.all(
-    Array.from({ length: Math.min(MODEL_CONCURRENCY, contexts.length) }, runner)
+    Array.from({ length: Math.min(MODEL_CONCURRENCY, toReview.length) }, runner)
   );
 
   // --- Drop findings for components this target no longer touches -------
@@ -823,6 +850,34 @@ export async function runReviewJob(
       log(`persisting ${category} findings failed — ${(error as Error).message}`);
     }
   };
+
+  if (retry) {
+    // The intent call sees one line per finding — the kept ones included.
+    if (retry.intent && resolved.intent.source === "pull_request") {
+      const lines = (await listFindingsByTargetKey(repoId, targetKey))
+        .filter((f) => f.category !== "intent" && !f.callFailed)
+        .map((f) => `${f.filePath ?? f.componentName}: ${f.summary} (${[f.kind, f.scope, f.assessment].filter(Boolean).join(", ")})`);
+      running.set("__intent", "Intent check");
+      await publishProgress();
+      const intentPass = await runIntentPass({
+        intent: resolved.intent,
+        files: resolved.files,
+        findingLines: lines,
+        aiConfig,
+        tokenBudget: effortSettings.tokenBudget,
+        prId: resolved.prId,
+        revision,
+        log,
+      });
+      running.delete("__intent");
+      progress.calls += intentPass.calls;
+      progress.promptTokens += intentPass.promptTokens;
+      progress.completionTokens += intentPass.completionTokens;
+      await persistCategory("intent", [intentPass.finding]);
+    }
+    await publishProgress();
+    return finish();
+  }
 
   // --- Usages the change left behind ----------------------------------------
   running.set("__impact", "Impact check");
@@ -889,27 +944,30 @@ export async function runReviewJob(
   progress.completionTokens += prMapSpent.completionTokens;
 
   await publishProgress();
+  return finish();
 
-  const durationMs = Date.now() - startedAt;
-  log(
-    `done in ${durationMs}ms — ${progress.completed} component(s) reviewed, ` +
-      `${progress.failed} failed, ${findingsWritten} finding(s), ${progress.calls} model call(s), ` +
-      `${progress.promptTokens}+${progress.completionTokens} token(s)`
-  );
+  function finish(): ReviewJobResult {
+    const durationMs = Date.now() - startedAt;
+    log(
+      `done in ${durationMs}ms — ${progress.completed} component(s) reviewed, ` +
+        `${progress.failed} failed, ${findingsWritten} finding(s), ${progress.calls} model call(s), ` +
+        `${progress.promptTokens}+${progress.completionTokens} token(s)`
+    );
 
-  return {
-    repoId,
-    targetKey,
-    components: contexts.length,
-    failedComponents: progress.failed,
-    findings: findingsWritten,
-    calls: progress.calls,
-    promptTokens: progress.promptTokens,
-    completionTokens: progress.completionTokens,
-    prunedFindings,
-    durationMs,
-    ...(resolved.reviewed.baseSha ? { reviewedBaseSha: resolved.reviewed.baseSha } : {}),
-    ...(resolved.reviewed.headSha ? { reviewedHeadSha: resolved.reviewed.headSha } : {}),
-    reviewedAt,
-  };
+    return {
+      repoId,
+      targetKey,
+      components: toReview.length,
+      failedComponents: progress.failed,
+      findings: findingsWritten,
+      calls: progress.calls,
+      promptTokens: progress.promptTokens,
+      completionTokens: progress.completionTokens,
+      prunedFindings,
+      durationMs,
+      ...(resolved.reviewed.baseSha ? { reviewedBaseSha: resolved.reviewed.baseSha } : {}),
+      ...(resolved.reviewed.headSha ? { reviewedHeadSha: resolved.reviewed.headSha } : {}),
+      reviewedAt,
+    };
+  }
 }

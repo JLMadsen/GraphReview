@@ -1,13 +1,13 @@
 // POST /api/repos/[repoId]/diff-impact/added-components — labels the
 // `unmatchedFiles` from a prior `POST ../diff-impact` call (files a PR added
-// that have no `(:File)` node in the persisted graph yet) as ephemeral,
+// that have no stored file in the persisted graph yet) as ephemeral,
 // folder-clustered "components" with an AI-written description each.
 //
 // Sibling of `../route.ts`, same reasoning as `../file/route.ts`: this is a
 // separate call rather than folded into the diff-impact response so the
 // client can skip it entirely on a cache hit (see
 // lib/jobs/added-components.ts's doc comment) instead of paying an AI call
-// on every "Check impact" click. No Neo4j write — nothing here is persisted.
+// on every "Check impact" click. No database write — nothing here is persisted.
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -15,7 +15,7 @@ import {
   describeAddedComponents,
   synthesizeAddedComponents,
 } from "@/lib/jobs/added-components";
-import { getRepoById } from "@/lib/neo4j";
+import { getRepoById } from "@/lib/db";
 import type { AddedComponentsResponseDTO } from "@/components/graph/types";
 
 export const dynamic = "force-dynamic";

@@ -26,7 +26,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import type { RepoStatus } from "@/lib/jobs";
-import type { RepoProvider } from "@/lib/neo4j";
+import type { RepoProvider } from "@/lib/db";
 import { StatusLogHover } from "./status-log-hover";
 
 function shortSha(sha?: string): string | undefined {

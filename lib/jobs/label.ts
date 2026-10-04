@@ -20,7 +20,7 @@
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { UnrecoverableError } from "bullmq";
+import { UnrecoverableError } from "./runner";
 import { labelComponents } from "@/lib/ai";
 import type { AiProviderConfig, LabelInput, LabelModuleInput } from "@/lib/ai";
 import { decrypt } from "@/lib/crypto";
@@ -29,13 +29,12 @@ import {
   getActiveAiProvider,
   getRepoById,
   linkComponentChildOf,
-  linkComponentToRepo,
   listModuleLabelInputs,
   setComponentDescription,
   setRepoDomainsStale,
   upsertComponent,
-} from "@/lib/neo4j";
-import type { RepoRecord } from "@/lib/neo4j";
+} from "@/lib/db";
+import type { RepoRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import {
   LABEL_CANCELLED_REASON,
@@ -60,7 +59,7 @@ const README_CANDIDATES = ["README.md", "readme.md", "README", "Readme.md", "REA
 
 /**
  * Reads and decrypts the currently *active* saved AI provider (multiple
- * providers can be saved, lib/neo4j/ai-provider.ts, with one
+ * providers can be saved, lib/db/ai-provider.ts, with one
  * marked active at a time).
  *
  * Deliberately a local copy of `./review.ts`'s equivalent rather than a
@@ -90,7 +89,7 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
     apiKey = decrypt(provider.apiKeyEncrypted as string);
   } catch {
     throw new UnrecoverableError(
-      "The stored AI API key could not be decrypted — has SESSION_SECRET changed? Re-enter it in Settings."
+      "The stored AI API key could not be decrypted — has the secret key (SESSION_SECRET or secret.key in the data folder) changed? Re-enter it in Settings."
     );
   }
 
@@ -110,7 +109,7 @@ async function loadAiConfig(): Promise<AiProviderConfig> {
  * "perhaps a README/package.json snippet" alongside the paths.
  *
  * Entirely best-effort: a repo whose source isn't on disk (never cloned, or
- * a local path outside the bind mount) simply gets labeled from its
+ * a local path that no longer exists) simply gets labeled from its
  * module names and paths, which is the input the feature is designed around
  * anyway. Never throws.
  */
@@ -223,7 +222,7 @@ export async function runLabelJob(
   };
   const publishProgress = async (): Promise<void> => {
     try {
-      // Progress is advisory (a live counter) — a Redis hiccup writing it
+      // Progress is advisory (a live counter) — a hiccup writing it
       // must never take down a job that is otherwise succeeding.
       await job?.updateProgress({ ...progress });
     } catch {
@@ -276,10 +275,7 @@ export async function runLabelJob(
   //
   // Replace, don't accumulate: the previous run's domains are removed first,
   // so re-labeling can't leave orphaned boxes behind when the model picks
-  // different names. Every write below is serial — these MERGE relationships
-  // onto shared endpoints, and Neo4j Community deadlocks on parallel
-  // relationship writes (see analyze.ts's
-  // NEO4J_RELATIONSHIP_WRITE_CONCURRENCY).
+  // different names.
   // From here on the run is committed: stopping half-way through these
   // writes would leave the old domains deleted and the new ones partly
   // written, so the saving phase ignores cancellation.
@@ -322,7 +318,6 @@ export async function runLabelJob(
       pathPatterns: [],
       tier: "domain",
     });
-    await linkComponentToRepo(domainId, repoId);
     for (const moduleId of domain.moduleIds) {
       await linkComponentChildOf(moduleId, domainId);
     }

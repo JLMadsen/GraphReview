@@ -9,7 +9,7 @@
 
 import { NextResponse } from "next/server";
 import { buildAppMap, loadAppMapInput, toStoredAppMaps } from "@/lib/jobs";
-import { getAppMapRecords, getRepoById } from "@/lib/neo4j";
+import { getAppMapRecords, getRepoById } from "@/lib/db";
 import { isAppMapLevel, type AppMapResponseDTO } from "@/components/graph/app-map-types";
 
 export const dynamic = "force-dynamic";

@@ -1,6 +1,6 @@
 // GET /api/repos/[repoId]/graph
 //
-// Returns every `(:Component)` for the repo plus the `DEPENDS_ON` edges
+// Returns every component of the repo plus the `DEPENDS_ON` edges
 // between them, in the flat DTO shape `components/graph/` renders. The
 // domain tier is populated on demand by the AI labeling job
 // (lib/jobs/label.ts), so a repo may legitimately have none: a component
@@ -11,17 +11,14 @@
 // points at a module — so their `fileCount` is **summed from their
 // children**. Reporting the raw 0 would size every domain box's label as
 // "0 files" and, worse, feed a 0 into the canvas's node-size scale.
-//
-// `lib/neo4j`'s repository functions (component.ts, file.ts) don't expose
-// a "list DEPENDS_ON edges for a repo" or "list CHILD_OF parents for a
-// repo" query — only per-node helpers keyed by id. Rather than add new
-// exports to that module (out of this task's owned paths), this route
-// uses `runRead` directly, which `lib/neo4j/client.ts` explicitly documents
-// route handlers as an intended caller of alongside the repository
-// modules.
 
 import { NextResponse } from "next/server";
-import { listComponentsByRepoId, listFilesByComponentId, runRead } from "@/lib/neo4j";
+import {
+  countFilesByComponent,
+  listComponentDependencies,
+  listComponentParents,
+  listComponentsByRepoId,
+} from "@/lib/db";
 import type { GraphEdgeDTO, GraphNodeDTO, GraphResponseDTO } from "@/components/graph/types";
 
 export const dynamic = "force-dynamic";
@@ -35,36 +32,13 @@ export async function GET(
   try {
     const components = await listComponentsByRepoId(repoId);
 
-    const [fileCountEntries, parentResult, dependsOnResult] = await Promise.all([
-      Promise.all(
-        components.map(async (c) => {
-          const files = await listFilesByComponentId(c.id);
-          return [c.id, files.length] as const;
-        })
-      ),
-      runRead(
-        `
-        MATCH (child:Component {repoId: $repoId})-[:CHILD_OF]->(parent:Component)
-        RETURN child.id AS childId, parent.id AS parentId
-        `,
-        { repoId }
-      ),
-      runRead(
-        `
-        MATCH (a:Component {repoId: $repoId})-[dep:DEPENDS_ON]->(b:Component {repoId: $repoId})
-        RETURN a.id AS source, b.id AS target, dep.weight AS weight
-        `,
-        { repoId }
-      ),
+    const [fileCountById, parents, dependencies] = await Promise.all([
+      countFilesByComponent(repoId),
+      listComponentParents(repoId),
+      listComponentDependencies(repoId),
     ]);
 
-    const fileCountById = new Map(fileCountEntries);
-    const parentById = new Map(
-      parentResult.records.map((record) => [
-        record.get("childId") as string,
-        record.get("parentId") as string,
-      ])
-    );
+    const parentById = new Map(parents.map((p) => [p.childId, p.parentId]));
 
     // A domain's file count is the sum of its children's (see the header).
     // Computed from the same `parentById` map the nesting uses, so the two
@@ -92,10 +66,10 @@ export async function GET(
       origin: c.origin === "merge" ? "merge" : undefined,
     }));
 
-    const edges: GraphEdgeDTO[] = dependsOnResult.records.map((record) => ({
-      source: record.get("source") as string,
-      target: record.get("target") as string,
-      weight: Number(record.get("weight")),
+    const edges: GraphEdgeDTO[] = dependencies.map((d) => ({
+      source: d.source,
+      target: d.target,
+      weight: d.weight,
     }));
 
     const body: GraphResponseDTO = { nodes, edges };

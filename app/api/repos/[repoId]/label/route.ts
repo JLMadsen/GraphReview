@@ -27,7 +27,7 @@ import {
   type CancelLabelResult,
   type LabelProgress,
 } from "@/lib/jobs";
-import { getActiveAiProvider, getLabelSummary, getRepoById } from "@/lib/neo4j";
+import { getActiveAiProvider, getLabelSummary, getRepoById } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -35,13 +35,13 @@ export const dynamic = "force-dynamic";
 // Response contract
 // ---------------------------------------------------------------------------
 
-/** Lifecycle of a repo's labeling run, collapsed from BullMQ's finer-grained job states. `"none"` means "never labeled". */
+/** Lifecycle of a repo's labeling run, collapsed from the job runner's states. `"none"` means "never labeled". */
 export type LabelState = "none" | "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export interface LabelStatusResponse {
   state: LabelState;
   progress?: LabelProgress;
-  /** The failed job's `failedReason`, or a degraded-read note (e.g. Redis down). */
+  /** The failed job's `failedReason`. */
   error?: string;
   /** `running` only: the user asked to cancel and the worker hasn't stopped yet. */
   cancelRequested?: boolean;
@@ -78,14 +78,6 @@ const bodySchema = z.object({ force: z.boolean().optional() }).optional();
 
 function errorResponse(error: string, status: number, code?: string): NextResponse {
   return NextResponse.json(code ? { error, code } : { error }, { status });
-}
-
-/** Whether the failure looks like "Redis is unreachable" rather than a real application error — see the review route for why the producer connection's bounded retry makes this a 503. */
-function isRedisUnavailable(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EPIPE|max retries per request|Connection is closed|Stream isn't writeable|Redis/i.test(
-    message
-  );
 }
 
 /** The active saved provider must have all three fields present for a labeling run to be possible (base URL + key + model are one unit). */
@@ -135,14 +127,6 @@ export async function POST(
     };
     return NextResponse.json(body);
   } catch (err) {
-    if (isRedisUnavailable(err)) {
-      console.error(`POST /api/repos/${repoId}/label — redis unavailable:`, err);
-      return errorResponse(
-        "The job queue is unavailable — is Redis running?",
-        503,
-        "queue_unavailable"
-      );
-    }
     console.error(`POST /api/repos/${repoId}/label failed:`, err);
     return errorResponse(
       err instanceof Error ? err.message : "Failed to enqueue the labeling run.",
@@ -155,7 +139,7 @@ export async function POST(
 // GET — status
 // ---------------------------------------------------------------------------
 
-/** Collapses BullMQ's job states onto the five the UI knows about. */
+/** Collapses the job runner's states onto the five the UI knows about. */
 function toLabelState(jobState: string): LabelState {
   switch (jobState) {
     case "waiting":
@@ -217,32 +201,23 @@ export async function GET(
     let finishedAt: string | undefined;
     let warning: string | undefined;
 
-    try {
-      const job = await getLabelJob(repoId);
-      if (job) {
-        state = toLabelState(await job.getState());
-        progress = toProgress(job.progress);
-        if (state === "failed" && job.failedReason === LABEL_CANCELLED_REASON) {
-          state = "cancelled";
-        } else if (state === "failed") {
-          error = job.failedReason || "The labeling job failed.";
-        }
-        if (state === "running") cancelRequested = await isLabelCancelRequested(repoId);
-        if (job.finishedOn) finishedAt = new Date(job.finishedOn).toISOString();
-        if (state === "completed" && job.returnvalue?.keptPreviousDomains) {
-          warning =
-            summary.domains > 0
-              ? "The model's domain grouping couldn't be used, so the existing domains were kept. Try again, or a larger model."
-              : "The model's domain grouping couldn't be used. Try again, or a larger model.";
-        }
+    const job = await getLabelJob(repoId);
+    if (job) {
+      state = toLabelState(await job.getState());
+      progress = toProgress(job.progress);
+      if (state === "failed" && job.failedReason === LABEL_CANCELLED_REASON) {
+        state = "cancelled";
+      } else if (state === "failed") {
+        error = job.failedReason || "The labeling job failed.";
       }
-    } catch (queueError) {
-      // Redis being down must not hide a domain tier that is already in
-      // Neo4j — degrade to "no live job state" and say why, exactly as the
-      // review endpoint does.
-      if (!isRedisUnavailable(queueError)) throw queueError;
-      console.error(`GET /api/repos/${repoId}/label — redis unavailable:`, queueError);
-      error = "The job queue is unavailable — live progress could not be read.";
+      if (state === "running") cancelRequested = await isLabelCancelRequested(repoId);
+      if (job.finishedOn) finishedAt = new Date(job.finishedOn).toISOString();
+      if (state === "completed" && job.returnvalue?.keptPreviousDomains) {
+        warning =
+          summary.domains > 0
+            ? "The model's domain grouping couldn't be used, so the existing domains were kept. Try again, or a larger model."
+            : "The model's domain grouping couldn't be used. Try again, or a larger model.";
+      }
     }
 
     // A job only lives as long as its retention window, while the domain
@@ -254,7 +229,7 @@ export async function GET(
     }
 
     // Read on demand only (`?logs=1`) — never part of the regular ~1.2s
-    // progress poll, since that would spend a Redis round trip on every tick
+    // progress poll, since that would spend a database read on every tick
     // for a hover nobody may ever make. Best-effort: a failure here must not
     // take down a response that otherwise successfully answered the status
     // question.
@@ -312,14 +287,6 @@ export async function DELETE(
     const body: CancelLabelResponse = await cancelLabel(repoId);
     return NextResponse.json(body);
   } catch (err) {
-    if (isRedisUnavailable(err)) {
-      console.error(`DELETE /api/repos/${repoId}/label — redis unavailable:`, err);
-      return errorResponse(
-        "The job queue is unavailable — is Redis running?",
-        503,
-        "queue_unavailable"
-      );
-    }
     console.error(`DELETE /api/repos/${repoId}/label failed:`, err);
     return errorResponse(
       err instanceof Error ? err.message : "Failed to cancel the labeling run.",

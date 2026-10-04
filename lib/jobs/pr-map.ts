@@ -3,7 +3,7 @@
 // labelled edges between the groups.
 //
 // Two layers:
-//   1. `loadPrMapInput` — the only Neo4j-touching part: which component owns
+//   1. `loadPrMapInput` — the only database-touching part: which component owns
 //      each changed file, and the `IMPORTS` edges into and out of the changed
 //      files (one hop, so untouched neighbours can show up as context cards).
 //   2. Everything else is pure. Files are classified by path (code / test /
@@ -19,7 +19,7 @@
 // job and for tests.
 
 import path from "node:path";
-import { listPrMapComponents, listPrMapImports } from "@/lib/neo4j";
+import { listPrMapComponents, listPrMapImports } from "@/lib/db";
 import type {
   PrMapEdgeDTO,
   PrMapFileDTO,
@@ -567,7 +567,7 @@ export function buildHeuristicPrMap(input: PrMapInput): { nodes: PrMapNodeDTO[];
   return assemblePrMap(input, collectPrMapLinks(input), heuristicPrMapGroups(input));
 }
 
-/** An AI grouping as lib/ai/pr-map.ts returns it and lib/neo4j stores it. */
+/** An AI grouping as lib/ai/pr-map.ts returns it and lib/db stores it. */
 export interface PrMapAiGrouping {
   groups: Array<{ name: string; description?: string; files: string[] }>;
   edgeLabels: Array<{ from: string; to: string; label: string }>;

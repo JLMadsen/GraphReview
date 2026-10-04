@@ -1,23 +1,36 @@
 # Agent instructions
 
-## Docker builds
+## Running the app
 
-Never run `docker compose build` / `docker build` / `docker compose up --build` directly.
-Rebuilding without pruning leaves the previous image dangling (untagged, `<none>:<none>`)
-because the tag just moves to the new image — old layers stick around and silently eat disk.
+GraphReview is one Node process: `npm run dev` starts the Next.js dev server
+*and* the background job workers (instrumentation.ts → worker/index.ts).
+There is no separate worker, database server or queue to start. Dev data
+lives in `.data/` (SQLite file, clone cache, generated credential key);
+delete that folder to start from scratch.
 
-Always use:
+Requires Node.js 22.13+ (`node:sqlite`).
+
+## Building while the user's copy runs
+
+The user may be running GraphReview from this checkout (`npx graphreview`
+linked to it, or `npm start`), which serves `.next/`. `npm run dev` is safe:
+it always builds into `.next-dev/` (next.config.mjs). Never `npm run build`
+into `.next/` while the user's copy is running — check `~/.graphreview/instance.json` for a live
+pid. To verify a build, use a separate folder:
 
 ```bash
-npm run docker
+GRAPHREVIEW_DIST_DIR=.next-check npx next build
 ```
 
-This builds the `app`/`worker` images (docker/docker-compose.yml, docker/Dockerfile), prunes the
-now-dangling previous image (`docker image prune -f` — only removes untagged images, never
-anything currently tagged or in use, so it's safe every time), then runs `docker compose up`.
+`npm pack` builds into `.next/` (prepack), so only pack when the user's copy
+isn't running from here, and tell them to restart it afterwards.
 
-Use `npm run docker:build` instead if you only want to build + prune without starting containers.
+## Packaging
 
-Use `npm run docker:up` (plain `up`, no build) only when you're certain no source/Dockerfile
-changes have happened since the last build — it starts whatever image is already tagged, which
-can silently run stale code otherwise.
+The app ships as an npm package run with `npx graphreview`
+(bin/graphreview.mjs → `next start`). `npm pack` builds and packs it; test a
+change to the launcher or the `files` list by installing that tarball into
+an empty folder and running `npx graphreview --no-open --data <tmp dir>`.
+Never `npm publish` without the user asking. `npm pack` packs the working
+copy, not the commit: `bin/graphreview.mjs` must have LF line endings (a CRLF
+shebang breaks it on macOS/Linux) — `git checkout -- bin` restores them.

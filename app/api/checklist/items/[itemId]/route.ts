@@ -5,7 +5,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { deleteChecklistItem, updateChecklistItem } from "@/lib/neo4j";
+import { deleteChecklistItem, updateChecklistItem } from "@/lib/db";
 import { apiError, errorMessage } from "@/app/api/repos/_shared";
 
 export const dynamic = "force-dynamic";
