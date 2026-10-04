@@ -31,9 +31,9 @@ jobs:
           fi
       - run: npm ci
       - name: Build the offline bundle
-        run: .github/scripts/offline-bundle.sh dist
+        run: bash .github/scripts/offline-bundle.sh dist
       - name: Start it with no network
-        run: .github/scripts/offline-smoke-test.sh dist/graphreview-*-linux-x64.tar.gz
+        run: bash .github/scripts/offline-smoke-test.sh dist/graphreview-*-linux-x64.tar.gz
       - name: Save the preview image
         run: |
           major=$(sed -n 's/^export const DEFAULT_NODE_MAJOR = \([0-9]*\);/\1/p' lib/preview/node-version.ts)
