@@ -28,6 +28,9 @@ change actually touches and which ones depend on it.
 It runs on your machine, against GitHub pull requests, GitLab merge requests
 or plain branches in a local checkout. No account, no cloud, nothing to host.
 
+> [!NOTE]
+> Reviews are as good as the model you hook it up to.
+
 ## What it does
 
 **Maps the change.** Static analysis builds a component graph of the repo
@@ -56,6 +59,8 @@ throwaway Docker container. Swap the mocked props to see each state.
 agent) read the open findings, look at the code, and reply to each one:
 "doesn't hold, because…" or "fair, fixing it". The replies show up right
 under the finding.
+
+![Agent harness answered a review](docs/images/mcp.png)
 
 ## Getting started
 
