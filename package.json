@@ -3,6 +3,10 @@
   "version": "0.1.2",
   "description": "Review pull requests against a component graph of your codebase, with optional AI review. Runs locally.",
   "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JLMadsen/GraphReview.git"
+  },
   "bin": {
     "graphreview": "bin/graphreview.mjs"
   },

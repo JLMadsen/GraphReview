@@ -3,7 +3,8 @@
 #   1. builds the offline bundle for Linux x64 and starts it with no network,
 #   2. creates the GitHub Release with the bundle, the preview image and
 #      checksums attached,
-#   3. publishes the package to npm (needs the NPM_TOKEN repository secret).
+#   3. publishes the package to npm (trusted publishing, no token; see the
+#      npm job).
 name: Release
 
 on:
@@ -69,9 +70,15 @@ jobs:
 
           **Offline (Linux x64):** download \`graphreview-${GITHUB_REF_NAME#v}-linux-x64.tar.gz\`, copy it over, \`tar -xzf\` it and run \`./graphreview\`. Node.js is included; git is needed. For before/after previews also \`docker load -i\` the preview image. See README.txt in the bundle."
 
+  # Trusted publishing: npm checks this workflow's GitHub identity (OIDC)
+  # instead of a token. Set up once on npmjs.com → graphreview → Settings →
+  # Trusted publisher (GitHub Actions, JLMadsen/GraphReview, release.yml).
   npm:
     needs: offline-bundle
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -79,8 +86,8 @@ jobs:
           node-version: 22
           cache: npm
           registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1+; Node 22 ships npm 10.
+      - run: npm install -g npm@latest
       - run: npm ci
       # prepack runs the production build.
       - run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
