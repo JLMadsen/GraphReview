@@ -4,8 +4,18 @@
 // publishes. Versions are just a counter; nothing else needs choosing.
 import { execFileSync } from "node:child_process";
 
-const run = (command, args) => execFileSync(command, args, { stdio: "inherit", shell: process.platform === "win32" });
+// No shell anywhere: on Windows one would split "Release %s" into two
+// arguments. npm is run as the npm-cli.js `npm run` itself is (npm.cmd can't
+// be started without a shell).
+const run = (command, args) => execFileSync(command, args, { stdio: "inherit" });
 const read = (args) => execFileSync("git", args, { encoding: "utf8" }).trim();
+const npm = (args) => {
+  if (!process.env.npm_execpath) {
+    console.error("release: run this as `npm run release`.");
+    process.exit(1);
+  }
+  run(process.execPath, [process.env.npm_execpath, ...args]);
+};
 
 const branch = read(["branch", "--show-current"]);
 if (branch !== "Master") {
@@ -18,6 +28,6 @@ if (read(["status", "--porcelain"])) {
 }
 
 run("git", ["pull", "--ff-only"]);
-run("npm", ["version", "patch", "-m", "Release %s"]);
+npm(["version", "patch", "-m", "Release %s"]);
 run("git", ["push", "--follow-tags"]);
 console.log("release: pushed — follow it under Actions → Release on GitHub.");
