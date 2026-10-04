@@ -1,6 +1,6 @@
 {
   "name": "graphreview",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Review pull requests against a component graph of your codebase, with optional AI review. Runs locally.",
   "license": "GPL-3.0-only",
   "bin": {
