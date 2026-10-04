@@ -39,6 +39,8 @@ import {
   Cable,
   Check,
   ChevronRight,
+  ChevronsDown,
+  ChevronsUp,
   CircleCheck,
   CircleDashed,
   CircleHelp,
@@ -119,6 +121,10 @@ export interface ReviewPanelProps {
   /** Effort level for the next run (automatic or re-run). Changing it does not start a run by itself. */
   effort: ReviewEffort;
   onEffortChange: (effort: ReviewEffort) => void;
+  /** The dock has the whole column, the map folded away above it. */
+  expanded?: boolean;
+  /** Folds the map away (Expand) or brings it back (Show map). Absent: no button. */
+  onToggleExpanded?: () => void;
 }
 
 const shortSha = (sha: string) => sha.slice(0, 7);
@@ -770,6 +776,8 @@ export function ReviewPanel({
   onSetResolved,
   effort,
   onEffortChange,
+  expanded = false,
+  onToggleExpanded,
 }: ReviewPanelProps) {
   /** The finding whose file diff is open in `FileDiffModal`, or `null` when it's closed. */
   const [diffFinding, setDiffFinding] = useState<FindingDTO | null>(null);
@@ -920,6 +928,19 @@ export function ReviewPanel({
           )}
 
           <div className="ml-auto flex items-center gap-1">
+            {onToggleExpanded && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                onClick={onToggleExpanded}
+                aria-expanded={expanded}
+                title={expanded ? "Bring the map back above the review" : "Fold the map away and give the review the whole column"}
+              >
+                {expanded ? <ChevronsDown aria-hidden /> : <ChevronsUp aria-hidden />}
+                {expanded ? "Show map" : "Expand"}
+              </Button>
+            )}
             {aiConfigured && (
               <Button
                 type="button"

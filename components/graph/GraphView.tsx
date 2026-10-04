@@ -93,6 +93,7 @@ function viewLayerClass(active: boolean): string {
 }
 const VIEW_STORAGE_KEY = "graphreview.graph.view";
 const APP_LEVEL_STORAGE_KEY = "graphreview.appmap.level";
+const REVIEW_EXPANDED_STORAGE_KEY = "graphreview.review.expanded";
 
 /** Trimmed shape of `GET /api/repos/[repoId]` — see this repo's task brief. Only the fields this view needs. */
 interface RepoContext {
@@ -158,12 +159,15 @@ export function GraphView({
   /** The view last chosen — remembered per browser, `pr` by default. With no diff selected, `pr` falls back to the App map. */
   const [preferredView, setPreferredViewState] = useState<GraphViewMode>("pr");
   const [appLevel, setAppLevelState] = useState<AppMapLevel>("architecture");
+  /** The review dock took the whole column (map folded away) — remembered per browser. */
+  const [reviewExpanded, setReviewExpandedState] = useState(false);
   useEffect(() => {
     try {
       const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
       if (stored === "repo" || stored === "pr" || stored === "app") setPreferredViewState(stored);
       const level = window.localStorage.getItem(APP_LEVEL_STORAGE_KEY);
       if (isAppMapLevel(level)) setAppLevelState(level);
+      if (window.localStorage.getItem(REVIEW_EXPANDED_STORAGE_KEY) === "1") setReviewExpandedState(true);
     } catch {
       /* storage unavailable — keep the defaults */
     }
@@ -175,6 +179,18 @@ export function GraphView({
     } catch {
       /* ignored */
     }
+  }, []);
+  /** The map is folded away only while there is a review to give the room to. */
+  const mapFolded = reviewExpanded && reviewTarget !== null;
+  const toggleReviewExpanded = useCallback(() => {
+    setReviewExpandedState((expanded) => {
+      try {
+        window.localStorage.setItem(REVIEW_EXPANDED_STORAGE_KEY, expanded ? "0" : "1");
+      } catch {
+        /* ignored */
+      }
+      return !expanded;
+    });
   }, []);
   const canvasRef = useRef<GraphCanvasHandle>(null);
   /** The file open in the diff modal, and optionally the before/after component to start on. */
@@ -538,7 +554,7 @@ export function GraphView({
             </span>
           </p>
         )}
-        {!usingSample && (
+        {!usingSample && !mapFolded && (
           <Segmented
             label="Graph view"
             value={view}
@@ -558,12 +574,19 @@ export function GraphView({
         {/* The three views share this one fixed-height cell; each is a flex
             column whose canvas takes whatever its own toolbar leaves. With a
             review under it the map section gets a bit over half the tab,
-            without one everything but the view switch. */}
+            without one everything but the view switch. The review's Expand
+            folds it to nothing (the canvases skip a zero size and refit when
+            it comes back), so the findings get the whole column. */}
         <div
-          className="grid shrink-0"
+          className={cn("grid shrink-0 transition-[height] duration-200", mapFolded && "-mb-3 overflow-hidden")}
           style={{
-            height: reviewTarget ? "calc(var(--tab-h, 100vh) * 0.58)" : "calc(var(--tab-h, 100vh) - 3.75rem)",
+            height: mapFolded
+              ? 0
+              : reviewTarget
+                ? "calc(var(--tab-h, 100vh) * 0.58)"
+                : "calc(var(--tab-h, 100vh) - 3.75rem)",
           }}
+          inert={mapFolded}
         >
         {appMounted && !usingSample && (
           <div className={viewLayerClass(view === "app")} inert={view !== "app"}>
@@ -676,6 +699,8 @@ export function GraphView({
             onSetResolved={review.setResolved}
             effort={reviewEffort}
             onEffortChange={setReviewEffort}
+            expanded={reviewExpanded}
+            onToggleExpanded={toggleReviewExpanded}
           />
         )}
       </div>
