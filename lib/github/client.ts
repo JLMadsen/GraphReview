@@ -10,7 +10,7 @@
 //
 // The API host itself is overridable via `GITHUB_API_URL` (GitHub
 // Enterprise Server, or an internal mirror on a closed network) — see
-// `GITHUB_API_BASE_URL` below and `docker/.env.example`.
+// `GITHUB_API_BASE_URL` below and docs/install.md.
 
 import { Octokit } from "@octokit/rest";
 import type { OctokitResponse } from "@octokit/types";
@@ -40,7 +40,7 @@ const DEFAULT_PER_PAGE = 100;
  * REST/GraphQL base URL override, e.g. for a GitHub Enterprise Server
  * instance or an internal mirror on a closed network
  * (`https://github.example.com/api/v3`). Unset means "use Octokit's
- * built-in default" (`https://api.github.com`) — see `docker/.env.example`.
+ * built-in default" (`https://api.github.com`) — see docs/install.md.
  * Read once at module load rather than per-call since it's a deployment-time
  * constant, not something that changes while the process is running.
  */

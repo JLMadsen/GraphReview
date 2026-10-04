@@ -12,7 +12,7 @@
 //
 // The API host is overridable via `GITLAB_API_URL` (a self-hosted GitLab
 // instance, or an internal mirror) — see `GITLAB_API_BASE_URL` below and
-// `docker/.env.example`. Defaults to gitlab.com.
+// docs/install.md. Defaults to gitlab.com.
 //
 // GitLab merge requests are mapped onto the exact same PullRequestSummary/
 // PullRequestDetail/PullRequestFile/LinkedIssue shapes lib/github uses (see

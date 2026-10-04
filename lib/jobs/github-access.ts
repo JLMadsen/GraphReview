@@ -65,7 +65,7 @@ export function parseGitHubUrl(url: string): GitHubRepoRef | null {
  * because a GitHub Enterprise Server instance's web host and API host differ
  * (`https://host` vs `https://host/api/v3`). Defaults to `https://github.com`;
  * override via `GITHUB_WEB_URL` on a closed network — see
- * `docker/.env.example`. Trailing slashes are stripped so the templates
+ * docs/install.md. Trailing slashes are stripped so the templates
  * below don't end up with a doubled `//`.
  */
 const GITHUB_WEB_URL = (process.env.GITHUB_WEB_URL || "https://github.com").replace(/\/+$/, "");

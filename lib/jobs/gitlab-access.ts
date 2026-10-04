@@ -73,7 +73,7 @@ export function parseGitLabUrl(url: string): GitLabProjectRef | null {
  * displayed in the UI. Distinct from `GITLAB_API_URL` (lib/gitlab/client.ts)
  * because a self-hosted instance's web host and API host can diverge.
  * Defaults to `https://gitlab.com`; override via `GITLAB_WEB_URL` — see
- * `docker/.env.example`.
+ * docs/install.md.
  */
 const GITLAB_WEB_URL = (process.env.GITLAB_WEB_URL || "https://gitlab.com").replace(/\/+$/, "");
 

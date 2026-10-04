@@ -15,7 +15,6 @@
     "!.next/cache/",
     "!.next/trace",
     "!.next/types/",
-    "public/",
     "lib/analysis/languages/**/*.scm",
     "lib/preview/harness/",
     "lib/runtime/config-env.mjs",

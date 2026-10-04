@@ -82,7 +82,7 @@ Options: `--port <n>`, `--data <dir>`, `--no-open`.
 [Docker](https://www.docker.com/products/docker-desktop/) is only needed for
 the before/after previews.
 
-[`install.md`](install.md) has the rest: configuration, where data lives,
+[`docs/install.md`](docs/install.md) has the rest: configuration, where data lives,
 known limits.
 
 ### Behind a corporate firewall?
@@ -90,13 +90,13 @@ known limits.
 GraphReview picks up your existing npm/pip config and the certificates your
 machine already trusts. Self-hosted GitLab or GitHub Enterprise, registry
 mirrors and extra CAs each take one line in `~/.graphreview/config.env`.
-[Here's the full setup](install.md#private-registries-company-certificates-and-offline-networks).
+[Here's the full setup](docs/install.md#private-registries-company-certificates-and-offline-networks).
 
 ### Using a local model
 
 Anything that speaks `/v1/chat/completions` works, so
 [Ollama](https://ollama.com) is a drop-in replacement for a hosted API key.
-Setup is in [`install.md`](install.md#6-optional-features). Be warned that a
+Setup is in [`docs/install.md`](docs/install.md#6-optional-features). Be warned that a
 7B model reviews like a 7B model.
 
 ### Connecting a coding agent
