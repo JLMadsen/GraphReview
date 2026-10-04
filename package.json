@@ -27,7 +27,8 @@
     "build": "next build",
     "start": "node bin/graphreview.mjs",
     "lint": "eslint",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "release": "node .github/scripts/release.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

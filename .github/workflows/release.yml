@@ -1,5 +1,5 @@
-# Release: push a tag that matches package.json's version (`npm version
-# minor && git push --follow-tags`) and this
+# Release: `npm run release` on Master (.github/scripts/release.mjs) bumps
+# the patch number, tags and pushes; the v* tag then
 #   1. builds the offline bundle for Linux x64 and starts it with no network,
 #   2. creates the GitHub Release with the bundle, the preview image and
 #      checksums attached,
