@@ -151,7 +151,12 @@ export function McpCard({ url }: { url: string }) {
           ))}
         </Tabs>
         <div className="space-y-2 border-t border-border pt-4">
-          <p className="text-[13px] text-muted-foreground">Then ask the agent, from the repo&apos;s folder:</p>
+          <p className="text-[13px] text-muted-foreground">
+            Then, from the repo&apos;s folder, run the server&apos;s <span className="font-mono">review</span> prompt — in
+            Claude Code <span className="font-mono text-foreground">/mcp__graphreview__review</span>, in VS Code{" "}
+            <span className="font-mono text-foreground">/mcp.graphreview.review</span>. It finds the review for your branch
+            and works through it. Where your agent has no MCP prompts, paste this instead:
+          </p>
           <CopyBlock
             wrap
             text="Read the GraphReview review of this branch. For each open finding, check the code: if it's wrong, answer it with why; if it's right, fix it and reply that you're fixing it." />

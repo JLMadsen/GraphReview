@@ -1,78 +1,120 @@
-# GraphReview
+<p align="center">
+  <img src="app/icon.svg" width="88" alt="GraphReview logo">
+</p>
 
-A locally-run tool for reviewing GitHub pull requests and GitLab merge
-requests against a codebase's component graph.
+<h1 align="center">GraphReview</h1>
 
+<p align="center">
+  Review the shape of a pull request, not just its diff.
+</p>
 
-![GraphReview's component graph and AI review view](docs/images/example3.png)
+<p align="center">
+  <code>npx graphreview</code>
+</p>
 
-Preview app changes: GraphReview renders the changed components before and
-after, in a sandboxed Docker container.
+---
 
-![GraphReview's before and after app renderings](docs/images/example4.png)
+A 40-file pull request is a wall of diffs in alphabetical order. You read
+`api/`, then `components/`, then `lib/`, and somewhere in the middle you're
+supposed to work out how it all connects.
 
-## Quickstart
+GraphReview draws the PR on a map of your codebase instead. Changed files are
+grouped into components, the components are wired together by the imports and
+calls between them, and you can see at a glance which parts of the app a
+change actually touches and which ones depend on it.
 
-You need [Node.js](https://nodejs.org) 22.13 or newer and
-[git](https://git-scm.com). Then:
+![A pull request laid out on GraphReview's component graph, with the AI review alongside](docs/images/example3.png)
+
+It runs on your machine, against GitHub pull requests, GitLab merge requests
+or plain branches in a local checkout. No account, no cloud, nothing to host.
+
+## What it does
+
+**Maps the change.** Static analysis builds a component graph of the repo
+(JS/TS, Python, Go, Java, Kotlin, Rust), and every PR is laid out on it.
+Unchanged neighbours are one click away when you want to know who calls the
+thing that changed.
+
+**Checks the basics.** Does the PR have a description, link an issue, stay
+under a reviewable size, explain *why*? Small things, but they're the first
+things a reviewer asks about.
+
+**Reviews it with AI, if you want.** Each component gets its own review, and
+every finding is graded (defect, concern, unknown, ok) so you can start with
+what matters. There's a chat on the side for "what does this actually do?"
+and "would merging this break anything?". Point it at any OpenAI-compatible
+endpoint, including a model running on your own GPU. Without one, everything
+else still works.
+
+**Shows you the UI change.** For React and Next.js repos, GraphReview
+renders changed components at the base and at the head, side by side, in a
+throwaway Docker container. Swap the mocked props to see each state.
+
+![Before and after renderings of a changed settings form](docs/images/example4.png)
+
+**Talks to your coding agent.** An MCP server lets Claude Code (or any other
+agent) read the open findings, look at the code, and reply to each one:
+"doesn't hold, because…" or "fair, fixing it". The replies show up right
+under the finding.
+
+## Getting started
+
+You need [Node.js](https://nodejs.org) 22.13+ and [git](https://git-scm.com).
 
 ```bash
 npx graphreview
 ```
 
-That starts GraphReview at [http://127.0.0.1:3470](http://127.0.0.1:3470)
-and opens it in your browser. Everything it stores — the database, clones of
-GitHub/GitLab repos, and the key that encrypts your saved tokens — lives in
-`~/.graphreview`. Stop it with Ctrl+C.
+That's it. It opens at [http://127.0.0.1:3470](http://127.0.0.1:3470) and
+keeps everything (database, clones, the key for your saved tokens) in
+`~/.graphreview`. Ctrl+C to stop.
 
-Options: `--port <n>`, `--data <dir>`, `--no-open` (`npx graphreview --help`).
+Add a repo from the start page: pick a local checkout or paste a GitHub or
+GitLab URL. For pull requests and private repos, drop a personal access token
+into Settings. Local repos need no token at all.
 
-[Docker](https://www.docker.com/products/docker-desktop/) is optional: it's
-only used by the before/after preview, which says so when Docker isn't
-running. Everything else works without it.
+Options: `--port <n>`, `--data <dir>`, `--no-open`.
+[Docker](https://www.docker.com/products/docker-desktop/) is only needed for
+the before/after previews.
 
-## Running from a checkout
+[`install.md`](install.md) has the rest: configuration, where data lives,
+known limits.
 
-```bash
-npm install
-npm run dev       # http://localhost:3470, workers included (other port: npm run dev -- -p 4000)
-```
+### Behind a corporate firewall?
 
-`npm run dev` keeps its data in `.data/` in the checkout, separate from an
-installed copy's `~/.graphreview`. `npm run build && npm start` runs the
-production build the same way `npx graphreview` does.
+GraphReview picks up your existing npm/pip config and the certificates your
+machine already trusts. Self-hosted GitLab or GitHub Enterprise, registry
+mirrors and extra CAs each take one line in `~/.graphreview/config.env`.
+[Here's the full setup](install.md#private-registries-company-certificates-and-offline-networks).
 
-## Private registries, company certificates and offline networks
+### Using a local model
 
-GraphReview reuses your machine's npm/pip config and trusted certificates, and
-settings for self-hosted GitLab/GitHub, registry mirrors and extra CAs go in
-`~/.graphreview/config.env`. See
-[`install.md`](install.md#private-registries-company-certificates-and-offline-networks)
-for what's automatic and what you need to set.
+Anything that speaks `/v1/chat/completions` works, so
+[Ollama](https://ollama.com) is a drop-in replacement for a hosted API key.
+Setup is in [`install.md`](install.md#6-optional-features). Be warned that a
+7B model reviews like a 7B model.
 
-## Running your own AI
+### Connecting a coding agent
 
-GraphReview's labeling and PR review features call an OpenAI-compatible
-`/v1/chat/completions` endpoint, so a locally-run model (e.g. Ollama) works
-as a drop-in replacement for a hosted API key. See
-[`install.md`](install.md#6-optional-features) for setup steps.
-
-## Connecting a coding agent (MCP)
-
-GraphReview serves an MCP server at `http://127.0.0.1:3470/api/mcp`
-(Streamable HTTP) while it runs. A coding agent can read a review's open
-findings and the diff of each flagged component, then answer each finding —
-"this doesn't hold, because…" (resolves it) or "right, fixing it" — and
-the replies show under the finding in the app. For Claude Code (desktop
-app or CLI), add a `.mcp.json` to the root of the repo the agent works in:
+While GraphReview runs, it serves MCP at `http://127.0.0.1:3470/api/mcp`.
+For Claude Code, add this `.mcp.json` to the root of the repo you're working in:
 
 ```json
 { "mcpServers": { "graphreview": { "type": "http", "url": "http://127.0.0.1:3470/api/mcp" } } }
 ```
 
-Settings → Connect a coding agent has the setup for other agents. See [`lib/mcp/README.md`](lib/mcp/README.md) for the tools.
+Settings → Connect a coding agent covers other agents, and
+[`lib/mcp/README.md`](lib/mcp/README.md) lists the tools.
 
-## Project layout
+## Development
 
-Each `lib/*`, `worker/`, `types/`, and `components/graph/` directory has its
-own `README.md` stating what belongs there.
+```bash
+npm install
+npm run dev       # http://localhost:3470, workers included
+```
+
+It's one Node process: the Next.js server and the background workers share
+it, and everything lives in a single SQLite file. `npm run dev` keeps its
+data in `.data/`, away from an installed copy. Each `lib/*`, `worker/`,
+`types/` and `components/graph/` folder has a `README.md` saying what
+belongs there.

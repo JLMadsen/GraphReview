@@ -122,6 +122,90 @@ async function reviewState(repoId: string, targetKey: string, hasFindings: boole
   return hasFindings || state === "completed" ? "completed" : "none";
 }
 
+/** One line per review target of a repo that has findings — what `list_reviews` returns and the `review` prompt lists. Newest first. */
+async function listReviewSummaries(repoId: string) {
+  const byTarget = new Map<string, { findings: number; open: number; worstOpen?: FindingAssessment; reviewedAt: string }>();
+  for (const finding of await listFindingsByRepoId(repoId)) {
+    const entry = byTarget.get(finding.targetKey) ?? { findings: 0, open: 0, reviewedAt: "" };
+    entry.findings++;
+    if (finding.assessment !== "ok" && !finding.resolvedAt) {
+      entry.open++;
+      if (!entry.worstOpen || ASSESSMENT_RANK[finding.assessment] < ASSESSMENT_RANK[entry.worstOpen]) {
+        entry.worstOpen = finding.assessment;
+      }
+    }
+    const at = finding.reviewedAt ?? finding.createdAt;
+    if (at > entry.reviewedAt) entry.reviewedAt = at;
+    byTarget.set(finding.targetKey, entry);
+  }
+  const reviews = await Promise.all(
+    [...byTarget].map(async ([target, entry]) => {
+      const pr = /^pr:(\d+)$/.exec(target);
+      const record = pr ? await getPullRequestByNumber(repoId, Number(pr[1])) : null;
+      return { target, ...(record ? { title: record.title, url: record.url, state: record.state } : {}), ...entry };
+    })
+  );
+  return reviews.sort((a, b) => b.reviewedAt.localeCompare(a.reviewedAt));
+}
+
+/** How many reviews per repo the `review` prompt lists — enough to find the current branch's, short enough to stay a prompt. */
+const PROMPT_REVIEWS_PER_REPO = 8;
+
+/**
+ * The `review` prompt's text: the workflow, plus the reviews that exist right
+ * now so the agent can pick the one for the branch it is on without a lookup.
+ * The server can't see the agent's checkout, so matching repo and branch is
+ * left to the agent (it has git); explicit arguments skip that.
+ */
+async function reviewPromptText(args: { repo?: string; target?: string }): Promise<string> {
+  const repos = await listRepos();
+  const wanted = args.repo?.trim().toLowerCase();
+  const chosen = wanted
+    ? repos.filter((r) => r.id.toLowerCase() === wanted || r.name.toLowerCase() === wanted)
+    : repos;
+
+  const lines: string[] = [
+    "Work through the GraphReview review of my current change, using the graphreview MCP tools.",
+    "",
+  ];
+
+  if (args.target?.trim()) {
+    lines.push(`Review target: ${args.target.trim()}.`);
+  } else {
+    lines.push(
+      "Find the review for the branch I'm on: check `git branch --show-current` and the repo's remote/path, then pick the matching repo and review target below — a refs:<base>...<head> target whose head is my branch, or the pr:<number> of my branch's pull request. If none matches, ask me which one to use."
+    );
+  }
+
+  if (wanted && chosen.length === 0) {
+    lines.push("", `GraphReview has no repo called "${args.repo}" — call list_repos to see what it has.`);
+  } else {
+    lines.push("", "Repos and their reviews in GraphReview right now:");
+    for (const repo of chosen) {
+      const where = repo.url ?? repo.localPath ?? "";
+      lines.push(`- ${repo.name} (repoId ${repo.id}${where ? `, ${where}` : ""})`);
+      const reviews = (await listReviewSummaries(repo.id)).slice(0, PROMPT_REVIEWS_PER_REPO);
+      if (reviews.length === 0) lines.push("  - no reviews yet");
+      for (const review of reviews) {
+        const title = "title" in review && review.title ? ` "${review.title}"` : "";
+        const open = review.open > 0 ? `${review.open} open, worst ${review.worstOpen}` : "nothing open";
+        lines.push(`  - ${review.target}${title}: ${open} (of ${review.findings})`);
+      }
+    }
+  }
+
+  lines.push(
+    "",
+    "Then:",
+    "1. get_review for that target. If it says the branch has moved since the review, tell me — the findings may be out of date.",
+    "2. For each open finding, worst first, read the code it points at (get_file_diff / get_component_diff, or the file itself) and decide whether the concern holds. Reviews are advisory and can be wrong.",
+    '3. If it does not hold: respond_to_finding with kind "answered" and a short, specific reason. This resolves it.',
+    '4. If it holds: fix it, then respond_to_finding with kind "fixing" saying what you changed.',
+    "5. Finish with a short summary: what you answered, what you fixed, and anything you left for me to decide."
+  );
+  return lines.join("\n");
+}
+
 export function createGraphReviewMcpServer(): McpServer {
   const server = new McpServer({ name: "graphreview", version: "0.1.0" }, { instructions: INSTRUCTIONS });
 
@@ -157,28 +241,7 @@ export function createGraphReviewMcpServer(): McpServer {
     ({ repoId }) =>
       json(async () => {
         await loadRepo(repoId);
-        const byTarget = new Map<string, { findings: number; open: number; worstOpen?: FindingAssessment; reviewedAt: string }>();
-        for (const finding of await listFindingsByRepoId(repoId)) {
-          const entry = byTarget.get(finding.targetKey) ?? { findings: 0, open: 0, reviewedAt: "" };
-          entry.findings++;
-          if (finding.assessment !== "ok" && !finding.resolvedAt) {
-            entry.open++;
-            if (!entry.worstOpen || ASSESSMENT_RANK[finding.assessment] < ASSESSMENT_RANK[entry.worstOpen]) {
-              entry.worstOpen = finding.assessment;
-            }
-          }
-          const at = finding.reviewedAt ?? finding.createdAt;
-          if (at > entry.reviewedAt) entry.reviewedAt = at;
-          byTarget.set(finding.targetKey, entry);
-        }
-        const reviews = await Promise.all(
-          [...byTarget].map(async ([target, entry]) => {
-            const pr = /^pr:(\d+)$/.exec(target);
-            const record = pr ? await getPullRequestByNumber(repoId, Number(pr[1])) : null;
-            return { target, ...(record ? { title: record.title, url: record.url, state: record.state } : {}), ...entry };
-          })
-        );
-        return reviews.sort((a, b) => b.reviewedAt.localeCompare(a.reviewedAt));
+        return listReviewSummaries(repoId);
       })
   );
 
@@ -380,6 +443,25 @@ export function createGraphReviewMcpServer(): McpServer {
           responses: updated.responses,
         };
       })
+  );
+
+  server.registerPrompt(
+    "review",
+    {
+      title: "Work through the GraphReview review",
+      description:
+        "Read the GraphReview review of the current branch and answer or fix each open finding. Lists the reviews that exist right now.",
+      argsSchema: {
+        target: z
+          .string()
+          .optional()
+          .describe('Review target, e.g. "pr:42" or "refs:main...my-branch". Default: the one for the current branch.'),
+        repo: z.string().optional().describe("Repo name or id, when GraphReview has more than one. Default: all."),
+      },
+    },
+    async (args) => ({
+      messages: [{ role: "user", content: { type: "text", text: await reviewPromptText(args) } }],
+    })
   );
 
   return server;
