@@ -20,7 +20,9 @@ loopback rule in `middleware.ts` applies to it like every other route.
 | `respond_to_finding` | Append a reply: `answered` (resolves it), `fixing` (concern is right, fix under way; stays open), `comment`. |
 
 Replies are stored on the finding (`FindingRecord.responses`) and shown in
-the review dock. Like a manual resolve, they belong to that review run: a
+the review dock, live: `events.ts` signals the change in-process, and
+`GET /api/repos/[repoId]/review/events` streams it to the open dock (server-sent
+events), which refetches the review. Like a manual resolve, they belong to that review run: a
 re-review replaces the findings and starts them without replies.
 
 Scope: reads and replies only. Starting a review, and posting anything to

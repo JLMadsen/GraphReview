@@ -33,6 +33,7 @@ import {
   type ReviewTarget,
 } from "@/lib/jobs";
 import { readFileAtCommit } from "@/lib/jobs/pr-context";
+import { emitFindingsChanged } from "./events";
 
 const INSTRUCTIONS = `GraphReview reviews pull requests and branch comparisons against a component graph of the codebase. Each review is a list of findings, grouped by component; each finding has an assessment (defect > concern > unknown > ok).
 
@@ -372,6 +373,7 @@ export function createGraphReviewMcpServer(): McpServer {
           body: message.trim(),
         });
         if (!updated) throw new ToolError(`Finding "${findingId}" was replaced by a re-review — call get_review again.`);
+        emitFindingsChanged(repoId, updated.targetKey, updated.id);
         return {
           id: updated.id,
           status: findingStatus(updated),

@@ -119,13 +119,14 @@ GraphReview serves an MCP server at `http://127.0.0.1:3470/api/mcp`
 (Streamable HTTP) while it runs. A coding agent can read a review's open
 findings and the diff of each flagged component, then answer each finding —
 "this doesn't hold, because…" (resolves it) or "right, fixing it" — and
-the replies show under the finding in the app. For Claude Code:
+the replies show under the finding in the app. For Claude Code (desktop
+app or CLI), add a `.mcp.json` to the root of the repo the agent works in:
 
-```bash
-claude mcp add --transport http graphreview http://127.0.0.1:3470/api/mcp
+```json
+{ "mcpServers": { "graphreview": { "type": "http", "url": "http://127.0.0.1:3470/api/mcp" } } }
 ```
 
-See [`lib/mcp/README.md`](lib/mcp/README.md) for the tools.
+Settings → Connect a coding agent has the setup for other agents. See [`lib/mcp/README.md`](lib/mcp/README.md) for the tools.
 
 ## Project layout
 

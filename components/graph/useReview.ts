@@ -28,6 +28,8 @@
 //      spend). It is re-checked when the target is (re)selected — the main
 //      effect re-runs — and when the tab becomes visible again; never on a
 //      timer.
+//   7. A coding agent answering a finding over MCP is pushed to the open
+//      dock as a server-sent event, and the settled review is refetched.
 //
 // ---------------------------------------------------------------------------
 // The dependency-array footgun this file is written around
@@ -326,48 +328,61 @@ export function useReview(
     // ref or module scope, so no disable comment is needed to keep it out.)
   }, [repoId, targetKey, rerunNonce]);
 
+  // Refetches a settled review that is on screen and folds in its findings
+  // and freshness. One plain GET: never POSTs, never interrupts a run in
+  // flight (polling owns those), and is dropped if the target/run changed
+  // while it was travelling. Reads everything through refs, so it is stable.
+  const refreshSettled = useCallback(() => {
+    const current = snapshotRef.current;
+    const currentTarget = targetRef.current;
+    if (!currentTarget || current.status !== "ready" || isPending(current.state)) return;
+    const runId = runIdRef.current;
+    const url = `/api/repos/${encodeURIComponent(repoId)}/review?${reviewTargetQuery(currentTarget)}`;
+    void (async () => {
+      try {
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json().catch(() => null)) as ReviewStatusResponseDTO | null;
+        if (!data || runIdRef.current !== runId) return;
+        // Only fold in a still-settled review; a run started elsewhere in
+        // the meantime is picked up by the next explicit load, not here.
+        if (isPending(data.state)) return;
+        setSnapshot((prev) =>
+          prev.status === "ready" && !isPending(prev.state)
+            ? { ...prev, findings: data.findings, freshness: data.freshness }
+            : prev
+        );
+      } catch {
+        /* advisory — a failed refresh just leaves the last answer up */
+      }
+    })();
+  }, [repoId]);
+
   // Re-check freshness when the tab comes back into view: the usual way a
   // branch moves is that the user pushed from a terminal in another window.
-  // One plain GET, applied only to a completed review that is on screen — it
-  // never POSTs, never interrupts a run in flight, and is dropped if the
-  // target/run changed while it was travelling. Deps are the two primitives
-  // that identify the review; the state it writes is reached via functional
-  // update and read via `snapshotRef`.
+  // Never on a timer.
   useEffect(() => {
     if (!targetKey) return;
-
     const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
-      const current = snapshotRef.current;
-      const currentTarget = targetRef.current;
-      if (!currentTarget || current.status !== "ready" || current.state !== "completed") {
-        return;
-      }
-      const runId = runIdRef.current;
-      const url = `/api/repos/${encodeURIComponent(repoId)}/review?${reviewTargetQuery(currentTarget)}`;
-      void (async () => {
-        try {
-          const res = await fetch(url, { cache: "no-store" });
-          if (!res.ok) return;
-          const data = (await res.json().catch(() => null)) as ReviewStatusResponseDTO | null;
-          if (!data || runIdRef.current !== runId) return;
-          // Only fold in a still-completed review; a run started elsewhere in
-          // the meantime is picked up by the next explicit load, not here.
-          if (data.state !== "completed") return;
-          setSnapshot((prev) =>
-            prev.status === "ready" && prev.state === "completed"
-              ? { ...prev, findings: data.findings, freshness: data.freshness }
-              : prev
-          );
-        } catch {
-          /* advisory — a failed re-check just leaves the last answer up */
-        }
-      })();
+      if (document.visibilityState === "visible") refreshSettled();
     };
-
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [repoId, targetKey]);
+  }, [targetKey, refreshSettled]);
+
+  // Live updates when a finding changes outside the review job — a coding
+  // agent answering it over MCP. The server only says "something changed"
+  // (app/api/repos/[repoId]/review/events); the review GET stays the source
+  // of truth. EventSource reconnects by itself if the server restarts.
+  useEffect(() => {
+    const currentTarget = targetRef.current;
+    if (!targetKey || !currentTarget) return;
+    const source = new EventSource(
+      `/api/repos/${encodeURIComponent(repoId)}/review/events?${reviewTargetQuery(currentTarget)}`
+    );
+    source.addEventListener("findings", refreshSettled);
+    return () => source.close();
+  }, [repoId, targetKey, refreshSettled]);
 
   const rerun = useCallback(() => {
     forceRunRef.current = true;

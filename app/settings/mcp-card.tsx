@@ -27,9 +27,11 @@ const HARNESSES: Harness[] = [
   {
     id: "claude-code",
     name: "Claude Code",
-    where: "Run",
-    snippet: (url) => `claude mcp add --transport http graphreview ${url}`,
-    note: "Add --scope user to have it in every project.",
+    // A file, not `claude mcp add`: the desktop app doesn't put the `claude`
+    // command on the PATH, and both the app and the CLI read `.mcp.json`.
+    where: ".mcp.json in the root of the repo the agent works in",
+    snippet: (url) => json({ mcpServers: { graphreview: { type: "http", url } } }),
+    note: "Works in the Claude desktop app and the CLI; start a new session and approve the server when asked. With the CLI installed, `claude mcp add --transport http --scope user graphreview <url>` adds it for every project instead.",
   },
   {
     id: "codex",
