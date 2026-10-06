@@ -48,6 +48,8 @@ import { cn } from "cn";
 import { GraphCanvas, type GraphCanvasHandle } from "./GraphCanvas";
 import { FileDiffModal } from "./FileDiffModal";
 import { PrMapCanvas } from "./PrMapCanvas";
+import { PrAreaList, PrAreaPanel } from "./PrAreaPanel";
+import { buildPrAreas } from "./pr-areas";
 import { usePrMap } from "./usePrMap";
 import type { PrMapRequestDTO } from "./pr-map-types";
 import { AppMapView } from "./AppMapView";
@@ -194,8 +196,15 @@ export function GraphView({
   }, []);
   const canvasRef = useRef<GraphCanvasHandle>(null);
   /** The file open in the diff modal, and optionally the before/after component to start on. */
-  const [openFile, setOpenFile] = useState<{ path: string; component?: string } | null>(null);
+  // Every file in every list opens the one file viewer (FileDiffModal) —
+  // with a diff selected, a changed file shows its diff and the rest show
+  // whole; with none, every file shows as analyzed. Lists about the change
+  // (the dock's Files tab, an area's most-changed files) open on the diff;
+  // the rest (a module's files, the explainer, chat, "Not on the map") on the
+  // whole file, its changed lines marked.
+  const [openFile, setOpenFile] = useState<{ path: string; component?: string; tab?: "diff" | "file" } | null>(null);
   const openFilePath = useCallback((path: string) => setOpenFile({ path }), []);
+  const openFileView = useCallback((path: string) => setOpenFile({ path, tab: "file" }), []);
   const [leftWidth, setLeftWidth] = usePanelWidth("graphreview.panel.diff", 236, 200, 480);
   const [chatWidth, setChatWidth] = usePanelWidth("graphreview.panel.chat", 380, 300, 720);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -398,6 +407,20 @@ export function GraphView({
     return { filePaths: [...diffResult.touchedFiles, ...diffResult.unmatchedFiles] };
   }, [diffResult, reviewTarget]);
   const prMap = usePrMap(repoId, prRequest, review.state);
+  /** The PR map's cards as areas, with their findings — one object for the canvas, the dock and the inspector. */
+  const prAreas = useMemo(() => buildPrAreas(prMap.map, review.findings), [prMap.map, review.findings]);
+  /** The area (PR map card) the PR view is focused on, and optionally one of its components — they scope the dock. */
+  const [prArea, setPrArea] = useState<string | null>(null);
+  const [prAreaComponent, setPrAreaComponent] = useState<string | null>(null);
+  const selectPrArea = useCallback((cardId: string | null) => {
+    setPrArea(cardId);
+    setPrAreaComponent(null);
+  }, []);
+  useEffect(() => selectPrArea(null), [prRequest, selectPrArea]);
+  // A refreshed map (the review's grouping arriving) has new card ids.
+  useEffect(() => {
+    if (prArea && prMap.map && !prMap.map.nodes.some((n) => n.id === prArea)) selectPrArea(null);
+  }, [prArea, prMap.map, selectPrArea]);
   /** The diff's line totals for the summary — the PR map carries per-file +/-. */
   const lineStats = useMemo(() => {
     if (!prMap.map) return null;
@@ -460,13 +483,6 @@ export function GraphView({
     },
     [setAppLevel, setPreferredView]
   );
-  const selectFileModule = useCallback(
-    (path: string) => {
-      const owner = appMap.map?.fileOwners[path];
-      if (owner) showInAppMap(owner);
-    },
-    [appMap.map, showInAppMap]
-  );
   const selectComponentLink = useCallback(
     (componentId: string | null) => {
       if (componentId) showInAppMap(componentId);
@@ -479,10 +495,6 @@ export function GraphView({
   useEffect(() => {
     setOpenFile(null);
   }, [prRequest]);
-
-  const handleSelectCards = useCallback((componentIds: string[]) => {
-    setSelectedNodeId(componentIds[0] ?? null);
-  }, []);
 
 
   const componentNameById = useCallback(
@@ -510,18 +522,52 @@ export function GraphView({
     [review.findings, selectedNodeId]
   );
 
-  const hasInspector = Boolean(selectedNode || (mergesOpen && !usingSample) || showAppPanel);
+  /** On the PR view the inspector explains the selected area (or lists them all); a component panel would only repeat it. */
+  const showPrPanel = view === "pr" && prMap.map !== null;
+  const selectedPrArea = prArea ? prAreas.areas.get(prArea) : undefined;
+  const showComponentPanel = Boolean(selectedNode) && !showPrPanel;
+  const hasInspector = Boolean(showComponentPanel || (mergesOpen && !usingSample) || showAppPanel || showPrPanel);
+  const chatFocus = showPrPanel
+    ? prAreaComponent
+      ? { id: prAreaComponent, name: componentNameById(prAreaComponent) ?? prAreaComponent }
+      : null
+    : selectedNode
+      ? { id: selectedNode.id, name: selectedNode.name }
+      : null;
+
+  // The view switch leads each view's own toolbar (see view-chrome.ts), so
+  // the switch and the view's controls are one bar rather than two rows.
+  const viewSwitch = usingSample ? undefined : (
+    <>
+    <Segmented
+      label="Graph view"
+      value={view}
+      onChange={setPreferredView}
+      options={[
+        {
+          value: "app" as const,
+          label: "App map",
+          title: "The whole app as cards — by architecture, feature or module, with explanations",
+        },
+        { value: "repo" as const, label: "Repo", title: "The whole component graph" },
+        ...(prRequest ? [{ value: "pr" as const, label: "PR", title: "Only what this diff touches" }] : []),
+      ]}
+    />
+    {/* Sets the view switch apart from the view's own controls after it. */}
+    <span className="h-5 w-px shrink-0 bg-border" aria-hidden />
+    </>
+  );
 
   return (
     // `data-wide-shell` opts this tab out of the repo shell's `max-w-6xl`
     // cap — see app/repo/[repoId]/layout.tsx for the mechanism and why.
     <div ref={rootRef} data-wide-shell className="flex flex-col lg:h-(--tab-h) lg:flex-row lg:overflow-hidden">
       <aside
-        className="relative w-full shrink-0 border-border lg:h-full lg:w-(--panel-w) lg:border-r"
+        className="relative w-full shrink-0 border-border bg-card lg:h-full lg:w-(--panel-w) lg:border-r"
         style={{ "--panel-w": `${leftWidth}px` } as React.CSSProperties}
       >
         <PanelResizeHandle edge="right" width={leftWidth} onResize={setLeftWidth} label="Resize diff panel" />
-        <div className="px-4 pb-4 lg:h-full lg:overflow-y-auto lg:pb-6">
+        <div className="px-4 pt-3 pb-4 lg:h-full lg:overflow-y-auto lg:pb-6">
           <DiffPanel
             repoId={repoId}
             defaultBranch={repo?.defaultBranch}
@@ -544,9 +590,9 @@ export function GraphView({
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col gap-3 px-4 pb-4 lg:h-full lg:overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col lg:h-full lg:overflow-hidden">
         {usingSample && (
-          <p className="flex items-start gap-2 text-xs text-warning">
+          <p className="flex items-start gap-2 border-b border-border px-4 py-2 text-xs text-warning">
             <FlaskConical className="mt-px size-3.5 shrink-0" aria-hidden />
             <span>
               <span className="font-medium">Showing sample data</span> — this repo has no analyzed component graph yet
@@ -554,37 +600,21 @@ export function GraphView({
             </span>
           </p>
         )}
-        {!usingSample && !mapFolded && (
-          <Segmented
-            label="Graph view"
-            value={view}
-            onChange={setPreferredView}
-            options={[
-              {
-                value: "app" as const,
-                label: "App map",
-                title: "The whole app as cards — by architecture, feature or module, with explanations",
-              },
-              { value: "repo" as const, label: "Repo", title: "The whole component graph" },
-              ...(prRequest ? [{ value: "pr" as const, label: "PR", title: "Only what this diff touches" }] : []),
-            ]}
-          />
-        )}
-
         {/* The three views share this one fixed-height cell; each is a flex
             column whose canvas takes whatever its own toolbar leaves. With a
-            review under it the map section gets a bit over half the tab,
-            without one everything but the view switch. The review's Expand
+            review under it the map section gets half the tab (the dock has a
+            tab bar and column headers to fit), without one all of it. The
+            view switch sits in each view's toolbar. The review's Expand
             folds it to nothing (the canvases skip a zero size and refit when
             it comes back), so the findings get the whole column. */}
         <div
-          className={cn("grid shrink-0 transition-[height] duration-200", mapFolded && "-mb-3 overflow-hidden")}
+          className={cn("grid shrink-0 transition-[height] duration-200", mapFolded && "overflow-hidden")}
           style={{
             height: mapFolded
               ? 0
               : reviewTarget
-                ? "calc(var(--tab-h, 100vh) * 0.58)"
-                : "calc(var(--tab-h, 100vh) - 3.75rem)",
+                ? "calc(var(--tab-h, 100vh) * 0.5)"
+                : "var(--tab-h, 100vh)",
           }}
           inert={mapFolded}
         >
@@ -592,6 +622,7 @@ export function GraphView({
           <div className={viewLayerClass(view === "app")} inert={view !== "app"}>
             <AppMapView
               className="flex h-full flex-col"
+              leading={viewSwitch}
               map={appMap.map}
               loading={appMap.loading}
               error={appMap.error}
@@ -610,14 +641,14 @@ export function GraphView({
           <div className={viewLayerClass(view === "pr")} inert={view !== "pr"}>
           <PrMapCanvas
             className="flex h-full flex-col"
+            leading={viewSwitch}
             map={prMap.map}
             loading={prMap.loading}
             error={prMap.error}
-            findings={review.findings}
-            selectedComponentId={selectedNodeId}
-            onSelectComponents={handleSelectCards}
-            onOpenFile={reviewTarget ? openFilePath : undefined}
-            onShowInRepo={(ids) => ids[0] && showInAppMap(ids[0])}
+            areas={prAreas}
+            selectedCardId={prArea}
+            onSelectCard={selectPrArea}
+            selectedComponentId={prAreaComponent ?? selectedNodeId}
             reviewPending={review.state === "queued" || review.state === "running"}
           />
           </div>
@@ -626,6 +657,7 @@ export function GraphView({
         {graph ? (
           <GraphCanvas
             className="flex h-full flex-col"
+            leading={viewSwitch}
             ref={canvasRef}
             nodes={canvasNodes}
             edges={graph.edges}
@@ -654,7 +686,7 @@ export function GraphView({
             }
           />
         ) : (
-          <div className="bp-grid flex h-96 flex-col items-center justify-center gap-3 rounded-lg border border-border">
+          <div className="bp-grid flex h-full min-h-96 flex-col items-center justify-center gap-3">
             <LoaderCircle
               className="size-5 animate-spin text-muted-foreground"
               aria-hidden
@@ -665,15 +697,14 @@ export function GraphView({
         </div>
         </div>
 
-        {reviewTarget && (
-          <FileDiffModal
-            repoId={repoId}
-            target={reviewTarget}
-            finding={openFile ? { filePath: openFile.path } : null}
-            initialComponent={openFile?.component}
-            onClose={() => setOpenFile(null)}
-          />
-        )}
+        <FileDiffModal
+          repoId={repoId}
+          target={reviewTarget}
+          finding={openFile ? { filePath: openFile.path } : null}
+          initialComponent={openFile?.component}
+          initialTab={openFile?.tab}
+          onClose={() => setOpenFile(null)}
+        />
 
         {/* Under the graph, full width: the AI review, exceptions first —
             see ReviewPanel's header for why it lives here rather than in a
@@ -694,13 +725,19 @@ export function GraphView({
             canRerun={review.canRerun}
             onRerun={review.rerun}
             onRetryFailed={review.retryFailed}
-            selectedComponentId={selectedNodeId}
             onSelectComponent={selectComponentLink}
             onSetResolved={review.setResolved}
             effort={reviewEffort}
             onEffortChange={setReviewEffort}
             expanded={reviewExpanded}
             onToggleExpanded={toggleReviewExpanded}
+            map={prMap.map}
+            areas={prAreas}
+            scopeAreaId={prArea}
+            scopeComponentId={prAreaComponent}
+            onClearScope={() => selectPrArea(null)}
+            componentName={componentNameById}
+            onOpenFile={openFilePath}
           />
         )}
       </div>
@@ -733,7 +770,7 @@ export function GraphView({
                     fileMarkers={fileMarkers}
                     onSelect={setAppSelection}
                     onSelectModule={showInAppMap}
-                    onSelectFile={selectFileModule}
+                    onSelectFile={openFileView}
                   />
                 </div>
               )}
@@ -748,7 +785,22 @@ export function GraphView({
                   }}
                 />
               )}
-              {selectedNode && (
+              {showPrPanel &&
+                (selectedPrArea ? (
+                  <PrAreaPanel
+                    key={selectedPrArea.node.id}
+                    area={selectedPrArea}
+                    componentName={componentNameById}
+                    selectedComponentId={prAreaComponent}
+                    onSelectComponent={setPrAreaComponent}
+                    onOpenFile={openFilePath}
+                    onShowInAppMap={showInAppMap}
+                    onClose={() => selectPrArea(null)}
+                  />
+                ) : (
+                  <PrAreaList areas={prAreas} onSelect={selectPrArea} />
+                ))}
+              {showComponentPanel && selectedNode && (
                 <ComponentFilesPanel
                   key={selectedNode.id}
                   repoId={repoId}
@@ -760,6 +812,7 @@ export function GraphView({
                   sampleData={usingSample}
                   localFiles={addedFilesById.get(selectedNode.id)}
                   findings={selectedFindings}
+                  onOpenFile={usingSample ? undefined : openFileView}
                   headerAction={
                     !usingSample ? (
                       <button
@@ -799,11 +852,11 @@ export function GraphView({
                 chat={chat}
                 targetLabel={reviewTarget ? reviewTargetLabel(reviewTarget) : null}
                 repoName={repo?.name}
-                focus={selectedNode ? { id: selectedNode.id, name: selectedNode.name } : null}
+                focus={chatFocus}
                 componentName={componentNameById}
                 changedFiles={chatChangedFiles}
                 onSelectComponent={showInAppMap}
-                onOpenFile={reviewTarget ? openFilePath : undefined}
+                onOpenFile={openFileView}
               />
             </div>
           )}

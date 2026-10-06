@@ -65,10 +65,10 @@ export function MergesControl({ merges, open, onToggle, onRegroup }: MergesContr
           "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
           open ? "border-brand/50 bg-brand/10 text-foreground" : "border-border bg-card text-foreground hover:bg-secondary"
         )}
-        title="Folders that look like one feature — merge them into a single node"
+        title="Merge suggestions — folders that look like one feature, to merge into a single node"
       >
         <GitMerge className="size-3.5 text-brand" aria-hidden />
-        Merge suggestions
+        Merges
         {count > 0 && (
           <span className="rounded-full bg-brand px-1.5 font-mono text-[10px] leading-4 text-white">{count}</span>
         )}
@@ -81,7 +81,7 @@ export function MergesControl({ merges, open, onToggle, onRegroup }: MergesContr
           title="A merge moved modules between domain groups. Re-generate labels to regroup them (uses the AI provider)."
         >
           <TriangleAlert className="size-3" aria-hidden />
-          Groups out of date — regroup
+          Regroup
         </button>
       )}
     </div>

@@ -31,7 +31,6 @@ import {
   Bot,
   Check,
   Circle,
-  CircleCheck,
   Github,
   Gitlab,
   LoaderCircle,
@@ -422,7 +421,7 @@ function ProviderViewRow({
               className="flex size-5 shrink-0 items-center justify-center text-success"
               title="Active provider"
             >
-              <CircleCheck className="size-5" aria-hidden />
+              <Check className="size-5" aria-hidden />
             </span>
           ) : (
             <form action={activateFormAction}>

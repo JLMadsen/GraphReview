@@ -47,8 +47,11 @@ function GraphMark() {
 
 export default function RootLayout({
   children,
+  nav,
 }: Readonly<{
   children: React.ReactNode;
+  /** The `@nav` slot: the open repo's name, source and status — empty outside a repo. */
+  nav: React.ReactNode;
 }>) {
   return (
     // The font variables belong on <html>, not <body>: globals.css applies
@@ -64,9 +67,12 @@ export default function RootLayout({
     >
       <body className="antialiased">
         <TooltipProvider>
-          <div className="flex min-h-screen flex-col">
+          {/* `group/app`: the bar spans the window when the page is an
+              edge-to-edge analysis surface (`data-wide-shell`, the Graph
+              tab), the same `:has()` switch the repo shell uses. */}
+          <div className="group/app flex min-h-screen flex-col">
             <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur-xl supports-[backdrop-filter]:bg-background/65">
-              <div className="mx-auto flex h-14 max-w-7xl items-center gap-5 px-6">
+              <div className="mx-auto flex h-12 max-w-7xl items-center gap-5 px-6 group-has-[[data-wide-shell]]/app:max-w-none group-has-[[data-wide-shell]]/app:px-4">
                 <Link
                   href="/"
                   className="group flex items-center gap-2.5 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
@@ -84,6 +90,7 @@ export default function RootLayout({
                   aria-hidden
                 />
                 <MainNav />
+                <div className="ml-auto flex min-w-0 items-center">{nav}</div>
               </div>
             </header>
             <main className="flex-1">{children}</main>

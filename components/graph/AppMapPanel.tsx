@@ -213,7 +213,7 @@ export function AppMapPanel({
                   type="button"
                   onClick={() => onSelectFile(f)}
                   className="w-full rounded-sm px-1 py-0.5 text-left hover:bg-secondary"
-                  title={`${f} — open its module`}
+                  title={`${f} — open the file`}
                 >
                   <span className="flex items-center gap-1.5 font-mono text-[11px]">
                     <span className="min-w-0 flex-1 truncate">{f}</span>

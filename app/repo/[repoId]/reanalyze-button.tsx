@@ -1,6 +1,6 @@
 "use client";
 
-// "Re-analyze" button in the repo header.
+// "Re-analyze" button for a repo — an icon in the top bar (`compact`).
 //
 // Re-analysis normally only happens when HEAD moves past `lastAnalyzedSha`
 // (see lib/jobs/staleness.ts), so an unchanged repo keeps a graph built by
@@ -13,7 +13,7 @@ import { useState } from "react";
 import { LoaderCircle, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-export function ReanalyzeButton({ repoId }: { repoId: string }) {
+export function ReanalyzeButton({ repoId, compact = false }: { repoId: string; compact?: boolean }) {
   const router = useRouter();
   const [queueing, setQueueing] = useState(false);
 
@@ -37,14 +37,16 @@ export function ReanalyzeButton({ repoId }: { repoId: string }) {
   return (
     <Button
       type="button"
-      variant="outline"
-      size="sm"
+      variant={compact ? "ghost" : "outline"}
+      size={compact ? "icon-sm" : "sm"}
       onClick={reanalyze}
       disabled={queueing}
-      title="Run the analysis again on the current commit"
+      className={compact ? "text-muted-foreground" : undefined}
+      title="Re-analyze — run the analysis again on the current commit"
+      aria-label={compact ? "Re-analyze" : undefined}
     >
       {queueing ? <LoaderCircle className="animate-spin" aria-hidden /> : <RotateCw aria-hidden />}
-      Re-analyze
+      {compact ? null : "Re-analyze"}
     </Button>
   );
 }

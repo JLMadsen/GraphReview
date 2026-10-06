@@ -79,3 +79,15 @@ between the folders (with counts), a README excerpt, and route/URL hints
 (e.g. `app/map` serves `/map`). Tokens aren't a concern yet. Once naming
 quality has been seen on real repos, check which of these actually improve
 the names and cut the rest.
+
+## The review verdict in the left column (parked 2026-10-06)
+
+Under the diff summary there used to be a verdict block (`components/graph/ReviewSummary.tsx`, still in the repo but unused): "24 need a look" in large type, the per-bucket breakdown ("22 defects · 2 concerns · 6 OK"), and the PR-level "Delivers what it describes?" answer — one word ("Mostly.") with the intent finding's summary, confidence and expandable reasoning.
+
+It was taken out because it showed too much text for what it adds: the dock's severity chips already carry the counts, and the map's badges show where they are. What it was the only home for is the **intent verdict** ("does the PR deliver what it describes") — that finding is now shown nowhere in the UI (it is still produced, stored and exported in the Markdown copy). If it comes back, consider just that part, as one short line: e.g. "Delivers what it describes? Mostly" with the summary on hover. Restoring the old block is one prop: `headline={<ReviewSummary …/>}` on `DiffPanel` in `GraphView.tsx`.
+
+## "Not on the map" in the left column (parked 2026-10-06)
+
+The diff summary used to end with a "Not on the map" section: the diff's files the last analysis doesn't know (added, moved or deleted since it ran — `unmatchedFiles` from diff-impact), each clickable, plus the AI-labelled "added components" for a PR (name, file count, description). It was taken out because in the PR view it repeats the PR map, which already puts every changed file on a card (unknown ones on heuristic cards like "Documentation" or `lib/neo4j`), and it sat below the fold.
+
+What still works without it: the added components are still fetched and drawn as green nodes on the Repo view (`onAddedComponents` → `GraphView`), and the App map's footer still counts files no card holds. If the information is wanted back, the suggestion was a small "new to the graph" tag on those files in the dock's Files tab rather than a separate list. The removed markup is in git history (`DiffSummary` in `components/graph/DiffPanel.tsx`).

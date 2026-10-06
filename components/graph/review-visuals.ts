@@ -35,7 +35,7 @@
 // illegible at whole-graph zoom), which is exactly why the marker is a
 // redundant cue — the authoritative, labelled list is in `ReviewPanel`.
 
-import { CircleAlert, CircleCheck, CircleHelp, CircleX } from "lucide-react";
+import { Check, Minus, TriangleAlert, X } from "lucide-react";
 import type { FindingDTO, Assessment, FindingKind, FindingScope } from "./types";
 
 export interface AssessmentVisual {
@@ -73,7 +73,7 @@ export const ASSESSMENT_VISUALS: Record<Assessment, AssessmentVisual> = {
     description: "The change looks wrong — or code it depends on was left behind.",
     color: "#fb3b53",
     text: "#ff8f9f",
-    icon: CircleX,
+    icon: X,
     rank: 0,
     markerOpacity: 0.55,
     markerPadding: 11,
@@ -83,7 +83,7 @@ export const ASSESSMENT_VISUALS: Record<Assessment, AssessmentVisual> = {
     description: "Worth a closer look: risky, incomplete, or a behaviour change others rely on.",
     color: "#e879f9",
     text: "#f0abfc",
-    icon: CircleAlert,
+    icon: TriangleAlert,
     rank: 1,
     markerOpacity: 0.45,
     markerPadding: 9,
@@ -93,7 +93,7 @@ export const ASSESSMENT_VISUALS: Record<Assessment, AssessmentVisual> = {
     description: "The model could not judge this change (or the call failed).",
     color: "#94a3b8",
     text: "#b8c2d2",
-    icon: CircleHelp,
+    icon: Minus,
     rank: 2,
     markerOpacity: 0.4,
     markerPadding: 8,
@@ -103,7 +103,7 @@ export const ASSESSMENT_VISUALS: Record<Assessment, AssessmentVisual> = {
     description: "The change looks correct on its own terms.",
     color: "#34d399",
     text: "#6ee7b7",
-    icon: CircleCheck,
+    icon: Check,
     rank: 3,
     markerOpacity: 0.2,
     markerPadding: 6,
@@ -201,6 +201,32 @@ export function isImpactNote(finding: FindingDTO): boolean {
 export function isImpactFinding(finding: FindingDTO): boolean {
   return finding.category === "impact" && !isImpactNote(finding);
 }
+
+/**
+ * The changed declaration an impact finding is about (`isPendingJobState`),
+ * read back from the summary lib/jobs/impact.ts writes:
+ * "Not updated for the change to <name>: <reason>". `null` for anything else.
+ */
+export function impactSymbol(finding: Pick<FindingDTO, "category" | "summary">): string | null {
+  if (finding.category !== "impact") return null;
+  const match = /^Not updated for the change to (.+?):\s/.exec(finding.summary);
+  return match ? match[1] : null;
+}
+
+/**
+ * What happened to that declaration — "was removed from lib/jobs/queue.ts",
+ * "in lib/x.ts changed from `a` to `b`" — from the rationale impact.ts
+ * writes ("`name` <change>, but this line was not edited by the change.").
+ */
+export function impactChange(finding: Pick<FindingDTO, "category" | "rationale">): string | null {
+  if (finding.category !== "impact") return null;
+  const match = /^`[^`]+`\s+([\s\S]+?), but this line was not edited/.exec(finding.rationale);
+  return match ? match[1] : null;
+}
+
+/** What every verdict surface says on hover. */
+export const REVIEW_ADVISORY =
+  "Judged by the model on each change's own merits — it can be wrong. Nothing here blocks the PR or is posted anywhere.";
 
 /** Per-component change findings. */
 export function isChangeFinding(finding: FindingDTO): boolean {

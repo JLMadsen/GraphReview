@@ -42,10 +42,10 @@ function LineRow({ line, highlighted }: { line: DiffLine; highlighted: boolean }
         highlighted && "ring-1 ring-inset ring-brand/60"
       )}
     >
-      <td className="w-10 shrink-0 border-r border-border/40 px-1.5 text-right font-mono text-[10px] text-muted-foreground/50 select-none">
+      <td className="w-10 shrink-0 border-r border-border/40 px-1.5 text-right font-mono text-[10px] text-muted-foreground select-none">
         {line.oldLine ?? ""}
       </td>
-      <td className="w-10 shrink-0 border-r border-border/40 px-1.5 text-right font-mono text-[10px] text-muted-foreground/50 select-none">
+      <td className="w-10 shrink-0 border-r border-border/40 px-1.5 text-right font-mono text-[10px] text-muted-foreground select-none">
         {line.newLine ?? ""}
       </td>
       <td

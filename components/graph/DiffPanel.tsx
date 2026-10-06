@@ -17,7 +17,7 @@
 // the diff is older than the analyzed graph it is mapped onto.
 
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, History, LoaderCircle, TriangleAlert } from "lucide-react";
+import { ChevronDown, ChevronsUpDown, History, LoaderCircle, TriangleAlert } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { cn } from "cn";
 import { evictClosedAddedCache, readAddedCache, writeAddedCache } from "./added-cache";
@@ -135,6 +135,12 @@ interface PullRequestOption {
   state: "open" | "closed" | "merged";
   /** Versions the added-components cache — see added-cache.ts. */
   updatedAt: string;
+  // The rest of the summary the endpoint sends — the diff summary's meta lines.
+  draft?: boolean;
+  author?: string | null;
+  baseRef?: string;
+  headRef?: string;
+  createdAt?: string;
 }
 
 interface CommitOption {
@@ -308,11 +314,7 @@ export function DiffPanel({
   const [checked, setChecked] = useState<DiffImpactRequestDTO | null>(null);
   /** The picker is open — always before the first result, and after "Change". */
   const [picking, setPicking] = useState(true);
-  /** Local copy of whatever was last reported via `onAddedComponents`, for this panel's own "Added" list below. */
-  const [addedComponents, setAddedComponents] = useState<AddedComponentDTO[]>([]);
-
   function reportAddedComponents(components: AddedComponentDTO[]) {
-    setAddedComponents(components);
     onAddedComponents(components);
   }
 
@@ -670,13 +672,12 @@ export function DiffPanel({
         checked={checked}
         meta={resultMeta}
         lastAnalyzedSha={lastAnalyzedSha}
-        prTitle={
+        pr={
           "prNumber" in checked && prListState.status === "loaded"
-            ? prListState.items.find((pr) => pr.number === checked.prNumber)?.title
+            ? prListState.items.find((pr) => pr.number === checked.prNumber)
             : undefined
         }
         lineStats={lineStats}
-        addedComponents={addedComponents}
         loading={loading}
         onChange={clearDiff}
         headline={headline}
@@ -911,9 +912,8 @@ function DiffSummary({
   checked,
   meta,
   lastAnalyzedSha,
-  prTitle,
+  pr,
   lineStats,
-  addedComponents,
   loading,
   onChange,
   headline,
@@ -923,9 +923,9 @@ function DiffSummary({
   checked: DiffImpactRequestDTO;
   meta: DiffTargetMeta;
   lastAnalyzedSha?: string;
-  prTitle?: string;
+  /** The PR's summary from the list, when the check was of a PR that is in it. */
+  pr?: PullRequestOption;
   lineStats?: { additions: number; deletions: number } | null;
-  addedComponents: AddedComponentDTO[];
   loading: boolean;
   onChange: () => void;
   headline?: React.ReactNode;
@@ -934,46 +934,66 @@ function DiffSummary({
   const kind = "prNumber" in checked ? "Pull request" : "baseRef" in checked ? (isShaLike(checked.headRef) ? "Commits" : "Branches") : "Files";
   // One file count for the whole page: every file in the diff, on the map or not.
   const files = result.touchedFiles.length + result.unmatchedFiles.length;
-  const offMap = result.unmatchedFiles.length;
+
+  const prState = pr ? (pr.state === "open" && pr.draft ? "draft" : pr.state) : null;
+  const prWhen = pr ? relativeDate(pr.state === "open" ? pr.createdAt ?? pr.updatedAt : pr.updatedAt) : "";
 
   return (
     <div className="text-xs">
-      <div className="flex items-baseline justify-between gap-2">
-        <p className="text-[11px] text-muted-foreground">{kind}</p>
-        <button
-          type="button"
-          onClick={onChange}
-          className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-        >
-          Change
-        </button>
-      </div>
-      <p className="mt-1 text-[13px] leading-snug font-medium">
-        {"prNumber" in checked ? (
-          <>
-            <span className="font-mono text-muted-foreground">#{checked.prNumber}</span> {prTitle ?? ""}
-          </>
-        ) : "baseRef" in checked ? (
-          <span className="font-mono text-xs">
-            {shortRef(checked.baseRef)} <span className="text-muted-foreground">→</span> {shortRef(checked.headRef)}
-          </span>
+      {/* What is being looked at, as the picker it reopens. */}
+      <button
+        type="button"
+        onClick={onChange}
+        className="flex w-full items-start gap-2 rounded-md border border-border bg-background/40 px-2.5 py-2 text-left transition-colors hover:border-foreground/25 hover:bg-background/70"
+        title={`${kind} — pick another diff`}
+      >
+        <span className="line-clamp-2 min-w-0 flex-1 text-[13px] leading-snug font-medium">
+          {"prNumber" in checked ? (
+            <>
+              <span className="font-mono font-normal text-muted-foreground">#{checked.prNumber}</span>{" "}
+              {pr?.title ?? "Pull request"}
+            </>
+          ) : "baseRef" in checked ? (
+            <span className="font-mono text-xs">
+              {shortRef(checked.baseRef)} <span className="text-muted-foreground">→</span> {shortRef(checked.headRef)}
+            </span>
+          ) : (
+            "Pasted paths"
+          )}
+        </span>
+        {loading ? (
+          <LoaderCircle className="mt-0.5 size-3.5 shrink-0 animate-spin text-muted-foreground" aria-label="Checking" />
         ) : (
-          "Pasted paths"
+          <ChevronsUpDown className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
         )}
-      </p>
-      <p className="mt-1.5 flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-        {lineStats && (
+      </button>
+
+      <div className="mt-2.5 space-y-0.5 font-mono text-[11px] leading-relaxed text-muted-foreground">
+        {pr ? (
           <>
-            <span className="text-success">+{lineStats.additions}</span>
-            <span className="text-destructive">−{lineStats.deletions}</span>
+            <p className="truncate">
+              {pr.author ?? "unknown"} · {prState}
+              {prWhen ? ` ${prWhen}` : ""}
+            </p>
+            {pr.headRef && pr.baseRef && (
+              <p className="truncate" title={`${pr.headRef} → ${pr.baseRef}`}>
+                {pr.headRef} → {pr.baseRef}
+              </p>
+            )}
           </>
+        ) : null}
+        <p>
+          {pr ? "" : `${kind} · `}
+          {files} file{files === 1 ? "" : "s"} · {result.touchedComponentIds.length} component
+          {result.touchedComponentIds.length === 1 ? "" : "s"}
+        </p>
+        {lineStats && (
+          <p>
+            <span className="text-success">+{lineStats.additions.toLocaleString("en-US")}</span>{" "}
+            <span className="text-destructive">−{lineStats.deletions.toLocaleString("en-US")}</span>
+          </p>
         )}
-        {loading && <LoaderCircle className="size-3 animate-spin" aria-label="Checking" />}
-      </p>
-      <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
-        {files} file{files === 1 ? "" : "s"} · {result.touchedComponentIds.length} component
-        {result.touchedComponentIds.length === 1 ? "" : "s"}
-      </p>
+      </div>
       {meta.historical && (
         <p className="mt-1.5 text-[11px] leading-snug text-muted-foreground">
           History, mapped onto the graph at{" "}
@@ -988,43 +1008,6 @@ function DiffSummary({
         </div>
       )}
 
-      {offMap > 0 && (
-        <section className="mt-3 border-t border-border pt-2.5">
-          <p className="flex items-center gap-1 text-[11px]">
-            <span className="text-muted-foreground">Not on the map</span>
-            <span className="ml-auto font-mono text-muted-foreground">
-              {offMap} file{offMap === 1 ? "" : "s"}
-              {addedComponents.length > 0 && <span className="text-success"> · {addedComponents.length} new</span>}
-            </span>
-          </p>
-          <p className="mt-1.5 text-[11px] leading-snug text-muted-foreground">
-            {meta.historical ? "Added, moved or deleted since the analysis." : "Added by this diff — they join the map at the next analysis."}
-            {addedComponents.length > 0 && " The Repo view shows them as green components."}
-          </p>
-          {addedComponents.length > 0 && (
-            <ul className="mt-2 space-y-1.5">
-              {addedComponents.map((c) => (
-                <li key={c.id} className="text-[11px]">
-                  <p className="flex items-baseline gap-1.5">
-                    <span className="truncate font-medium text-success" title={c.name}>
-                      {c.name}
-                    </span>
-                    <span className="shrink-0 font-mono text-muted-foreground">{c.fileCount}</span>
-                  </p>
-                  {c.description && <p className="leading-snug text-muted-foreground">{c.description}</p>}
-                </li>
-              ))}
-            </ul>
-          )}
-          <ul className="mt-2 max-h-40 space-y-0.5 overflow-y-auto font-mono text-[11px] text-muted-foreground">
-            {result.unmatchedFiles.map((f) => (
-              <li key={f} className="truncate" title={f}>
-                {f}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
     </div>
   );
 }

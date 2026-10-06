@@ -18,6 +18,8 @@ export interface PrMapFileDTO {
   status: FileDiffStatus;
   additions: number;
   deletions: number;
+  /** The analyzed component that owns the file, when there is one. */
+  componentId?: string;
 }
 
 export interface PrMapNodeDTO {

@@ -79,6 +79,7 @@ import {
   type CollapsedDomains,
 } from "./collapse";
 import { tidyDomainLayout } from "./layout-tidy";
+import { VIEW_TOOLBAR } from "./view-chrome";
 import type { UseLabelsResult } from "./label-types";
 import type { GraphEdgeDTO, GraphNodeDTO, Assessment } from "./types";
 
@@ -894,6 +895,8 @@ export interface GraphCanvasProps {
   previewComponentIds?: string[];
   /** Extra toolbar controls rendered after the Labels control (the merge suggestions button). */
   toolbarExtra?: React.ReactNode;
+  /** Drawn first in the toolbar — GraphView's view switch. */
+  leading?: React.ReactNode;
   className?: string;
 }
 
@@ -910,6 +913,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       labels,
       previewComponentIds,
       toolbarExtra,
+      leading,
       className,
     },
     ref
@@ -1598,8 +1602,9 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
     return (
       <div className={className}>
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className={VIEW_TOOLBAR}>
           <div className="flex flex-wrap items-center gap-2">
+            {leading}
             <div
               className="flex items-center gap-0.5 rounded-lg bg-muted p-[3px] ring-1 ring-border/60"
               role="group"
@@ -1614,17 +1619,18 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
                     type="button"
                     onClick={() => setLayout(opt.value)}
                     className={cn(
-                      "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
+                      "flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
                       active
                         ? "bg-elevated text-foreground shadow-sm ring-1 ring-border/60"
                         : "text-muted-foreground hover:text-foreground"
                     )}
                     aria-pressed={active}
+                    aria-label={`${opt.label} layout`}
+                    title={`${opt.label} layout`}
                   >
                     <Icon
                       className={cn("size-3.5", active ? "text-brand" : "opacity-70")}
                     />
-                    {opt.label}
                   </button>
                 );
               })}
@@ -1645,121 +1651,125 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
             {toolbarExtra}
           </div>
 
-          <div className="flex items-center gap-1.5">
-            {(Object.keys(CATEGORY_LABELS) as AffectedCategory[]).map((cat) => {
-              const on = visibleCategories[cat];
-              return (
-                <button
-                  key={cat}
-                  type="button"
-                  disabled={!hasDiff}
-                  onClick={() =>
-                    setVisibleCategories((prev) => ({ ...prev, [cat]: !prev[cat] }))
-                  }
-                  className={cn(
-                    "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40",
-                    on
-                      ? "border-border bg-card text-foreground hover:bg-secondary"
-                      : "border-transparent bg-muted text-muted-foreground line-through decoration-muted-foreground/50"
-                  )}
-                  aria-pressed={on}
-                  title={
-                    hasDiff
-                      ? `Toggle ${CATEGORY_LABELS[cat].toLowerCase()} components`
-                      : "Run an impact check to enable impact filters"
-                  }
-                >
-                  <span
-                    className="inline-block size-2 rounded-full ring-1 ring-inset ring-black/20"
-                    style={{
-                      backgroundColor: on
-                        ? IMPACT_COLORS[cat].fill
-                        : "transparent",
-                      boxShadow: on
-                        ? `0 0 0 1px ${IMPACT_COLORS[cat].border}66`
-                        : `inset 0 0 0 1px ${IMPACT_COLORS[cat].border}`,
-                    }}
-                  />
-                  {CATEGORY_LABELS[cat]}
-                  {hasDiff ? (
-                    <span className="font-mono text-[10px] text-muted-foreground">
-                      {categoryCounts[cat]}
-                    </span>
-                  ) : null}
-                </button>
-              );
-            })}
-
-            {/*
-              Review legend. Appears only once a review has produced findings,
-              so the toolbar is unchanged for every pre-AI flow, and it reads
-              as a second, quieter group rather than three more filter
-              buttons: a hairline divider, no borders, no toggle affordance
-              (the actual filters live in the dock below the canvas, which is
-              also where the findings are — duplicating them here would give
-              two controls for one list). Verdicts with no components are
-              omitted entirely, so the common "all OK" review adds one
-              small chip instead of four.
-            */}
-            {hasReview && (
-              <>
-                <span
-                  className="mx-0.5 h-4 w-px bg-border"
-                  aria-hidden
-                />
-                <div
-                  className="flex items-center gap-1.5"
-                  aria-label="AI review findings"
-                >
-                  {ASSESSMENT_ORDER.filter((intent) => intentCounts[intent] > 0).map(
-                    (intent) => {
-                      const visual = ASSESSMENT_VISUALS[intent];
-                      const Icon = visual.icon;
-                      return (
-                        <span
-                          key={intent}
-                          className="flex items-center gap-1 rounded-full px-1.5 py-1 text-xs font-medium"
-                          style={{
-                            color: visual.text,
-                            backgroundColor: `${visual.color}14`,
-                          }}
-                          title={`${intentCounts[intent]} component${
-                            intentCounts[intent] === 1 ? "" : "s"
-                          } marked ${visual.label.toLowerCase()} — ${
-                            visual.description
-                          }`}
-                        >
-                          <Icon className="size-3" aria-hidden />
-                          {visual.label}
-                          <span className="font-mono text-[10px] opacity-80">
-                            {intentCounts[intent]}
-                          </span>
-                        </span>
-                      );
-                    }
-                  )}
-                  {impactedCount > 0 && (
-                    <span
-                      className="flex items-center gap-1 rounded-full border border-dashed px-1.5 py-0.5 text-xs font-medium"
-                      style={{ color: IMPACTED_COLOR, borderColor: IMPACTED_COLOR }}
-                      title={`${impactedCount} component${impactedCount === 1 ? "" : "s"} with code the change left behind — a usage of a changed signature, type or constant that was not updated (dashed ring)`}
-                    >
-                      Impacted
-                      <span className="font-mono text-[10px] opacity-80">{impactedCount}</span>
-                    </span>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
         </div>
 
         {/* Fills the rest of the view's height (GraphView sizes the view);
             Cytoscape's container is pinned to it with an inline style:
             Cytoscape injects position: relative for its container class,
             which would beat a Tailwind "absolute". */}
-        <div className="relative min-h-[220px] flex-1 overflow-hidden rounded-xl bg-canvas ring-1 ring-border">
+        <div className="relative min-h-[220px] flex-1 overflow-hidden bg-canvas">
           <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
+
+          {/* The impact filters and the review legend float over the canvas
+              (bottom left, clear of the zoom controls) so the toolbar above
+              stays one row. */}
+            <div className="absolute bottom-3 left-3 z-20 flex max-w-[calc(100%-5rem)] flex-wrap items-center gap-1.5 rounded-lg border border-border/70 bg-background/80 px-2 py-1.5 backdrop-blur-md">
+              {(Object.keys(CATEGORY_LABELS) as AffectedCategory[]).map((cat) => {
+                const on = visibleCategories[cat];
+                return (
+                  <button
+                    key={cat}
+                    type="button"
+                    disabled={!hasDiff}
+                    onClick={() =>
+                      setVisibleCategories((prev) => ({ ...prev, [cat]: !prev[cat] }))
+                    }
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+                      on
+                        ? "border-border bg-card text-foreground hover:bg-secondary"
+                        : "border-transparent bg-muted text-muted-foreground line-through decoration-muted-foreground/50"
+                    )}
+                    aria-pressed={on}
+                    title={
+                      hasDiff
+                        ? `Toggle ${CATEGORY_LABELS[cat].toLowerCase()} components`
+                        : "Run an impact check to enable impact filters"
+                    }
+                  >
+                    <span
+                      className="inline-block size-2 rounded-full ring-1 ring-inset ring-black/20"
+                      style={{
+                        backgroundColor: on
+                          ? IMPACT_COLORS[cat].fill
+                          : "transparent",
+                        boxShadow: on
+                          ? `0 0 0 1px ${IMPACT_COLORS[cat].border}66`
+                          : `inset 0 0 0 1px ${IMPACT_COLORS[cat].border}`,
+                      }}
+                    />
+                    {CATEGORY_LABELS[cat]}
+                    {hasDiff ? (
+                      <span className="font-mono text-[10px] text-muted-foreground">
+                        {categoryCounts[cat]}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+
+              {/*
+                Review legend. Appears only once a review has produced findings,
+                so the toolbar is unchanged for every pre-AI flow, and it reads
+                as a second, quieter group rather than three more filter
+                buttons: a hairline divider, no borders, no toggle affordance
+                (the actual filters live in the dock below the canvas, which is
+                also where the findings are — duplicating them here would give
+                two controls for one list). Verdicts with no components are
+                omitted entirely, so the common "all OK" review adds one
+                small chip instead of four.
+              */}
+              {hasReview && (
+                <>
+                  <span
+                    className="mx-0.5 h-4 w-px bg-border"
+                    aria-hidden
+                  />
+                  <div
+                    className="flex items-center gap-1.5"
+                    aria-label="AI review findings"
+                  >
+                    {ASSESSMENT_ORDER.filter((intent) => intentCounts[intent] > 0).map(
+                      (intent) => {
+                        const visual = ASSESSMENT_VISUALS[intent];
+                        const Icon = visual.icon;
+                        return (
+                          <span
+                            key={intent}
+                            className="flex items-center gap-1 rounded-full px-1.5 py-1 text-xs font-medium"
+                            style={{
+                              color: visual.text,
+                              backgroundColor: `${visual.color}14`,
+                            }}
+                            title={`${intentCounts[intent]} component${
+                              intentCounts[intent] === 1 ? "" : "s"
+                            } marked ${visual.label.toLowerCase()} — ${
+                              visual.description
+                            }`}
+                          >
+                            <Icon className="size-3" aria-hidden />
+                            {visual.label}
+                            <span className="font-mono text-[10px] opacity-80">
+                              {intentCounts[intent]}
+                            </span>
+                          </span>
+                        );
+                      }
+                    )}
+                    {impactedCount > 0 && (
+                      <span
+                        className="flex items-center gap-1 rounded-full border border-dashed px-1.5 py-0.5 text-xs font-medium"
+                        style={{ color: IMPACTED_COLOR, borderColor: IMPACTED_COLOR }}
+                        title={`${impactedCount} component${impactedCount === 1 ? "" : "s"} with code the change left behind — a usage of a changed signature, type or constant that was not updated (dashed ring)`}
+                      >
+                        Impacted
+                        <span className="font-mono text-[10px] opacity-80">{impactedCount}</span>
+                      </span>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
 
           {/*
             Scale readout. Costs nothing (both numbers are already props) and

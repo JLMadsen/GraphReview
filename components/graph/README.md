@@ -35,8 +35,10 @@ On the rendering approach:
 - The AI review surface, backed by
   `/api/repos/[repoId]/review`: `useReview` (auto-run on a PR/ref target,
   then poll while the job streams findings in), `ReviewPanel` (the
-  full-width dock under the canvas — progress, cost counter, filter chips,
-  findings grouped by component) and `review-visuals.ts` (the one place the
+  full-width dock under the canvas — Findings and Files tabs, severity
+  toggles, impact findings grouped by the declaration they use, scoped to
+  the selected PR map area), `ReviewSummary` (the verdict at the top of
+  the left column) and `review-visuals.ts` (the one place the
   four `assessment` colours/glyphs are defined — plus the neutral scope/kind
   tags and the dashed "impacted" ring for components holding a caller the
   change left behind — shared by the panel, the sidebar and the canvas
@@ -52,7 +54,7 @@ On the rendering approach:
   `label-types.ts`. Labeling is what produces the compound boxes: until it
   has run, no node has a parent and the canvas is flat.
 - Feature merges (DESIGN.md §6.3): `useMerges` (fetch on mount and after every graph refetch, then the accept/reject/reopen/unmerge/rename/name-with-AI actions), `MergeSuggestions.tsx` (the toolbar button with the open count, and the suggestions panel in the right sidebar — hovering a card rings the nodes it would combine) and the merged-module section of `ComponentFilesPanel` (members, Rename, Name with AI, Unmerge). Wire types in `merge-types.ts`. Merged modules render as rounded hexagons (`shape`), and the preview ring uses `outline-*` — neither is owned by any of the three layers below.
-- The PR map (DESIGN.md §6.4) — the canvas slot's second view once a diff is selected, behind the **Repo | PR** switch in `GraphView`: `usePrMap` (POST `/api/repos/[repoId]/pr-map` for the current selection, refetched on every review state change so the AI grouping appears when the review finishes), `PrMapCanvas.tsx` (React Flow + elkjs, measured-then-laid-out cards, finding markers, shared selection, the "unchanged neighbours" toggle) and `PrMapNode.tsx` (the card: name, description, file chips with status and +/-). Wire types in `pr-map-types.ts`. Both views stay mounted; "Show in repo" uses `GraphCanvasHandle.focus`, and `ComponentFilesPanel`'s `headerAction` carries the Repo/PR jump.
+- The PR map (DESIGN.md §6.4) — the canvas slot's second view once a diff is selected, behind the **Repo | PR** switch in `GraphView`: `usePrMap` (POST `/api/repos/[repoId]/pr-map` for the current selection, refetched on every review state change so the AI grouping appears when the review finishes), `PrMapCanvas.tsx` (React Flow + elkjs, measured-then-laid-out cards, area selection, the "unchanged neighbours" toggle), `PrMapNode.tsx` (the card: name, files and +/-, a severity bar and an open-findings badge) and `PrAreaPanel.tsx` (the right column on the PR view: the selected area, or every area). `pr-areas.ts` (`buildPrAreas`) is what the canvas, the dock and the inspector all read — each card's files, lines and findings by bucket, and which card a finding belongs to. Wire types in `pr-map-types.ts`. Both views stay mounted; "Show in repo" uses `GraphCanvasHandle.focus`, and `ComponentFilesPanel`'s `headerAction` carries the Repo/PR jump.
 - Three *composing* highlight layers on the canvas, each owning disjoint
   Cytoscape style properties so none can overwrite another: diff impact
   (node `background-color`), selection (`border-*`/`opacity`/`z-index`) and

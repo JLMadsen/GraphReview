@@ -455,7 +455,8 @@ export function assemblePrMap(
       files: files
         .map((p) => {
           const { path: filePath, status, additions, deletions } = fileByPath.get(p)!;
-          return { path: filePath, status, additions, deletions };
+          const componentId = input.componentIdByPath.get(p);
+          return { path: filePath, status, additions, deletions, ...(componentId ? { componentId } : {}) };
         })
         .sort((a, b) => a.path.localeCompare(b.path)),
     });
@@ -574,8 +575,12 @@ export interface PrMapAiGrouping {
 }
 
 /**
- * The map for an AI grouping. Any changed file the grouping doesn't place
- * keeps its heuristic card, so a partial answer still shows every file.
+ * The map for an AI grouping. A changed code file the grouping doesn't place
+ * joins the group that holds most of its module's other files — on a large
+ * diff the model names a few files per area and stops, and a card per
+ * leftover module would bury the areas it did name. Anything still unplaced
+ * (a module the grouping never touched, tests, config, docs) keeps its
+ * heuristic card, so a partial answer still shows every file.
  */
 export function applyPrMapGrouping(
   input: PrMapInput,
@@ -586,8 +591,40 @@ export function applyPrMapGrouping(
     id: `ai:${index}`,
     name: group.name,
     description: group.description,
-    files: group.files,
+    files: [...group.files],
   }));
+  const named = new Set(groups.flatMap((group) => group.files));
+
+  // Which group holds most of each module's named files (ties: the first).
+  const perModule = new Map<string, Map<number, number>>();
+  groups.forEach((group, index) => {
+    for (const file of group.files) {
+      const owner = input.componentIdByPath.get(file);
+      if (!owner) continue;
+      const counts = perModule.get(owner) ?? new Map<number, number>();
+      counts.set(index, (counts.get(index) ?? 0) + 1);
+      perModule.set(owner, counts);
+    }
+  });
+  const groupOfModule = new Map<string, number>();
+  for (const [owner, counts] of perModule) {
+    let best = -1;
+    let bestCount = 0;
+    for (const [index, count] of counts) {
+      if (count > bestCount) {
+        best = index;
+        bestCount = count;
+      }
+    }
+    if (best >= 0) groupOfModule.set(owner, best);
+  }
+  for (const file of input.files) {
+    if (named.has(file.path) || classifyPath(file.path) !== "code") continue;
+    const owner = input.componentIdByPath.get(file.path);
+    const index = owner ? groupOfModule.get(owner) : undefined;
+    if (index !== undefined) groups[index].files.push(file.path);
+  }
+
   const placed = new Set(groups.flatMap((group) => group.files));
   const leftovers = heuristicPrMapGroups({
     ...input,

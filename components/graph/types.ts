@@ -121,8 +121,26 @@ export interface FileDiffResponseDTO {
   deletions: number;
   /** Unified diff hunks (`@@ ... @@`), the same text GitHub/`git diff -U3` produce. Absent for binary files or a diff too large to keep. */
   patch?: string;
-  /** The whole file at the requested commit — set only when the path is not part of the diff (an impact finding's caller). */
+  /** The whole file — set only when the path is not part of the diff (an impact finding's caller, or any file clicked in a list). */
   content?: string;
+  /** With `content`: the commit or ref it was read at. */
+  ref?: string;
+}
+
+/**
+ * Response shape for the same endpoint with `?view=file`: one file of the
+ * diff in full — the "File" tab of the diff modal. Read at the target's head,
+ * or at its base for a file the diff deletes.
+ */
+export interface FileContentResponseDTO {
+  path: string;
+  /** Which end of the diff the text comes from. */
+  side: "head" | "base";
+  /** The commit or ref it was read at. */
+  ref: string;
+  content: string;
+  /** The file is longer than the server reads and is cut off. */
+  truncated: boolean;
 }
 
 // ---------------------------------------------------------------------------

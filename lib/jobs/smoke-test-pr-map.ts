@@ -180,6 +180,31 @@ async function partB(): Promise<void> {
     applied.edges.some((e) => e.source === client?.id && e.target === host?.id && e.label === "starts")
   );
 
+  // A leftover code file of a module the grouping already placed joins that
+  // group; a leftover test of the same module keeps its own card.
+  const wider: PrMapInput = {
+    ...INPUT,
+    files: [...INPUT.files, { path: "src/ffi/abi.ts", status: "added", additions: 12, deletions: 0 }],
+    componentIdByPath: new Map([...INPUT.componentIdByPath, ["src/ffi/abi.ts", "c:ffi"]]),
+  };
+  const partial = applyPrMapGrouping(wider, collectPrMapLinks(wider), {
+    groups: [{ name: "Runtime Host", files: ["src/ffi/ffiRuntimeHost.ts"] }],
+    edgeLabels: [],
+  });
+  const hostFiles = partial.nodes.find((n) => n.name === "Runtime Host")?.files.map((f) => f.path) ?? [];
+  check(
+    "leftover code joins its module's group; its test keeps a test card",
+    hostFiles.includes("src/ffi/abi.ts") &&
+      !hostFiles.includes("src/ffi/ffiRuntimeHost.test.ts") &&
+      partial.nodes.some((n) => n.role === "test" && n.files.some((f) => f.path === "src/ffi/ffiRuntimeHost.test.ts")),
+    JSON.stringify(partial.nodes.map((n) => [n.name, n.files.map((f) => f.path)]))
+  );
+  check(
+    "a module the grouping never placed keeps its heuristic card",
+    partial.nodes.some((n) => n.id === "code:c:client"),
+    JSON.stringify(partial.nodes.map((n) => n.id))
+  );
+
   const mock = await startMockServer({ port: 0, host: "127.0.0.1", delayMs: 0, log: () => undefined });
   const real: AiProviderConfig = { baseUrl: `${mock.url}/v1`, apiKey: "test-key", model: "mock-review-1" };
   try {

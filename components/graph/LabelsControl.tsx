@@ -18,10 +18,10 @@ import {
   Ban,
   ChevronsDownUp,
   ChevronsUpDown,
-  CircleX,
   LoaderCircle,
   Sparkles,
   TriangleAlert,
+  X,
 } from "lucide-react";
 import { cn } from "cn";
 import { JobLogHover } from "./JobLogHover";
@@ -93,7 +93,7 @@ export function LabelsControl({
           {running
             ? "Labeling…"
             : hasLabels
-              ? "Re-generate labels"
+              ? "Relabel"
               : "Generate labels"}
         </button>
       ) : (
@@ -147,7 +147,7 @@ export function LabelsControl({
           className="flex items-center gap-1 rounded-full border border-border bg-card px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:border-destructive/50 hover:bg-destructive/10 hover:text-destructive"
           title="Stop this labeling run. Nothing it produced is saved; the tokens already spent are not refunded."
         >
-          <CircleX className="size-3" aria-hidden />
+          <X className="size-3" aria-hidden />
           Cancel
         </button>
       )}
@@ -167,22 +167,13 @@ export function LabelsControl({
       {/* What exists today, once a run has produced something. */}
       {!running && hasLabels && (
         <span
-          className="text-[11px] text-muted-foreground"
-          title="Domain groups and described modules currently stored for this repo"
+          className="font-mono text-[11px] text-muted-foreground"
+          title={`${labels.domains} domain group${labels.domains === 1 ? "" : "s"} · ${labels.describedModules} of ${labels.modules} modules described${
+            labels.state === "completed" && formatAgo(labels.finishedAt) ? ` · labeled ${formatAgo(labels.finishedAt)}` : ""
+          }`}
         >
-          <span className="font-mono text-foreground">{labels.domains}</span> domain
-          {labels.domains === 1 ? "" : "s"}
-          <span className="mx-1 opacity-40">·</span>
-          <span className="font-mono text-foreground">
-            {labels.describedModules}
-          </span>
-          /{labels.modules} described
-          {labels.state === "completed" && formatAgo(labels.finishedAt) && (
-            <>
-              <span className="mx-1 opacity-40">·</span>
-              labeled {formatAgo(labels.finishedAt)}
-            </>
-          )}
+          <span className="text-foreground">{labels.domains}</span>d ·{" "}
+          <span className="text-foreground">{labels.describedModules}</span>/{labels.modules}
         </span>
       )}
 
@@ -203,7 +194,7 @@ export function LabelsControl({
           ) : (
             <ChevronsDownUp className="size-3.5 opacity-70" aria-hidden />
           )}
-          {collapsed ? "Expand groups" : "Collapse groups"}
+          {collapsed ? "Expand" : "Collapse"}
         </button>
       )}
 

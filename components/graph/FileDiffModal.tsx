@@ -11,11 +11,19 @@
 // any) is "open" — not one per finding — so opening a second diff replaces
 // the first rather than stacking dialogs.
 //
-// For JS/TS and Python files a second tab, "Before / after", runs the
-// changed functions and components at both ends of the diff (PreviewPanel,
-// DESIGN.md §6.9). The tab resets to the diff whenever another file opens.
+// A file in the diff has a second tab, "File": the whole file at the head of
+// the diff (at its base, for a deleted file), with the lines the diff added
+// marked in the gutter — fetched the first time the tab opens. For JS/TS and
+// Python files a third, "Before / after", runs the changed functions and
+// components at both ends of the diff (PreviewPanel, DESIGN.md §6.9). The tab
+// resets to the diff whenever another file opens.
+//
+// It is also the app's one file viewer: any file clicked in any list opens
+// here. A file the diff didn't change comes back whole (at the diff's head),
+// and with no diff selected at all (`target` null) the file is read as the
+// repo was analyzed, through `GET /api/repos/[repoId]/file`.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FileDiff, LoaderCircle, TriangleAlert } from "lucide-react";
 import {
   Dialog,
@@ -29,11 +37,12 @@ import { DiffViewer } from "./DiffViewer";
 import { PreviewPanel } from "./PreviewPanel";
 import { Segmented } from "./Segmented";
 import { parseLineRange, parseUnifiedDiff } from "./diff-utils";
-import type { FileDiffResponseDTO, FindingDTO, ReviewTargetDTO } from "./types";
+import type { FileContentResponseDTO, FileDiffResponseDTO, FindingDTO, ReviewTargetDTO } from "./types";
 
-function diffQuery(target: ReviewTargetDTO, filePath: string, sha?: string): string {
+function diffQuery(target: ReviewTargetDTO, filePath: string, sha?: string, view?: "file"): string {
   const params = new URLSearchParams({ path: filePath });
   if (sha) params.set("sha", sha);
+  if (view) params.set("view", view);
   if ("prNumber" in target) {
     params.set("prNumber", String(target.prNumber));
   } else {
@@ -48,38 +57,96 @@ type FetchState =
   | { status: "loaded"; data: FileDiffResponseDTO }
   | { status: "error"; message: string };
 
+type FileState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "loaded"; data: FileContentResponseDTO }
+  | { status: "error"; message: string };
+
+export type ModalTab = "diff" | "file" | "preview";
+
+/** A short sha for a full one; a branch name or "working copy" as is. */
+function shortRefLabel(ref: string): string {
+  return /^[0-9a-f]{40}$/.test(ref) ? ref.slice(0, 7) : ref;
+}
+
 export interface FileDiffModalProps {
   repoId: string;
-  target: ReviewTargetDTO;
-  /** The file to show (a finding, or a bare `{ filePath }` from a PR map chip), or `null` when the modal is closed. */
+  /** The diff being looked at, or `null` with none selected — then only the file itself can be shown. */
+  target: ReviewTargetDTO | null;
+  /** The file to show (a finding, or a bare `{ filePath }` from a file list), or `null` when the modal is closed. */
   finding: (Pick<FindingDTO, "filePath" | "lineRange"> & { reviewedHeadSha?: string }) | null;
   /** Open on the Before / after tab, showing this component (from the "Looks different" list). */
   initialComponent?: string;
+  /** The tab a changed file opens on — the diff unless a list asks for the whole file. */
+  initialTab?: "diff" | "file";
   onClose: () => void;
 }
 
-export function FileDiffModal({ repoId, target, finding, initialComponent, onClose }: FileDiffModalProps) {
+export function FileDiffModal({ repoId, target, finding, initialComponent, initialTab = "diff", onClose }: FileDiffModalProps) {
   const [state, setState] = useState<FetchState>({ status: "loading" });
-  const [tab, setTab] = useState<"diff" | "preview">("diff");
+  const [fileState, setFileState] = useState<FileState>({ status: "idle" });
+  const [tab, setTab] = useState<ModalTab>("diff");
   const filePath = finding?.filePath;
   const headSha = finding?.reviewedHeadSha;
-  // A file outside the diff (an impact finding's caller) has no before/after.
-  // With a head sha the file may turn out to be one, so the tab waits for the answer.
-  const outsideDiff = state.status === "loaded" ? state.data.content !== undefined : Boolean(headSha);
-  const previewable = Boolean(filePath && runtimeForPath(filePath)) && !outsideDiff;
+  // A file outside the diff (an impact finding's caller, any unchanged file
+  // from a list, every file with no diff selected) has no tabs: it is shown
+  // whole. With a head sha the file may turn out to be one, so the tabs wait
+  // for the answer.
+  const outsideDiff = !target || (state.status === "loaded" ? state.data.content !== undefined : Boolean(headSha));
+  const previewable = Boolean(target && filePath && runtimeForPath(filePath)) && !outsideDiff;
+  const shownTab: ModalTab = outsideDiff ? "diff" : tab;
 
+  /** The file whose whole text has been asked for — at most one request per opened file. */
+  const fileRequested = useRef<string | null>(null);
   useEffect(() => {
-    setTab(initialComponent ? "preview" : "diff");
-  }, [filePath, initialComponent]);
+    setTab(initialComponent ? "preview" : initialTab);
+    setFileState({ status: "idle" });
+    fileRequested.current = null;
+  }, [filePath, initialComponent, initialTab]);
+
+  // The whole file is fetched the first time its tab opens — once the diff is
+  // in, which says whether the file changed at all and which lines to mark —
+  // then kept until another file opens; an answer for a file no longer open is
+  // dropped.
+  const wantFile = shownTab === "file" && Boolean(filePath) && state.status === "loaded";
+  useEffect(() => {
+    if (!wantFile || !filePath || !target || fileRequested.current === filePath) return;
+    const path = filePath;
+    fileRequested.current = path;
+    setFileState({ status: "loading" });
+    fetch(`/api/repos/${repoId}/diff-impact/file?${diffQuery(target, path, undefined, "file")}`)
+      .then(async (res) => {
+        const json = (await res.json().catch(() => null)) as FileContentResponseDTO | { error: string } | null;
+        if (!res.ok || !json || "error" in json) {
+          throw new Error(json && "error" in json ? json.error : `Request failed (${res.status}).`);
+        }
+        return json;
+      })
+      .then((data) => {
+        if (fileRequested.current === path) setFileState({ status: "loaded", data });
+      })
+      .catch((err: unknown) => {
+        if (fileRequested.current === path) {
+          setFileState({ status: "error", message: err instanceof Error ? err.message : "Failed to load the file." });
+        }
+      });
+    // `target` is fixed for the lifetime of the dock, like the diff fetch below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantFile, filePath, repoId]);
 
   useEffect(() => {
     if (!filePath) return;
     let cancelled = false;
     setState({ status: "loading" });
-    fetch(`/api/repos/${repoId}/diff-impact/file?${diffQuery(target, filePath, headSha)}`)
+    const url = target
+      ? `/api/repos/${repoId}/diff-impact/file?${diffQuery(target, filePath, headSha)}`
+      : `/api/repos/${repoId}/file?${new URLSearchParams({ path: filePath })}`;
+    fetch(url)
       .then(async (res) => {
         const json = (await res.json().catch(() => null)) as
           | FileDiffResponseDTO
+          | FileContentResponseDTO
           | { error: string }
           | null;
         if (!res.ok || !json || "error" in json) {
@@ -87,7 +154,10 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, onClo
             json && "error" in json ? json.error : `Request failed (${res.status}).`
           );
         }
-        return json;
+        // With no diff the answer is just the file — the same shape as an unchanged one.
+        return "side" in json
+          ? ({ path: json.path, status: "unchanged", additions: 0, deletions: 0, content: json.content, ref: json.ref } satisfies FileDiffResponseDTO)
+          : json;
       })
       .then((data) => {
         if (!cancelled) setState({ status: "loaded", data });
@@ -102,19 +172,36 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, onClo
     return () => {
       cancelled = true;
     };
-    // `target` is fixed for the lifetime of a review dock — only the
-    // selected finding's file ever changes.
+    // `target` is fixed while a file is open (GraphView closes the viewer
+    // when the diff selection changes) — only the file ever changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoId, filePath, headSha]);
 
   const highlightRange = parseLineRange(finding?.lineRange);
+  const hunks = useMemo(
+    () => (state.status === "loaded" && state.data.patch ? parseUnifiedDiff(state.data.patch) : []),
+    [state]
+  );
+  /** New-file line numbers the diff added — marked in the File tab's gutter. */
+  const addedLines = useMemo(() => {
+    const lines = new Set<number>();
+    for (const hunk of hunks) for (const line of hunk.lines) if (line.type === "add" && line.newLine != null) lines.add(line.newLine);
+    return lines;
+  }, [hunks]);
+  const tabOptions = [
+    { value: "diff" as const, label: "Diff" },
+    { value: "file" as const, label: "File", title: "The whole file at the head of the diff, with the changed lines marked" },
+    ...(previewable
+      ? [{ value: "preview" as const, label: "Before / after", title: "Render the changed components and run the changed functions, before and after" }]
+      : []),
+  ];
 
   return (
     <Dialog open={Boolean(finding)} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         className={cn(
           "flex w-full max-w-[calc(100%-2rem)] flex-col",
-          tab === "preview" ? "max-h-[92vh] sm:max-w-7xl" : "max-h-[85vh] sm:max-w-4xl"
+          shownTab === "preview" ? "max-h-[92vh] sm:max-w-7xl" : "max-h-[85vh] sm:max-w-4xl"
         )}
       >
         <DialogHeader>
@@ -123,26 +210,24 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, onClo
             <span className="truncate" title={filePath}>
               {filePath}
             </span>
-            {previewable && (
+            {!outsideDiff && (
               <Segmented
                 className="ml-auto shrink-0 font-sans"
                 size="xs"
                 label="View"
-                value={tab}
+                value={shownTab}
                 onChange={setTab}
-                options={[
-                  { value: "diff", label: "Diff" },
-                  { value: "preview", label: "Before / after", title: "Render the changed components and run the changed functions, before and after" },
-                ]}
+                options={tabOptions}
               />
             )}
             {state.status === "loaded" && state.data.content !== undefined && (
-              <span className={cn("shrink-0 font-sans text-[11px] font-normal text-muted-foreground", !previewable && "ml-auto")}>
-                not changed by this diff{headSha ? ` · at ${headSha.slice(0, 7)}` : ""}
+              <span className="ml-auto shrink-0 font-sans text-[11px] font-normal text-muted-foreground">
+                {target ? "not changed by this diff" : "as analyzed"}
+                {(state.data.ref ?? headSha) ? ` · at ${shortRefLabel(state.data.ref ?? headSha!)}` : ""}
               </span>
             )}
             {state.status === "loaded" && state.data.content === undefined && (
-              <span className={cn("shrink-0 font-sans text-[11px] font-normal text-muted-foreground", !previewable && "ml-auto")}>
+              <span className="shrink-0 font-sans text-[11px] font-normal text-muted-foreground">
                 <span className="text-success">+{state.data.additions}</span>{" "}
                 <span className="text-destructive">-{state.data.deletions}</span>
               </span>
@@ -151,32 +236,29 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, onClo
         </DialogHeader>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {tab === "preview" && filePath && (
+          {shownTab === "preview" && filePath && target && (
             <PreviewPanel repoId={repoId} target={target} filePath={filePath} initialSymbol={initialComponent} />
           )}
-          {tab === "diff" && state.status === "loading" && (
+          {(shownTab === "diff" || shownTab === "file") && state.status === "loading" && (
             <p className="flex items-center gap-2 px-1 py-6 text-xs text-muted-foreground">
               <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
-              Loading diff…
+              {target ? "Loading…" : "Loading the file…"}
             </p>
           )}
-          {tab === "diff" && state.status === "error" && (
+          {(shownTab === "diff" || shownTab === "file") && state.status === "error" && (
             <p className="flex items-start gap-2 px-1 py-6 text-xs text-destructive">
               <TriangleAlert className="mt-px size-3.5 shrink-0" aria-hidden />
               <span>{state.message}</span>
             </p>
           )}
-          {tab === "diff" && state.status === "loaded" && state.data.content !== undefined && (
+          {shownTab === "diff" && state.status === "loaded" && state.data.content !== undefined && (
             <FileText content={state.data.content} highlightRange={highlightRange} />
           )}
-          {tab === "diff" &&
+          {shownTab === "diff" &&
             state.status === "loaded" &&
             state.data.content === undefined &&
             (state.data.patch ? (
-              <DiffViewer
-                hunks={parseUnifiedDiff(state.data.patch)}
-                highlightRange={highlightRange}
-              />
+              <DiffViewer hunks={hunks} highlightRange={highlightRange} />
             ) : (
               <p className="px-1 py-6 text-center text-xs text-muted-foreground">
                 {state.data.status === "added" || state.data.status === "removed"
@@ -184,6 +266,44 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, onClo
                   : "No textual diff for this file (binary, or too large)."}
               </p>
             ))}
+          {shownTab === "file" && state.status === "loaded" && (fileState.status === "loading" || fileState.status === "idle") && (
+            <p className="flex items-center gap-2 px-1 py-6 text-xs text-muted-foreground">
+              <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
+              Loading the file…
+            </p>
+          )}
+          {shownTab === "file" && fileState.status === "error" && (
+            <p className="flex items-start gap-2 px-1 py-6 text-xs text-destructive">
+              <TriangleAlert className="mt-px size-3.5 shrink-0" aria-hidden />
+              <span>{fileState.message}</span>
+            </p>
+          )}
+          {shownTab === "file" && fileState.status === "loaded" && (
+            <>
+              <p className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[11px] text-muted-foreground">
+                <span>
+                  {fileState.data.side === "base" ? "Before the change — this diff deletes the file" : "At the head of the diff"}
+                  {" · "}
+                  <code className="font-mono" title={fileState.data.ref}>
+                    {shortRefLabel(fileState.data.ref)}
+                  </code>
+                </span>
+                {fileState.data.side === "head" && addedLines.size > 0 && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-3 w-[3px] rounded-[1px] bg-success" aria-hidden />
+                    {addedLines.size} line{addedLines.size === 1 ? "" : "s"} added or changed
+                  </span>
+                )}
+                {fileState.data.truncated && <span className="text-warning">Cut off — the file is very large.</span>}
+              </p>
+              <FileText
+                content={fileState.data.content}
+                highlightRange={highlightRange}
+                addedLines={fileState.data.side === "head" ? addedLines : undefined}
+                whole
+              />
+            </>
+          )}
         </div>
       </DialogContent>
     </Dialog>
@@ -194,14 +314,34 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, onClo
 const FILE_CONTEXT_LINES = 12;
 
 /**
- * A whole file that the diff didn't touch — the caller an impact finding
- * points at — as numbered lines, the finding's line ringed like the diff
- * view does, and only a window around it shown.
+ * A file as numbered lines, the finding's line ringed like the diff view
+ * does. Two uses: a file the diff didn't touch — the caller an impact finding
+ * points at — shown as a window around that line; and the File tab
+ * (`whole`): every line, the lines the diff added marked in the gutter, and
+ * the view scrolled to the finding's line, or else to the first change.
  */
-function FileText({ content, highlightRange }: { content: string; highlightRange: [number, number] | null }) {
-  const lines = content.split(/\r?\n/);
-  const from = highlightRange ? Math.max(1, highlightRange[0] - FILE_CONTEXT_LINES) : 1;
-  const to = highlightRange ? Math.min(lines.length, highlightRange[1] + FILE_CONTEXT_LINES) : lines.length;
+function FileText({
+  content,
+  highlightRange,
+  addedLines,
+  whole = false,
+}: {
+  content: string;
+  highlightRange: [number, number] | null;
+  addedLines?: ReadonlySet<number>;
+  whole?: boolean;
+}) {
+  const lines = content.replace(/\r?\n$/, "").split(/\r?\n/);
+  const windowed = !whole && highlightRange !== null;
+  const from = windowed && highlightRange ? Math.max(1, highlightRange[0] - FILE_CONTEXT_LINES) : 1;
+  const to = windowed && highlightRange ? Math.min(lines.length, highlightRange[1] + FILE_CONTEXT_LINES) : lines.length;
+  let firstAdded: number | null = null;
+  if (addedLines) for (const n of addedLines) if (firstAdded === null || n < firstAdded) firstAdded = n;
+  const scrollLine = whole ? (highlightRange?.[0] ?? firstAdded) : null;
+  const scrollRef = useRef<HTMLTableRowElement>(null);
+  useEffect(() => {
+    scrollRef.current?.scrollIntoView({ block: "center" });
+  }, [content, scrollLine]);
   return (
     <div className="overflow-x-auto rounded-md border border-border">
       <table className="w-full border-collapse">
@@ -216,9 +356,19 @@ function FileText({ content, highlightRange }: { content: string; highlightRange
           {lines.slice(from - 1, to).map((text, index) => {
             const n = from + index;
             const highlighted = Boolean(highlightRange && n >= highlightRange[0] && n <= highlightRange[1]);
+            const added = Boolean(addedLines?.has(n));
             return (
-              <tr key={n} className={cn(highlighted && "bg-destructive/10 ring-1 ring-inset ring-brand/60")}>
-                <td className="w-10 shrink-0 border-r border-border/40 px-1.5 text-right font-mono text-[10px] text-muted-foreground/50 select-none">
+              <tr
+                key={n}
+                ref={n === scrollLine ? scrollRef : undefined}
+                className={cn(added && "bg-success/10", highlighted && "bg-destructive/10 ring-1 ring-inset ring-brand/60")}
+              >
+                <td
+                  className={cn(
+                    "w-10 shrink-0 border-r border-border/40 px-1.5 text-right font-mono text-[10px] text-muted-foreground select-none",
+                    added && "border-l-[3px] border-l-success text-success/80"
+                  )}
+                >
                   {n}
                 </td>
                 <td className="w-full px-2 font-mono text-[12px] leading-relaxed whitespace-pre">{text || " "}</td>

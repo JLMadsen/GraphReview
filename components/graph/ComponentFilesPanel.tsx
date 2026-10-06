@@ -67,6 +67,8 @@ export interface ComponentFilesPanelProps {
   merged?: MergedModuleActions;
   /** Rendered in the header before the clear button — GraphView's "Show in PR" / "Show in repo" switch. */
   headerAction?: React.ReactNode;
+  /** Opens a file in the file viewer. Absent (sample data): the rows are plain text. */
+  onOpenFile?: (path: string) => void;
   onClear: () => void;
 }
 
@@ -92,6 +94,7 @@ export function ComponentFilesPanel({
   findings,
   merged,
   headerAction,
+  onOpenFile,
   onClear,
 }: ComponentFilesPanelProps) {
   const [state, setState] = useState<FetchState>({ status: "loading" });
@@ -305,9 +308,13 @@ export function ComponentFilesPanel({
           // and this panel shares a sticky sidebar with DiffPanel.
           <ul className="max-h-[38vh] divide-y divide-border/60 overflow-y-auto">
             {files.map((file) => (
-              <li
-                key={file.id}
-                className="flex items-start gap-2 px-3 py-1.5 transition-colors hover:bg-secondary/50"
+              <li key={file.id}>
+              <button
+                type="button"
+                onClick={onOpenFile ? () => onOpenFile(file.path) : undefined}
+                disabled={!onOpenFile}
+                className="flex w-full items-start gap-2 px-3 py-1.5 text-left transition-colors hover:bg-secondary/50 disabled:cursor-default"
+                title={onOpenFile ? `${file.path} — open the file` : file.path}
               >
                 <FileCode2
                   className="mt-0.5 size-3 shrink-0 text-muted-foreground/70"
@@ -330,7 +337,7 @@ export function ComponentFilesPanel({
                       return (
                         <>
                           {dir && (
-                            <span className="truncate text-muted-foreground/70">
+                            <span className="truncate text-muted-foreground">
                               {dir}
                             </span>
                           )}
@@ -351,6 +358,7 @@ export function ComponentFilesPanel({
                     )}
                   </p>
                 </div>
+              </button>
               </li>
             ))}
           </ul>
