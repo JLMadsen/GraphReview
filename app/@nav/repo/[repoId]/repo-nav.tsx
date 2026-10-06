@@ -6,7 +6,8 @@ import { loadRepo } from "@/app/repo/[repoId]/load-repo";
 
 /**
  * The repo's identity in the app's top bar, on every /repo/[repoId] page:
- * its name (a switcher to the other repos), where it comes from, its
+ * its name (a switcher to the other repos), where it comes from (a link to
+ * the hosted repo, in a new tab), its
  * analysis status as a dot and a word, and the two repo actions as quiet
  * icon buttons. It used to be a header row above every repo tab; in the top
  * bar it costs the Graph tab no height.
@@ -14,6 +15,11 @@ import { loadRepo } from "@/app/repo/[repoId]/load-repo";
  * Shares one request-cached lookup with the repo layout (`loadRepo`), which
  * renders the 404 and any load error — this renders nothing in those cases.
  */
+
+/** A hosted repo's URL opens in a new tab; a local repo's folder path can't be linked from a web page. */
+function isWebUrl(source: string): boolean {
+  return /^https?:\/\//i.test(source);
+}
 
 export async function RepoNav({ params }: { params: Promise<{ repoId: string }> }) {
   const { repoId } = await params;
@@ -26,7 +32,18 @@ export async function RepoNav({ params }: { params: Promise<{ repoId: string }> 
   return (
     <div className="flex min-w-0 items-center gap-3">
       <RepoSwitcher repoId={repo.id} repoName={repo.name} className="text-[13px] font-semibold text-foreground" />
-      {source ? (
+      {source && isWebUrl(source) ? (
+        <a
+          href={source}
+          target="_blank"
+          rel="noreferrer"
+          className="hidden min-w-0 items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground md:flex"
+          title={`Open on ${PROVIDER_NAMES[repo.provider]} · ${source}`}
+        >
+          <SourceIcon className="size-3.5 shrink-0 opacity-70" aria-hidden />
+          <span className="max-w-[28rem] truncate font-mono text-[11px]">{source}</span>
+        </a>
+      ) : source ? (
         <span
           className="hidden min-w-0 items-center gap-1.5 text-xs text-muted-foreground md:flex"
           title={`${PROVIDER_NAMES[repo.provider]} · ${source}`}
