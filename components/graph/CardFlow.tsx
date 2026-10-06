@@ -129,16 +129,23 @@ export function linkId(link: { source: string; target: string }): string {
   return `${link.source}->${link.target}`;
 }
 
-type CardData = { content: ReactNode };
+type CardData = { content: ReactNode; height: number };
 
+/**
+ * A card stretched to the height the layout reserved for it. ELK routed the
+ * edges to points along that box's sides, but the card's own height changes
+ * with zoom (the far-zoom look is taller or shorter than the close-up one) —
+ * drawn at its natural height, edges would end in empty space below a card or
+ * run into it.
+ */
 function CardNode({ data }: NodeProps<Node<CardData>>) {
   const hidden = { opacity: 0, pointerEvents: "none" as const, border: 0, width: 1, height: 1 };
   return (
-    <>
+    <div className="flex flex-col *:flex-1" style={{ height: data.height }}>
       <Handle type="target" position={Position.Left} isConnectable={false} style={hidden} />
       {data.content}
       <Handle type="source" position={Position.Right} isConnectable={false} style={hidden} />
-    </>
+    </div>
   );
 }
 
@@ -399,7 +406,7 @@ function CardFlowInner({
               id,
               type: "card",
               position: { x: positions.get(id)!.x, y: positions.get(id)!.y },
-              data: { content: renderCard(id) },
+              data: { content: renderCard(id), height: positions.get(id)!.height },
               draggable: false,
               selectable: false,
               connectable: false,
