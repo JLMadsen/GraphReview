@@ -10,19 +10,27 @@
 // comparison / local git) and hands back one file's raw patch text — no
 // database write, no component matching.
 //
-// With `?sha=<head commit>`, a path that is NOT part of the diff comes back
-// as the whole file at that commit (`content`) instead of a 404 — what an
-// impact finding points at: a caller the change left untouched.
+// A path that is NOT part of the diff comes back as the whole file
+// (`content`) instead of a 404: at `?sha=<head commit>` when given — what an
+// impact finding points at, a caller the change left untouched, at the
+// commit that was reviewed — and otherwise at the target's head, for any
+// file clicked in a list while this diff is selected.
+//
+// With `?view=file` it returns the whole file instead of its patch
+// (`FileContentResponseDTO`), read at the target's head — or at its base for
+// a file the diff deletes. That is the diff modal's "File" tab.
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { compareRefs, listPullRequestFiles } from "@/lib/github";
+import { compareRefs, getPullRequest, listPullRequestFiles } from "@/lib/github";
 import type { PullRequestFile } from "@/lib/github";
-import { compareRefs as compareGitLabRefs, listMergeRequestFiles } from "@/lib/gitlab";
+import { compareRefs as compareGitLabRefs, getMergeRequest, listMergeRequestFiles } from "@/lib/gitlab";
 import { listLocalFilePatches, resolveGitHubAccess, resolveGitLabAccess } from "@/lib/jobs";
-import { readFileAtCommit } from "@/lib/jobs/pr-context";
+import { resolveLocalRefSha } from "@/lib/jobs/local-git";
+import { MAX_FILE_CHARS, readFileAtCommit } from "@/lib/jobs/pr-context";
 import { getRepoById } from "@/lib/db";
-import type { FileDiffResponseDTO } from "@/components/graph/types";
+import type { RepoRecord } from "@/lib/db";
+import type { FileContentResponseDTO, FileDiffResponseDTO } from "@/components/graph/types";
 
 export const dynamic = "force-dynamic";
 
@@ -57,6 +65,32 @@ function fromPullRequestFile(file: PullRequestFile): FileLike {
     deletions: file.deletions,
     patch: file.patch,
   };
+}
+
+type FileQuery = z.infer<typeof querySchema>;
+
+/**
+ * The commit (or ref) one end of the target points at, for reading a whole
+ * file there. A PR's ends come from the host; a ref pair is used as given,
+ * except on a local repo, which can only be read at a commit.
+ */
+async function targetRef(repo: RepoRecord, query: FileQuery, side: "head" | "base"): Promise<string | null> {
+  if (!("prNumber" in query)) {
+    const ref = side === "head" ? query.headRef : query.baseRef;
+    if (repo.provider === "local") return repo.localPath ? resolveLocalRefSha(repo.localPath, ref) : null;
+    return ref;
+  }
+  if (repo.provider === "gitlab") {
+    const access = await resolveGitLabAccess(repo);
+    if (!access.ok) return null;
+    const { data: mr } = await getMergeRequest(access.token, access.ref.path, query.prNumber);
+    return side === "head" ? mr.headSha : mr.baseSha;
+  }
+  if (repo.provider === "local") return null;
+  const access = await resolveGitHubAccess(repo);
+  if (!access.ok) return null;
+  const { data: pr } = await getPullRequest(access.token, access.ref.owner, access.ref.repo, query.prNumber);
+  return side === "head" ? pr.headSha : pr.baseSha;
 }
 
 function toResponse(file: FileLike): FileDiffResponseDTO {
@@ -199,15 +233,37 @@ export async function GET(
       }
     }
 
-    if (!file && parsed.data.sha) {
-      const whole = await readFileAtCommit(repo, parsed.data.sha, path);
-      if (whole?.source === "commit") {
+    if (url.searchParams.get("view") === "file") {
+      const side = file?.status === "removed" ? "base" : "head";
+      const ref = await targetRef(repo, parsed.data, side);
+      const whole = ref ? await readFileAtCommit(repo, ref, path) : null;
+      if (!ref || whole?.source !== "commit") {
+        return NextResponse.json(
+          { error: `Couldn't read "${path}" at the ${side === "head" ? "head" : "base"} of this diff (missing, binary, or too large).` },
+          { status: 404 }
+        );
+      }
+      const body: FileContentResponseDTO = {
+        path,
+        side,
+        ref,
+        content: whole.text,
+        truncated: whole.text.length >= MAX_FILE_CHARS,
+      };
+      return NextResponse.json(body);
+    }
+
+    if (!file) {
+      const ref = parsed.data.sha ?? (await targetRef(repo, parsed.data, "head"));
+      const whole = ref ? await readFileAtCommit(repo, ref, path) : null;
+      if (ref && whole?.source === "commit") {
         const body: FileDiffResponseDTO = {
           path,
-          status: "modified",
+          status: "unchanged",
           additions: 0,
           deletions: 0,
           content: whole.text,
+          ref,
         };
         return NextResponse.json(body);
       }
@@ -215,7 +271,7 @@ export async function GET(
 
     if (!file) {
       return NextResponse.json(
-        { error: `No diff found for "${path}" in this target.` },
+        { error: `"${path}" isn't in this diff, and couldn't be read at its head (missing, binary, or too large).` },
         { status: 404 }
       );
     }

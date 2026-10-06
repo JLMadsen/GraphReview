@@ -1,9 +1,9 @@
 // GET /api/repos/[repoId]/components/[componentId]/files
 //
 // The sibling `graph` route only reports a component's file *count* (it's
-// what sizes the nodes); this route answers "which files, exactly", for the
-// Graph tab's selected-component panel (clicking a node in
-// `components/graph/GraphCanvas.tsx`).
+// what sizes the nodes); this route answers "which files, exactly". Its UI
+// (the component panel of the removed Repo view) is gone and nothing in the
+// app calls it now; it is kept as a small read-only API.
 //
 // Unlike `graph/route.ts` and `diff-impact/route.ts`, no raw `runRead` is
 // needed here: `lib/db/file.ts` already exposes exactly this query as

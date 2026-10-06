@@ -25,6 +25,13 @@ export interface ChangedContract {
   before: string;
   /** The declaration after the change; absent when removed. */
   after?: string;
+  /**
+   * Set when the declaration moved here from another file *and* its
+   * contract changed on the way: `before` is then the old file's version.
+   * (The old file also gets its own `removed` contract, for callers that
+   * still import it from there.)
+   */
+  movedFrom?: string;
 }
 
 export interface ContractSourceFile {
@@ -195,14 +202,21 @@ function sideDeclarations(side: readonly SideLine[]): SideDeclaration[] {
   });
 }
 
+interface FileDeclaration {
+  kind: ContractKind;
+  text: string;
+  /** 1-based line of the declaration. */
+  line: number;
+}
+
 /** Every declaration in a whole file, by name — several when a name is declared more than once (methods of different classes, overloads). */
-function fileDeclarations(content: string): Map<string, Array<{ kind: ContractKind; text: string }>> {
+function fileDeclarations(content: string): Map<string, FileDeclaration[]> {
   const lines = content.split(/\r?\n/);
-  const out = new Map<string, Array<{ kind: ContractKind; text: string }>>();
+  const out = new Map<string, FileDeclaration[]>();
   for (const declaration of extractDeclarations(content)) {
     const kind = contractKind(declaration.signature);
     const list = out.get(declaration.name) ?? [];
-    list.push({ kind, text: render(lines, spanFor(lines, declaration, kind), kind) });
+    list.push({ kind, text: render(lines, spanFor(lines, declaration, kind), kind), line: declaration.line + 1 });
     out.set(declaration.name, list);
   }
   return out;
@@ -214,7 +228,7 @@ function fileDeclarations(content: string): Map<string, Array<{ kind: ContractKi
  * side is the best guess at which one it became.
  */
 function headVersion(
-  candidates: Array<{ kind: ContractKind; text: string }> | undefined,
+  candidates: FileDeclaration[] | undefined,
   oldText: string,
   hunkNew: { text: string } | undefined
 ): { text: string } | undefined {
@@ -236,6 +250,11 @@ const KIND_RANK: Record<ContractKind, number> = { callable: 0, type: 1, value: 2
  * are not contract changes; a changed parameter list, return type, type
  * member or exported constant is. Names shorter than three characters are
  * skipped — too common to search for.
+ *
+ * A removed declaration that the same diff wrote into exactly one other file
+ * (added or modified) moved there; when its contract changed on the way, that
+ * is reported as a `changed` contract of the new file with `movedFrom` set.
+ * Added files are read only for this.
  */
 export function detectChangedContracts(files: readonly ContractSourceFile[]): ChangedContract[] {
   const found = new Map<string, ChangedContract>();
@@ -304,6 +323,8 @@ export function detectChangedContracts(files: readonly ContractSourceFile[]): Ch
     }
   }
 
+  pairMoves(files, found);
+
   return [...found.values()]
     .sort(
       (a, b) =>
@@ -311,4 +332,48 @@ export function detectChangedContracts(files: readonly ContractSourceFile[]): Ch
         KIND_RANK[a.kind] - KIND_RANK[b.kind]
     )
     .slice(0, MAX_CONTRACTS);
+}
+
+/** Turns "removed here, written there with a different contract" into a `changed` contract of the new file. */
+function pairMoves(files: readonly ContractSourceFile[], found: Map<string, ChangedContract>): void {
+  const removed = [...found.values()].filter((c) => c.change === "removed");
+  if (removed.length === 0) return;
+  const homes = files
+    .filter((f) => typeof f.headContent === "string")
+    .map((f) => ({
+      path: f.path,
+      declarations: fileDeclarations(f.headContent as string),
+      // Only declarations the diff wrote count: an old same-named one elsewhere is not the moved one.
+      wrote: (line: number) => f.status === "added" || addedLineNumbers(f.patch).has(line),
+    }));
+
+  for (const contract of removed) {
+    const matches = homes.flatMap((home) =>
+      home.path === contract.filePath
+        ? []
+        : (home.declarations.get(contract.name) ?? [])
+            .filter((d) => d.kind === contract.kind && home.wrote(d.line))
+            .map((d) => ({ path: home.path, declaration: d }))
+    );
+    if (new Set(matches.map((m) => m.path)).size !== 1) continue; // nowhere, or ambiguous
+    const path = matches[0].path;
+    const key = `${path}\0${contract.name}`;
+    if (found.has(key)) continue;
+    const now = headVersion(
+      matches.map((m) => m.declaration),
+      contract.before,
+      undefined
+    )!;
+    // Moved unchanged: only callers still importing the old file can break — the removal covers them.
+    if (normalize(now.text) === normalize(contract.before)) continue;
+    found.set(key, {
+      name: contract.name,
+      filePath: path,
+      kind: contract.kind,
+      change: "changed",
+      before: contract.before,
+      after: now.text,
+      movedFrom: contract.filePath,
+    });
+  }
 }

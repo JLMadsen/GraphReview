@@ -1,6 +1,6 @@
 "use client";
 
-// The repo-detail breadcrumb's name segment, upgraded into a switcher —
+// The open repo's name in the top bar (app/@nav), upgraded into a switcher —
 // making repo switching available directly from the UI, as a "multi-repo
 // switcher UX polish" v3 item.
 //
@@ -16,7 +16,7 @@
 // No Popover/Command primitive exists in components/ui/ yet, and the
 // codebase's established convention when one is missing is a plain
 // implementation rather than pulling in a new dependency for it (see
-// DiffPanel's hand-rolled <select> and GraphCanvas's custom tooltip) — same
+// DiffPanel's hand-rolled <select>) — same
 // approach here: a `relative` trigger, an absolutely positioned panel, a
 // document click listener to close on an outside click.
 
@@ -30,6 +30,8 @@ import { providerIcon } from "./repo-status-badge";
 export interface RepoSwitcherProps {
   repoId: string;
   repoName: string;
+  /** Extra classes for the trigger (the top bar sets the name's weight). */
+  className?: string;
 }
 
 type ListState =
@@ -44,7 +46,7 @@ function matches(repo: RepoDto, query: string): boolean {
   return haystack.includes(query.toLowerCase());
 }
 
-export function RepoSwitcher({ repoId, repoName }: RepoSwitcherProps) {
+export function RepoSwitcher({ repoId, repoName, className }: RepoSwitcherProps) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -121,7 +123,11 @@ export function RepoSwitcher({ repoId, repoName }: RepoSwitcherProps) {
         onClick={toggle}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="flex items-center gap-1 rounded px-1 py-0.5 text-foreground/80 transition-colors hover:text-foreground"
+        className={cn(
+          "flex items-center gap-1 rounded px-1 py-0.5 text-foreground/80 transition-colors hover:text-foreground",
+          className
+        )}
+        title="Switch repo"
       >
         <span className="max-w-48 truncate">{repoName}</span>
         <ChevronDown

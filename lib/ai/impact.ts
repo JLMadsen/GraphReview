@@ -43,6 +43,8 @@ export interface ImpactContract {
   change: "changed" | "removed";
   before: string;
   after?: string;
+  /** The file it moved from, when it moved and changed on the way (`before` is from there). */
+  movedFrom?: string;
   usages: ImpactUsage[];
 }
 
@@ -93,7 +95,8 @@ export function buildImpactSystemPrompt(): string {
 
 function renderContract(contract: ImpactContract, usages: readonly ImpactUsage[]): string {
   const lines = [
-    `### ${contract.name} (${contract.kind}, ${contract.change}) in ${contract.filePath}`,
+    `### ${contract.name} (${contract.kind}, ${contract.change}) in ${contract.filePath}` +
+      (contract.movedFrom ? ` (moved from ${contract.movedFrom})` : ""),
     "Before:",
     fenced(contract.before),
   ];

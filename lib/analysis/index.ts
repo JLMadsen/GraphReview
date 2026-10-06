@@ -20,6 +20,7 @@ export {
   type ImportEdge,
   type ModuleCluster,
 } from "./graph-builder";
+export { MAX_MODULE_FILES, nameStem, splitLargeModules } from "./split-modules";
 export {
   analyzedExtensions,
   analyzerForExtension,

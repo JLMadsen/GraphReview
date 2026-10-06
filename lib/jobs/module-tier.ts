@@ -21,6 +21,7 @@
 
 import { clusterByFolderDepth, DEFAULT_MODULE_DEPTH } from "@/lib/analysis/graph-builder";
 import type { ModuleCluster } from "@/lib/analysis/graph-builder";
+import { splitLargeModules } from "@/lib/analysis/split-modules";
 import {
   deleteComponent,
   deleteEmptyAutoDomainComponents,
@@ -41,19 +42,10 @@ import {
 import type { ComponentRecord, LostFolder } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import { computeMergeSuggestions, type HeuristicModule } from "./merge-heuristics";
-import { folderOfPattern, isUnderFolder, resolveOwnership } from "./ownership";
+import { folderOfPattern, isUnderFolder, pathPatternsFor, resolveOwnership } from "./ownership";
 
 /** How many lost folders a merged module remembers for rename detection. */
 const MAX_LOST_FOLDERS = 10;
-
-/**
- * The folder pattern a module cluster was derived from. `ModuleCluster.name`
- * is the *display* name (a bare folder name, or a qualified one when two
- * folders would collide), so it can't be used directly as a path pattern.
- */
-export function pathPatternFor(cluster: Pick<ModuleCluster, "folder">): string {
-  return cluster.folder === "" ? "*" : `${cluster.folder}/**`;
-}
 
 export function parseLostFolders(raw: string | undefined): LostFolder[] {
   if (!raw) return [];
@@ -108,7 +100,7 @@ export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTie
       name: existing?.createdBy === "user" ? existing.name : cluster.name,
       description: existing?.description,
       createdBy: existing?.createdBy ?? "auto",
-      pathPatterns: [pathPatternFor(cluster)],
+      pathPatterns: pathPatternsFor(cluster),
       tier: "module",
       origin: "folder",
     });
@@ -236,7 +228,7 @@ export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTie
         id,
         name: cluster.name,
         origin: "folder" as const,
-        pathPatterns: [pathPatternFor(cluster)],
+        pathPatterns: pathPatternsFor(cluster),
       })),
       ...liveMerged.map((m) => ({
         id: m.id,
@@ -273,7 +265,7 @@ export async function regroupRepo(repoId: string, log: JobLogger): Promise<Modul
     repoId,
     filePaths,
     edges,
-    folderClusters: clusterByFolderDepth(filePaths, DEFAULT_MODULE_DEPTH),
+    folderClusters: splitLargeModules(clusterByFolderDepth(filePaths, DEFAULT_MODULE_DEPTH), edges),
     moduleDepth: DEFAULT_MODULE_DEPTH,
     log,
   });

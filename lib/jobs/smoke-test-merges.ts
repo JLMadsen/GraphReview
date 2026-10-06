@@ -7,11 +7,11 @@
  * modules, most specific wins, dead patterns) and every heuristic kind
  * (shared name, import-only, move-file, rename) on a small Next.js-shaped repo.
  */
-import { clusterByFolderDepth, type ModuleCluster } from "@/lib/analysis/graph-builder";
+import { clusterByFolderDepth } from "@/lib/analysis/graph-builder";
 import { computeMergeSuggestions, displayName, featureKey, type HeuristicModule } from "./merge-heuristics";
 import { routeHint } from "./merge-naming";
 import { patternsOverlap } from "./merges";
-import { folderModuleId, resolveOwnership } from "./ownership";
+import { folderModuleId, pathPatternsFor, resolveOwnership } from "./ownership";
 
 let failures = 0;
 
@@ -73,11 +73,6 @@ const edges = [
 
 const clusters = clusterByFolderDepth(files, DEPTH);
 
-/** Same as module-tier.ts's pathPatternFor (which pulls in Neo4j): the folder a cluster came from. */
-function patternOf(cluster: ModuleCluster): string {
-  return cluster.folder === "" ? "*" : `${cluster.folder}/**`;
-}
-
 function modulesFor(owner: Map<string, string>, merged: HeuristicModule[] = []): HeuristicModule[] {
   const ownership = resolveOwnership(REPO, clusters, merged);
   return [
@@ -85,7 +80,7 @@ function modulesFor(owner: Map<string, string>, merged: HeuristicModule[] = []):
       id,
       name: cluster.name,
       origin: "folder" as const,
-      pathPatterns: [patternOf(cluster)],
+      pathPatterns: pathPatternsFor(cluster),
     })),
     ...merged,
   ].filter((m) => [...owner.values()].includes(m.id));
@@ -218,7 +213,7 @@ const renamedSuggestions = computeMergeSuggestions({
       id,
       name: cluster.name,
       origin: "folder" as const,
-      pathPatterns: [patternOf(cluster)],
+      pathPatterns: pathPatternsFor(cluster),
     })),
     mapAfterRename,
   ],
@@ -251,7 +246,7 @@ const splitSuggestions = computeMergeSuggestions({
       id,
       name: cluster.name,
       origin: "folder" as const,
-      pathPatterns: [patternOf(cluster)],
+      pathPatterns: pathPatternsFor(cluster),
     })),
     mapWithoutReview,
   ],
@@ -267,6 +262,42 @@ check(
 check(
   "does not move lib/ai/label.ts (no imports to Map)",
   !splitSuggestions.some((s) => s.members.includes("lib/ai/label.ts"))
+);
+
+// A flat folder split by name: its core keeps `lib/big/**`, the part lists
+// its files. A suggestion naming the core must list the core's files — the
+// folder pattern would claim the part's files too.
+console.log("\nsplit flat folder");
+const bigCore = { name: "big", folder: "lib/big", filePaths: ["lib/big/core.ts", "lib/big/util.ts"] };
+const bigPart = { name: "big · chart", folder: "lib/big", filePaths: ["lib/big/chart.ts", "lib/big/chart-axis.ts", "lib/big/use-chart.ts"], exactFiles: true as const };
+const shopFiles = ["app/shop/page.tsx", "app/shop/cart.tsx", "app/shop/list.tsx"];
+const bigClusters = [bigCore, bigPart, { name: "shop", folder: "app/shop", filePaths: shopFiles }];
+check(
+  "a name-cut part is stored with its files, a core with its folder",
+  JSON.stringify(pathPatternsFor(bigPart)) === JSON.stringify(["lib/big/chart-axis.ts", "lib/big/chart.ts", "lib/big/use-chart.ts"]) &&
+    JSON.stringify(pathPatternsFor(bigCore)) === '["lib/big/**"]'
+);
+const bigOwnership = resolveOwnership(REPO, bigClusters, []);
+const bigSuggestions = computeMergeSuggestions({
+  filePaths: bigClusters.flatMap((c) => c.filePaths),
+  edges: shopFiles.map((from, i) => ({ from, to: i === 0 ? "lib/big/util.ts" : "lib/big/core.ts" })),
+  ownerByFile: bigOwnership.componentIdByFile,
+  modules: bigOwnership.liveFolderModules.map(({ id, cluster }) => ({
+    id,
+    name: cluster.name,
+    origin: "folder" as const,
+    pathPatterns: pathPatternsFor(cluster),
+  })),
+  moduleDepth: DEPTH,
+});
+const coreMerge = bigSuggestions.find((s) => s.members.some((m) => m.startsWith("lib/big/")));
+check(
+  "the core is suggested file by file, never as lib/big/**",
+  Boolean(coreMerge) &&
+    coreMerge!.members.includes("lib/big/core.ts") &&
+    !coreMerge!.members.includes("lib/big/**") &&
+    !coreMerge!.members.some((m) => m.includes("chart")),
+  JSON.stringify(bigSuggestions.map((s) => s.members))
 );
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

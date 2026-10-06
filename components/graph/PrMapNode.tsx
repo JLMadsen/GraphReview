@@ -1,21 +1,25 @@
 "use client";
 
-// One card of the PR map: a name, a one-line description, and a chip per
-// changed file with its status and +/- counts. Rendered twice per layout —
-// once offscreen by `PrMapCanvas` to measure its height for ELK, and once as
-// the React Flow node — so it takes plain props and knows nothing about
-// React Flow itself (the handles are added by the node wrapper).
+// One card of the PR map (DESIGN.md §6.4): an *area* of the change — its
+// name, a short description, how many files and lines it holds, and the number of findings that
+// still need a look as a badge in the corner. The files themselves live in the area inspector and the dock's
+// Files tab; the card stays small so a map of a dozen areas reads at a
+// glance. An area the diff adds whole glows faintly green and says "new"; one
+// it deletes whole glows faintly red and says "deleted"; mixed areas stay
+// neutral. Rendered twice per layout — once offscreen by `CardFlow` to measure
+// its height for ELK, and once as the React Flow node — so it takes plain
+// props and knows nothing about React Flow itself.
 
-import { ChevronDown, ChevronUp, LayoutGrid } from "lucide-react";
 import { cn } from "cn";
 import { ASSESSMENT_VISUALS } from "./review-visuals";
-import type { PrMapFileDTO, PrMapNodeDTO, PrMapRole } from "./pr-map-types";
+import { areaLifecycle, type AreaLifecycle, type FindingBucket, type PrArea } from "./pr-areas";
+import type { PrMapNodeDTO, PrMapRole } from "./pr-map-types";
 import type { FileDiffStatus, Assessment } from "./types";
 
 /** Fixed card width — ELK only has to discover heights. */
-export const PR_CARD_WIDTH = 280;
-/** Files shown before the "+N more" toggle. */
-export const PR_CARD_FILE_LIMIT = 6;
+export const PR_CARD_WIDTH = 216;
+
+const NUMBER = new Intl.NumberFormat("en-US");
 
 const ROLE_TAGS: Partial<Record<PrMapRole, string>> = {
   test: "Tests",
@@ -25,7 +29,8 @@ const ROLE_TAGS: Partial<Record<PrMapRole, string>> = {
   context: "Unchanged",
 };
 
-const STATUS_BADGES: Record<FileDiffStatus, { letter: string; className: string; label: string }> = {
+/** A changed file's status as one coloured letter — shared by the dock's Files tab and the area inspector. */
+export const STATUS_BADGES: Record<FileDiffStatus, { letter: string; className: string; label: string }> = {
   added: { letter: "A", className: "text-success", label: "Added" },
   removed: { letter: "D", className: "text-destructive", label: "Deleted" },
   modified: { letter: "M", className: "text-warning", label: "Modified" },
@@ -34,21 +39,6 @@ const STATUS_BADGES: Record<FileDiffStatus, { letter: string; className: string;
   changed: { letter: "M", className: "text-warning", label: "Changed" },
   unchanged: { letter: "·", className: "text-muted-foreground", label: "Unchanged" },
 };
-
-/** Basenames, widened to `dir/base` only where two files in the card share a basename. */
-function chipLabels(files: PrMapFileDTO[]): Map<string, string> {
-  const counts = new Map<string, number>();
-  const base = (p: string) => p.slice(p.lastIndexOf("/") + 1);
-  for (const file of files) counts.set(base(file.path), (counts.get(base(file.path)) ?? 0) + 1);
-  return new Map(
-    files.map((file) => {
-      const name = base(file.path);
-      if ((counts.get(name) ?? 0) < 2) return [file.path, name];
-      const parts = file.path.split("/");
-      return [file.path, parts.length > 1 ? parts.slice(-2).join("/") : name];
-    })
-  );
-}
 
 export interface PrCardMarker {
   worst: Assessment;
@@ -82,147 +72,143 @@ export function AssessmentGlyph({ intent }: { intent: Assessment }) {
   );
 }
 
-export interface PrMapCardProps {
-  node: PrMapNodeDTO;
-  selected?: boolean;
-  expanded?: boolean;
-  marker?: PrCardMarker;
-  /** Worst verdict per file path, for the chip dots. */
-  fileMarkers?: Map<string, Assessment>;
-  onOpenFile?: (path: string) => void;
-  onToggleExpand?: () => void;
-  onShowInRepo?: () => void;
+const COUNT_ITEMS: Array<{ bucket: FindingBucket; label: string; visual: (typeof ASSESSMENT_VISUALS)[keyof typeof ASSESSMENT_VISUALS]; quiet?: boolean }> = [
+  { bucket: "defect", label: "defect", visual: ASSESSMENT_VISUALS.defect },
+  { bucket: "concern", label: "concern", visual: ASSESSMENT_VISUALS.concern },
+  { bucket: "unknown", label: "unknown", visual: ASSESSMENT_VISUALS.unknown, quiet: true },
+  { bucket: "fine", label: "OK or resolved", visual: ASSESSMENT_VISUALS.ok, quiet: true },
+];
+
+/**
+ * An area's findings as a row of glyph + count per bucket — "✕ 5  ▲ 1  ✓ 3"
+ * — worst first, empty buckets left out. Same glyphs and colours as the
+ * dock's chips; OK and unknown are quieter so problems lead.
+ */
+export function FindingCounts({ counts, className }: { counts: Record<FindingBucket, number>; className?: string }) {
+  const shown = COUNT_ITEMS.filter((item) => counts[item.bucket] > 0);
+  if (shown.length === 0) return null;
+  return (
+    <span
+      className={cn("inline-flex items-center gap-2 font-mono text-[11px] tabular-nums", className)}
+      title={shown.map((item) => `${counts[item.bucket]} ${item.label}`).join(" · ")}
+    >
+      {shown.map(({ bucket, visual, quiet }) => {
+        const Icon = visual.icon;
+        return (
+          <span key={bucket} className={cn("inline-flex items-center gap-0.5", quiet && "opacity-70")} style={{ color: visual.text }}>
+            <Icon className="size-3" aria-hidden />
+            {counts[bucket]}
+          </span>
+        );
+      })}
+    </span>
+  );
 }
 
-export function PrMapCard({
-  node,
-  selected,
-  expanded,
-  marker,
-  fileMarkers,
-  onOpenFile,
-  onToggleExpand,
-  onShowInRepo,
-}: PrMapCardProps) {
+/** How many findings in an area still need a look, as a round badge in the defect or concern colour. */
+export function OpenBadge({ area, className }: { area: PrArea; className?: string }) {
+  if (area.open === 0) return null;
+  const worst = area.counts.defect > 0 ? "defect" : "concern";
+  return (
+    <span
+      className={cn(
+        "amc-status inline-flex h-[1.8em] min-w-[1.8em] items-center justify-center rounded-full px-[0.45em] font-mono text-[11px] font-semibold text-background",
+        className
+      )}
+      style={{ background: ASSESSMENT_VISUALS[worst].color }}
+      title={`${area.counts.defect} defect${area.counts.defect === 1 ? "" : "s"}, ${area.counts.concern} concern${area.counts.concern === 1 ? "" : "s"} still open`}
+    >
+      {area.open}
+    </span>
+  );
+}
+
+/**
+ * The new/deleted look: a hairline of the colour and a soft glow around the
+ * card. Kept faint on purpose — it says what the area is, and the review's
+ * badge and bar (what needs a look) must stay the loudest thing on a card.
+ */
+export const LIFECYCLE_STYLES: Record<AreaLifecycle, { card: string; word: string; text: string; title: string }> = {
+  new: {
+    card: "border-success/45 shadow-[0_0_0_1px_color-mix(in_oklab,var(--success)_22%,transparent),0_0_18px_-2px_color-mix(in_oklab,var(--success)_45%,transparent)]",
+    word: "new",
+    text: "text-success",
+    title: "Every file in this area is new in this diff",
+  },
+  deleted: {
+    card: "border-destructive/45 shadow-[0_0_0_1px_color-mix(in_oklab,var(--destructive)_22%,transparent),0_0_18px_-2px_color-mix(in_oklab,var(--destructive)_45%,transparent)]",
+    word: "deleted",
+    text: "text-destructive",
+    title: "Every file in this area is deleted by this diff",
+  },
+};
+
+export interface PrMapCardProps {
+  node: PrMapNodeDTO;
+  /** The card's files, lines and findings — absent while the review hasn't produced any. */
+  area?: PrArea;
+  selected?: boolean;
+  /** Another card is selected: this one steps back. */
+  dimmed?: boolean;
+}
+
+export function PrMapCard({ node, area, selected, dimmed }: PrMapCardProps) {
   const context = node.role === "context";
-  const labels = chipLabels(node.files);
-  const hidden = node.files.length - PR_CARD_FILE_LIMIT;
-  const files = expanded || hidden <= 0 ? node.files : node.files.slice(0, PR_CARD_FILE_LIMIT);
   const tag = ROLE_TAGS[node.role];
+  const files = node.files.length;
+  const lifecycle = areaLifecycle(node);
+  const look = lifecycle ? LIFECYCLE_STYLES[lifecycle] : null;
   return (
     <div
       style={{ width: PR_CARD_WIDTH }}
+      title={look?.title}
       className={cn(
-        "rounded-lg border px-3 pt-2.5 pb-2.5 text-left transition-colors",
-        context ? "border-dashed border-border bg-card/40 opacity-70" : "border-foreground/14 bg-card",
-        selected && "border-brand opacity-100 ring-1 ring-brand"
+        "relative rounded-md border px-3 pt-2.5 pb-2.5 text-left transition-[opacity,border-color,box-shadow]",
+        context
+          ? "border-dashed border-border bg-card/40"
+          : look
+            ? cn("bg-card", look.card)
+            : area && area.open > 0
+              ? "border-foreground/25 bg-card"
+              : "border-foreground/14 bg-card",
+        context && !selected && "opacity-75",
+        selected && "border-brand opacity-100 shadow-[0_0_0_4px_color-mix(in_oklab,var(--brand)_18%,transparent)]",
+        dimmed && !selected && "opacity-50"
       )}
     >
-      <div className="flex items-start gap-2">
-        <div className="min-w-0 flex-1">
-          {tag && (
-            <p className="mb-0.5 font-mono text-[11px] text-muted-foreground lowercase">{tag}</p>
-          )}
-          <p className="amc-name text-[13px] leading-snug font-medium">{node.name}</p>
-        </div>
-        {marker && <CardMarkerBadge marker={marker} className="mt-0.5" />}
-        {onShowInRepo && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onShowInRepo();
-            }}
-            className="nodrag -mr-1 shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-            title="Show on the app map"
-            aria-label={`Show ${node.name} on the app map`}
-          >
-            <LayoutGrid className="size-3.5" />
-          </button>
-        )}
-      </div>
-
+      {tag && <p className="amc-desc mb-0.5 font-mono text-[10px] text-muted-foreground lowercase">{tag}</p>}
+      <p className="amc-name pr-4 text-[13px] leading-snug font-medium">{node.name}</p>
+      {/* What the area does, clamped so a long one can't stretch the card; the
+          inspector shows it whole. Hidden when zoomed far out, like the tag. */}
       {node.description && (
-        <p className="amc-desc mt-1 text-[11px] leading-snug text-muted-foreground">
+        <p className="amc-desc mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground" title={node.description}>
           {node.description}
         </p>
       )}
-
-      {files.length > 0 && (
-        <ul className="mt-2 border-t border-border/70 pt-1">
-          {files.map((file) => {
-            const badge = STATUS_BADGES[file.status] ?? STATUS_BADGES.changed;
-            const intent = fileMarkers?.get(file.path);
-            const content = (
-              <>
-                {intent && (
-                  <AssessmentGlyph intent={intent} />
-                )}
-                <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
-                  {labels.get(file.path)}
-                </span>
-                {(file.additions > 0 || file.deletions > 0) && (
-                  <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-                    <span className="text-success">+{file.additions}</span>{" "}
-                    <span className="text-destructive">−{file.deletions}</span>
-                  </span>
-                )}
-                <span
-                  className={cn("w-3 shrink-0 text-center font-mono text-[11px] font-semibold", badge.className)}
-                  title={badge.label}
-                >
-                  {badge.letter}
-                </span>
-              </>
-            );
-            return (
-              <li key={file.path}>
-                {onOpenFile ? (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onOpenFile(file.path);
-                    }}
-                    className="nodrag -mx-1 flex w-[calc(100%+0.5rem)] items-center gap-1.5 rounded-sm px-1 py-0.5 text-left transition-colors hover:bg-secondary"
-                    title={`${file.path} — view diff`}
-                  >
-                    {content}
-                  </button>
-                ) : (
-                  <div
-                    className="flex w-full items-center gap-1.5 py-0.5"
-                    title={file.path}
-                  >
-                    {content}
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-
-      {hidden > 0 && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleExpand?.();
-          }}
-          className="nodrag mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-        >
-          {expanded ? (
-            <>
-              <ChevronUp className="size-3" /> Show fewer
-            </>
-          ) : (
-            <>
-              <ChevronDown className="size-3" /> {hidden} more file{hidden === 1 ? "" : "s"}
-            </>
-          )}
-        </button>
-      )}
+      {/* Unbreakable chunks — "new", "5 files", "+1,160 −83" — so the line can wrap
+          between them but never splits a number from its sign; zoomed out,
+          the file count steps aside (amc-count) to leave the line counts room. */}
+      <p className="amc-status mt-0.5 flex flex-wrap gap-x-2 font-mono text-[11px] whitespace-nowrap text-muted-foreground">
+        {context ? (
+          "not changed"
+        ) : (
+          <>
+            {look && <span className={cn("font-sans font-medium", look.text)}>{look.word}</span>}
+            <span className="amc-count">
+              {files} file{files === 1 ? "" : "s"}
+            </span>
+            {area && (area.additions > 0 || area.deletions > 0) && (
+              <span>
+                {area.additions > 0 && <span className="text-success">+{NUMBER.format(area.additions)}</span>}
+                {area.additions > 0 && area.deletions > 0 && " "}
+                {area.deletions > 0 && <span className="text-destructive">−{NUMBER.format(area.deletions)}</span>}
+              </span>
+            )}
+          </>
+        )}
+      </p>
+      {area && <OpenBadge area={area} className="absolute -top-2.5 -right-2.5" />}
     </div>
   );
 }
+

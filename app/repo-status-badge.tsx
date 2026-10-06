@@ -15,7 +15,7 @@
 // red = failed.
 
 import {
-  CircleCheck,
+  Check,
   Github,
   Gitlab,
   HardDrive,
@@ -96,7 +96,7 @@ export function RepoStatusBadge({
           variant="outline"
           className="gap-1.5 border-success/25 bg-success/10 text-success"
         >
-          <CircleCheck aria-hidden />
+          <Check aria-hidden />
           <span>Up to date</span>
           {sha ? (
             <span className="font-mono text-[10px] text-success/70">{sha}</span>

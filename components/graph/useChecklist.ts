@@ -21,6 +21,8 @@ export interface UseChecklistResult {
   loading: boolean;
   error: string | null;
   runningAi: boolean;
+  /** The AI items will run on their own once the review now in flight finishes. */
+  waitsForReview: boolean;
   runAi(): Promise<void>;
   refresh(): void;
 }
@@ -115,5 +117,6 @@ export function useChecklist(
     return () => clearTimeout(timer);
   }, [data, refresh]);
 
-  return { data, loading, error, runningAi, runAi, refresh };
+  const waitsForReview = autoReview && (reviewState === "queued" || reviewState === "running" || reviewState === undefined);
+  return { data, loading, error, runningAi, waitsForReview, runAi, refresh };
 }

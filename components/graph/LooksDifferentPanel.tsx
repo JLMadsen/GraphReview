@@ -9,7 +9,7 @@
 // purpose; they live in each file's dialog.
 
 import { useState } from "react";
-import { Eye, LoaderCircle, Play } from "lucide-react";
+import { LoaderCircle, Play } from "lucide-react";
 import { cn } from "cn";
 import type { PreviewScanFileDTO } from "@/lib/preview/types";
 import { Spark } from "./Spark";
@@ -61,21 +61,8 @@ export function LooksDifferentPanel({
   return (
     <section className="mt-3 border-t border-border pt-2.5 text-[11px]">
       <div className="flex items-center gap-1.5">
-        <p className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px] leading-tight font-medium">
-          <Eye className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-          {!anyRun ? (
-            <span>
-              {rows.length} changed component{rows.length === 1 ? "" : "s"}
-            </span>
-          ) : different > 0 ? (
-            <span className="text-warning">
-              {different} look{different === 1 ? "s" : ""} different
-            </span>
-          ) : pending ? (
-            <span className="text-muted-foreground">Rendering…</span>
-          ) : (
-            <span className="text-muted-foreground">All look the same</span>
-          )}
+        <p className="min-w-0 flex-1 font-semibold tracking-wide whitespace-nowrap text-muted-foreground uppercase">
+          Before / after
         </p>
         <button
           type="button"
@@ -93,6 +80,21 @@ export function LooksDifferentPanel({
           <Spark title="Props are mocked up by the model" />
         </button>
       </div>
+      <p className="mt-0.5 font-mono">
+        {!anyRun ? (
+          <span className="text-muted-foreground">
+            {rows.length} changed component{rows.length === 1 ? "" : "s"}
+          </span>
+        ) : different > 0 ? (
+          <span className="text-warning">
+            {different} look{different === 1 ? "s" : ""} different
+          </span>
+        ) : pending ? (
+          <span className="text-muted-foreground">rendering…</span>
+        ) : (
+          <span className="text-muted-foreground">all look the same</span>
+        )}
+      </p>
 
       {error && <p className="mt-1 text-destructive">{error}</p>}
       {sandboxDown && !anyRun && <p className="mt-1 leading-snug text-muted-foreground">{scan.sandbox?.reason}</p>}

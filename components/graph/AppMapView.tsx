@@ -12,10 +12,11 @@
 // right column (`AppMapPanel`), so the canvas keeps its width.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { LoaderCircle, Search, TriangleAlert, X } from "lucide-react";
+import { Info, LoaderCircle, Search, TriangleAlert, X } from "lucide-react";
 import { cn } from "cn";
 import { APP_CARD_WIDTH, AppMapCard } from "./AppMapCard";
 import { Segmented } from "./Segmented";
+import { VIEW_CANVAS, VIEW_TOOLBAR } from "./view-chrome";
 import { Spark } from "./Spark";
 import { CardFlow, DEFAULT_ELK_OPTIONS, linkId, type CardFlowLink } from "./CardFlow";
 import type { PrCardMarker } from "./PrMapNode";
@@ -55,6 +56,8 @@ export interface AppMapViewProps {
   findings?: FindingDTO[];
   /** The component selected elsewhere; the cards holding it are ringed. */
   focusModuleId?: string | null;
+  /** Drawn first in the toolbar — GraphView's view switch. */
+  leading?: React.ReactNode;
   className?: string;
 }
 
@@ -70,6 +73,7 @@ export function AppMapView({
   changedFiles,
   findings,
   focusModuleId,
+  leading,
   className,
 }: AppMapViewProps) {
   const [query, setQuery] = useState("");
@@ -206,7 +210,8 @@ export function AppMapView({
 
   return (
     <div className={className}>
-      <div className="mb-3 flex flex-wrap items-center gap-2">
+      <div className={VIEW_TOOLBAR}>
+        {leading}
         <Segmented
           label="Level of detail"
           value={level}
@@ -230,8 +235,10 @@ export function AppMapView({
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Find a card or file…"
-            className="h-[26px] w-48 rounded-md border border-border bg-transparent pr-6 pl-7 text-xs outline-none placeholder:text-muted-foreground focus:border-brand"
+            placeholder="Find…"
+            title="Find a card or file"
+            aria-label="Find a card or file"
+            className="h-[26px] w-28 rounded-md border border-border bg-transparent pr-6 pl-7 text-xs outline-none placeholder:text-muted-foreground focus:border-brand"
           />
           {query && (
             <button type="button" onClick={() => setQuery("")} className="absolute right-1.5 text-muted-foreground hover:text-foreground" aria-label="Clear search">
@@ -255,19 +262,30 @@ export function AppMapView({
             title={highlight ? "Show every card normally" : "Make the diff's cards stand out and fade the rest"}
           >
             <span className={cn("size-2 rounded-sm", highlight ? "bg-warning" : "border border-muted-foreground")} aria-hidden />
-            Highlight changes
+            Highlight
           </button>
         )}
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          {map && <SourceNote map={map} />}
+          {/* In words on wide screens; elsewhere it would wrap the toolbar, so it
+              shrinks to an info icon with the same words on hover. */}
+          {map && (
+            <span className="hidden 2xl:inline">
+              <SourceNote map={map} />
+            </span>
+          )}
+          {map && sourceNoteText(map) && (
+            <span className="text-muted-foreground 2xl:hidden" title={sourceNoteText(map)!} aria-label={sourceNoteText(map)!}>
+              <Info className="size-3.5" aria-hidden />
+            </span>
+          )}
           {loading && <LoaderCircle className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
           <AiButton job={job} level={level} />
         </div>
       </div>
 
       {(job.notice || (map?.newFiles ?? 0) > 0) && (
-        <p className="mb-2 flex items-start gap-1.5 text-[11px] text-warning">
+        <p className="flex items-start gap-1.5 border-b border-border bg-warning/5 px-4 py-1.5 text-[11px] text-warning">
           <TriangleAlert className="mt-px size-3.5 shrink-0" aria-hidden />
           {job.notice ??
             `${map!.newFiles} file${map!.newFiles === 1 ? " isn't" : "s aren't"} in the model's grouping (added since, or skipped) — placed by the heuristic. Describe again to include ${map!.newFiles === 1 ? "it" : "them"}.`}
@@ -275,6 +293,7 @@ export function AppMapView({
       )}
 
       <CardFlow
+        className={VIEW_CANVAS}
         cardIds={cardIds}
         cardWidth={APP_CARD_WIDTH}
         renderCard={renderCard}
@@ -310,7 +329,7 @@ export function AppMapView({
         )}
       </CardFlow>
 
-      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+      <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-border bg-card px-4 py-1.5 text-[11px] text-muted-foreground">
         {presentLayers.map((layer) => (
           <span key={layer} className="flex items-center gap-1" title={APP_LAYERS[layer].blurb}>
             <span className="h-2.5 w-[3px] rounded-sm" style={{ backgroundColor: layerTint(layer) }} />
@@ -341,6 +360,13 @@ export function AppMapView({
       </div>
     </div>
   );
+}
+
+/** What SourceNote says, as plain text — for the info icon's tooltip on narrower screens. */
+function sourceNoteText(map: AppMapResponseDTO): string | null {
+  if (map.source === "ai") return `Described ${formatAgo(map.generatedAt)}${map.model ? ` by ${map.model}` : ""}`;
+  if (map.level === "modules") return null;
+  return map.level === "architecture" ? "Layers guessed from paths" : "Features guessed from shared names";
 }
 
 function SourceNote({ map }: { map: AppMapResponseDTO }) {
@@ -412,7 +438,7 @@ function AiButton({ job, level }: { job: UseAppMapJobResult; level: AppMapLevel 
       }
     >
       <Spark className="text-[11px]" />
-      {generated ? "Describe again" : level === "features" ? "Group features" : level === "architecture" ? "Describe layers" : "Describe modules"}
+      {generated ? "Redescribe" : level === "features" ? "Group features" : "Describe"}
     </button>
   );
 }

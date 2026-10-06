@@ -1,41 +1,24 @@
-// The AI-review highlight layer's visual language.
-//
-// Single source of truth shared by every surface that renders an
-// `assessment`: the Cytoscape `underlay-*` markers in `GraphCanvas`, the
-// legend chips next to them, `ReviewPanel`'s filter chips and finding
-// badges, and `ComponentFilesPanel`'s compact per-component list. A badge in
-// the panel is therefore exactly the colour of the halo on the node it
-// points at, the same way `IMPACT_COLORS` ties the impact legend to the
-// node fills.
-//
-// ---------------------------------------------------------------------------
-// Why these colours
-// ---------------------------------------------------------------------------
-// This is the *third* independent highlight layer on the canvas, and it has
-// to stay readable on top of the other two without being mistaken for
-// either:
-//
-//   layer 1 (impact)    — node FILL: amber #f0a92b / indigo #6366f1 / slate
-//   layer 2 (selection) — BORDER + opacity: near-white / sky #7dd3fc
-//   layer 3 (this one)  — UNDERLAY halo behind the node
-//
-// So the palette deliberately avoids amber, indigo and sky: rose for
-// defect, orchid for concern, a neutral slate for unknown, and emerald for
-// ok. Each also differs in lightness, not just hue.
+// The AI review's visual language — the one place a verdict's colour,
+// glyph and word are defined, shared by every surface that shows an
+// `assessment`: the review dock's chips and badges, the PR map's and app
+// map's card badges, the area inspector's counts and the file viewer. A
+// badge in the dock is therefore exactly the colour of the badge on the card
+// it belongs to.
 //
 // What drives the colour is the *assessment* — is the change sound on its
-// own terms. How a change relates to the PR's stated intent (`scope`) and
-// what sort of change it is (`kind`) are neutral tags beside it, never a
-// colour: a correct drive-by fix is green.
+// own terms: rose for defect, orchid for concern, slate for unknown, emerald
+// for OK. Each also differs in lightness, not just hue. How a change relates
+// to the PR's stated intent (`scope`) and what sort of change it is (`kind`)
+// are neutral tags beside it, never a colour: a correct drive-by fix is green.
 //
-// Colour is never the only channel, per the accessibility requirement: every
-// badge and chip carries a distinct lucide glyph *and* a written label, so
-// the four states are separable with no colour perception at all. The graph
-// marker is colour-only by necessity (a glyph inside a 30px node would be
-// illegible at whole-graph zoom), which is exactly why the marker is a
-// redundant cue — the authoritative, labelled list is in `ReviewPanel`.
+// Colour is never the only channel: every badge and chip also carries a
+// plain glyph (✕ ▲ – ✓, no circle) and a written label, so the four states
+// read with no colour perception at all.
+//
+// (`markerOpacity`/`markerPadding` and the class-name helpers below were
+// for the removed Cytoscape Repo view's halos; nothing draws them now.)
 
-import { CircleAlert, CircleCheck, CircleHelp, CircleX } from "lucide-react";
+import { Check, Minus, TriangleAlert, X } from "lucide-react";
 import type { FindingDTO, Assessment, FindingKind, FindingScope } from "./types";
 
 export interface AssessmentVisual {
@@ -73,7 +56,7 @@ export const ASSESSMENT_VISUALS: Record<Assessment, AssessmentVisual> = {
     description: "The change looks wrong — or code it depends on was left behind.",
     color: "#fb3b53",
     text: "#ff8f9f",
-    icon: CircleX,
+    icon: X,
     rank: 0,
     markerOpacity: 0.55,
     markerPadding: 11,
@@ -83,7 +66,7 @@ export const ASSESSMENT_VISUALS: Record<Assessment, AssessmentVisual> = {
     description: "Worth a closer look: risky, incomplete, or a behaviour change others rely on.",
     color: "#e879f9",
     text: "#f0abfc",
-    icon: CircleAlert,
+    icon: TriangleAlert,
     rank: 1,
     markerOpacity: 0.45,
     markerPadding: 9,
@@ -93,7 +76,7 @@ export const ASSESSMENT_VISUALS: Record<Assessment, AssessmentVisual> = {
     description: "The model could not judge this change (or the call failed).",
     color: "#94a3b8",
     text: "#b8c2d2",
-    icon: CircleHelp,
+    icon: Minus,
     rank: 2,
     markerOpacity: 0.4,
     markerPadding: 8,
@@ -103,7 +86,7 @@ export const ASSESSMENT_VISUALS: Record<Assessment, AssessmentVisual> = {
     description: "The change looks correct on its own terms.",
     color: "#34d399",
     text: "#6ee7b7",
-    icon: CircleCheck,
+    icon: Check,
     rank: 3,
     markerOpacity: 0.2,
     markerPadding: 6,
@@ -201,6 +184,44 @@ export function isImpactNote(finding: FindingDTO): boolean {
 export function isImpactFinding(finding: FindingDTO): boolean {
   return finding.category === "impact" && !isImpactNote(finding);
 }
+
+/**
+ * The changed declaration an impact finding is about (`isPendingJobState`),
+ * read back from the summary lib/jobs/impact.ts writes:
+ * "Not updated for the change to <name>: <reason>". `null` for anything else.
+ */
+export function impactSymbol(finding: Pick<FindingDTO, "category" | "summary">): string | null {
+  if (finding.category !== "impact") return null;
+  const match = /^Not updated for the change to (.+?):\s/.exec(finding.summary);
+  return match ? match[1] : null;
+}
+
+/**
+ * What happened to that declaration — "was removed from lib/jobs/queue.ts",
+ * "in lib/x.ts changed from `a` to `b`" — from the rationale impact.ts
+ * writes ("`name` <change>, but this line was not edited by the change." —
+ * "these lines were" when one finding covers several lines of a file).
+ */
+export function impactChange(finding: Pick<FindingDTO, "category" | "rationale">): string | null {
+  if (finding.category !== "impact") return null;
+  const match = /^`[^`]+`\s+([\s\S]+?), but (?:this line was|these lines were) not edited/.exec(finding.rationale);
+  return match ? match[1] : null;
+}
+
+/**
+ * The model's reasons in an impact finding: one per line when the finding
+ * covers several lines of a file (the rationale's "- line N: <reason>"
+ * list), else the summary's "<reason>" part.
+ */
+export function impactReasons(finding: Pick<FindingDTO, "summary" | "rationale">): string[] {
+  const perLine = [...finding.rationale.matchAll(/^- line \d+: (.+)$/gm)].map((m) => m[1].trim());
+  if (perLine.length > 0) return perLine;
+  return [finding.summary.replace(/^Not updated for the change to .+?:\s*/, "")];
+}
+
+/** What every verdict surface says on hover. */
+export const REVIEW_ADVISORY =
+  "Judged by the model on each change's own merits — it can be wrong. Nothing here blocks the PR or is posted anywhere.";
 
 /** Per-component change findings. */
 export function isChangeFinding(finding: FindingDTO): boolean {

@@ -283,7 +283,10 @@
 .amc-measure-far .amc-name {
   font-size: calc(13px * var(--label-scale, 1));
   line-height: 1.15;
-  overflow-wrap: anywhere;
+  /* Break between words; a single word too long for the card is hyphenated
+     rather than cut at an arbitrary letter ("Documenta-tion", not "Documentati / on"). */
+  overflow-wrap: break-word;
+  hyphens: auto;
 }
 .cardflow[data-far] .react-flow .amc-status,
 .cardflow[data-far] .react-flow .amc-status *,

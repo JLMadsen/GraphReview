@@ -100,11 +100,19 @@ export function ChatPanel({
 
   return (
     <div className="flex h-full min-h-64 flex-col">
-      <header className="flex items-baseline gap-2 border-b border-border px-3 py-2">
-        <p className="min-w-0 flex-1 truncate text-sm font-medium">
-          {aboutRepo ? `Ask about ${repoName ?? "this repo"}` : "Ask about this change"}
+      <header className="flex items-center gap-2 border-b border-border px-4 py-2">
+        <p className="min-w-0 flex-1 truncate">
+          <span className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">Chat</span>
+          <span className="ml-2 text-[11px] text-muted-foreground">
+            {aboutRepo ? `about ${repoName ?? "this repo"}` : "about this change"}
+          </span>
         </p>
-        <p className="shrink-0 truncate font-mono text-[11px] text-muted-foreground">{targetLabel ?? "whole repo"}</p>
+        <p className="shrink-0 truncate font-mono text-[11px] text-muted-foreground">
+          {chat.messages.length > 0
+            ? `${chat.messages.filter((m) => m.role === "user").length} asked · `
+            : ""}
+          {targetLabel ?? "whole repo"}
+        </p>
         {chat.messages.length > 0 && (
           <button
             type="button"
@@ -131,7 +139,7 @@ export function ChatPanel({
 
       <div
         ref={scrollRef}
-        className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3 [&>*:first-child]:border-t-0 [&>*:first-child]:pt-0"
+        className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3 [&>*:first-child]:border-t-0 [&>*:first-child]:pt-0"
       >
         {chat.loading ? (
           <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -222,7 +230,7 @@ export function ChatPanel({
       </div>
 
       <form
-        className="border-t border-border px-3 py-2.5"
+        className="border-t border-border px-4 py-2.5"
         onSubmit={(e) => {
           e.preventDefault();
           submit(draft);
@@ -367,10 +375,17 @@ function Message({
 // A small Markdown subset
 // ---------------------------------------------------------------------------
 
-/** `app/map/page.tsx:12` → `app/map/page.tsx`, when it's a changed file. */
-function changedFileOf(code: string, changedFiles: ReadonlySet<string>): string | null {
+/** A relative path with a folder and an extension — `lib/jobs/queue.ts`, `app/[id]/page.tsx`. */
+const PATH_LIKE = /^(?!\/)(?!https?:)[\w@.+\-[\]()]+(\/[\w@.+\-[\]()]+)+\.[A-Za-z0-9]{1,10}$/;
+
+/**
+ * `app/map/page.tsx:12` → `app/map/page.tsx`: a file the answer names, when
+ * it is one of the diff's files or reads like a path in the repo. The viewer
+ * says so if a path-like one turns out not to exist.
+ */
+function fileOf(code: string, changedFiles: ReadonlySet<string>): string | null {
   const path = code.replace(/:\d+(-\d+)?$/, "");
-  return changedFiles.has(path) ? path : null;
+  return changedFiles.has(path) || PATH_LIKE.test(path) ? path : null;
 }
 
 function renderInline(text: string, changedFiles: ReadonlySet<string>, onOpenFile?: (path: string) => void): ReactNode {
@@ -381,7 +396,7 @@ function renderInline(text: string, changedFiles: ReadonlySet<string>, onOpenFil
   for (const match of text.matchAll(pattern)) {
     if (match.index! > last) parts.push(text.slice(last, match.index));
     if (match[1] !== undefined) {
-      const file = onOpenFile ? changedFileOf(match[1], changedFiles) : null;
+      const file = onOpenFile ? fileOf(match[1], changedFiles) : null;
       parts.push(
         file ? (
           <button
@@ -389,7 +404,7 @@ function renderInline(text: string, changedFiles: ReadonlySet<string>, onOpenFil
             type="button"
             onClick={() => onOpenFile!(file)}
             className="font-mono text-[11px] text-foreground underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-foreground"
-            title="Open this file's diff"
+            title="Open this file"
           >
             {match[1]}
           </button>

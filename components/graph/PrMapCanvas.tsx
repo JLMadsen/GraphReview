@@ -1,45 +1,45 @@
 "use client";
 
-// The Graph tab's PR view (DESIGN.md §6.4): the PR map drawn as cards with
-// labelled edges, laid out left-to-right by ELK and rendered with React Flow
-// through the shared `CardFlow` canvas (also used by the app map).
+// The Graph tab's PR view (DESIGN.md §6.4): the PR map drawn as small area
+// cards with labelled edges, laid out left-to-right by ELK and rendered with
+// React Flow through the shared `CardFlow` canvas (also used by the app map).
 //
-// Why not the Cytoscape canvas: a card here holds a list of clickable file
-// chips, which is HTML, and Cytoscape draws to a <canvas>. The map is small
-// (a handful of cards), so React Flow's DOM nodes cost nothing and every
-// card is an ordinary React component.
+// Why not the Cytoscape canvas: cards are HTML (badges, bars, wrapped
+// names), and Cytoscape draws to a <canvas>. The map is small (a handful of
+// cards), so React Flow's DOM nodes cost nothing.
 //
-// Layout is two-pass. Card heights depend on their content (description
-// length, number of files, whether "+N more" is expanded), so every card is
-// first rendered offscreen at the fixed card width and measured, then ELK
-// places the measured boxes, then React Flow draws them at those positions.
-// Nodes are not draggable: the layout is the point, and a dragged card would
-// be thrown away by the next refresh anyway.
+// A card is an *area* of the change. Clicking one selects it: the other
+// cards step back, its edges light up, the review dock below filters to its
+// findings and files, and the right column explains it (`PrAreaPanel`).
+// Clicking it again, or the background, goes back to the whole PR. The
+// numbers on the cards come from `buildPrAreas`, the same object the dock
+// and the inspector read, so the three never disagree.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Eye, EyeOff, LoaderCircle, TriangleAlert } from "lucide-react";
 import { cn } from "cn";
 import { CardFlow, type CardFlowLink } from "./CardFlow";
-import { PR_CARD_WIDTH, PrMapCard, type PrCardMarker, type PrMapCardProps } from "./PrMapNode";
+import { PR_CARD_WIDTH, PrMapCard } from "./PrMapNode";
 import { Spark } from "./Spark";
-import { effectiveAssessment, worstAssessment } from "./review-visuals";
-import type { PrMapNodeDTO, PrMapResponseDTO } from "./pr-map-types";
-import type { FindingDTO, Assessment } from "./types";
+import { ASSESSMENT_VISUALS } from "./review-visuals";
+import { areaLifecycle, type AreaLifecycle, type PrAreas } from "./pr-areas";
+import type { PrMapResponseDTO } from "./pr-map-types";
+import { VIEW_CANVAS, VIEW_TOOLBAR } from "./view-chrome";
 
 export interface PrMapCanvasProps {
   map: PrMapResponseDTO | null;
   loading: boolean;
   error: string | null;
-  findings: FindingDTO[];
-  /** The component selected anywhere in the Graph tab — cards holding it light up. */
-  selectedComponentId: string | null;
-  /** A card was clicked (its component ids), or the background (`[]`). */
-  onSelectComponents: (componentIds: string[]) => void;
-  /** Opens a file's diff. Absent when there is no diff to show (pasted paths). */
-  onOpenFile?: (path: string) => void;
-  onShowInRepo: (componentIds: string[]) => void;
+  areas: PrAreas;
+  /** The selected area (card id), or `null` for the whole PR. */
+  selectedCardId: string | null;
+  onSelectCard: (cardId: string | null) => void;
+  /** A component selected elsewhere in the Graph tab — the cards holding it light up while no area is picked. */
+  selectedComponentId?: string | null;
   /** A review of this target is queued or running — its PR map pass will rename the cards. */
   reviewPending?: boolean;
+  /** Drawn first in the toolbar — GraphView's view switch. */
+  leading?: React.ReactNode;
   className?: string;
 }
 
@@ -47,28 +47,19 @@ export function PrMapCanvas({
   map,
   loading,
   error,
-  findings,
+  areas,
+  selectedCardId,
+  onSelectCard,
   selectedComponentId,
-  onSelectComponents,
-  onOpenFile,
-  onShowInRepo,
   reviewPending,
+  leading,
   className,
 }: PrMapCanvasProps) {
   const [showContext, setShowContext] = useState(true);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  /** The card clicked last — kept locally because a card with no component (e.g. dependencies) can't be expressed as a component selection. */
-  const [activeCardId, setActiveCardId] = useState<string | null>(null);
-
-  // A new map is a new set of cards: expansion and the local selection don't carry over.
-  useEffect(() => {
-    setExpanded(new Set());
-    setActiveCardId(null);
-  }, [map]);
 
   const cards = useMemo(
-    () => (map ? map.nodes.filter((n) => showContext || n.role !== "context") : []),
-    [map, showContext]
+    () => (map ? map.nodes.filter((n) => showContext || n.role !== "context" || n.id === selectedCardId) : []),
+    [map, showContext, selectedCardId]
   );
   const cardIds = useMemo(() => new Set(cards.map((c) => c.id)), [cards]);
   const links = useMemo(
@@ -76,95 +67,50 @@ export function PrMapCanvas({
     [map, cardIds]
   );
   const contextCount = map?.nodes.filter((n) => n.role === "context").length ?? 0;
-
-  // --- Findings: one marker per card, one dot per file -------------------
-  const { cardMarkers, fileMarkers } = useMemo(() => {
-    const fileMarkers = new Map<string, Assessment>();
-    const cardMarkers = new Map<string, PrCardMarker>();
-    if (!map) return { cardMarkers, fileMarkers };
-    const cardOfFile = new Map<string, string>();
-    for (const node of map.nodes) for (const file of node.files) cardOfFile.set(file.path, node.id);
-    const cardOfComponent = (componentId: string): string | undefined =>
-      (
-        map.nodes.find((n) => n.role === "code" && n.componentIds.includes(componentId)) ??
-        map.nodes.find((n) => n.role !== "context" && n.componentIds.includes(componentId))
-      )?.id;
-    for (const finding of findings) {
-      const intent = effectiveAssessment(finding);
-      if (finding.filePath) {
-        const prev = fileMarkers.get(finding.filePath);
-        fileMarkers.set(finding.filePath, prev ? worstAssessment(prev, intent) : intent);
-      }
-      const cardId =
-        (finding.filePath && cardOfFile.get(finding.filePath)) || cardOfComponent(finding.componentId);
-      if (!cardId) continue;
-      const prev = cardMarkers.get(cardId);
-      cardMarkers.set(cardId, {
-        worst: prev ? worstAssessment(prev.worst, intent) : intent,
-        count: (prev?.count ?? 0) + 1,
-      });
+  /** Which of the new / deleted looks appear on this map — the legend only explains those. */
+  const lifecycles = useMemo(() => {
+    const seen = new Set<AreaLifecycle>();
+    for (const node of map?.nodes ?? []) {
+      const lifecycle = areaLifecycle(node);
+      if (lifecycle) seen.add(lifecycle);
     }
-    return { cardMarkers, fileMarkers };
-  }, [map, findings]);
-
-  // --- Selection ---------------------------------------------------------
-  useEffect(() => {
-    if (!activeCardId) return;
-    const card = map?.nodes.find((n) => n.id === activeCardId);
-    if (!card) return setActiveCardId(null);
-    // Something else changed the selection (the review dock, the Repo view):
-    // drop the local pick unless it still holds the selected component.
-    if (selectedComponentId ? !card.componentIds.includes(selectedComponentId) : card.componentIds.length > 0) {
-      setActiveCardId(null);
-    }
-  }, [selectedComponentId, activeCardId, map]);
+    return seen;
+  }, [map]);
 
   const highlighted = useMemo(() => {
-    if (activeCardId) return new Set([activeCardId]);
+    if (selectedCardId) return new Set([selectedCardId]);
     if (!selectedComponentId) return new Set<string>();
     return new Set(cards.filter((c) => c.componentIds.includes(selectedComponentId)).map((c) => c.id));
-  }, [activeCardId, selectedComponentId, cards]);
+  }, [selectedCardId, selectedComponentId, cards]);
 
-  const toggleExpand = useCallback((id: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const cardProps = useCallback(
-    (node: PrMapNodeDTO): PrMapCardProps => ({
-      node,
-      expanded: expanded.has(node.id),
-      selected: highlighted.has(node.id),
-      marker: cardMarkers.get(node.id),
-      fileMarkers,
-      onOpenFile,
-      onToggleExpand: () => toggleExpand(node.id),
-      onShowInRepo: node.componentIds.length > 0 ? () => onShowInRepo(node.componentIds) : undefined,
-    }),
-    [expanded, highlighted, cardMarkers, fileMarkers, onOpenFile, toggleExpand, onShowInRepo]
-  );
-
-  // --- Canvas ------------------------------------------------------------
-  const layoutKey = useMemo(
-    () =>
-      JSON.stringify([
-        cards.map((c) => [c.id, c.name, c.description, c.files.length, expanded.has(c.id), cardMarkers.has(c.id)]),
-        links.map((e) => [e.source, e.target]),
-      ]),
-    [cards, links, expanded, cardMarkers]
-  );
-  const cardIdList = useMemo(() => cards.map((c) => c.id), [cards]);
   const renderCard = useCallback(
     (id: string) => {
       const card = cards.find((c) => c.id === id);
-      return card ? <PrMapCard {...cardProps(card)} /> : null;
+      if (!card) return null;
+      return (
+        <PrMapCard
+          node={card}
+          area={areas.areas.get(card.id)}
+          selected={highlighted.has(card.id)}
+          dimmed={Boolean(selectedCardId) && card.id !== selectedCardId}
+        />
+      );
     },
-    [cards, cardProps]
+    [cards, areas, highlighted, selectedCardId]
   );
+
+  // Only what changes a card's size or the edge set re-runs the layout: the
+  // name, whether it has a role tag, and the edges. (The badge floats over
+  // the corner, so findings arriving never move a card.)
+  const layoutKey = useMemo(
+    () =>
+      JSON.stringify([
+        cards.map((c) => [c.id, c.name, c.role]),
+        links.map((e) => [e.source, e.target]),
+      ]),
+    [cards, links]
+  );
+  const cardIdList = useMemo(() => cards.map((c) => c.id), [cards]);
   const flowLinks = useMemo<CardFlowLink[]>(() => {
     const roleOf = new Map(cards.map((c) => [c.id, c.role]));
     return links.map((link) => ({
@@ -173,65 +119,57 @@ export function PrMapCanvas({
     }));
   }, [links, cards]);
 
-  // --- Summary -----------------------------------------------------------
-  // File and line totals live in the diff summary (left column) — saying
-  // them again here is how the page ended up with four disagreeing counts.
+  // File and line totals live in the diff summary (left column) — the
+  // toolbar only says how the map is grouped and what the colours mean.
   const groups = map?.nodes.filter((n) => n.role !== "context").length ?? 0;
 
   return (
     <div className={className}>
-      <div className="mb-3 flex min-h-[26px] flex-wrap items-center justify-between gap-3">
+      <div className={VIEW_TOOLBAR}>
+        {leading}
         <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
           {map && (
             <span className="font-mono text-[11px]">
-              {groups} group{groups === 1 ? "" : "s"}
+              {groups} area{groups === 1 ? "" : "s"} · {map.edges.length} link{map.edges.length === 1 ? "" : "s"}
             </span>
           )}
           {map && <SourceNote map={map} reviewPending={reviewPending} />}
           {loading && <LoaderCircle className="size-3.5 animate-spin" aria-label="Loading" />}
         </div>
-        {contextCount > 0 && (
-          <button
-            type="button"
-            onClick={() => setShowContext((v) => !v)}
-            aria-pressed={showContext}
-            className={cn(
-              "flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
-              showContext
-                ? "border-foreground/25 bg-secondary text-foreground"
-                : "border-border text-muted-foreground hover:text-foreground"
-            )}
-            title="Untouched modules the changed code imports or is imported by"
-          >
-            {showContext ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
-            Unchanged neighbours ({contextCount})
-          </button>
-        )}
+        <div className="ml-auto flex flex-wrap items-center gap-3">
+          {contextCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowContext((v) => !v)}
+              aria-pressed={showContext}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+                showContext
+                  ? "border-foreground/25 bg-secondary text-foreground"
+                  : "border-border text-muted-foreground hover:text-foreground"
+              )}
+              title="Untouched modules the changed code imports or is imported by"
+            >
+              {showContext ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+              Neighbours ({contextCount})
+            </button>
+          )}
+        </div>
       </div>
 
       <CardFlow
+        className={VIEW_CANVAS}
         cardIds={cardIdList}
         cardWidth={PR_CARD_WIDTH}
         renderCard={renderCard}
         links={flowLinks}
         highlighted={highlighted}
         layoutKey={layoutKey}
-        onCardClick={(id) => {
-          const card = map?.nodes.find((n) => n.id === id);
-          if (!card) return;
-          if (highlighted.has(card.id) && activeCardId === card.id) {
-            setActiveCardId(null);
-            onSelectComponents([]);
-            return;
-          }
-          setActiveCardId(card.id);
-          onSelectComponents(card.componentIds);
-        }}
-        onPaneClick={() => {
-          setActiveCardId(null);
-          onSelectComponents([]);
-        }}
+        onCardClick={(id) => onSelectCard(id === selectedCardId ? null : id)}
+        onPaneClick={() => onSelectCard(null)}
       >
+        {/* Floats over the canvas so the toolbar above stays one row. */}
+        {map && map.nodes.length > 0 && <Legend lifecycles={lifecycles} />}
         {!map && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
             {error ? (
@@ -252,8 +190,50 @@ export function PrMapCanvas({
             This diff changes no files.
           </div>
         )}
+        {selectedCardId && (
+          <button
+            type="button"
+            onClick={() => onSelectCard(null)}
+            className="absolute bottom-3 left-3 z-10 rounded-md border border-border bg-card px-2.5 py-1 text-xs text-muted-foreground shadow-sm transition-colors hover:text-foreground"
+          >
+            Show the whole PR
+          </button>
+        )}
       </CardFlow>
     </div>
+  );
+}
+
+/** What the cards' badges and glows mean: the badge colours, plus the new / deleted looks this map has. */
+function Legend({ lifecycles }: { lifecycles: ReadonlySet<AreaLifecycle> }) {
+  const items = [
+    { label: "defect", style: { background: ASSESSMENT_VISUALS.defect.color } },
+    { label: "concern", style: { background: ASSESSMENT_VISUALS.concern.color } },
+  ];
+  const glows: Array<{ key: AreaLifecycle; label: string; className: string }> = [
+    { key: "new", label: "all new", className: "border-success/60 shadow-[0_0_6px_0_color-mix(in_oklab,var(--success)_60%,transparent)]" },
+    { key: "deleted", label: "all deleted", className: "border-destructive/60 shadow-[0_0_6px_0_color-mix(in_oklab,var(--destructive)_60%,transparent)]" },
+  ];
+  return (
+    <span
+      className="pointer-events-none absolute top-2 right-3 z-10 flex items-center gap-3 rounded-md bg-background/70 px-2 py-1 text-[11px] text-muted-foreground backdrop-blur-sm"
+      aria-hidden
+    >
+      {items.map((item) => (
+        <span key={item.label} className="flex items-center gap-1.5">
+          <span className="size-2 rounded-full" style={item.style} />
+          {item.label}
+        </span>
+      ))}
+      {glows
+        .filter((g) => lifecycles.has(g.key))
+        .map((g) => (
+          <span key={g.key} className="flex items-center gap-1.5">
+            <span className={cn("h-2 w-3 rounded-[2px] border bg-card", g.className)} />
+            {g.label}
+          </span>
+        ))}
+    </span>
   );
 }
 

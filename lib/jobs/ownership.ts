@@ -35,6 +35,17 @@ export function isUnderFolder(filePath: string, dir: string): boolean {
   return dir === "" || filePath.startsWith(`${dir}/`);
 }
 
+/**
+ * The path patterns a folder cluster is stored with: `<folder>/**` (`*` for
+ * the repo root), or its files one by one for a part split off a flat folder
+ * by name (../analysis/split-modules.ts), which shares its folder with the
+ * module it came from.
+ */
+export function pathPatternsFor(cluster: Pick<ModuleCluster, "folder" | "filePaths" | "exactFiles">): string[] {
+  if (cluster.exactFiles) return [...cluster.filePaths].sort();
+  return [cluster.folder === "" ? "*" : folderPattern(cluster.folder)];
+}
+
 export function folderModuleId(repoId: string, moduleName: string): string {
   return `${repoId}:module:${moduleName}`;
 }

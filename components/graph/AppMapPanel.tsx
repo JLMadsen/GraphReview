@@ -5,7 +5,7 @@
 // "explains itself": the AI explanation, the files to open first and why,
 // which layers the card spans, every connection in and out with its verb and
 // what flows along it, and the modules behind the card. Everything is a link
-// back into the map (another card) or the Repo view (a module).
+// back into the map (another card or a module's card).
 
 // The cards themselves are compact (name, description, counts), so this is
 // also where a card's files live — review-flagged and changed ones first,
@@ -213,7 +213,7 @@ export function AppMapPanel({
                   type="button"
                   onClick={() => onSelectFile(f)}
                   className="w-full rounded-sm px-1 py-0.5 text-left hover:bg-secondary"
-                  title={`${f} — open its module`}
+                  title={`${f} — open the file`}
                 >
                   <span className="flex items-center gap-1.5 font-mono text-[11px]">
                     <span className="min-w-0 flex-1 truncate">{f}</span>

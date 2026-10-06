@@ -13,6 +13,7 @@ import { countLines, type FileAnalysis, type FileImport } from "./ir";
 import { dirOf, extensionOf } from "./paths";
 import { analyzerForPath, listAnalyzers } from "./registry";
 import { runQuery } from "./tree-sitter";
+import { splitLargeModules } from "./split-modules";
 import { walkRepo, type WalkOptions } from "./walk";
 
 /** A folder-derived cluster — the "module" tier of §6.1. */
@@ -28,6 +29,12 @@ export interface ModuleCluster {
   folder: string;
   /** Repo-relative paths of the analyzed files belonging to this module. */
   filePaths: string[];
+  /**
+   * Set on a part split off a large flat folder by name (./split-modules.ts):
+   * it shares `folder` with the module it came from, so its path patterns
+   * are its files, not `<folder>/**`.
+   */
+  exactFiles?: true;
 }
 
 /** Resolved file-to-file import edge. */
@@ -41,7 +48,7 @@ export interface AnalysisResult {
   files: FileAnalysis[];
   /** Resolved file-to-file import edges only — no call-graph edges in v1 (§5). */
   edges: ImportEdge[];
-  /** Folder-based clustering at `moduleDepth` (§6, §6.1). */
+  /** Folder-based clustering at `moduleDepth` (§6, §6.1), oversized modules split (./split-modules.ts). */
   modules: ModuleCluster[];
   /** Unresolved import specifiers, deduped — the grouped "external" nodes of §5. */
   externalPackages: string[];
@@ -421,9 +428,12 @@ export async function analyzeRepo(
   return {
     files,
     edges,
-    modules: clusterByFolderDepth(
-      files.map((f) => f.file),
-      options.moduleDepth ?? DEFAULT_MODULE_DEPTH,
+    modules: splitLargeModules(
+      clusterByFolderDepth(
+        files.map((f) => f.file),
+        options.moduleDepth ?? DEFAULT_MODULE_DEPTH,
+      ),
+      edges,
     ),
     externalPackages: [...externals].sort(),
   };

@@ -25,7 +25,7 @@ import { readRepoFile, sourceDir } from "./review-context";
 import { gitIn } from "./source";
 
 const CACHE_MS = 60_000;
-const MAX_FILE_CHARS = 400_000;
+export const MAX_FILE_CHARS = 400_000;
 
 interface CacheEntry {
   at: number;

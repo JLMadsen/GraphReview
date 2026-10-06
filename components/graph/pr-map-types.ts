@@ -18,6 +18,8 @@ export interface PrMapFileDTO {
   status: FileDiffStatus;
   additions: number;
   deletions: number;
+  /** The analyzed component that owns the file, when there is one. */
+  componentId?: string;
 }
 
 export interface PrMapNodeDTO {
@@ -26,7 +28,7 @@ export interface PrMapNodeDTO {
   name: string;
   description?: string;
   role: PrMapRole;
-  /** Graph component ids behind this card — what selecting it selects on the Repo view. Empty for files no analyzed component owns. */
+  /** Graph component ids behind this card, most files first. Empty for files no analyzed component owns. */
   componentIds: string[];
   /** Changed files in this card, sorted by path. Always empty for `context`. */
   files: PrMapFileDTO[];

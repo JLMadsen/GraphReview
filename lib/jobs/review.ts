@@ -455,7 +455,7 @@ async function runPrMapPass(args: {
 
   try {
     const result = await groupPrMap(args.aiConfig, aiInput, { tokenBudget: args.tokenBudget });
-    spent.calls = 1;
+    spent.calls = result.calls;
     spent.promptTokens = result.usage.promptTokens;
     spent.completionTokens = result.usage.completionTokens;
     if (result.parseFailed) {
