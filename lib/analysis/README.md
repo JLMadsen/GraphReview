@@ -47,7 +47,7 @@ import { analyzeRepo } from "@/lib/analysis";
 const result = await analyzeRepo("/data/repos/<repoId>", { moduleDepth: 2 });
 // result.files            FileAnalysis[]                (nodes, with their IR imports)
 // result.edges            { from, to, kind }[]          (resolved file → file import edges)
-// result.modules          { name, filePaths }[]         (module tier, folder-based)
+// result.modules          { name, filePaths }[]         (module tier, folder-based; oversized modules split by split-modules.ts)
 // result.externalPackages string[]                      (grouped "external" nodes)
 ```
 
@@ -77,7 +77,9 @@ imports nothing from `lib/db`, `lib/github`, `lib/ai` or `lib/jobs`.
 | `__fixtures__/sample-repo-langs.ts` | Go + Java + Rust fixture, materialized into a temp dir |
 | `__fixtures__/sample-repo-jvm.ts` | Gradle multi-module Java + Kotlin fixture, materialized into a temp dir |
 | `__fixtures__/sample-repo-node.ts` | pnpm-style TS monorepo fixture, materialized into a temp dir |
+| `split-modules.ts` | splits modules over 30 files — by subfolder, then by file-name stem and imports (DESIGN.md §6.1) |
 | `smoke-test.ts` | end-to-end check (`npx tsx lib/analysis/smoke-test.ts`) |
+| `smoke-test-split-modules.ts` | module splitting check (`npx tsx lib/analysis/smoke-test-split-modules.ts`) |
 | `smoke-test-langs.ts` | Go/Java/Rust check (`npx tsx lib/analysis/smoke-test-langs.ts [dir]`; with a `dir` it prints resolved/external stats per language) |
 | `smoke-test-jvm.ts` | Java+Kotlin shared-resolver check (`npx tsx lib/analysis/smoke-test-jvm.ts [dir]`) |
 | `smoke-test-node.ts` | JS/TS monorepo resolver check (`npx tsx lib/analysis/smoke-test-node.ts [dir]`) |

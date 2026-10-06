@@ -1,7 +1,7 @@
 "use client";
 
 // One card of the PR map (DESIGN.md §6.4): an *area* of the change — its
-// name, how many files and lines it holds, and the number of findings that
+// name, a short description, how many files and lines it holds, and the number of findings that
 // still need a look as a badge in the corner. The files themselves live in the area inspector and the dock's
 // Files tab; the card stays small so a map of a dozen areas reads at a
 // glance. An area the diff adds whole glows faintly green and says "new"; one
@@ -178,6 +178,13 @@ export function PrMapCard({ node, area, selected, dimmed }: PrMapCardProps) {
     >
       {tag && <p className="amc-desc mb-0.5 font-mono text-[10px] text-muted-foreground lowercase">{tag}</p>}
       <p className="amc-name pr-4 text-[13px] leading-snug font-medium">{node.name}</p>
+      {/* What the area does, clamped so a long one can't stretch the card; the
+          inspector shows it whole. Hidden when zoomed far out, like the tag. */}
+      {node.description && (
+        <p className="amc-desc mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground" title={node.description}>
+          {node.description}
+        </p>
+      )}
       {/* Unbreakable chunks — "new", "5 files", "+1,160 −83" — so the line can wrap
           between them but never splits a number from its sign; zoomed out,
           the file count steps aside (amc-count) to leave the line counts room. */}

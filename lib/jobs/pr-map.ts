@@ -372,14 +372,63 @@ export function heuristicPrMapGroups(input: PrMapInput): PrMapGroup[] {
         : `Changes ${list.slice(0, 3).join(", ")}${list.length > 3 ? ` +${list.length - 3} more` : ""}`;
   }
 
-  // New files that all landed in one folder read better named as such.
+  // New files that all landed in one folder read better named as such — and
+  // so do deleted ones, which an analysis of the head never saw.
   for (const group of groups.values()) {
     if (!group.id.startsWith("new:")) continue;
     const statuses = new Set(group.files.map((p) => input.files.find((f) => f.path === p)?.status));
     if (statuses.size === 1 && statuses.has("added")) group.description = "New files";
+    if (statuses.size === 1 && statuses.has("removed")) group.description = "Deleted files";
   }
 
-  return [...groups.values()];
+  return splitRemovedFiles(input, [...groups.values()]);
+}
+
+/** A code card with more files than this splits off the files the diff deletes. */
+const SPLIT_REMOVED_ABOVE = 8;
+/** …when at least this many of them are deleted, and at least this many are not. */
+const MIN_SPLIT_PART = 2;
+
+/**
+ * A large module card that is partly deleted becomes two: the files that
+ * stay, and the files this change retires. Modules are folders, so one flat
+ * folder is one card however much of it a diff touches — and "what is being
+ * removed" is the cut a reviewer reads first. The kept part keeps the card's
+ * id, so component edges still land on it.
+ */
+function splitRemovedFiles(input: PrMapInput, groups: PrMapGroup[]): PrMapGroup[] {
+  const statusOf = new Map(input.files.map((file) => [file.path, file.status]));
+  const out: PrMapGroup[] = [];
+  for (const group of groups) {
+    out.push(group);
+    if (group.role !== "code" || group.files.length <= SPLIT_REMOVED_ABOVE) continue;
+    const removed = group.files.filter((p) => statusOf.get(p) === "removed");
+    const kept = group.files.filter((p) => statusOf.get(p) !== "removed");
+    if (removed.length < MIN_SPLIT_PART || kept.length < MIN_SPLIT_PART) continue;
+    group.files = kept;
+    out.push({
+      id: `${group.id}:removed`,
+      name: `${group.name} (removed)`,
+      description: "Files this change deletes",
+      role: "code",
+      files: removed,
+    });
+  }
+  return out;
+}
+
+/** Roles that never belong in an AI code group — they fall back to their own heuristic cards. */
+const NON_CODE_ROLES = new Set<PrMapFileRole>(["dependency", "docs", "test"]);
+
+/**
+ * Takes manifests, docs and tests out of an AI group that holds code: the
+ * prompt asks for them to be boxed apart, and a weak model still drops a
+ * lockfile into a UI box. A group of only non-code files keeps them.
+ */
+function withoutStrayRoles(group: PrMapGroup): PrMapGroup {
+  const roles = group.files.map((p) => classifyPath(p));
+  if (!roles.includes("code")) return group;
+  return { ...group, files: group.files.filter((_, i) => !NON_CODE_ROLES.has(roles[i])) };
 }
 
 // ---------------------------------------------------------------------------
@@ -580,19 +629,22 @@ export interface PrMapAiGrouping {
  * diff the model names a few files per area and stops, and a card per
  * leftover module would bury the areas it did name. Anything still unplaced
  * (a module the grouping never touched, tests, config, docs) keeps its
- * heuristic card, so a partial answer still shows every file.
+ * heuristic card, so a partial answer still shows every file. Manifests,
+ * docs and tests the model put in a code group are taken back out first.
  */
 export function applyPrMapGrouping(
   input: PrMapInput,
   links: PrMapLink[],
   grouping: PrMapAiGrouping
 ): { nodes: PrMapNodeDTO[]; edges: PrMapEdgeDTO[] } {
-  const groups: PrMapGroup[] = grouping.groups.map((group, index) => ({
-    id: `ai:${index}`,
-    name: group.name,
-    description: group.description,
-    files: [...group.files],
-  }));
+  const groups: PrMapGroup[] = grouping.groups.map((group, index) =>
+    withoutStrayRoles({
+      id: `ai:${index}`,
+      name: group.name,
+      description: group.description,
+      files: [...group.files],
+    })
+  );
   const named = new Set(groups.flatMap((group) => group.files));
 
   // Which group holds most of each module's named files (ties: the first).

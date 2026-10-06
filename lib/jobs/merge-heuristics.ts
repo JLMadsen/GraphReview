@@ -233,8 +233,9 @@ class Context {
    * files sitting *directly* in its folder (`app/page.tsx`, while `app/map`
    * is its own module), and `app/**` would claim the whole tree. The same
    * goes for any module with another folder module nested inside it (a JVM
-   * base package next to its feature packages). Those are listed file by
-   * file instead.
+   * base package next to its feature packages), or sharing its folder (the
+   * core of a flat folder split by name). Those are listed file by file
+   * instead.
    */
   private membersOf(mod: HeuristicModule): string[] {
     const dir = folderOfPattern(mod.pathPatterns[0] ?? "");
@@ -242,7 +243,8 @@ class Context {
     const hasNested = this.input.modules.some((other) => {
       if (other.id === mod.id || other.origin !== "folder") return false;
       const otherDir = folderOfPattern(other.pathPatterns[0] ?? "");
-      return otherDir !== null && otherDir !== dir && isUnderFolder(otherDir, dir);
+      if (otherDir === null) return other.pathPatterns.some((p) => isUnderFolder(p, dir));
+      return otherDir !== dir && isUnderFolder(otherDir, dir);
     });
     if (!hasNested && dir.split("/").length >= this.input.moduleDepth) return [folderPattern(dir)];
     return [...this.input.ownerByFile]

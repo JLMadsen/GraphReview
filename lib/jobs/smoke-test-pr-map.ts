@@ -13,6 +13,12 @@
 import { groupPrMap, normalizePrMapGrouping } from "@/lib/ai/pr-map";
 import { MOCK_DESCRIPTION_PREFIX, startMockServer } from "@/lib/ai/mock-server";
 import type { AiProviderConfig } from "@/lib/ai";
+import type { chatCompletion } from "@/lib/ai/client";
+
+/** A provider config for stubbed `chat` calls — never dialled. */
+function stubConfig(): AiProviderConfig {
+  return { baseUrl: "http://127.0.0.1:9/v1", apiKey: "unused", model: "stub" };
+}
 import {
   applyPrMapGrouping,
   assemblePrMap,
@@ -138,6 +144,28 @@ function partA(): void {
   check("host uses the dependency", edge(map, "code:c:ffi", "dep")?.label === "uses");
   check("host imports its unchanged neighbour", edge(map, "code:c:ffi", "ctx:c:util")?.label === "imports");
   check("docs have no edges", !map.edges.some((e) => e.source === "docs" || e.target === "docs"));
+
+  // One flat folder is one module; a large, partly deleted one splits.
+  const flat: PrMapInput = {
+    files: Array.from({ length: 12 }, (_, i) => ({
+      path: `src/ui/F${i}.tsx`,
+      status: i < 4 ? "removed" : "modified",
+      additions: i < 4 ? 0 : 5,
+      deletions: 5,
+    })),
+    componentIdByPath: new Map(Array.from({ length: 12 }, (_, i) => [`src/ui/F${i}.tsx`, "c:ui"] as const)),
+    components: new Map([["c:ui", { id: "c:ui", name: "ui" }]]),
+    imports: [],
+  };
+  const flatMap = buildHeuristicPrMap(flat);
+  check(
+    "a large module card splits off its deleted files",
+    JSON.stringify(flatMap.nodes.map((n) => [n.id, n.files.length])) ===
+      JSON.stringify([["code:c:ui", 8], ["code:c:ui:removed", 4]]),
+    JSON.stringify(flatMap.nodes.map((n) => [n.id, n.files.length]))
+  );
+  const small = buildHeuristicPrMap({ ...flat, files: flat.files.slice(0, 8) });
+  check("a small module card stays whole", small.nodes.length === 1, JSON.stringify(small.nodes.map((n) => n.id)));
 }
 
 async function partB(): Promise<void> {
@@ -204,6 +232,93 @@ async function partB(): Promise<void> {
     partial.nodes.some((n) => n.id === "code:c:client"),
     JSON.stringify(partial.nodes.map((n) => n.id))
   );
+
+  // Manifests, docs and tests the model dropped into a code box go back to their own cards.
+  const stray = applyPrMapGrouping(INPUT, collectPrMapLinks(INPUT), {
+    groups: [
+      { name: "Everything", files: INPUT.files.map((f) => f.path) },
+    ],
+    edgeLabels: [],
+  });
+  const everything = stray.nodes.find((n) => n.name === "Everything")?.files.map((f) => f.path) ?? [];
+  check(
+    "dependency, docs and test files leave an AI code group",
+    JSON.stringify(everything) === JSON.stringify(["src/client.ts", "src/ffi/ffiRuntimeHost.ts"]) &&
+      stray.nodes.some((n) => n.id === "dep") &&
+      stray.nodes.some((n) => n.id === "docs") &&
+      stray.nodes.some((n) => n.role === "test"),
+    JSON.stringify(stray.nodes.map((n) => [n.id, n.files.map((f) => f.path)]))
+  );
+  const docsOnly = applyPrMapGrouping(INPUT, collectPrMapLinks(INPUT), {
+    groups: [{ name: "Docs And Deps", files: ["README.md", "package.json", "package-lock.json"] }],
+    edgeLabels: [],
+  });
+  check(
+    "a group of only non-code files keeps them",
+    docsOnly.nodes.find((n) => n.name === "Docs And Deps")?.files.length === 3
+  );
+
+  // An oversized box is sent back once; a smaller split replaces it, a worse one doesn't.
+  const big = Array.from({ length: 30 }, (_, i) => ({
+    path: `src/ui/F${i}.tsx`,
+    status: "modified",
+    additions: 1,
+    deletions: 0,
+    group: "ui",
+    highlights: [],
+  }));
+  const answer = (groups: Array<{ name: string; files: string[] }>) => ({
+    content: "```json\n" + JSON.stringify({ groups, edges: [] }) + "\n```",
+    usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+  });
+  const paths = big.map((f) => f.path);
+  const bigInput = { files: big, groups: [{ name: "ui", role: "code" }], context: [], links: [], summaries: [] };
+  let asked: string[] = [];
+  const splitting = await groupPrMap(stubConfig(), bigInput, {
+    chat: (async (_config, messages) => {
+      asked.push(messages[messages.length - 1].content);
+      return asked.length === 1
+        ? answer([{ name: "All Of It", files: paths }])
+        : answer([
+            { name: "Old Part", files: paths.slice(0, 15) },
+            { name: "New Part", files: paths.slice(15) },
+          ]);
+    }) as typeof chatCompletion,
+  });
+  check(
+    "oversized box is split by a follow-up",
+    splitting.calls === 2 &&
+      asked[1]?.includes('"All Of It" holds 30 of the 30') &&
+      JSON.stringify(splitting.groups.map((g) => g.files.length)) === "[15,15]" &&
+      splitting.usage.totalTokens === 30,
+    JSON.stringify({ calls: splitting.calls, groups: splitting.groups.map((g) => g.files.length) })
+  );
+  check("the first prompt states the diff size and a group range", /30 changed files .* aim for 4-8 groups/.test(asked[0] ?? ""));
+  asked = [];
+  const stubborn = await groupPrMap(stubConfig(), bigInput, {
+    chat: (async (_config, messages) => {
+      asked.push(messages[messages.length - 1].content);
+      return asked.length === 1
+        ? answer([{ name: "All Of It", files: paths }])
+        : answer([{ name: "Some Of It", files: paths.slice(0, 5) }]);
+    }) as typeof chatCompletion,
+  });
+  check(
+    "a follow-up that drops files is ignored",
+    stubborn.calls === 2 && stubborn.groups.length === 1 && stubborn.groups[0].files.length === 30
+  );
+  asked = [];
+  const fine = await groupPrMap(stubConfig(), bigInput, {
+    chat: (async (_config, messages) => {
+      asked.push(messages[messages.length - 1].content);
+      return answer([
+        { name: "A", files: paths.slice(0, 10) },
+        { name: "B", files: paths.slice(10, 20) },
+        { name: "C", files: paths.slice(20) },
+      ]);
+    }) as typeof chatCompletion,
+  });
+  check("balanced boxes need no follow-up", fine.calls === 1 && asked.length === 1);
 
   const mock = await startMockServer({ port: 0, host: "127.0.0.1", delayMs: 0, log: () => undefined });
   const real: AiProviderConfig = { baseUrl: `${mock.url}/v1`, apiKey: "test-key", model: "mock-review-1" };
