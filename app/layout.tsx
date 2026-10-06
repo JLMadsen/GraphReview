@@ -20,28 +20,55 @@ export const metadata: Metadata = {
 };
 
 /**
- * The wordmark's glyph: three components and the dependency edges between
- * them — the app's one idea, at 18px. Inline rather than a lucide icon so
- * the brand mark is GraphReview's own and not a stock pictogram.
+ * The wordmark's glyph, identical to app/icon.svg: an area of components on
+ * a blueprint grid, with a change reaching out of it to a component that
+ * needs a look — the impact check, at 28px. Fixed colours (not theme tokens)
+ * so it matches the favicon in both themes. Explorations that led here live
+ * in docs/testing/logos/.
  */
 function GraphMark() {
   return (
-    <span className="flex size-7 items-center justify-center rounded-[7px] bg-brand-muted ring-1 ring-inset ring-brand/30">
-      <svg
-        viewBox="0 0 24 24"
-        className="size-4 text-brand"
+    <svg viewBox="0 0 32 32" className="size-7 shrink-0" aria-hidden>
+      <rect width="32" height="32" rx="7" fill="#123458" />
+      <path
+        d="M8 0V32M16 0V32M24 0V32M0 8H32M0 16H32M0 24H32"
+        stroke="#fff"
+        strokeOpacity=".08"
+        strokeWidth=".6"
+      />
+      <rect
+        x="4"
+        y="4"
+        width="16.5"
+        height="16.5"
+        rx="4"
+        fill="#567bf7"
+        fillOpacity=".4"
+        stroke="#9db6ff"
+        strokeWidth="1"
+        strokeDasharray="2 1.5"
+      />
+      <path
+        d="M8.5 8.5L15.5 15.5M8.5 15.5H15.5M8.5 8.5V15.5"
+        stroke="#fff"
+        strokeOpacity=".7"
+        strokeWidth="1.3"
+      />
+      <circle cx="8.5" cy="8.5" r="2.1" fill="#fff" />
+      <circle cx="8.5" cy="15.5" r="2.1" fill="#fff" />
+      <circle cx="15.5" cy="15.5" r="2.4" fill="#fff" />
+      <circle
+        cx="24.5"
+        cy="24.5"
+        r="5.2"
         fill="none"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        aria-hidden
-      >
-        <path d="M12 6.5v4M9.2 15.2l-2.6-2.1M14.8 15.2l2.6-2.1" opacity="0.75" />
-        <circle cx="12" cy="4.5" r="2.4" fill="currentColor" stroke="none" />
-        <circle cx="5" cy="17" r="2.4" fill="currentColor" stroke="none" />
-        <circle cx="19" cy="17" r="2.4" fill="currentColor" stroke="none" />
-      </svg>
-    </span>
+        stroke="#f2b84b"
+        strokeOpacity=".4"
+        strokeWidth="1.1"
+      />
+      <path d="M15.5 15.5L21.9 21.9" stroke="#f2b84b" strokeWidth="2" strokeLinecap="round" />
+      <circle cx="24.5" cy="24.5" r="2.7" fill="#123458" stroke="#f2b84b" strokeWidth="1.8" />
+    </svg>
   );
 }
 
