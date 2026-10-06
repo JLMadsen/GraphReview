@@ -43,9 +43,6 @@
     "@xyflow/react": "^12.12.0",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.3.0",
-    "cytoscape": "^3.34.3",
-    "cytoscape-elk": "^2.3.0",
-    "cytoscape-fcose": "^2.2.0",
     "elkjs": "^0.12.0",
     "geist": "^1.7.2",
     "lucide-react": "^0.475.0",
@@ -61,7 +58,6 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
-    "@types/cytoscape": "^3.21.9",
     "@types/node": "^22.20.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",

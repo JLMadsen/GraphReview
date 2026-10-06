@@ -1,20 +1,27 @@
 // The impact pass of a review: callers the PR left behind.
 //
 //   1. contracts  — declarations whose signature/shape changed, or that were
-//                   removed (./impact-contracts.ts, from the diff + the head)
+//                   removed (./impact-contracts.ts, from the diff + the head);
+//                   one that moved to another file and changed on the way is
+//                   a changed contract of its new file
 //   2. usages     — whole-word search for each name at the head commit,
-//                   kept only where the file can actually reach the
-//                   declaration (same file; imports the declaring file or a
-//                   file that re-exports it; same directory for package-
-//                   scoped languages), and only on lines the PR did NOT
-//                   write — an edited call site counts as updated
+//                   kept only on lines the PR did NOT write (an edited call
+//                   site counts as updated) and only where the file actually
+//                   reaches the declaration: its import of the name, read
+//                   from the head text and followed through re-exports, leads
+//                   to the declaring file — or, where the text can't tell,
+//                   the analysed import graph says so. For a removed
+//                   declaration, only files where the name no longer resolves
+//                   at all (a move with a re-export, updated imports or an
+//                   alias left behind is not a removal)
 //   3. judgement  — one model call (a few at most) that says which of those
 //                   untouched usages no longer fit (lib/ai/impact.ts); only
 //                   `incompatible` ones become findings
 //
-// Findings are `category: "impact"`, attached to the *caller's* component —
-// usually one the diff doesn't touch at all — with the caller's path and
-// line. When the caps cut usages off, one note says how many weren't checked.
+// Findings are `category: "impact"`, one per contract per caller file,
+// attached to the *caller's* component — usually one the diff doesn't touch
+// at all — with the caller's path, anchored at its first incompatible line.
+// When the caps cut usages off, one note says how many weren't checked.
 
 import { randomUUID } from "node:crypto";
 import { checkImpact, type AiProviderConfig, type ImpactContract, type ImpactUsage } from "@/lib/ai";
@@ -32,6 +39,8 @@ const MAX_HITS_PER_NAME = 300;
 const MAX_USAGES_PER_CONTRACT = 40;
 const SNIPPET_RADIUS = 3;
 const MAX_SNIPPET_LINE_CHARS = 240;
+/** Head files read at once when resolving imports. */
+const READ_CONCURRENCY = 16;
 /** Languages whose files see each other by directory/package, without an import. */
 const PACKAGE_SCOPED = /\.(?:go|java|kt|kts)$/;
 const IMPORT_LINE =
@@ -64,15 +73,25 @@ async function loadImports(repoId: string, paths: readonly string[]): Promise<Ma
  * Which grep hits for a contract are usages worth judging: not a line the
  * PR wrote (that call site was updated), not a declaration of the name
  * itself, not a bare import when only the shape changed — and only in a
- * file that can reach the declaration: the declaring file, a file in the
- * same package (Go/Java/Kotlin), or one that imports the declaring file or
- * another file mentioning the name (a re-exporting barrel). Pure, for tests.
+ * file that can reach the declaration.
+ *
+ * Reaching it is decided from the head text of the hit files when given
+ * (`headContents`, see {@link resolveName}): a file whose import of the name
+ * leads to the declaring file reaches it, one whose import leads to another
+ * declaration of the same name doesn't — and for a removed declaration, a
+ * file where the name still resolves (moved, re-exported, aliased) is not
+ * affected. Where the text can't tell (no import naming it, an import that
+ * can't be placed, a language without import parsing), the analysed import
+ * graph decides: the declaring file, a file in the same package
+ * (Go/Java/Kotlin), or one that imports the declaring file or another file
+ * mentioning the name (a re-exporting barrel). Pure, for tests.
  */
 export function untouchedReachableUsages(
   contract: ChangedContract,
   hits: readonly GrepHit[],
   addedByPath: ReadonlyMap<string, ReadonlySet<number>>,
-  importsByPath: ReadonlyMap<string, ReadonlySet<string>>
+  importsByPath: ReadonlyMap<string, ReadonlySet<string>>,
+  headContents?: ReadonlyMap<string, string | null>
 ): GrepHit[] {
   const candidates = hits.filter((hit) => {
     if (addedByPath.get(hit.path)?.has(hit.line)) return false; // the PR wrote this line
@@ -83,14 +102,206 @@ export function untouchedReachableUsages(
   // Files that mention the name and could pass it on: the declaring file,
   // and any re-exporting barrel among the hits (import lines included).
   const providers = new Set([contract.filePath, ...hits.map((h) => h.path)]);
-  return candidates.filter((hit) => {
-    if (hit.path === contract.filePath) return true;
-    if (PACKAGE_SCOPED.test(hit.path) && dirOf(hit.path) === dirOf(contract.filePath)) return true;
-    const fileImports = importsByPath.get(hit.path);
+  const known = [...providers];
+
+  const graphReaches = (path: string): boolean => {
+    if (path === contract.filePath) return true;
+    if (PACKAGE_SCOPED.test(path) && dirOf(path) === dirOf(contract.filePath)) return true;
+    const fileImports = importsByPath.get(path);
     if (!fileImports) return false;
-    for (const target of fileImports) if (target !== hit.path && providers.has(target)) return true;
+    for (const target of fileImports) if (target !== path && providers.has(target)) return true;
     return false;
+  };
+  const affected = (path: string): boolean => {
+    if (!headContents) return graphReaches(path);
+    if (contract.change === "removed") {
+      return graphReaches(path) && !stillResolves(contract.name, contract.filePath, path, headContents, known);
+    }
+    const resolution = resolveName(contract.name, path, headContents, known);
+    if (resolution.kind === "file") return resolution.path === contract.filePath;
+    return graphReaches(path);
+  };
+
+  const affectedByPath = new Map<string, boolean>();
+  return candidates.filter((hit) => {
+    let keep = affectedByPath.get(hit.path);
+    if (keep === undefined) {
+      keep = affected(hit.path);
+      affectedByPath.set(hit.path, keep);
+    }
+    return keep;
   });
+}
+
+// ---------------------------------------------------------------------------
+// Where a name resolves at the head (moves, re-exports, aliases)
+// ---------------------------------------------------------------------------
+
+const JS_LIKE = /\.(?:[cm]?[jt]sx?|vue|svelte)$/;
+const PYTHON = /\.pyi?$/;
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** The name is bound at module level in this file: a declaration, or a plain binding (`const statusOf = symbolStatus`). */
+function bindsLocally(content: string, name: string, path: string): boolean {
+  if (extractDeclarations(content).some((d) => d.name === name)) return true;
+  const word = escapeRegExp(name);
+  if (new RegExp(`^(?:export\\s+)?(?:const|let|var)\\s+${word}\\b`, "m").test(content)) return true;
+  return PYTHON.test(path) && new RegExp(`^${word}\\s*(?::[^=\\n]*)?=(?!=)`, "m").test(content);
+}
+
+/** The module makes the name available to importers. Outside JS/TS, every module-level name is. */
+function exportsName(content: string, name: string, path: string): boolean {
+  if (!JS_LIKE.test(path)) return true;
+  const word = escapeRegExp(name);
+  const declared = new RegExp(
+    `^\\s*export\\s+(?:default\\s+)?(?:declare\\s+)?(?:abstract\\s+)?(?:async\\s+)?` +
+      `(?:function\\*?|class|interface|type|enum|namespace|const|let|var)\\s+${word}\\b`,
+    "m"
+  );
+  if (declared.test(content)) return true;
+  const named = new RegExp(`\\b${word}\\b`);
+  for (const match of content.matchAll(/\bexport\s+(?:type\s+)?\{([^}]*)\}/g)) if (named.test(match[1])) return true;
+  return false;
+}
+
+/** Module specifiers of the import (or re-export) statements in this file that bind the name. */
+function importSpecifiers(content: string, name: string, path: string): string[] {
+  const named = new RegExp(`\\b${escapeRegExp(name)}\\b`);
+  const out: string[] = [];
+  if (PYTHON.test(path)) {
+    for (const match of content.matchAll(/^\s*from\s+([.\w]+)\s+import\s+(\([^)]*\)|[^\n]*)/gm)) {
+      if (named.test(match[2])) out.push(match[1]);
+    }
+    return out;
+  }
+  for (const match of content.matchAll(/\b(?:import|export)\s+(?:type\s+)?([^;'"]*?)\s*from\s*["']([^"']+)["']/g)) {
+    if (named.test(match[1])) out.push(match[2]);
+  }
+  for (const match of content.matchAll(/\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\(\s*["']([^"']+)["']\s*\)/g)) {
+    if (named.test(match[1])) out.push(match[2]);
+  }
+  return out;
+}
+
+/** `a/b/../c` → `a/c`. */
+function normalizePath(path: string): string {
+  const out: string[] = [];
+  for (const part of path.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") out.pop();
+    else out.push(part);
+  }
+  return out.join("/");
+}
+
+/** A file's path without its extension, and without a trailing `index`/`__init__`. */
+function moduleStems(path: string): string[] {
+  const stem = path.replace(/\.[^./]+$/, "");
+  const parent = stem.replace(/\/(?:index|__init__)$/, "");
+  return parent === stem ? [stem] : [stem, parent];
+}
+
+/**
+ * Which of the known files (the declaring file first, then every file that
+ * mentions the name) an import specifier points at — loosely: relative
+ * specifiers exactly, `@/`-style aliases and Python dotted paths by suffix.
+ */
+function resolveSpecifier(spec: string, fromPath: string, known: readonly string[]): string | undefined {
+  let target: string;
+  let exact: boolean;
+  if (PYTHON.test(fromPath)) {
+    const dots = /^\.*/.exec(spec)![0].length;
+    const rest = spec.slice(dots).replace(/\./g, "/");
+    if (dots > 0) {
+      let dir = dirOf(fromPath);
+      for (let i = 1; i < dots; i++) dir = dirOf(dir);
+      target = normalizePath(`${dir}/${rest}`);
+      exact = true;
+    } else {
+      target = rest;
+      exact = false;
+    }
+  } else if (spec.startsWith(".")) {
+    target = normalizePath(`${dirOf(fromPath)}/${spec}`);
+    exact = true;
+  } else {
+    target = spec.replace(/^[@~#]\//, "");
+    exact = false;
+  }
+  target = target.replace(/\.[cm]?[jt]sx?$/, "");
+  return known.find((path) =>
+    moduleStems(path).some((stem) => stem === target || (!exact && stem.endsWith(`/${target}`)))
+  );
+}
+
+/**
+ * Where `name`, as used in `path`, comes from at the head:
+ *   - `file`     — the file whose module-level binding it is: `path` itself
+ *                  (a declaration, or an alias such as `const statusOf =
+ *                  symbolStatus`), or the module an import of it leads to,
+ *                  followed through re-exports (`export { name }`, `export
+ *                  { name } from`)
+ *   - `external` — imported from a module that doesn't mention the name (a
+ *                  package, an `export *` barrel, a path that can't be placed)
+ *   - `unnamed`  — nothing in `path` binds or imports it (a namespace import,
+ *                  a same-package caller, a language without import parsing)
+ *   - `dead`     — its import leads to a file that doesn't provide it
+ * `contents` is the head text by path (`null`: gone); `known` the files that
+ * mention the name, the declaring file first.
+ */
+export type NameResolution = { kind: "file"; path: string } | { kind: "external" | "unnamed" | "dead" };
+
+export function resolveName(
+  name: string,
+  path: string,
+  contents: ReadonlyMap<string, string | null>,
+  known: readonly string[],
+  asModule = false,
+  seen: Set<string> = new Set([path])
+): NameResolution {
+  const content = contents.get(path);
+  if (content == null) return { kind: "dead" };
+  if (asModule && !exportsName(content, name, path)) return { kind: "dead" };
+  if (bindsLocally(content, name, path)) return { kind: "file", path };
+  const specs = importSpecifiers(content, name, path);
+  if (specs.length === 0) return { kind: asModule ? "dead" : "unnamed" };
+  let best: NameResolution = { kind: "dead" };
+  for (const spec of specs) {
+    const target = resolveSpecifier(spec, path, known);
+    if (!target) {
+      best = { kind: "external" };
+      continue;
+    }
+    if (seen.has(target)) continue;
+    seen.add(target);
+    const found = resolveName(name, target, contents, known, true, seen);
+    if (found.kind === "file") return found;
+    if (found.kind === "external") best = found;
+  }
+  return best;
+}
+
+/**
+ * Whether `name`, removed from `declaringPath`, is still available at the
+ * head to code in `path` — it resolves to some file, or to a module we can't
+ * see into ({@link resolveName}). A caller with no import naming it resolves
+ * only if the declaring file itself still provides the name (a re-export).
+ */
+export function stillResolves(
+  name: string,
+  declaringPath: string,
+  path: string,
+  contents: ReadonlyMap<string, string | null>,
+  known: readonly string[]
+): boolean {
+  let resolution = resolveName(name, path, contents, known);
+  if (resolution.kind === "unnamed" && path !== declaringPath) {
+    resolution = resolveName(name, declaringPath, contents, known, true, new Set([path, declaringPath]));
+  }
+  return resolution.kind === "file" || resolution.kind === "external";
 }
 
 function snippet(content: string, line: number): string {
@@ -109,6 +320,65 @@ function snippet(content: string, line: number): string {
 function oneLine(text: string, max = 160): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
+}
+
+/** How the finding words what happened to the declaration. */
+function changeText(contract: ChangedContract): string {
+  const name = `\`${contract.name}\``;
+  if (contract.change === "removed") return `${name} was removed from ${contract.filePath}`;
+  const shape = `changed from \`${oneLine(contract.before)}\` to \`${oneLine(contract.after ?? "")}\``;
+  return contract.movedFrom
+    ? `${name} moved from ${contract.movedFrom} to ${contract.filePath} and ${shape}`
+    : `${name} in ${contract.filePath} ${shape}`;
+}
+
+/**
+ * One finding per caller file per contract, anchored at its first
+ * incompatible line, with every line and the model's reason for it in the
+ * rationale. The summary and the rationale's opening are parsed back by the
+ * UI (components/graph/review-visuals.ts: impactSymbol, impactChange). Pure, for tests.
+ */
+export function impactFindings(
+  verdicts: ReadonlyArray<{ contract: ChangedContract; path: string; line: number; reason: string }>,
+  componentIdByPath: ReadonlyMap<string, string>,
+  base: Pick<TargetFindingInput, "prId" | "model" | "createdAt" | "reviewedBaseSha" | "reviewedHeadSha" | "reviewedAt">
+): ImpactFindingInput[] {
+  const groups = new Map<ChangedContract, Map<string, Array<{ line: number; reason: string }>>>();
+  for (const verdict of verdicts) {
+    const byPath = groups.get(verdict.contract) ?? new Map<string, Array<{ line: number; reason: string }>>();
+    groups.set(verdict.contract, byPath);
+    const lines = byPath.get(verdict.path) ?? [];
+    byPath.set(verdict.path, lines);
+    if (!lines.some((l) => l.line === verdict.line)) lines.push({ line: verdict.line, reason: verdict.reason.trim() });
+  }
+
+  const findings: ImpactFindingInput[] = [];
+  for (const [contract, byPath] of groups) {
+    for (const [path, lines] of byPath) {
+      lines.sort((a, b) => a.line - b.line);
+      const [first] = lines;
+      const reason = first.reason || "this usage no longer fits.";
+      const more = lines.length - 1;
+      findings.push({
+        id: randomUUID(),
+        ...base,
+        componentId: componentIdByPath.get(path) ?? "",
+        filePath: path,
+        lineRange: String(first.line),
+        summary:
+          `Not updated for the change to ${contract.name}: ${reason}` +
+          (more > 0 ? ` (and ${more} more place${more === 1 ? "" : "s"} in this file)` : ""),
+        assessment: "defect",
+        confidence: 0.8,
+        rationale:
+          lines.length === 1
+            ? `${changeText(contract)}, but this line was not edited by the change. ${first.reason}`.trim()
+            : `${changeText(contract)}, but these lines were not edited by the change:\n` +
+              lines.map((l) => `- line ${l.line}: ${l.reason || "no longer fits."}`).join("\n"),
+      });
+    }
+  }
+  return findings;
 }
 
 /**
@@ -135,7 +405,8 @@ export async function runImpactPass(args: {
 
   try {
     // --- 1. What changed shape -------------------------------------------
-    const candidates = files.filter((f) => f.patch && f.status !== "added");
+    // Added files are read too: a removed declaration may have moved into one.
+    const candidates = files.filter((f) => f.patch);
     const sources = await Promise.all(
       candidates.map(async (file) => {
         const content = await head.read(file.path);
@@ -159,22 +430,37 @@ export async function runImpactPass(args: {
     // --- 2. Untouched usages -------------------------------------------------
     const addedByPath = new Map(files.map((f) => [f.path, addedLineNumbers(f.patch)]));
     const hitsByContract = new Map<ChangedContract, GrepHit[]>();
+    const grepped = new Map<string, Awaited<ReturnType<HeadSource["grepWord"]>>>();
     let unchecked = 0;
     let truncatedNames = 0;
     for (const contract of contracts) {
-      const { hits, truncated } = await head.grepWord(contract.name, MAX_HITS_PER_NAME);
-      if (truncated) truncatedNames++;
-      hitsByContract.set(contract, hits);
+      // A moved declaration is two contracts of one name: search it once.
+      let result = grepped.get(contract.name);
+      if (!result) {
+        result = await head.grepWord(contract.name, MAX_HITS_PER_NAME);
+        grepped.set(contract.name, result);
+        if (result.truncated) truncatedNames++;
+      }
+      hitsByContract.set(contract, result.hits);
     }
 
     const hitPaths = [...new Set([...hitsByContract.values()].flat().map((h) => h.path))];
     const imports = await loadImports(repoId, hitPaths);
+    // Where each caller's import of the name leads is read from the head
+    // text of every file that mentions it (and of the declaring files).
+    const headContents = new Map<string, string | null>();
+    const toRead = [...new Set([...contracts.map((c) => c.filePath), ...hitPaths])];
+    for (let i = 0; i < toRead.length; i += READ_CONCURRENCY) {
+      const batch = toRead.slice(i, i + READ_CONCURRENCY);
+      const texts = await Promise.all(batch.map((path) => head.read(path)));
+      batch.forEach((path, j) => headContents.set(path, texts[j]));
+    }
 
     const contractInputs: Array<{ contract: ChangedContract; input: ImpactContract }> = [];
     const usageIndex = new Map<string, { contract: ChangedContract; path: string; line: number }>();
     let nextId = 1;
     for (const contract of contracts) {
-      const reachable = untouchedReachableUsages(contract, hitsByContract.get(contract) ?? [], addedByPath, imports);
+      const reachable = untouchedReachableUsages(contract, hitsByContract.get(contract) ?? [], addedByPath, imports, headContents);
       if (reachable.length > MAX_USAGES_PER_CONTRACT) unchecked += reachable.length - MAX_USAGES_PER_CONTRACT;
 
       const usages: ImpactUsage[] = [];
@@ -194,6 +480,7 @@ export async function runImpactPass(args: {
           change: contract.change,
           before: contract.before,
           after: contract.after,
+          movedFrom: contract.movedFrom,
           usages,
         },
       });
@@ -220,30 +507,16 @@ export async function runImpactPass(args: {
         (result.parseFailures > 0 ? `, ${result.parseFailures} unparseable answer(s)` : "")
     );
 
-    const callerPaths = [...new Set(result.incompatible.map((v) => usageIndex.get(v.usageId)!.path))];
-    const { componentIdByPath } = await matchFilesToComponents(repoId, callerPaths);
-    for (const verdict of result.incompatible) {
-      const usage = usageIndex.get(verdict.usageId)!;
-      const { contract } = usage;
-      const changeText =
-        contract.change === "removed"
-          ? `\`${contract.name}\` was removed from ${contract.filePath}`
-          : `\`${contract.name}\` in ${contract.filePath} changed from \`${oneLine(contract.before)}\` to \`${oneLine(contract.after ?? "")}\``;
-      spent.findings.push({
-        id: randomUUID(),
+    const verdicts = result.incompatible.map((v) => ({ ...usageIndex.get(v.usageId)!, reason: v.reason }));
+    const { componentIdByPath } = await matchFilesToComponents(repoId, [...new Set(verdicts.map((v) => v.path))]);
+    spent.findings.push(
+      ...impactFindings(verdicts, componentIdByPath, {
         prId: args.prId,
-        componentId: componentIdByPath.get(usage.path) ?? "",
-        filePath: usage.path,
-        lineRange: String(usage.line),
-        summary: `Not updated for the change to ${contract.name}: ${verdict.reason || "this usage no longer fits."}`,
-        assessment: "defect",
-        confidence: 0.8,
-        rationale: `${changeText}, but this line was not edited by the change. ${verdict.reason}`.trim(),
         model: args.aiConfig.model,
         createdAt: new Date().toISOString(),
         ...args.revision,
-      });
-    }
+      })
+    );
     return withNote(spent, unchecked, truncatedNames, args);
   } catch (error) {
     // A call that went out may still be billed.

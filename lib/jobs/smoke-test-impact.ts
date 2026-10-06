@@ -13,7 +13,9 @@ import type { chatCompletion } from "@/lib/ai/client";
 import { startMockServer } from "@/lib/ai/mock-server";
 import type { AiProviderConfig, ChatMessage } from "@/lib/ai";
 import { addedLineNumbers, detectChangedContracts, type ChangedContract } from "./impact-contracts";
-import { untouchedReachableUsages } from "./impact";
+import { impactChange, impactReasons, impactSymbol } from "@/components/graph/review-visuals";
+import type { GrepHit } from "./head-source";
+import { impactFindings, untouchedReachableUsages } from "./impact";
 
 let failures = 0;
 function check(label: string, condition: boolean, detail?: string): void {
@@ -156,6 +158,217 @@ async function main(): Promise<void> {
     const goContract: ChangedContract = { ...contract, name: "Parse", filePath: "pkg/p/parse.go" };
     const goHits = [{ path: "pkg/p/use.go", line: 4, text: "\tv := Parse(s)" }];
     check("Go: same package directory counts without an import edge", untouchedReachableUsages(goContract, goHits, new Map(), new Map()).length === 1);
+  }
+
+  console.log("\nremoved vs moved:");
+  {
+    const removed = (name: string, filePath: string): ChangedContract => ({ name, filePath, kind: "callable", change: "removed", before: `export function ${name}()` });
+    const keep = (contract: ChangedContract, hits: GrepHit[], imports: Record<string, string[]>, contents: Record<string, string | null>) =>
+      untouchedReachableUsages(
+        contract,
+        hits,
+        new Map(),
+        new Map(Object.entries(imports).map(([k, v]) => [k, new Set(v)])),
+        new Map(Object.entries(contents))
+      ).map((h) => `${h.path}:${h.line}`);
+
+    // Moved to runner.ts; queue.ts imports it back and re-exports it.
+    const pending = removed("isPendingJobState", "lib/jobs/queue.ts");
+    const pendingHits: GrepHit[] = [
+      { path: "lib/jobs/queue.ts", line: 1, text: 'import { isPendingJobState } from "./runner";' },
+      { path: "lib/jobs/queue.ts", line: 2, text: "export { isPendingJobState };" },
+      { path: "lib/jobs/runner.ts", line: 4, text: "export function isPendingJobState(state: string): boolean {" },
+      { path: "app/api/jobs/route.ts", line: 1, text: 'import { isPendingJobState } from "@/lib/jobs/queue";' },
+      { path: "app/api/jobs/route.ts", line: 9, text: "  if (isPendingJobState(job.state)) return;" },
+      { path: "lib/jobs/watch.ts", line: 6, text: "  return queue.isPendingJobState(s);" }, // namespace import
+    ];
+    const pendingContents = {
+      "lib/jobs/queue.ts": 'import { isPendingJobState } from "./runner";\nexport { isPendingJobState };\n',
+      "lib/jobs/runner.ts": "export const X = 1;\n\nexport function isPendingJobState(state: string): boolean {\n  return true;\n}\n",
+      "app/api/jobs/route.ts": 'import { isPendingJobState } from "@/lib/jobs/queue";\n',
+      "lib/jobs/watch.ts": 'import * as queue from "./queue";\n',
+    };
+    const pendingImports = { "app/api/jobs/route.ts": ["lib/jobs/queue.ts"], "lib/jobs/watch.ts": ["lib/jobs/queue.ts"] };
+    check(
+      "moved + re-exported from the old module -> no usage reported",
+      keep(pending, pendingHits, pendingImports, pendingContents).length === 0,
+      keep(pending, pendingHits, pendingImports, pendingContents).join(" ")
+    );
+    const dropped = { ...pendingContents, "lib/jobs/queue.ts": 'import { isPendingJobState } from "./runner";\n' };
+    check(
+      "moved but the old module no longer re-exports -> its importers are reported",
+      keep(pending, pendingHits, pendingImports, dropped).join(" ") === "app/api/jobs/route.ts:1 app/api/jobs/route.ts:9 lib/jobs/watch.ts:6",
+      keep(pending, pendingHits, pendingImports, dropped).join(" ")
+    );
+
+    // A file-local function moved to its own module and imported back.
+    const latest = removed("latestReviewedRevision", "app/api/repos/[repoId]/review/route.ts");
+    const latestHits: GrepHit[] = [
+      { path: "app/api/repos/[repoId]/review/route.ts", line: 3, text: "  latestReviewedRevision," },
+      { path: "app/api/repos/[repoId]/review/route.ts", line: 40, text: "  const rev = latestReviewedRevision(findings);" },
+      { path: "lib/jobs/review-freshness.ts", line: 2, text: "export function latestReviewedRevision(findings: Finding[]) {" },
+    ];
+    const latestContents = {
+      "app/api/repos/[repoId]/review/route.ts": 'import {\n  isFresh,\n  latestReviewedRevision,\n} from "@/lib/jobs/review-freshness";\n',
+      "lib/jobs/review-freshness.ts": "\nexport function latestReviewedRevision(findings: Finding[]) {\n}\n",
+    };
+    check("file-local function moved and imported back (multi-line import) -> nothing", keep(latest, latestHits, {}, latestContents).length === 0);
+
+    // Moved to another module; callers' imports updated, call sites untouched (graph still has the old edge).
+    const provider = removed("getActiveAiProvider", "lib/neo4j/ai-provider.ts");
+    const providerHits: GrepHit[] = [
+      { path: "lib/db/ai-provider.ts", line: 5, text: "export async function getActiveAiProvider() {" },
+      { path: "lib/jobs/review.ts", line: 120, text: "  const ai = await getActiveAiProvider();" },
+      { path: "lib/jobs/stale.ts", line: 30, text: "  const ai = await getActiveAiProvider();" },
+    ];
+    const providerContents = {
+      "lib/neo4j/ai-provider.ts": null,
+      "lib/db/ai-provider.ts": "import x from 'y';\n\n\n\nexport async function getActiveAiProvider() {\n}\n",
+      "lib/jobs/review.ts": 'import { getActiveAiProvider } from "@/lib/db/ai-provider";\n',
+      "lib/jobs/stale.ts": 'import { getActiveAiProvider } from "../neo4j/ai-provider";\n',
+    };
+    const providerImports = { "lib/jobs/review.ts": ["lib/neo4j/ai-provider.ts"], "lib/jobs/stale.ts": ["lib/neo4j/ai-provider.ts"] };
+    const providerKept = keep(provider, providerHits, providerImports, providerContents);
+    check("moved with updated imports -> only the caller still importing the old path", providerKept.join(" ") === "lib/jobs/stale.ts:30", providerKept.join(" "));
+
+    // A function replaced by a local alias.
+    const status = removed("statusOf", "components/graph/PreviewPanel.tsx");
+    const statusHits: GrepHit[] = [
+      { path: "components/graph/PreviewPanel.tsx", line: 12, text: "const statusOf = symbolStatus;" },
+      { path: "components/graph/PreviewPanel.tsx", line: 80, text: "  const s = statusOf(symbol);" },
+    ];
+    check(
+      "function -> const alias -> nothing",
+      keep(status, statusHits, {}, { "components/graph/PreviewPanel.tsx": 'import { symbolStatus } from "./status";\n\nconst statusOf = symbolStatus;\n' }).length === 0
+    );
+
+    // A real removal is still reported, at its local and imported usages.
+    const legacy = removed("legacyHelper", "lib/util.ts");
+    const legacyHits: GrepHit[] = [
+      { path: "lib/util.ts", line: 20, text: "  return legacyHelper(a);" },
+      { path: "lib/b.ts", line: 4, text: "  legacyHelper(x);" },
+    ];
+    const legacyKept = keep(legacy, legacyHits, { "lib/b.ts": ["lib/util.ts"] }, {
+      "lib/util.ts": "export const A = 1;\n",
+      "lib/b.ts": 'import { legacyHelper } from "./util";\n',
+    });
+    check("genuine removal -> local and importing usages still reported", legacyKept.join(" ") === "lib/util.ts:20 lib/b.ts:4", legacyKept.join(" "));
+  }
+
+  console.log("\nmoved and changed:");
+  {
+    const oldPatch = ["@@ -1,4 +1,1 @@", " export const A = 1;", "-export function loadConfig(path: string) {", "-  return read(path);", "-}"].join("\n");
+    const oldHead = "export const A = 1;\n";
+    const newHead = "export function loadConfig(path: string, env: Env) {\n  return read(path, env);\n}\n";
+    const newPatch = "@@ -0,0 +1,3 @@\n+export function loadConfig(path: string, env: Env) {\n+  return read(path, env);\n+}";
+    const found = detectChangedContracts([
+      { path: "lib/old.ts", status: "modified", patch: oldPatch, headContent: oldHead },
+      { path: "lib/config/load.ts", status: "added", patch: newPatch, headContent: newHead },
+    ]);
+    const removedOld = found.find((c) => c.filePath === "lib/old.ts");
+    const moved = found.find((c) => c.filePath === "lib/config/load.ts");
+    check("removed from the old file is still reported as removed", removedOld?.change === "removed");
+    check(
+      "and the new file gets a changed contract with movedFrom",
+      moved?.change === "changed" && moved.movedFrom === "lib/old.ts" && moved.before.includes("(path: string)") && Boolean(moved.after?.includes("env: Env")),
+      JSON.stringify(moved)
+    );
+
+    const sameHead = "export function loadConfig(path: string) {\n  return read(path);\n}\n";
+    const unchanged = detectChangedContracts([
+      { path: "lib/old.ts", status: "modified", patch: oldPatch, headContent: oldHead },
+      { path: "lib/config/load.ts", status: "added", patch: "@@ -0,0 +1,3 @@\n+x", headContent: sameHead },
+    ]);
+    check("moved unchanged -> only the removal", unchanged.length === 1 && unchanged[0].change === "removed");
+
+    // A same-named declaration the diff didn't write (an unrelated old one) is not the moved one.
+    const other = detectChangedContracts([
+      { path: "lib/old.ts", status: "modified", patch: oldPatch, headContent: oldHead },
+      { path: "lib/other.ts", status: "modified", patch: "@@ -10,1 +10,1 @@\n-x\n+y", headContent: newHead },
+    ]);
+    check("pre-existing same-named declaration elsewhere -> not paired", other.length === 1 && other[0].change === "removed");
+
+    // Usages: the caller importing the new path is checked against the changed contract, not the removal.
+    const hits: GrepHit[] = [
+      { path: "lib/config/load.ts", line: 1, text: "export function loadConfig(path: string, env: Env) {" },
+      { path: "app/start.ts", line: 8, text: "  const cfg = loadConfig(file);" },
+      { path: "app/legacy.ts", line: 3, text: "  loadConfig(file);" },
+    ];
+    const contents = new Map<string, string | null>([
+      ["lib/old.ts", oldHead],
+      ["lib/config/load.ts", newHead],
+      ["app/start.ts", 'import { loadConfig } from "@/lib/config/load";\n'],
+      ["app/legacy.ts", 'import { loadConfig } from "../lib/old";\n'],
+    ]);
+    // The analysed graph predates the PR: both callers still point at the old file, the new one isn't in it.
+    const graph = new Map([["app/start.ts", new Set(["lib/old.ts"])], ["app/legacy.ts", new Set(["lib/old.ts"])]]);
+    const keptMoved = untouchedReachableUsages(moved!, hits, new Map(), graph, contents).map((h) => h.path);
+    const keptRemoved = untouchedReachableUsages(removedOld!, hits, new Map(), graph, contents).map((h) => h.path);
+    check("changed contract: the caller importing the new file is kept", keptMoved.join(" ") === "app/start.ts", keptMoved.join(" "));
+    check("removal: only the caller still importing the old file is kept", keptRemoved.join(" ") === "app/legacy.ts", keptRemoved.join(" "));
+  }
+
+  console.log("\nchanged contracts resolve through imports:");
+  {
+    const contract: ChangedContract = { name: "formatDate", filePath: "lib/report/format.ts", kind: "callable", change: "changed", before: "a", after: "b" };
+    const hits: GrepHit[] = [
+      { path: "lib/report/format.ts", line: 2, text: "export function formatDate(d: Date, tz: string) {" },
+      { path: "lib/dates.ts", line: 1, text: "export function formatDate(d: Date) {" },
+      { path: "lib/report/index.ts", line: 1, text: 'export { formatDate } from "./format";' },
+      { path: "app/a.ts", line: 5, text: "  formatDate(now);" }, // imports the unrelated lib/dates.ts
+      { path: "app/b.ts", line: 6, text: "  formatDate(now);" }, // through the report barrel
+      { path: "app/c.ts", line: 7, text: "  formatDate(now);" }, // a package — the graph decides
+      { path: "app/d.go", line: 4, text: "\tformatDate(now)" }, // no import parsing — the graph decides
+    ];
+    const contents = new Map<string, string | null>([
+      ["lib/report/format.ts", "\nexport function formatDate(d: Date, tz: string) {\n}\n"],
+      ["lib/dates.ts", "export function formatDate(d: Date) {\n}\n"],
+      ["lib/report/index.ts", 'export { formatDate } from "./format";\n'],
+      ["app/a.ts", 'import { formatDate } from "@/lib/dates";\n'],
+      ["app/b.ts", 'import { formatDate } from "@/lib/report";\n'],
+      ["app/c.ts", 'import { formatDate } from "date-utils";\n'],
+      ["app/d.go", "package app\n"],
+    ]);
+    // The graph links app/a.ts to lib/dates.ts, which mentions the name — it used to count as a provider.
+    const graph = new Map([
+      ["app/a.ts", new Set(["lib/dates.ts"])],
+      ["app/c.ts", new Set<string>()],
+      ["app/d.go", new Set(["lib/report/format.ts"])],
+    ]);
+    const kept = untouchedReachableUsages(contract, hits, new Map(), graph, contents).map((h) => h.path);
+    check(
+      "drops the caller of a same-named declaration elsewhere; keeps barrel callers without a graph edge; falls back to the graph",
+      kept.join(" ") === "app/b.ts app/d.go",
+      kept.join(" ")
+    );
+  }
+
+  console.log("\nfindings per caller file:");
+  {
+    const contract: ChangedContract = { name: "isPendingJobState", filePath: "lib/jobs/queue.ts", kind: "callable", change: "removed", before: "x" };
+    const other: ChangedContract = { ...contract, name: "loadConfig", filePath: "lib/config/load.ts", change: "changed", before: "loadConfig(a)", after: "loadConfig(a, b)", movedFrom: "lib/old.ts" };
+    const base = { prId: "p", model: "m", createdAt: "t", reviewedBaseSha: "b", reviewedHeadSha: "h", reviewedAt: "t" };
+    const findings = impactFindings(
+      [
+        { contract, path: "app/route.ts", line: 9, reason: "Still calls the removed helper." },
+        { contract, path: "app/route.ts", line: 1, reason: "Imports it from queue." },
+        { contract, path: "app/route.ts", line: 9, reason: "Duplicate." },
+        { contract, path: "app/other.ts", line: 4, reason: "Calls it." },
+        { contract: other, path: "app/route.ts", line: 20, reason: "Missing b." },
+      ],
+      new Map([["app/route.ts", "comp-1"]]),
+      base
+    );
+    check("one finding per contract per caller file", findings.length === 3, String(findings.length));
+    const route = findings.find((f) => f.filePath === "app/route.ts" && f.summary.includes("isPendingJobState"))!;
+    check("anchored at the first line, summary counts the rest", route.lineRange === "1" && route.summary.endsWith("(and 1 more place in this file)") && route.componentId === "comp-1", route.summary);
+    const asDto = (f: typeof route) => ({ category: "impact" as const, summary: f.summary, rationale: f.rationale });
+    check("UI still reads the symbol and the change", impactSymbol(asDto(route)) === "isPendingJobState" && impactChange(asDto(route)) === "was removed from lib/jobs/queue.ts", impactChange(asDto(route)) ?? "null");
+    check("UI reads one reason per line", impactReasons(asDto(route)).join(" | ") === "Imports it from queue. | Still calls the removed helper.");
+    const single = findings.find((f) => f.filePath === "app/other.ts")!;
+    check("single line keeps the old wording", single.rationale.includes("but this line was not edited") && impactReasons(asDto(single)).join() === "Calls it.");
+    const movedFinding = findings.find((f) => f.summary.includes("loadConfig"))!;
+    check("moved + changed is worded as a move", impactChange(asDto(movedFinding))?.startsWith("moved from lib/old.ts to lib/config/load.ts and changed from") === true, movedFinding.rationale);
   }
 
   console.log("\nimpact model call (fake chat):");

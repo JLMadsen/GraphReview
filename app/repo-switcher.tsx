@@ -16,7 +16,7 @@
 // No Popover/Command primitive exists in components/ui/ yet, and the
 // codebase's established convention when one is missing is a plain
 // implementation rather than pulling in a new dependency for it (see
-// DiffPanel's hand-rolled <select> and GraphCanvas's custom tooltip) — same
+// DiffPanel's hand-rolled <select>) — same
 // approach here: a `relative` trigger, an absolutely positioned panel, a
 // document click listener to close on an outside click.
 

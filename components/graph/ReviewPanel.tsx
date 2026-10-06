@@ -59,6 +59,7 @@ import {
   findingTag,
   formatLocation,
   impactChange,
+  impactReasons,
   impactSymbol,
   isImpactFinding,
   isImpactNote,
@@ -513,16 +514,20 @@ function ImpactGroupRow({
   const resolved = openOnes.length === 0;
   const files = new Set(findings.map((f) => f.filePath));
   const components = [...new Map(findings.filter((f) => f.componentId).map((f) => [f.componentId, f.componentName])).entries()];
-  const reasons = [...new Set(findings.map((f) => f.summary.replace(/^Not updated for the change to .+?:\s*/, "")))];
-  const lines = `${findings.length} line${findings.length === 1 ? "" : "s"}${files.size > 1 ? ` in ${files.size} files` : ""}`;
+  const reasons = [...new Set(findings.flatMap(impactReasons))];
+  const lines = `${files.size} file${files.size === 1 ? "" : "s"}`;
   const single = findings.length === 1 ? findings[0] : null;
   const where = single ? formatLocation(single) : `${files.size} file${files.size === 1 ? "" : "s"}`;
   const visual = ASSESSMENT_VISUALS.defect;
   const anyFixing = openOnes.some((f) => f.responses?.some((r) => r.kind === "fixing"));
   // "in lib/x.ts changed from `<whole old signature>` to `<whole new one>`"
   // is a paragraph; the title says what changed and the expansion shows how.
-  const signature = change ? /^in (\S+) changed from ([\s\S]+)$/.exec(change) : null;
-  const shortChange = signature ? `changed in ${signature[1]}` : (change ?? "changed");
+  const signature = change ? /^(?:in (\S+)|moved from \S+ to (\S+) and) changed from ([\s\S]+)$/.exec(change) : null;
+  const shortChange = signature
+    ? signature[1]
+      ? `changed in ${signature[1]}`
+      : `moved to ${signature[2]} and changed`
+    : (change ?? "changed");
   const rowRef = useRowKeyboard(keyboard, {
     toggle: () => setOpen((v) => !v),
     resolve: () => {
@@ -569,7 +574,7 @@ function ImpactGroupRow({
             className="border-transparent bg-transparent px-0"
             title="Usages the change did not update — usually in files the diff never touched"
           >
-            {resolved ? `${lines} — resolved` : `${lines} still use${findings.length === 1 ? "s" : ""} it`}
+            {resolved ? `${lines} — resolved` : `${lines} still use${files.size === 1 ? "s" : ""} it`}
           </Chip>
           {components.map(([id, name]) => (
             <Chip key={id} onClick={() => onSelectComponent(id)} title={`Open ${name} on the app map`}>
@@ -601,7 +606,7 @@ function ImpactGroupRow({
                 </button>
               ))}
             </div>
-            {signature && <SignatureChange text={signature[2]} />}
+            {signature && <SignatureChange text={signature[3]} />}
             {reasons.map((reason) => (
               <p key={reason} className="mt-1.5">
                 {reason}

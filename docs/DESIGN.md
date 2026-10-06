@@ -281,6 +281,8 @@ Decided with the user from mockups (a "workbench" with tables, and a "signal" gr
 
 **Notes pass (same day).** The verdict block in the left column is parked (docs/ideas.md); the map cards lost their findings bar (badge only) and their count line wraps only between whole chunks, the file count stepping aside when zoomed out; the Areas list shows glyph + count per bucket (✕ 7 ▲ 1 ✓ 3) instead of a bar; every verdict and check icon is the plain glyph (✕ ✓ ▲ –), no circle; checks show titles only, their result detail on hover.
 
+**The Repo view is gone (2026-10-06).** The Graph tab has two views, App map and PR. The Cytoscape component graph (§8's layouts, domain boxes, impact filters, review halos), its component panel, the Relabel and Merge suggestions controls that lived in its toolbar, the sample graph for unanalyzed repos (the App map's own empty state covers that) and the added-components AI call were removed, with the cytoscape packages. The labelling, merge and component-files backends are untouched and still run where they did; already-written descriptions and accepted merges stay in effect. Sections below that describe the Repo view are history. Details and how each could come back: docs/ideas.md.
+
 ### 6.5 The app map — the whole codebase as cards, at three levels (built 2026-09-26)
 
 **Problem.** The PR map (§6.4) turned out to be the most readable picture in the app, but it only exists for a diff. The Repo graph shows the whole codebase, yet at 50–150 module nodes with every import drawn it says *where* code is, not *what the app is made of* or *how the parts work together*.

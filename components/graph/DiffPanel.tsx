@@ -4,7 +4,7 @@
 // commits" — plus the prototype's "paste changed file paths" textarea. Lives
 // as a sidebar inside the Graph tab, not a separate screen. Calls
 // `POST /api/repos/[repoId]/diff-impact` and reports the result up to
-// GraphView, which feeds it to GraphCanvas for touched-node highlighting.
+// GraphView, which builds the PR map and starts the review from it.
 //
 // Once a check succeeds the picker folds away into a summary — what was
 // picked, its size, and whatever GraphView slots in under it (the
@@ -20,12 +20,9 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronsUpDown, History, LoaderCircle, TriangleAlert } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { cn } from "cn";
-import { evictClosedAddedCache, readAddedCache, writeAddedCache } from "./added-cache";
 import { Segmented } from "./Segmented";
 import { isShaLike, shortRef } from "./types";
 import type {
-  AddedComponentDTO,
-  AddedComponentsResponseDTO,
   DiffImpactRequestDTO,
   DiffImpactResponseDTO,
   ReviewTargetDTO,
@@ -133,7 +130,6 @@ interface PullRequestOption {
   number: number;
   title: string;
   state: "open" | "closed" | "merged";
-  /** Versions the added-components cache — see added-cache.ts. */
   updatedAt: string;
   // The rest of the summary the endpoint sends — the diff summary's meta lines.
   draft?: boolean;
@@ -239,15 +235,6 @@ export interface DiffPanelProps {
     target: ReviewTargetDTO | null,
     meta: DiffTargetMeta
   ) => void;
-  /**
-   * Reports the AI-labeled components for this check's `unmatchedFiles`
-   * (files the PR added with no stored component yet — see
-   * `AddedComponentDTO`). Fired with `[]` alongside every `onResult` call
-   * that isn't a successful PR-mode check, so the canvas's green highlight
-   * always matches the current result. PR mode only: refs/paths checks have
-   * no stable identity to cache these against, so they're never labeled.
-   */
-  onAddedComponents: (components: AddedComponentDTO[]) => void;
   /** Line totals of the checked diff, once known (from the PR map) — shown in the summary. */
   lineStats?: { additions: number; deletions: number } | null;
   /** The review's verdict, shown large under the diff's own lines once a check succeeds. */
@@ -266,7 +253,6 @@ export function DiffPanel({
   initialBaseRef,
   initialHeadRef,
   onResult,
-  onAddedComponents,
   lineStats,
   headline,
   children,
@@ -314,9 +300,6 @@ export function DiffPanel({
   const [checked, setChecked] = useState<DiffImpactRequestDTO | null>(null);
   /** The picker is open — always before the first result, and after "Change". */
   const [picking, setPicking] = useState(true);
-  function reportAddedComponents(components: AddedComponentDTO[]) {
-    onAddedComponents(components);
-  }
 
   const [branchesState, setBranchesState] = useState<ListFetchState<BranchOption>>({
     status: "idle",
@@ -376,15 +359,6 @@ export function DiffPanel({
       .then((json: PullRequestsApiResponse) => {
         if (cancelled) return;
         const loaded = json?.linked && !json.error && Array.isArray(json.pullRequests);
-        if (loaded) {
-          // A genuine, successful load — including a truly empty one — is
-          // when cache entries for PRs that dropped out of the recent list
-          // are safe to drop. Merged PRs stay cached: their `updatedAt`
-          // rarely moves again, so their labels stay valid. A failed or
-          // not-linked fetch never reaches here, so a network hiccup can't
-          // wipe a still-valid cache.
-          evictClosedAddedCache(repoId, new Set(json.pullRequests.map((pr) => pr.number)));
-        }
         if (loaded && json.pullRequests.length > 0) {
           setPrListState({ status: "loaded", items: json.pullRequests });
         } else {
@@ -492,50 +466,6 @@ export function DiffPanel({
     return NO_META;
   }
 
-  // Labels `unmatchedFiles` for a PR-mode check — cache-first (see
-  // added-cache.ts), only reaching the network on a miss. `prList` is read
-  // fresh from state at call time (not a dependency) since this is only
-  // ever invoked from inside `runCheck`, itself an event/effect callback.
-  async function loadAddedComponents(prNumber: number, unmatchedFiles: string[]) {
-    if (unmatchedFiles.length === 0) {
-      reportAddedComponents([]);
-      return;
-    }
-    const knownPr =
-      prListState.status === "loaded"
-        ? prListState.items.find((pr) => pr.number === prNumber)
-        : undefined;
-    if (knownPr) {
-      const cached = readAddedCache(repoId, prNumber, knownPr.updatedAt);
-      if (cached) {
-        reportAddedComponents(cached);
-        return;
-      }
-    }
-    try {
-      const res = await fetch(`/api/repos/${repoId}/diff-impact/added-components`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filePaths: unmatchedFiles }),
-      });
-      const json = (await res.json().catch(() => null)) as
-        | AddedComponentsResponseDTO
-        | { error: string }
-        | null;
-      if (!res.ok || !json || "error" in json) {
-        reportAddedComponents([]);
-        return;
-      }
-      reportAddedComponents(json.components);
-      // Only cacheable when the PR list is loaded — that's where `updatedAt`
-      // (the cache's version tag) comes from. Without it, this result is
-      // still shown, just re-labeled on the next check.
-      if (knownPr) writeAddedCache(repoId, prNumber, knownPr.updatedAt, json.components);
-    } catch {
-      reportAddedComponents([]);
-    }
-  }
-
   async function runCheck(body: DiffImpactRequestDTO) {
     setLoading(true);
     setError(null);
@@ -560,7 +490,6 @@ export function DiffPanel({
         setResult(null);
         setResultMeta(NO_META);
         onResult(null, null, NO_META);
-        reportAddedComponents([]);
         return;
       }
       const meta = metaFor(body);
@@ -573,17 +502,11 @@ export function DiffPanel({
       // 404/not-linked diff never fires an LLM job off the back of it —
       // and `meta.autoReview` keeps history from starting one per click.
       onResult(json, reviewTargetFor(body), meta);
-      if ("prNumber" in body) {
-        void loadAddedComponents(body.prNumber, json.unmatchedFiles);
-      } else {
-        reportAddedComponents([]);
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Request failed.");
       setResult(null);
       setResultMeta(NO_META);
       onResult(null, null, NO_META);
-      reportAddedComponents([]);
     } finally {
       setLoading(false);
     }
@@ -599,7 +522,6 @@ export function DiffPanel({
     setPickedCommits([]);
     setPicking(true);
     onResult(null, null, NO_META);
-    reportAddedComponents([]);
     try {
       const url = new URL(window.location.href);
       for (const key of ["pr", "base", "head"]) url.searchParams.delete(key);

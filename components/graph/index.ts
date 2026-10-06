@@ -1,12 +1,6 @@
 // Barrel for components/graph. See README.md.
-export { GraphCanvas, LAYOUT_OPTIONS } from "./GraphCanvas";
-export type { GraphCanvasHandle, GraphCanvasProps, LayoutMode } from "./GraphCanvas";
-
 export { DiffPanel } from "./DiffPanel";
 export type { DiffPanelProps } from "./DiffPanel";
-
-export { ComponentFilesPanel } from "./ComponentFilesPanel";
-export type { ComponentFilesPanelProps } from "./ComponentFilesPanel";
 
 export { GraphView } from "./GraphView";
 export type { GraphViewProps } from "./GraphView";
@@ -16,11 +10,6 @@ export type { ReviewPanelProps } from "./ReviewPanel";
 
 export { useReview } from "./useReview";
 export type { ReviewSnapshot, UseReviewResult } from "./useReview";
-
-export { LabelsControl } from "./LabelsControl";
-export type { LabelsControlProps } from "./LabelsControl";
-
-export { useLabels } from "./useLabels";
 
 export {
   formatLabelCost,
@@ -35,7 +24,6 @@ export type {
   LabelSnapshot,
   LabelStateDTO,
   LabelStatusResponseDTO,
-  UseLabelsResult,
 } from "./label-types";
 
 export {
@@ -51,8 +39,6 @@ export {
   worstAssessment,
 } from "./review-visuals";
 export type { AssessmentVisual, ReviewMarker, ReviewMarkerMap } from "./review-visuals";
-
-export { SAMPLE_NODES, SAMPLE_EDGES } from "./sample-data";
 
 export {
   reviewTargetKeyOf,

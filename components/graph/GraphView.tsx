@@ -1,51 +1,38 @@
 "use client";
 
-// Client-side orchestrator for the Graph tab: fetches the
-// component graph and optional repo context, hosts the diff-selection
-// sidebar, and feeds diff-impact results into GraphCanvas for touched-node
-// highlighting. Everything fetches client-side (rather than the server
-// page doing it) so a missing/not-yet-built `/api/repos/[repoId]` repo
-// endpoint or an unreadable database degrades gracefully in the browser
-// instead of failing the page render.
+// Client-side orchestrator for the Graph tab. Everything fetches
+// client-side (rather than the server page doing it) so a missing endpoint or
+// an unreadable database degrades gracefully in the browser instead of
+// failing the page render.
 //
-// It is also where the v2 AI review is hung off the diff flow:
-// `DiffPanel` reports *what* was checked alongside the impact result, that
-// target drives `useReview` (auto-run + polling), and the resulting findings
-// fan out to three places — marker halos on the canvas, the full dock below
-// it, and the selected component's own panel in the sidebar.
+// Two views share the canvas slot (DESIGN.md §6.4, §6.5):
+//   - **App map** (`AppMapView`) — the whole codebase as cards, at an
+//     architecture, feature or module level of detail, carrying the diff's
+//     changes and the review's verdicts. The default with no diff selected.
+//   - **PR** (`PrMapCanvas`) — only what the diff touches, as area cards.
+// Both stay mounted once opened, stacked in one grid cell with the inactive
+// one transparent and `inert`, so each keeps its layout and zoom. (Not
+// `visibility: hidden`: React Flow sets `visibility: visible` inline on its
+// nodes, which pokes straight through it.) Every module link — the
+// explainer's modules, chat chips, a finding's component, an area's "App
+// map" button — opens that module's card on the App map (`showInAppMap`).
+// The old Repo view (the Cytoscape component graph) was removed on
+// 2026-10-06; see docs/ideas.md for what went with it.
 //
-// Once a diff is selected the canvas slot has two views (DESIGN.md §6.4):
-// **Repo** (the whole component graph, `GraphCanvas`) and **PR** (the PR
-// map, `PrMapCanvas` — only what the diff touches, as cards). Both stay
-// mounted, stacked in one grid cell with the inactive one transparent and
-// `inert`, so Cytoscape keeps its real size, layout and zoom while the PR
-// view is up. (Not `visibility: hidden`: React Flow sets `visibility:
-// visible` inline on its nodes, which pokes straight through it.)
-// Selection is shared: a card selects its component. Every module link —
-// the explainer's modules and files, chat chips, a finding's component, the
-// component panel, a PR map card's button — opens that module's card on the
-// App map (`showInAppMap`).
-//
-// A third view, **App map** (DESIGN.md §6.5, `AppMapView`), is always
-// available and is the default with no diff selected: the whole codebase
-// drawn like the PR map, at an architecture, feature or module level of
-// detail, carrying the diff's changes and the review's verdicts on its cards.
-// It is mounted the first time it is opened and stays mounted after, like the
-// other two. Its explainer (`AppMapPanel`) sits in the right column above the
-// component panel, so a module picked from it opens right underneath; a
-// component selected anywhere else rings the cards that hold it.
+// The v2 AI review hangs off the diff flow: `DiffPanel` reports *what* was
+// checked alongside the impact result, that target drives `useReview`
+// (auto-run + polling), and the findings fan out to the cards, the dock
+// under the map and the area inspector.
 //
 // Columns, left to right, edge to edge (DESIGN.md §6.6, §6.7): the diff
-// (a picker, then a summary with the checklist folded into it) · the graph
+// (a picker, then a summary with the checklist folded into it) · the map
 // with the AI review under it · the right column, flush against the right
-// edge and sticky: the inspector for whatever is selected on top, the chat
-// below — about the diff when one is selected, about the repo otherwise.
+// edge: the inspector for whatever is selected on top, the chat below —
+// about the diff when one is selected, about the repo otherwise.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FlaskConical, LayoutGrid, LoaderCircle } from "lucide-react";
 import { cn } from "cn";
-import { GraphCanvas, type GraphCanvasHandle } from "./GraphCanvas";
 import { FileDiffModal } from "./FileDiffModal";
 import { PrMapCanvas } from "./PrMapCanvas";
 import { PrAreaList, PrAreaPanel } from "./PrAreaPanel";
@@ -57,21 +44,16 @@ import { AppMapPanel, type AppMapSelection } from "./AppMapPanel";
 import { useAppMap, useAppMapJob } from "./useAppMap";
 import { isAppMapLevel, type AppMapLevel } from "./app-map-types";
 import { PanelResizeHandle, usePanelWidth } from "./PanelResizeHandle";
-import { ComponentFilesPanel } from "./ComponentFilesPanel";
 import { ChatPanel } from "./ChatPanel";
 import { ChecklistPanel } from "./ChecklistPanel";
 import { LooksDifferentPanel } from "./LooksDifferentPanel";
 import { usePreviewScan } from "./usePreviewScan";
 import { useChecklist } from "./useChecklist";
 import { usePrChat } from "./usePrChat";
-import { MergesControl, MergeSuggestionsPanel } from "./MergeSuggestions";
 import { DiffPanel, type DiffTargetMeta } from "./DiffPanel";
 import { ReviewPanel } from "./ReviewPanel";
 import { Segmented } from "./Segmented";
-import { buildReviewMarkers, effectiveAssessment, worstAssessment } from "./review-visuals";
-import { SAMPLE_EDGES, SAMPLE_NODES } from "./sample-data";
-import { useLabels } from "./useLabels";
-import { useMerges } from "./useMerges";
+import { effectiveAssessment, worstAssessment } from "./review-visuals";
 import { useReview } from "./useReview";
 import {
   DEFAULT_REVIEW_EFFORT,
@@ -79,17 +61,15 @@ import {
   type ReviewEffort,
 } from "./types";
 import type {
-  AddedComponentDTO,
   DiffImpactResponseDTO,
-  GraphNodeDTO,
   GraphResponseDTO,
   Assessment,
   ReviewTargetDTO,
 } from "./types";
 
-type GraphViewMode = "repo" | "app" | "pr";
+type GraphViewMode = "app" | "pr";
 
-/** The two views share one grid cell; the inactive one stays laid out but can't be seen, clicked or focused. */
+/** The views share one grid cell; the inactive one stays laid out but can't be seen, clicked or focused. */
 function viewLayerClass(active: boolean): string {
   return cn("col-start-1 row-start-1 min-w-0", active ? "relative z-10" : "pointer-events-none opacity-0");
 }
@@ -124,22 +104,15 @@ export function GraphView({
   initialHeadRef,
 }: GraphViewProps) {
   const [repo, setRepo] = useState<RepoContext | null>(null);
+  /** The component graph — only its node names are used now (the dock and inspector label components with them). */
   const [graph, setGraph] = useState<GraphResponseDTO | null>(null);
-  const [usingSample, setUsingSample] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [diffResult, setDiffResult] = useState<DiffImpactResponseDTO | null>(null);
-  /** AI-labeled components for the current PR's `unmatchedFiles` — see DiffPanel's `onAddedComponents`. Ephemeral: never part of `graph`, cleared the moment the check changes. */
-  const [addedComponents, setAddedComponents] = useState<AddedComponentDTO[]>([]);
   /** What the current impact result was a check *of* — `null` for "paste paths" (no diff to review) and before any check. Drives the whole review flow below. */
   const [reviewTarget, setReviewTarget] = useState<ReviewTargetDTO | null>(null);
-  /** The component whose node was clicked in the canvas — drives both the canvas's neighbourhood highlight and the file panel below. */
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-
   /**
-   * Bumped to re-fetch the component graph without remounting anything —
-   * currently by the AI labeling run finishing, which adds the domain-tier
-   * nodes and the `parentId`s that turn them into compound boxes.
-   * Never read by the effect that sets it — it only exists to retrigger the fetch.
+   * Bumped to re-fetch the component graph and the App map without
+   * remounting anything — when an analysis finishes. Never read by the
+   * effects it retriggers.
    */
   const [graphNonce, setGraphNonce] = useState(0);
 
@@ -150,14 +123,6 @@ export function GraphView({
   const checklist = useChecklist(repoId, reviewTarget, review.state, autoReview);
   const chat = usePrChat(repoId, reviewTarget);
   const previewScan = usePreviewScan(repoId, reviewTarget);
-  const handleLabelsCompleted = useCallback(() => setGraphNonce((n) => n + 1), []);
-  const labels = useLabels(repoId, handleLabelsCompleted);
-  // Feature merges (DESIGN.md §6.3). Every accept/unmerge/rename changes the
-  // module tier server-side, so it refetches the graph the same way a
-  // finished labeling run does; the suggestions list follows `graphNonce`.
-  const merges = useMerges(repoId, graphNonce, handleLabelsCompleted);
-  const [mergesOpen, setMergesOpen] = useState(false);
-  const [previewIds, setPreviewIds] = useState<string[] | null>(null);
   /** The view last chosen — remembered per browser, `pr` by default. With no diff selected, `pr` falls back to the App map. */
   const [preferredView, setPreferredViewState] = useState<GraphViewMode>("pr");
   const [appLevel, setAppLevelState] = useState<AppMapLevel>("architecture");
@@ -166,7 +131,8 @@ export function GraphView({
   useEffect(() => {
     try {
       const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
-      if (stored === "repo" || stored === "pr" || stored === "app") setPreferredViewState(stored);
+      // A stored "repo" (the removed Repo view) falls back to the default.
+      if (stored === "pr" || stored === "app") setPreferredViewState(stored);
       const level = window.localStorage.getItem(APP_LEVEL_STORAGE_KEY);
       if (isAppMapLevel(level)) setAppLevelState(level);
       if (window.localStorage.getItem(REVIEW_EXPANDED_STORAGE_KEY) === "1") setReviewExpandedState(true);
@@ -194,13 +160,11 @@ export function GraphView({
       return !expanded;
     });
   }, []);
-  const canvasRef = useRef<GraphCanvasHandle>(null);
-  /** The file open in the diff modal, and optionally the before/after component to start on. */
   // Every file in every list opens the one file viewer (FileDiffModal) —
   // with a diff selected, a changed file shows its diff and the rest show
   // whole; with none, every file shows as analyzed. Lists about the change
   // (the dock's Files tab, an area's most-changed files) open on the diff;
-  // the rest (a module's files, the explainer, chat, "Not on the map") on the
+  // the rest (the explainer's files, chat) on the
   // whole file, its changed lines marked.
   const [openFile, setOpenFile] = useState<{ path: string; component?: string; tab?: "diff" | "file" } | null>(null);
   const openFilePath = useCallback((path: string) => setOpenFile({ path }), []);
@@ -232,20 +196,13 @@ export function GraphView({
     };
   }, []);
 
-  // A selection is only meaningful against the graph it was made in — but a
-  // *re-fetch* of the same repo's graph (a finished labeling run) keeps the
-  // same module ids, so it deliberately doesn't clear the selection.
-  useEffect(() => {
-    setSelectedNodeId(null);
-  }, [repoId]);
-
   // Repo context: the header/defaults, and the analysis status. While an
   // analysis is running (`analyzing`, or `stale` = refreshing an existing
   // graph) the status is re-read every few seconds — a cheap read of the job
   // queue, no git call — and the moment it finishes (or the analyzed commit
   // changes) the graph and the App map are fetched again and the server-
   // rendered header is refreshed. Without this the tab kept showing the old
-  // graph — or the sample one — until a manual reload. Fails silently: the
+  // map until a manual reload. Fails silently: the
   // endpoint 404s for an unknown repo and errors without a readable database.
   const router = useRouter();
   useEffect(() => {
@@ -281,36 +238,19 @@ export function GraphView({
     };
   }, [repoId, router]);
 
+  // The component graph, for component names. An unanalyzed repo or an
+  // unreadable database just leaves names unresolved (ids show instead) —
+  // the App map has its own "not analyzed yet" state.
   useEffect(() => {
     let cancelled = false;
-
     fetch(`/api/repos/${repoId}/graph`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`Graph request failed (${res.status}).`);
-        return (await res.json()) as GraphResponseDTO;
-      })
+      .then(async (res) => (res.ok ? ((await res.json()) as GraphResponseDTO) : null))
       .then((data) => {
-        if (cancelled) return;
-        if (data.nodes.length === 0) {
-          // Genuinely empty (not-yet-analyzed repo) — fall back to a
-          // sample graph so the Graph tab is never a dead end.
-          setGraph({ nodes: SAMPLE_NODES, edges: SAMPLE_EDGES });
-          setUsingSample(true);
-        } else {
-          setGraph(data);
-          setUsingSample(false);
-          setLoadError(null);
-        }
+        if (!cancelled) setGraph(data);
       })
-      .catch((err) => {
-        if (cancelled) return;
-        // Database unreadable / repo not analyzed yet — show sample data rather
-        // than a dead page, but surface the real error too.
-        setGraph({ nodes: SAMPLE_NODES, edges: SAMPLE_EDGES });
-        setUsingSample(true);
-        setLoadError(err instanceof Error ? err.message : "Failed to load graph.");
+      .catch(() => {
+        if (!cancelled) setGraph(null);
       });
-
     return () => {
       cancelled = true;
     };
@@ -327,76 +267,6 @@ export function GraphView({
     [setPreferredView]
   );
 
-  const handleAddedComponents = useCallback((components: AddedComponentDTO[]) => {
-    setAddedComponents(components);
-  }, []);
-
-  // Synthetic, unpersisted nodes for the current PR's added files (green on
-  // the canvas) — merged into the payload passed to GraphCanvas rather than
-  // into `graph` itself, so a graph re-fetch (e.g. after labeling finishes)
-  // can never accidentally drop or duplicate them.
-  const addedNodes = useMemo<GraphNodeDTO[]>(
-    () =>
-      addedComponents.map((c) => ({
-        id: c.id,
-        name: c.name,
-        tier: "module",
-        fileCount: c.fileCount,
-        description: c.description,
-      })),
-    [addedComponents]
-  );
-  const addedComponentIds = useMemo(
-    () => addedComponents.map((c) => c.id),
-    [addedComponents]
-  );
-  const addedFilesById = useMemo(() => {
-    const map = new Map<string, string[]>();
-    for (const c of addedComponents) map.set(c.id, c.filePaths);
-    return map;
-  }, [addedComponents]);
-  const canvasNodes = useMemo(
-    () => (graph ? [...graph.nodes, ...addedNodes] : []),
-    [graph, addedNodes]
-  );
-
-  const handleSelectNode = useCallback((nodeId: string | null) => {
-    setSelectedNodeId(nodeId);
-  }, []);
-
-  const clearSelection = useCallback(() => setSelectedNodeId(null), []);
-
-  // The graph payload already carries the selected component's name/tier/
-  // count, so the panel's header renders instantly and only the file list
-  // waits on the network.
-  const selectedNode = useMemo(
-    () =>
-      selectedNodeId
-        ? (graph?.nodes.find((n) => n.id === selectedNodeId) ??
-          addedNodes.find((n) => n.id === selectedNodeId) ??
-          null)
-        : null,
-    [graph, addedNodes, selectedNodeId]
-  );
-
-  // One marker per component (worst finding wins) for the canvas's third
-  // highlight layer. Memoized because `GraphCanvas` uses it as an effect
-  // dependency and this component re-renders on every poll tick.
-  const reviewMarkers = useMemo(
-    () => buildReviewMarkers(review.findings),
-    [review.findings]
-  );
-
-  const selectedMerged = useMemo(
-    () => (selectedNodeId ? merges.data?.merged.find((m) => m.id === selectedNodeId) : undefined),
-    [merges.data, selectedNodeId]
-  );
-  const mergedBusy =
-    merges.busy && selectedNodeId && merges.busy.id === selectedNodeId
-      ? merges.busy.action === "unmerge" || merges.busy.action === "rename" || merges.busy.action === "naming"
-        ? merges.busy.action
-        : null
-      : null;
 
   // The PR map follows the diff selection: the review target when there is
   // one, the pasted paths otherwise. Keyed on the review's state so the
@@ -434,12 +304,8 @@ export function GraphView({
     }
     return { additions, deletions };
   }, [prMap.map]);
-  // Sample data has no app map (nothing is analyzed), so it always shows Repo.
-  const view: GraphViewMode = usingSample
-    ? "repo"
-    : preferredView === "pr" && !prRequest
-      ? "app"
-      : preferredView;
+  /** `pr` with no diff selected falls back to the App map. */
+  const view: GraphViewMode = preferredView === "pr" && !prRequest ? "app" : preferredView;
 
   // --- App map (DESIGN.md §6.5) ---------------------------------------------
   /** Mounted (and fetching) from the first time the view is opened. */
@@ -468,17 +334,15 @@ export function GraphView({
     [diffResult]
   );
   /**
-   * Where every module link goes (a module or file in the explainer, a chat
-   * chip, a finding's component, the component panel, a PR map card): the
-   * App map at module level with that module's card selected, so its
-   * explainer opens. The card, not the old component panel, is the one place
-   * a module is explained.
+   * Where every module link goes (a module in the explainer, a chat chip, a
+   * finding's component, an area's "App map" button): the App map at module
+   * level with that module's card selected, so its explainer opens. The card
+   * is the one place a module is explained.
    */
   const showInAppMap = useCallback(
     (componentId: string) => {
       setAppLevel("modules");
       setAppSelection({ kind: "card", id: `mod:${componentId}` });
-      setSelectedNodeId(null);
       setPreferredView("app");
     },
     [setAppLevel, setPreferredView]
@@ -486,7 +350,6 @@ export function GraphView({
   const selectComponentLink = useCallback(
     (componentId: string | null) => {
       if (componentId) showInAppMap(componentId);
-      else setSelectedNodeId(null);
     },
     [showInAppMap]
   );
@@ -514,30 +377,19 @@ export function GraphView({
     return map;
   }, [review.findings]);
 
-  const selectedFindings = useMemo(
-    () =>
-      selectedNodeId
-        ? review.findings.filter((f) => f.componentId === selectedNodeId)
-        : [],
-    [review.findings, selectedNodeId]
-  );
-
-  /** On the PR view the inspector explains the selected area (or lists them all); a component panel would only repeat it. */
+  /** On the PR view the inspector explains the selected area, or lists them all. */
   const showPrPanel = view === "pr" && prMap.map !== null;
   const selectedPrArea = prArea ? prAreas.areas.get(prArea) : undefined;
-  const showComponentPanel = Boolean(selectedNode) && !showPrPanel;
-  const hasInspector = Boolean(showComponentPanel || (mergesOpen && !usingSample) || showAppPanel || showPrPanel);
-  const chatFocus = showPrPanel
-    ? prAreaComponent
+  const hasInspector = showAppPanel || showPrPanel;
+  const chatFocus =
+    showPrPanel && prAreaComponent
       ? { id: prAreaComponent, name: componentNameById(prAreaComponent) ?? prAreaComponent }
-      : null
-    : selectedNode
-      ? { id: selectedNode.id, name: selectedNode.name }
       : null;
 
   // The view switch leads each view's own toolbar (see view-chrome.ts), so
   // the switch and the view's controls are one bar rather than two rows.
-  const viewSwitch = usingSample ? undefined : (
+  // With no diff there is only the App map, so there is nothing to switch.
+  const viewSwitch = prRequest ? (
     <>
     <Segmented
       label="Graph view"
@@ -549,14 +401,13 @@ export function GraphView({
           label: "App map",
           title: "The whole app as cards — by architecture, feature or module, with explanations",
         },
-        { value: "repo" as const, label: "Repo", title: "The whole component graph" },
-        ...(prRequest ? [{ value: "pr" as const, label: "PR", title: "Only what this diff touches" }] : []),
+        { value: "pr" as const, label: "PR", title: "Only what this diff touches" },
       ]}
     />
     {/* Sets the view switch apart from the view's own controls after it. */}
     <span className="h-5 w-px shrink-0 bg-border" aria-hidden />
     </>
-  );
+  ) : undefined;
 
   return (
     // `data-wide-shell` opts this tab out of the repo shell's `max-w-6xl`
@@ -576,7 +427,6 @@ export function GraphView({
             initialBaseRef={initialBaseRef}
             initialHeadRef={initialHeadRef}
             onResult={handleDiffResult}
-            onAddedComponents={handleAddedComponents}
             lineStats={lineStats}
           >
             {reviewTarget && <ChecklistPanel repoId={repoId} checklist={checklist} />}
@@ -591,16 +441,7 @@ export function GraphView({
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col lg:h-full lg:overflow-hidden">
-        {usingSample && (
-          <p className="flex items-start gap-2 border-b border-border px-4 py-2 text-xs text-warning">
-            <FlaskConical className="mt-px size-3.5 shrink-0" aria-hidden />
-            <span>
-              <span className="font-medium">Showing sample data</span> — this repo has no analyzed component graph yet
-              {loadError ? ` (${loadError})` : ""}.
-            </span>
-          </p>
-        )}
-        {/* The three views share this one fixed-height cell; each is a flex
+        {/* The two views share this one fixed-height cell; each is a flex
             column whose canvas takes whatever its own toolbar leaves. With a
             review under it the map section gets half the tab (the dock has a
             tab bar and column headers to fit), without one all of it. The
@@ -618,7 +459,7 @@ export function GraphView({
           }}
           inert={mapFolded}
         >
-        {appMounted && !usingSample && (
+        {appMounted && (
           <div className={viewLayerClass(view === "app")} inert={view !== "app"}>
             <AppMapView
               className="flex h-full flex-col"
@@ -633,7 +474,7 @@ export function GraphView({
               onSelect={setAppSelection}
               changedFiles={changedFiles}
               findings={review.findings}
-              focusModuleId={selectedNodeId}
+              focusModuleId={prAreaComponent}
             />
           </div>
         )}
@@ -648,53 +489,11 @@ export function GraphView({
             areas={prAreas}
             selectedCardId={prArea}
             onSelectCard={selectPrArea}
-            selectedComponentId={prAreaComponent ?? selectedNodeId}
+            selectedComponentId={prAreaComponent}
             reviewPending={review.state === "queued" || review.state === "running"}
           />
           </div>
         )}
-        <div className={viewLayerClass(view === "repo")} inert={view !== "repo"}>
-        {graph ? (
-          <GraphCanvas
-            className="flex h-full flex-col"
-            leading={viewSwitch}
-            ref={canvasRef}
-            nodes={canvasNodes}
-            edges={graph.edges}
-            touchedComponentIds={diffResult?.touchedComponentIds}
-            addedComponentIds={addedComponentIds}
-            selectedNodeId={selectedNodeId}
-            onSelectNode={handleSelectNode}
-            reviewMarkers={reviewMarkers}
-            // No labeling control over sample data: those component ids
-            // don't exist in the database, so there is nothing to label.
-            labels={usingSample ? undefined : labels}
-            previewComponentIds={previewIds ?? undefined}
-            toolbarExtra={
-              usingSample ? undefined : (
-                <MergesControl
-                  merges={merges}
-                  open={mergesOpen}
-                  onToggle={() => setMergesOpen((v) => !v)}
-                  onRegroup={
-                    labels.aiConfigured && labels.domains > 0
-                      ? () => labels.generate({ force: false })
-                      : undefined
-                  }
-                />
-              )
-            }
-          />
-        ) : (
-          <div className="bp-grid flex h-full min-h-96 flex-col items-center justify-center gap-3">
-            <LoaderCircle
-              className="size-5 animate-spin text-muted-foreground"
-              aria-hidden
-            />
-            <p className="text-sm text-muted-foreground">Loading graph…</p>
-          </div>
-        )}
-        </div>
         </div>
 
         <FileDiffModal
@@ -746,21 +545,13 @@ export function GraphView({
           inspector (whatever is selected) on top, the chat under it. It is
           always there — with no diff selected the chat answers questions
           about the repo itself. */}
-      {(!usingSample || hasInspector) && (
-        <aside
+      <aside
           className="relative flex w-full shrink-0 flex-col border-t border-border bg-card lg:h-full lg:w-(--panel-w) lg:border-t-0 lg:border-l"
           style={{ "--panel-w": `${chatWidth}px` } as React.CSSProperties}
         >
           <PanelResizeHandle edge="left" width={chatWidth} onResize={setChatWidth} label="Resize right column" />
           {hasInspector && (
-            // `key` on the component panel forces a fresh fetch/state when
-            // the selection moves to another node.
-            <div
-              className={cn(
-                "min-h-0 shrink-0 space-y-3 overflow-y-auto",
-                usingSample ? "flex-1" : "max-h-[58%] border-b border-border"
-              )}
-            >
+            <div className="max-h-[58%] min-h-0 shrink-0 space-y-3 overflow-y-auto border-b border-border">
               {showAppPanel && (
                 <div className="px-3 py-3">
                   <AppMapPanel
@@ -773,17 +564,6 @@ export function GraphView({
                     onSelectFile={openFileView}
                   />
                 </div>
-              )}
-              {mergesOpen && !usingSample && (
-                <MergeSuggestionsPanel
-                  merges={merges}
-                  onPreview={setPreviewIds}
-                  onAccepted={(id) => setSelectedNodeId(id)}
-                  onClose={() => {
-                    setMergesOpen(false);
-                    setPreviewIds(null);
-                  }}
-                />
               )}
               {showPrPanel &&
                 (selectedPrArea ? (
@@ -800,54 +580,9 @@ export function GraphView({
                 ) : (
                   <PrAreaList areas={prAreas} onSelect={selectPrArea} />
                 ))}
-              {showComponentPanel && selectedNode && (
-                <ComponentFilesPanel
-                  key={selectedNode.id}
-                  repoId={repoId}
-                  componentId={selectedNode.id}
-                  componentName={selectedNode.name}
-                  tier={selectedNode.tier}
-                  fileCount={selectedNode.fileCount}
-                  description={selectedNode.description}
-                  sampleData={usingSample}
-                  localFiles={addedFilesById.get(selectedNode.id)}
-                  findings={selectedFindings}
-                  onOpenFile={usingSample ? undefined : openFileView}
-                  headerAction={
-                    !usingSample ? (
-                      <button
-                        type="button"
-                        onClick={() => showInAppMap(selectedNode.id)}
-                        className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                        title="Show this module's card on the app map"
-                      >
-                        <LayoutGrid className="size-3.5" /> App map
-                      </button>
-                    ) : undefined
-                  }
-                  merged={
-                    selectedMerged
-                      ? {
-                          pathPatterns: selectedMerged.pathPatterns,
-                          aiConfigured: merges.data?.aiConfigured ?? false,
-                          busy: mergedBusy,
-                          onRename: (name) => merges.rename(selectedMerged.id, name),
-                          onNameWithAi: () => void merges.nameWithAi(selectedMerged.id),
-                          onUnmerge: async () => {
-                            const ok = await merges.unmerge(selectedMerged.id);
-                            if (ok) setSelectedNodeId(null);
-                            return ok;
-                          },
-                        }
-                      : undefined
-                  }
-                  onClear={clearSelection}
-                />
-              )}
             </div>
           )}
-          {!usingSample && (
-            <div className="min-h-0 flex-1">
+          <div className="min-h-0 flex-1">
               <ChatPanel
                 chat={chat}
                 targetLabel={reviewTarget ? reviewTargetLabel(reviewTarget) : null}
@@ -858,10 +593,8 @@ export function GraphView({
                 onSelectComponent={showInAppMap}
                 onOpenFile={openFileView}
               />
-            </div>
-          )}
-        </aside>
-      )}
+          </div>
+      </aside>
     </div>
   );
 }

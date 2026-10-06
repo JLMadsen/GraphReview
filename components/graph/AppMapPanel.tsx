@@ -5,7 +5,7 @@
 // "explains itself": the AI explanation, the files to open first and why,
 // which layers the card spans, every connection in and out with its verb and
 // what flows along it, and the modules behind the card. Everything is a link
-// back into the map (another card) or the Repo view (a module).
+// back into the map (another card or a module's card).
 
 // The cards themselves are compact (name, description, counts), so this is
 // also where a card's files live — review-flagged and changed ones first,

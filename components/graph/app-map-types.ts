@@ -94,7 +94,7 @@ export interface AppMapNodeDTO {
   files: string[];
   /** Each file's layer — only present when the card spans more than one layer. */
   fileLayers?: Record<string, AppLayerId>;
-  /** Modules contributing files, most files first — what selecting the card selects on the Repo view. */
+  /** Modules contributing files, most files first. */
   modules: AppMapModuleDTO[];
 }
 
