@@ -6,7 +6,9 @@
 // re-analysis does — one code path owns who owns which file.
 //
 // Kept out of lib/jobs' barrel like ./analyze.ts: it pulls in the folder
-// clustering from lib/analysis. Routes import it directly.
+// clustering from lib/analysis. Routes import it directly — though nothing
+// does at the moment: the merges routes and their UI went with the Repo view
+// on 2026-10-06 (docs/ideas.md). Merges already accepted stay in effect.
 
 import { randomUUID } from "node:crypto";
 import {

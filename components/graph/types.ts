@@ -1,19 +1,17 @@
 // Shared DTO shapes for the Graph tab. These are the
-// contract between the two API routes this package owns
-// (app/api/repos/[repoId]/graph, app/api/repos/[repoId]/diff-impact) and the
-// Cytoscape UI in this directory. Intentionally colocated here rather than
-// in types/ — see components/graph/README.md's scope note; promote later if
-// another layer needs them.
+// contract between the API routes it reads (app/api/repos/[repoId]/graph,
+// …/diff-impact, …/review) and the UI in this directory. Intentionally
+// colocated here rather than in types/ — see components/graph/README.md's
+// scope note; promote later if another layer needs them.
 
 /** Mirrors `lib/db`'s `ComponentTier`, duplicated here (not imported) so
  * this file stays framework/DB-agnostic and safe to import from client
  * components — `lib/db` is server-only. */
 export type GraphNodeTier = "domain" | "module" | "file";
 
-/** One component, flattened for the graph UI. `parentId` is only
- * present when a `CHILD_OF` edge exists — v1 rarely populates the domain
- * tier, so most nodes have no parent and the UI must
- * render a flat graph in that case rather than assuming a 3-tier hierarchy. */
+/** One component, flattened for the graph UI (which reads it for component
+ * names). `parentId` is only present when a `CHILD_OF` edge exists — only
+ * the AI labeling job writes the domain tier, so most nodes have no parent. */
 export interface GraphNodeDTO {
   id: string;
   name: string;
@@ -38,23 +36,6 @@ export interface GraphResponseDTO {
   edges: GraphEdgeDTO[];
 }
 
-/** One file belonging to a component, as returned by
- * `GET /api/repos/[repoId]/components/[componentId]/files`. A trimmed
- * `FileRecord` — the graph UI only needs identity, path, language and size. */
-export interface ComponentFileDTO {
-  id: string;
-  path: string;
-  language: string;
-  loc: number;
-}
-
-/** Response shape for `GET /api/repos/[repoId]/components/[componentId]/files`. `files` is sorted by `path` ascending. */
-export interface ComponentFilesResponseDTO {
-  componentId: string;
-  componentName: string;
-  files: ComponentFileDTO[];
-}
-
 /** Request body accepted by `POST /api/repos/[repoId]/diff-impact` — exactly one of the three shapes. */
 export type DiffImpactRequestDTO =
   | { prNumber: number }
@@ -69,28 +50,6 @@ export interface DiffImpactResponseDTO {
   touchedComponentIds: string[];
   /** Changed paths with no matching stored file (non-code files, or the repo needs re-analysis). */
   unmatchedFiles: string[];
-}
-
-/**
- * One AI-labeled, folder-clustered group of `unmatchedFiles` — files a PR
- * added that have no stored file in the persisted graph yet (see
- * lib/jobs/added-components.ts). Never written to the database: synthesized fresh
- * on request and scoped to one PR view, which is why it travels as its own
- * DTO instead of joining `GraphNodeDTO`. `description` is absent when the AI
- * provider isn't configured or the labeling call failed — the component
- * (and its green node) still renders either way.
- */
-export interface AddedComponentDTO {
-  id: string;
-  name: string;
-  filePaths: string[];
-  fileCount: number;
-  description?: string;
-}
-
-/** Response shape for `POST /api/repos/[repoId]/diff-impact/added-components`. */
-export interface AddedComponentsResponseDTO {
-  components: AddedComponentDTO[];
 }
 
 /**
@@ -276,8 +235,12 @@ export interface ReviewStatusResponseDTO {
   targetKey: string;
   state: ReviewStateDTO;
   progress?: ReviewProgressDTO;
-  /** The failed job's reason. */
+  /** The failed job's reason — absent for a cancelled one. */
   error?: string;
+  /** `failed` only: the user cancelled the run. Findings of the components that finished before it stopped are kept. */
+  cancelled?: boolean;
+  /** `running` only: a cancel was requested and the worker hasn't stopped yet. */
+  cancelRequested?: boolean;
   findings: FindingDTO[];
   /** Present only for a completed review whose findings carry the shas they were made from. */
   freshness?: ReviewFreshnessDTO;
@@ -337,4 +300,17 @@ export function isShaLike(ref: string): boolean {
 /** A commit sha shortened to 7 characters; branch names unchanged. */
 export function shortRef(ref: string): string {
   return isShaLike(ref) ? ref.slice(0, 7) : ref;
+}
+
+/** `"just now"`, `"12 min ago"`, `"3 h ago"`, `"2 days ago"` — coarse on purpose; empty for a missing/invalid time. */
+export function formatAgo(iso: string | undefined): string {
+  if (!iso) return "";
+  const ms = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} days ago`;
 }

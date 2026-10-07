@@ -1,5 +1,5 @@
 # The npx entry point runs on macOS/Linux too: a CRLF shebang breaks it
 # (the kernel looks for an interpreter called "node\r").
 bin/* text eol=lf
-# Release scripts run on Linux runners.
+# CI and release scripts run on Linux runners.
 .github/scripts/* text eol=lf

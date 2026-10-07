@@ -23,7 +23,7 @@ grouped into components, the components are wired together by the imports and
 calls between them, and you can see at a glance which parts of the app a
 change actually touches and which ones depend on it.
 
-![A pull request laid out on GraphReview's component graph, with the AI review alongside](docs/images/example3.png)
+![A change laid out as area cards in GraphReview's PR view, with the AI review's findings underneath](docs/images/example3.png)
 
 It runs on your machine, against GitHub pull requests, GitLab merge requests
 or plain branches in a local checkout. No account, no cloud, nothing to host.

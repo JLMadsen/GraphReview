@@ -25,6 +25,22 @@ GRAPHREVIEW_DIST_DIR=.next-check npx next build
 `npm pack` builds into `.next/` (prepack), so only pack when the user's copy
 isn't running from here, and tell them to restart it afterwards.
 
+## Checks
+
+```bash
+npm run lint
+npm run typecheck   # tsc --noEmit
+npm test            # every lib/**/smoke-test*.ts, stops at the first failure
+```
+
+`npm test` (.github/scripts/smoke-tests.mjs) finds the smoke tests itself, so
+a new `smoke-test*.ts` under `lib/` is picked up without registering it, and
+runs each with its own temporary `GRAPHREVIEW_HOME`, so it never touches a
+real data folder. `npm test -- impact jobs` runs only those whose path
+contains one of the words; a single one also runs with `npx tsx <file>`.
+.github/workflows/check.yml runs all three plus a `.next-check` build on
+pushes to Master and on pull requests.
+
 ## Packaging
 
 The app ships as an npm package run with `npx graphreview`
@@ -37,9 +53,11 @@ shebang breaks it on macOS/Linux) — `git checkout -- bin` restores them.
 
 Releases are cut with `npm run release` on Master: it bumps the patch number
 (versions are a plain counter, not semver), tags and pushes. The `v*` tag
-starts .github/workflows/release.yml, which builds the Linux x64 offline bundle
+starts .github/workflows/release.yml, which first runs check.yml (nothing is
+built or published if it fails), then builds the Linux x64 offline bundle
 (.github/scripts/offline-bundle.sh), starts it with no network
 (offline-smoke-test.sh), creates the GitHub Release and publishes to npm
-(NPM_TOKEN secret). Never push a release tag without the user asking. To try
+with trusted publishing (GitHub OIDC; no token secret — the trusted
+publisher is configured on npmjs.com). Never push a release tag without the user asking. To try
 the bundle locally, run both scripts inside a `node:22-bookworm` container
 on a copy of the working tree, without node_modules or `.next*`.

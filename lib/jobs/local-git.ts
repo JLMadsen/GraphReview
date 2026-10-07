@@ -8,8 +8,15 @@
 // Reuses source.ts's `gitIn` (same simple-git setup as `readCurrentBranch`)
 // and `resolveLocalRepoPath` (the containment check) rather than
 // duplicating either.
+//
+// Every ref a function here takes can come from a request, so each one is
+// checked with `assertSafeGitRef` and, where the command's option parser
+// knows it (git 2.24+: diff, log, merge-base), placed after
+// `--end-of-options`: a ref like `--output=<path>` must never reach git as
+// an option.
 
 import type { Branch, CommitSummary, PullRequestFile, PullRequestFileStatus } from "@/lib/github";
+import { assertSafeGitRef, isSafeGitRef } from "./git-ref";
 import { gitIn, resolveLocalRepoPath } from "./source";
 
 /**
@@ -73,10 +80,13 @@ export async function listLocalChangedFiles(
   baseRef: string,
   headRef: string
 ): Promise<string[]> {
+  assertSafeGitRef(baseRef);
+  assertSafeGitRef(headRef);
   const dir = resolveLocalRepoPath(localPath);
   const output = await gitIn(dir, undefined, LOCAL_GIT_CONFIG).raw([
     "diff",
     "--name-only",
+    "--end-of-options",
     `${baseRef}...${headRef}`,
     "--",
   ]);
@@ -96,14 +106,13 @@ export async function listLocalCommits(
   ref: string,
   limit = 50
 ): Promise<CommitSummary[]> {
-  if (!ref || ref.startsWith("-")) {
-    throw new Error(`"${ref}" is not a valid git ref.`);
-  }
+  assertSafeGitRef(ref);
   const dir = resolveLocalRepoPath(localPath);
   const output = await gitIn(dir, undefined, LOCAL_GIT_CONFIG).raw([
     "log",
     `--max-count=${Math.min(500, Math.max(1, limit))}`,
     "--format=%H%x00%P%x00%an%x00%aI%x00%s%x1e",
+    "--end-of-options",
     ref,
     "--",
   ]);
@@ -133,12 +142,11 @@ export async function listLocalCommits(
  * tell" (the freshness check on a since-deleted branch).
  *
  * A leading `-` is refused rather than passed through: the ref arrives from
- * a query string and git would otherwise parse it as an option.
+ * a query string and git would otherwise parse it as an option. (rev-parse
+ * only learned `--end-of-options` in git 2.30, so the check is all there is.)
  */
 export async function resolveLocalRefSha(localPath: string, ref: string): Promise<string> {
-  if (!ref || ref.startsWith("-")) {
-    throw new Error(`"${ref}" is not a valid git ref.`);
-  }
+  assertSafeGitRef(ref);
   const dir = resolveLocalRepoPath(localPath);
   let out: string;
   try {
@@ -166,9 +174,10 @@ export async function localMergeBase(
   a: string,
   b: string
 ): Promise<string | null> {
+  if (!isSafeGitRef(a) || !isSafeGitRef(b)) return null;
   const dir = resolveLocalRepoPath(localPath);
   try {
-    const out = await gitIn(dir, undefined, LOCAL_GIT_CONFIG).raw(["merge-base", a, b]);
+    const out = await gitIn(dir, undefined, LOCAL_GIT_CONFIG).raw(["merge-base", "--end-of-options", a, b]);
     return out.trim() || null;
   } catch {
     return null;
@@ -229,19 +238,25 @@ function splitNul(output: string): string[] {
  *  - The patch is fetched per file rather than parsed out of one combined
  *    diff: it keeps the cap below a simple per-file decision and means a
  *    single pathological file can't corrupt the parse of every other one.
+ *  - Both refs come straight from requests (the diff-impact and PR map
+ *    endpoints, the MCP tools), so they are checked and the range always
+ *    follows `--end-of-options` — `--output=<path>` as a base ref would
+ *    otherwise make git write the diff to that file.
  */
 export async function listLocalFilePatches(
   localPath: string,
   baseRef: string,
   headRef: string
 ): Promise<LocalFilePatch[]> {
+  assertSafeGitRef(baseRef);
+  assertSafeGitRef(headRef);
   const dir = resolveLocalRepoPath(localPath);
   const git = gitIn(dir, undefined, LOCAL_GIT_CONFIG);
   const range = `${baseRef}...${headRef}`;
 
   const [nameStatusRaw, numstatRaw] = await Promise.all([
-    git.raw(["diff", "--name-status", "--no-renames", "-z", range, "--"]),
-    git.raw(["diff", "--numstat", "--no-renames", "-z", range, "--"]),
+    git.raw(["diff", "--name-status", "--no-renames", "-z", "--end-of-options", range, "--"]),
+    git.raw(["diff", "--numstat", "--no-renames", "-z", "--end-of-options", range, "--"]),
   ]);
 
   // `--name-status -z` emits: status \0 path \0 status \0 path \0 …
@@ -293,6 +308,7 @@ export async function listLocalFilePatches(
         "diff",
         "-U3",
         "--no-renames",
+        "--end-of-options",
         range,
         "--",
         path,

@@ -67,5 +67,7 @@ The Cytoscape **Repo** view (the whole component graph with layout modes,
 domain boxes, impact filters and review halos), its component panel, the
 Relabel and Merge suggestions controls that lived in its toolbar, the sample
 graph for unanalyzed repos, and the "added components" labelling of a PR's
-unknown files were removed on 2026-10-06. Their backends (labelling, merges,
-the component files route) are still there. See docs/ideas.md.
+unknown files were removed on 2026-10-06, and their routes with them
+(`label`, `merges/**`, `components/[id]/files`, `diff-impact/added-components`).
+The labelling and merge job backends are kept, unused, so the features can
+come back. See docs/ideas.md.

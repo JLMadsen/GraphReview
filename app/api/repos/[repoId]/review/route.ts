@@ -1,7 +1,8 @@
 // The AI review endpoint.
 //
-//   POST /api/repos/[repoId]/review   enqueue a review of a PR or a ref pair
-//   GET  /api/repos/[repoId]/review   job state + progress + findings so far
+//   POST   /api/repos/[repoId]/review   enqueue a review of a PR or a ref pair
+//   GET    /api/repos/[repoId]/review   job state + progress + findings so far
+//   DELETE /api/repos/[repoId]/review   cancel a queued or running review
 //
 // The GET is intentionally poll-shaped rather than a one-shot result: the review
 // runs one LLM call per touched component and persists each component's
@@ -13,18 +14,21 @@
 // that a review *could* succeed, enqueues, and reads back.
 
 import { NextResponse } from "next/server";
-import { z } from "zod";
+import { targetBodySchema, targetFromSearchParams, toReviewTarget } from "../../_shared";
 import {
+  REVIEW_CANCELLED_REASON,
+  cancelReview,
   checkReviewFreshness,
   enqueueReview,
   getReviewJob,
   getReviewJobLogs,
   invalidateReviewFreshness,
+  isReviewCancelRequested,
   latestReviewedRevision,
   reviewTargetKey,
+  type CancelReviewResult,
   type ReviewFreshness,
   type ReviewProgress,
-  type ReviewTarget,
 } from "@/lib/jobs";
 import { DEFAULT_REVIEW_EFFORT, isReviewEffort } from "@/lib/ai/effort";
 import {
@@ -78,8 +82,12 @@ export interface ReviewStatusResponse {
   targetKey: string;
   state: ReviewState;
   progress?: ReviewProgress;
-  /** The failed job's `failedReason`, when `state === "failed"`. */
+  /** The failed job's `failedReason`, when `state === "failed"` — absent for a cancelled one. */
   error?: string;
+  /** `failed` only: the user cancelled the run. Findings of the components that finished before it stopped are kept. */
+  cancelled?: boolean;
+  /** `running` only: the user asked to cancel and the worker hasn't stopped yet. */
+  cancelRequested?: boolean;
   findings: FindingDto[];
   /**
    * Whether the reviewed code has moved since the review ran (stale-review
@@ -98,40 +106,13 @@ export interface ReviewStatusResponse {
   logs?: string[];
 }
 
+export type CancelReviewResponse = CancelReviewResult;
+
 export interface EnqueueReviewResponse {
   jobId: string;
   targetKey: string;
   /** `false` when a review of this exact target was already queued or running — the existing job stands. */
   enqueued: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// Input parsing
-// ---------------------------------------------------------------------------
-
-const targetSchema = z.union([
-  z.object({ prNumber: z.number().int().positive() }),
-  z.object({ baseRef: z.string().min(1), headRef: z.string().min(1) }),
-]);
-
-function toTarget(parsed: z.infer<typeof targetSchema>): ReviewTarget {
-  return "prNumber" in parsed
-    ? { kind: "pr", prNumber: parsed.prNumber }
-    : { kind: "refs", baseRef: parsed.baseRef, headRef: parsed.headRef };
-}
-
-/** Parses a target out of GET query params (`?prNumber=` or `?baseRef=&headRef=`). Returns `null` when neither shape is present/valid. */
-function targetFromSearchParams(params: URLSearchParams): ReviewTarget | null {
-  const prNumberRaw = params.get("prNumber");
-  if (prNumberRaw !== null) {
-    const prNumber = Number(prNumberRaw);
-    if (!Number.isInteger(prNumber) || prNumber <= 0) return null;
-    return { kind: "pr", prNumber };
-  }
-  const baseRef = params.get("baseRef")?.trim();
-  const headRef = params.get("headRef")?.trim();
-  if (baseRef && headRef) return { kind: "refs", baseRef, headRef };
-  return null;
 }
 
 function errorResponse(
@@ -165,11 +146,11 @@ export async function POST(
     return errorResponse("Invalid JSON body.", 400);
   }
 
-  const parsed = targetSchema.safeParse(rawBody);
+  const parsed = targetBodySchema.safeParse(rawBody);
   if (!parsed.success) {
     return errorResponse("Body must be { prNumber } or { baseRef, headRef }.", 400);
   }
-  const target = toTarget(parsed.data);
+  const target = toReviewTarget(parsed.data);
 
   // Optional; anything other than a known level is a client bug worth a 400
   // rather than silently reviewing at a different cost than was asked for.
@@ -303,12 +284,16 @@ export async function GET(
     let state: ReviewState = "none";
     let progress: ReviewProgress | undefined;
     let error: string | undefined;
+    let cancelled = false;
+    let cancelRequested = false;
 
     const job = await getReviewJob(repoId, targetKey);
     if (job) {
       state = toReviewState(await job.getState());
       progress = toProgress(job.progress);
-      if (state === "failed") error = job.failedReason || "The review job failed.";
+      if (state === "failed" && job.failedReason === REVIEW_CANCELLED_REASON) cancelled = true;
+      else if (state === "failed") error = job.failedReason || "The review job failed.";
+      if (state === "running") cancelRequested = await isReviewCancelRequested(repoId, targetKey);
     }
 
     // A job only lives as long as its retention window (24h for a completed
@@ -347,6 +332,8 @@ export async function GET(
       state,
       ...(progress ? { progress } : {}),
       ...(error ? { error } : {}),
+      ...(cancelled ? { cancelled } : {}),
+      ...(cancelRequested ? { cancelRequested } : {}),
       ...(freshness ? { freshness } : {}),
       ...(logs ? { logs } : {}),
       findings: findingRecords.map((finding) => ({
@@ -376,6 +363,43 @@ export async function GET(
     console.error(`GET /api/repos/${repoId}/review failed:`, err);
     return errorResponse(
       err instanceof Error ? err.message : "Failed to read the review.",
+      500
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DELETE — cancel
+// ---------------------------------------------------------------------------
+
+/**
+ * Cancels the target's review (`?prNumber=` or `?baseRef=&headRef=`, as for
+ * GET). A queued review is removed outright; a running one is stopped by the
+ * worker within about a second — its model calls are aborted, the findings of
+ * components that already finished are kept, and nothing is pruned. Nothing
+ * to cancel is a 200 with `outcome: "not_running"`, not an error: the review
+ * may simply have finished a moment ago.
+ */
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ repoId: string }> }
+) {
+  const { repoId } = await params;
+  const target = targetFromSearchParams(new URL(request.url).searchParams);
+  if (!target) {
+    return errorResponse(
+      "Query must be ?prNumber=N or ?baseRef=X&headRef=Y.",
+      400
+    );
+  }
+
+  try {
+    const body: CancelReviewResponse = await cancelReview(repoId, reviewTargetKey(target));
+    return NextResponse.json(body);
+  } catch (err) {
+    console.error(`DELETE /api/repos/${repoId}/review failed:`, err);
+    return errorResponse(
+      err instanceof Error ? err.message : "Failed to cancel the review.",
       500
     );
   }

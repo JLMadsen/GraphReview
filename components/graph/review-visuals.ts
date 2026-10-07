@@ -14,9 +14,6 @@
 // Colour is never the only channel: every badge and chip also carries a
 // plain glyph (✕ ▲ – ✓, no circle) and a written label, so the four states
 // read with no colour perception at all.
-//
-// (`markerOpacity`/`markerPadding` and the class-name helpers below were
-// for the removed Cytoscape Repo view's halos; nothing draws them now.)
 
 import { Check, Minus, TriangleAlert, X } from "lucide-react";
 import type { FindingDTO, Assessment, FindingKind, FindingScope } from "./types";
@@ -26,21 +23,13 @@ export interface AssessmentVisual {
   label: string;
   /** One-line explanation, used as chip `title` text. */
   description: string;
-  /** The accent: Cytoscape underlay colour, chip dot, badge ring. */
+  /** The accent: chip dot, badge ring, card badge. */
   color: string;
   /** A lighter tint of `color`, legible as text on the dark card surface. */
   text: string;
   icon: React.ComponentType<{ className?: string }>;
   /** Worst-first ordering — 0 sorts first. */
   rank: number;
-  /**
-   * Cytoscape `underlay-opacity`/`underlay-padding` for a node whose worst
-   * finding is this state. `ok` is deliberately faint and tight (the
-   * brief's "subtle or none"): it still says "reviewed, looks consistent"
-   * without adding a fourth loud colour to a 109-node canvas.
-   */
-  markerOpacity: number;
-  markerPadding: number;
 }
 
 export const ASSESSMENT_ORDER: Assessment[] = [
@@ -58,8 +47,6 @@ export const ASSESSMENT_VISUALS: Record<Assessment, AssessmentVisual> = {
     text: "#ff8f9f",
     icon: X,
     rank: 0,
-    markerOpacity: 0.55,
-    markerPadding: 11,
   },
   concern: {
     label: "Concern",
@@ -68,8 +55,6 @@ export const ASSESSMENT_VISUALS: Record<Assessment, AssessmentVisual> = {
     text: "#f0abfc",
     icon: TriangleAlert,
     rank: 1,
-    markerOpacity: 0.45,
-    markerPadding: 9,
   },
   unknown: {
     label: "Unknown",
@@ -78,8 +63,6 @@ export const ASSESSMENT_VISUALS: Record<Assessment, AssessmentVisual> = {
     text: "#b8c2d2",
     icon: Minus,
     rank: 2,
-    markerOpacity: 0.4,
-    markerPadding: 8,
   },
   ok: {
     label: "OK",
@@ -88,22 +71,8 @@ export const ASSESSMENT_VISUALS: Record<Assessment, AssessmentVisual> = {
     text: "#6ee7b7",
     icon: Check,
     rank: 3,
-    markerOpacity: 0.2,
-    markerPadding: 6,
   },
 };
-
-/** Cytoscape class names this layer owns — removed as a set before re-applying. */
-export const ASSESSMENT_CLASS_NAMES = ASSESSMENT_ORDER.map(assessmentClassName).join(" ");
-
-export function assessmentClassName(intent: Assessment): string {
-  return `assessment-${intent}`;
-}
-
-/** Cytoscape class for a component holding a usage the change left behind (an impact finding). */
-export const IMPACTED_CLASS_NAME = "impacted";
-/** Dashed rose ring — the colour of `defect`, the shape of "not part of the diff". */
-export const IMPACTED_COLOR = "#fb3b53";
 
 /** `["defect", "concern", ...]` sorted worst-first. */
 export function compareAssessment(a: Assessment, b: Assessment): number {
@@ -118,7 +87,7 @@ export function worstAssessment(a: Assessment, b: Assessment): Assessment {
 /**
  * The verdict a finding counts as once reviewers have had their say: a
  * resolved finding counts as `ok`, whatever the model said. Everything
- * that ranks or colours by severity (markers, groups, the overall verdict)
+ * that ranks or colours by severity (card badges, groups, the overall verdict)
  * goes through this; the filter chips keep the model's own verdict.
  */
 export function effectiveAssessment(finding: FindingDTO): Assessment {
@@ -226,82 +195,6 @@ export const REVIEW_ADVISORY =
 /** Per-component change findings. */
 export function isChangeFinding(finding: FindingDTO): boolean {
   return finding.category === "change";
-}
-
-/** What the canvas needs per component to draw its marker and extend its tooltip. */
-export interface ReviewMarker {
-  componentName: string;
-  /** Drives the marker colour — the single worst verdict among this component's findings. */
-  worst: Assessment;
-  /** How many findings this component has, across all verdicts. */
-  count: number;
-  /** The worst finding's summary, for the hover tooltip's extra line. */
-  summary: string;
-  /** How many open impact findings (usages the change left behind) sit in this component. */
-  impacted: number;
-}
-
-export type ReviewMarkerMap = Record<string, ReviewMarker>;
-
-/**
- * Collapses a flat finding list into one marker per component, keeping the
- * worst verdict (and that finding's summary). Ties keep the first finding
- * seen, which — given the API returns findings in a stable order — keeps the
- * tooltip text from flickering between polls while a review streams in.
- */
-export function buildReviewMarkers(findings: FindingDTO[]): ReviewMarkerMap {
-  const markers: ReviewMarkerMap = {};
-  for (const finding of findings) {
-    // The PR-level intent verdict and impact notes belong to no component.
-    if (!finding.componentId) continue;
-    const impacted = isImpactFinding(finding) && !finding.resolvedAt ? 1 : 0;
-    const existing = markers[finding.componentId];
-    if (!existing) {
-      markers[finding.componentId] = {
-        componentName: finding.componentName,
-        worst: effectiveAssessment(finding),
-        count: 1,
-        summary: finding.summary,
-        impacted,
-      };
-      continue;
-    }
-    existing.count += 1;
-    existing.impacted += impacted;
-    if (compareAssessment(effectiveAssessment(finding), existing.worst) < 0) {
-      existing.worst = effectiveAssessment(finding);
-      existing.summary = finding.summary;
-    }
-  }
-  return markers;
-}
-
-/** Findings per verdict — powers both the panel's filter chips and the canvas legend. */
-export function countByAssessment(
-  findings: FindingDTO[]
-): Record<Assessment, number> {
-  const counts: Record<Assessment, number> = {
-    defect: 0,
-    concern: 0,
-    unknown: 0,
-    ok: 0,
-  };
-  for (const finding of findings) counts[finding.assessment] += 1;
-  return counts;
-}
-
-/** Components per verdict (by their worst finding) — what the canvas legend counts, since that's what's drawn. */
-export function countComponentsByAssessment(
-  markers: ReviewMarkerMap
-): Record<Assessment, number> {
-  const counts: Record<Assessment, number> = {
-    defect: 0,
-    concern: 0,
-    unknown: 0,
-    ok: 0,
-  };
-  for (const marker of Object.values(markers)) counts[marker.worst] += 1;
-  return counts;
 }
 
 /** The whole review in one verdict, for the dock header and the Markdown export. */

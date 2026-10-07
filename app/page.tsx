@@ -178,7 +178,7 @@ export default async function RepoListPage() {
             ) : null}
           </div>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            Add a local or GitHub repo to build its component graph.
+            Add a local, GitHub or GitLab repo to build its component graph.
           </p>
         </div>
         <AddRepoDialog />

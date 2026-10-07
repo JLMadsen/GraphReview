@@ -4,8 +4,8 @@
 // (§6.5): HTML cards joined by labelled edges, laid out by ELK and rendered
 // with React Flow.
 //
-// Why not the Cytoscape canvas: a card holds clickable chips, which is HTML,
-// and Cytoscape draws to a <canvas>. Maps are small enough (tens of cards,
+// Why not Cytoscape (which drew the removed Repo view): a card holds
+// clickable chips, which is HTML, and Cytoscape draws to a <canvas>. Maps are small enough (tens of cards,
 // low hundreds at most) that React Flow's DOM nodes cost nothing.
 //
 // Layout is two-pass. Card heights depend on their content, so every card is

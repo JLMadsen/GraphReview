@@ -20,10 +20,13 @@ import {
   REVIEW_QUEUE_NAME,
   clearAppMapCancel,
   clearLabelCancel,
+  clearReviewCancel,
   cleanUpIfRepoRemoved,
   isAppMapCancelRequested,
   isLabelCancelRequested,
+  isReviewCancelRequested,
   listRepoDtos,
+  reviewTargetKey,
   type AppMapJobData,
   type AppMapJobResult,
   type AnalysisJobData,
@@ -61,7 +64,7 @@ const CONCURRENCY = Number(process.env.ANALYSIS_CONCURRENCY ?? 1);
  */
 const REVIEW_CONCURRENCY = Number(process.env.REVIEW_CONCURRENCY ?? 1);
 
-/** How often an active labeling job checks whether the user cancelled it. */
+/** How often an active review, labeling or app-map job checks whether the user cancelled it. */
 const LABEL_CANCEL_POLL_MS = 1000;
 
 /**
@@ -101,6 +104,50 @@ function logError(message: string): void {
  */
 function mirrorToJobLog(job: { log: (row: string) => Promise<number> }, message: string): void {
   void job.log(message).catch(() => undefined);
+}
+
+/**
+ * The review queue's job body. Exported so lib/ai/smoke-test-review.ts can
+ * run it on a worker of its own.
+ */
+export async function processReviewJob(job: Job<ReviewJobData, ReviewJobResult>): Promise<ReviewJobResult> {
+  const { repoId, target } = job.data;
+  const describedTarget =
+    target.kind === "pr"
+      ? `PR #${target.prNumber}`
+      : `${target.baseRef}...${target.headRef}`;
+  log(`review job ${job.id} started — repo ${repoId}, ${describedTarget}`);
+
+  // Cooperative cancellation, exactly like the label queue: the request
+  // sets a flag (lib/jobs/review-queue.ts), this polls it and aborts the
+  // run's model calls.
+  const targetKey = reviewTargetKey(target);
+  const abort = new AbortController();
+  const poll = setInterval(() => {
+    isReviewCancelRequested(repoId, targetKey)
+      .then((requested) => {
+        if (requested && !abort.signal.aborted) {
+          log(`review job ${job.id} · cancel requested`);
+          abort.abort();
+        }
+      })
+      .catch(() => undefined);
+  }, LABEL_CANCEL_POLL_MS);
+
+  try {
+    return await runReviewJob(
+      job.data,
+      job,
+      (message) => {
+        log(`review job ${job.id} · ${message}`);
+        mirrorToJobLog(job, message);
+      },
+      abort.signal
+    );
+  } finally {
+    clearInterval(poll);
+    await clearReviewCancel(repoId, targetKey).catch(() => undefined);
+  }
 }
 
 const STARTED_KEY = Symbol.for("graphreview.worker.started");
@@ -176,19 +223,7 @@ export async function startWorker(): Promise<void> {
   // --- review queue -------------------------------------------------------
   const reviewWorker = new Worker<ReviewJobData, ReviewJobResult>(
     REVIEW_QUEUE_NAME,
-    async (job: Job<ReviewJobData, ReviewJobResult>) => {
-      const { repoId, target } = job.data;
-      const describedTarget =
-        target.kind === "pr"
-          ? `PR #${target.prNumber}`
-          : `${target.baseRef}...${target.headRef}`;
-      log(`review job ${job.id} started — repo ${repoId}, ${describedTarget}`);
-
-      return runReviewJob(job.data, job, (message) => {
-        log(`review job ${job.id} · ${message}`);
-        mirrorToJobLog(job, message);
-      });
-    },
+    processReviewJob,
     { concurrency: REVIEW_CONCURRENCY }
   );
 
@@ -276,8 +311,8 @@ export async function startWorker(): Promise<void> {
   const appMapWorker = new Worker<AppMapJobData, AppMapJobResult>(
     APP_MAP_QUEUE_NAME,
     async (job: Job<AppMapJobData, AppMapJobResult>) => {
-      const { repoId, level } = job.data;
-      log(`app-map job ${job.id} started — repo ${repoId}, level ${level}`);
+      const { repoId, level, mode } = job.data;
+      log(`app-map job ${job.id} started — repo ${repoId}, level ${level}${mode === "place" ? ", placing leftover files" : ""}`);
       // Cooperative cancellation, exactly like the label queue above.
       const abort = new AbortController();
       const poll = setInterval(() => {

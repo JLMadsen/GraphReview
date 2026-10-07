@@ -22,6 +22,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { gitRefSchema } from "../../../_shared";
 import { compareRefs, getPullRequest, listPullRequestFiles } from "@/lib/github";
 import type { PullRequestFile } from "@/lib/github";
 import { compareRefs as compareGitLabRefs, getMergeRequest, listMergeRequestFiles } from "@/lib/gitlab";
@@ -43,8 +44,8 @@ const querySchema = z.union([
   }),
   z.object({
     path: z.string().min(1),
-    baseRef: z.string().min(1),
-    headRef: z.string().min(1),
+    baseRef: gitRefSchema,
+    headRef: gitRefSchema,
     sha: shaSchema,
   }),
 ]);

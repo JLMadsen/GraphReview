@@ -57,7 +57,7 @@ import { MERGE_NAME_TASK_MARKER } from "./merge-name";
 import { CHECKLIST_TASK_MARKER } from "./checklist";
 import { PR_CHAT_TASK_MARKER, REPO_CHAT_SCOPE_MARKER } from "./pr-chat";
 import { PR_MAP_TASK_MARKER } from "./pr-map";
-import { APP_EXPLAIN_TASK_MARKER, APP_FEATURES_TASK_MARKER, APP_LAYERS_TASK_MARKER } from "./app-map";
+import { APP_EXPLAIN_TASK_MARKER, APP_FEATURES_TASK_MARKER, APP_LAYERS_TASK_MARKER, APP_PLACE_TASK_MARKER } from "./app-map";
 import { PREVIEW_INPUTS_TASK_MARKER } from "./preview-inputs";
 import { IMPACT_TASK_MARKER } from "./impact";
 import { PR_INTENT_TASK_MARKER } from "./pr-intent";
@@ -234,6 +234,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
               ? prMapContent(userText)
               : prompt.includes(APP_FEATURES_TASK_MARKER)
                 ? appFeaturesContent(userText)
+                : prompt.includes(APP_PLACE_TASK_MARKER)
+                ? appPlaceContent(userText)
                 : prompt.includes(APP_LAYERS_TASK_MARKER)
                   ? appLayersContent(userText)
                   : prompt.includes(APP_EXPLAIN_TASK_MARKER)
@@ -736,6 +738,25 @@ function appFeaturesContent(userText: string): { content: string; note: string }
     members: [`${top}/`],
   }));
   return { content: fenced({ features }), note: `app-map-features features=${features.length}` };
+}
+
+/**
+ * Every listed file into the first feature, and each folder whose files were
+ * cut for length ("+N more in dir/") as a folder. The features answer above
+ * skips root files, so a job run against the mock always has some to place.
+ */
+function appPlaceContent(userText: string): { content: string; note: string } {
+  const [featuresPart, filesPart = ""] = userText.split(/^## Files to place.*$/m);
+  const feature = /^- (.+?)(?: — | \(holds |$)/m.exec(featuresPart.slice(featuresPart.indexOf("## Features")))?.[1];
+  const placements: Array<{ member: string; feature: string }> = [];
+  if (feature) {
+    for (const line of filesPart.split("\n")) {
+      const more = /^\(\+\d+ more in (\S+) /.exec(line);
+      if (more) placements.push({ member: more[1], feature });
+      else if (/^[^\s(]/.test(line)) placements.push({ member: line.split(":")[0], feature });
+    }
+  }
+  return { content: fenced({ placements }), note: `app-map-place placements=${placements.length}` };
 }
 
 /** Every hinted layer described, no moves. */

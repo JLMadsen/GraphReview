@@ -120,7 +120,8 @@ export function GraphView({
   /** Whether the selected target reviews itself — open PRs and branch comparisons only (see DiffPanel's `DiffTargetMeta`). */
   const [autoReview, setAutoReview] = useState(true);
   const review = useReview(repoId, reviewTarget, reviewEffort, autoReview);
-  const checklist = useChecklist(repoId, reviewTarget, review.state, autoReview);
+  // A cancelled review doesn't hand over to the checklist's automatic AI items.
+  const checklist = useChecklist(repoId, reviewTarget, review.state, autoReview && !review.cancelled);
   const chat = usePrChat(repoId, reviewTarget);
   const previewScan = usePreviewScan(repoId, reviewTarget);
   /** The view last chosen — remembered per browser, `pr` by default. With no diff selected, `pr` falls back to the App map. */
@@ -524,6 +525,10 @@ export function GraphView({
             canRerun={review.canRerun}
             onRerun={review.rerun}
             onRetryFailed={review.retryFailed}
+            cancelled={review.cancelled}
+            cancelling={review.cancelling}
+            canCancel={review.canCancel}
+            onCancel={review.cancel}
             onSelectComponent={selectComponentLink}
             onSetResolved={review.setResolved}
             effort={reviewEffort}

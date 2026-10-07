@@ -1,0 +1,34 @@
+# Checks: lint, type check, smoke tests (npm test) and a production build.
+# Runs on pushes to Master and on pull requests, and release.yml calls it
+# (workflow_call) before building anything, so a release that fails these is
+# never published.
+name: Check
+
+on:
+  push:
+    branches: [Master]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      # Into its own dist folder, like a local check build (AGENTS.md).
+      - name: Build
+        run: npx next build
+        env:
+          GRAPHREVIEW_DIST_DIR: .next-check

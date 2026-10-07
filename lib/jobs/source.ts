@@ -19,6 +19,7 @@ import type { SimpleGit, SimpleGitOptions } from "simple-git";
 import type { RepoProvider, RepoRecord } from "@/lib/db";
 import { gitCaBundle } from "@/lib/runtime/ca";
 import { getDataDir } from "@/lib/runtime/paths";
+import { assertSafeGitRef } from "./git-ref";
 import { getStoredGitHubToken, gitHubCloneUrl, parseGitHubUrl } from "./github-access";
 import { getStoredGitLabToken, gitLabCloneUrl, parseGitLabUrl } from "./gitlab-access";
 
@@ -39,6 +40,22 @@ process.env.GIT_TERMINAL_PROMPT = "0";
 process.env.GIT_ASKPASS = "echo";
 process.env.SSH_ASKPASS = "echo";
 process.env.GCM_INTERACTIVE = "never";
+
+/**
+ * Inherited variables simple-git lets through to git. Since v4 it strips
+ * every ambient `GIT_*` variable (and `SSH_ASKPASS`) from git's environment
+ * unless it is named here — the no-prompt settings above among them, which
+ * would leave a private-repo clone waiting on a credential prompt. The TLS
+ * trust variables are the user's own and were always honoured before.
+ */
+const GIT_ENVIRONMENT = [
+  "GIT_TERMINAL_PROMPT",
+  "GIT_ASKPASS",
+  "SSH_ASKPASS",
+  "GIT_SSL_CAINFO",
+  "GIT_SSL_CAPATH",
+  "GIT_SSL_NO_VERIFY",
+];
 
 /** Idle timeout for a git subprocess that should be quick (`ls-remote`, `rev-parse`). */
 const QUICK_GIT_TIMEOUT_MS = 20_000;
@@ -67,6 +84,7 @@ function gitOptions(
     // extras, since git replaces its own bundle with it (and with
     // schannelUseSSLCAInfo, Git for Windows' schannel backend uses it as well).
     config: ["credential.helper=", ...gitCaConfig(), ...config],
+    allowEnvironment: GIT_ENVIRONMENT,
     unsafe: { allowUnsafeCredentialHelper: true },
   };
 }
@@ -377,6 +395,10 @@ export async function prepareRepoSource(
  * repo was never analyzed. Returns the clone's directory. Used by the
  * before/after preview, which needs whole trees at a PR's base and head, not
  * just the diff.
+ *
+ * A ref-comparison target's refspecs are the request's own `baseRef` /
+ * `headRef`, so every sha and refspec is checked and fetched after
+ * `--end-of-options` — `git fetch origin --upload-pack=<cmd>` runs `<cmd>`.
  */
 export async function ensureCommitsInCache(
   repo: RepoRecord,
@@ -384,6 +406,7 @@ export async function ensureCommitsInCache(
   refspecs: readonly string[],
   log: Logger = () => {}
 ): Promise<string> {
+  for (const ref of [...shas, ...refspecs]) assertSafeGitRef(ref);
   const remoteProvider = repo.provider as RemoteProvider;
   const dir = repoCacheDir(repo.id);
   if (!existsSync(path.join(dir, ".git"))) await prepareRepoSource(repo, log);
@@ -406,13 +429,13 @@ export async function ensureCommitsInCache(
   if (absent.length === 0) return dir;
   log(`fetching ${absent.map((s) => s.slice(0, 7)).join(", ")} into the app's clone`);
   try {
-    await withFriendlyAuthError(git.fetch(["origin", ...absent]), remoteProvider, Boolean(token));
+    await withFriendlyAuthError(git.fetch(["--end-of-options", "origin", ...absent]), remoteProvider, Boolean(token));
   } catch (error) {
     log(`fetch by sha failed (${(error as Error).message.split("\n")[0]}) — fetching refs instead`);
   }
   absent = await missing();
   if (absent.length > 0 && refspecs.length > 0) {
-    await withFriendlyAuthError(git.fetch(["origin", ...refspecs]), remoteProvider, Boolean(token));
+    await withFriendlyAuthError(git.fetch(["--end-of-options", "origin", ...refspecs]), remoteProvider, Boolean(token));
     absent = await missing();
   }
   if (absent.length > 0) {

@@ -1,5 +1,5 @@
-// The frame every Graph-tab view (App map, Repo, PR) draws itself in, so the
-// three read as one surface: a single toolbar bar across the column — the
+// The frame every Graph-tab view (App map, PR) draws itself in, so the
+// two read as one surface: a single toolbar bar across the column — the
 // view switch first (GraphView passes it in as `leading`), then the view's
 // own controls — and the canvas edge to edge under it, no rounded box.
 

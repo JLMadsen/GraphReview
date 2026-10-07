@@ -120,7 +120,7 @@ export interface AppMapResponseDTO {
   source: "heuristic" | "ai";
   model?: string;
   generatedAt?: string;
-  /** Files placed by the heuristic because they appeared after the AI run grouped this level. */
+  /** Files no member of the AI grouping covers (added since it ran, or the model couldn't place them), so the heuristic placed them. */
   newFiles?: number;
   totalFiles: number;
   /** File path → owning module id, so a file chip can open its module. */
@@ -133,13 +133,21 @@ export interface AppMapResponseDTO {
 
 export type AppMapJobStateDTO = "none" | "queued" | "running" | "completed" | "failed" | "cancelled";
 
-export type AppMapPhaseDTO = "grouping" | "explaining" | "saving";
+export type AppMapPhaseDTO = "grouping" | "placing" | "explaining" | "saving";
+
+/**
+ * `full` groups (features, architecture) and explains every card; `place`
+ * (features only) keeps the stored grouping, has the model place just the
+ * files none of its members cover, and re-explains the cards that grew.
+ */
+export type AppMapRunMode = "full" | "place";
 
 export interface AppMapProgressDTO {
   level: AppMapLevel;
   phase: AppMapPhaseDTO;
-  /** Cards explained so far (`explaining`), else 0. */
+  /** Files placed so far (`placing`), cards explained so far (`explaining`), else 0. */
   done: number;
+  /** Files to place (`placing`), cards to explain (`explaining`). */
   total: number;
   calls: number;
   promptTokens: number;
@@ -150,6 +158,7 @@ export interface AppMapJobStatusDTO {
   state: AppMapJobStateDTO;
   /** The level the current (or last) run is/was for. */
   level?: AppMapLevel;
+  mode?: AppMapRunMode;
   progress?: AppMapProgressDTO;
   error?: string;
   finishedAt?: string;

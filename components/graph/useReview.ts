@@ -30,6 +30,11 @@
 //      timer.
 //   7. A coding agent answering a finding over MCP is pushed to the open
 //      dock as a server-sent event, and the settled review is refetched.
+//   8. `cancel()` DELETEs a queued/running review and lets polling pick up
+//      the outcome: a queued one is removed (back to `none`, or the previous
+//      run's findings), a running one stops as `failed` + `cancelled`, keeping
+//      the findings that already came back. A target cancelled in this page
+//      session is not auto-run again when it is revisited — only `rerun()`.
 //
 // ---------------------------------------------------------------------------
 // The dependency-array footgun this file is written around
@@ -85,6 +90,10 @@ export interface ReviewSnapshot {
   noticeCode: string | null;
   /** True between a rerun POST and the first poll that reflects it. */
   rerunning: boolean;
+  /** The last run was cancelled — by the server's account (`failed` + `cancelled`), or a queued run this tab removed. */
+  cancelled: boolean;
+  /** A cancel has been sent (by this tab, or reported by the server) and the run hasn't stopped yet. */
+  cancelling: boolean;
 }
 
 const IDLE_SNAPSHOT: ReviewSnapshot = {
@@ -95,7 +104,18 @@ const IDLE_SNAPSHOT: ReviewSnapshot = {
   notice: null,
   noticeCode: null,
   rerunning: false,
+  cancelled: false,
+  cancelling: false,
 };
+
+/**
+ * `<repoId>|<targetKey>` of the reviews cancelled in this page session. A
+ * queued review that is cancelled is removed outright, which reads back as
+ * `none` — without this, revisiting the target would auto-run the very
+ * review the user just stopped. Module scope so it survives the hook
+ * remounting; a reload forgets it.
+ */
+const cancelledTargets = new Set<string>();
 
 export interface UseReviewResult extends ReviewSnapshot {
   /** Deliberate re-run: removes the finished job and enqueues a fresh one. */
@@ -104,6 +124,10 @@ export interface UseReviewResult extends ReviewSnapshot {
   retryFailed: () => void;
   /** Whether a re-run is even possible right now. */
   canRerun: boolean;
+  /** Stops the queued or running review. Findings that already came back are kept. */
+  cancel: () => void;
+  /** A review is queued or running and not already being cancelled. */
+  canCancel: boolean;
   /** Marks a below-match finding resolved (or reopens it). Optimistic; reverts with a notice if the server refuses. */
   setResolved: (findingId: string, resolved: boolean) => void;
 }
@@ -174,6 +198,7 @@ export function useReview(
     const query = reviewTargetQuery(currentTarget);
     const statusUrl = `/api/repos/${encodeURIComponent(repoId)}/review?${query}`;
     const enqueueUrl = `/api/repos/${encodeURIComponent(repoId)}/review`;
+    const cancelKey = `${repoId}|${targetKey}`;
 
     // Only ever one automatic POST per effect run, whatever the polling does.
     let postAttempted = false;
@@ -218,6 +243,7 @@ export function useReview(
         // `enqueued: false` is not an error — it means a run of this exact
         // target was already pending, and polling below will attach to it.
         void (json as EnqueueReviewResponseDTO);
+        cancelledTargets.delete(cancelKey);
         return true;
       } catch (err) {
         if (!live()) return false;
@@ -284,14 +310,18 @@ export function useReview(
         notice: data.error ?? (isPending(data.state) ? null : prev.notice),
         noticeCode: data.error ? null : prev.noticeCode,
         rerunning: prev.rerunning && !isPending(data.state),
+        cancelled: Boolean(data.cancelled) || (data.state === "none" && cancelledTargets.has(cancelKey)),
+        cancelling: isPending(data.state) && (prev.cancelling || Boolean(data.cancelRequested)),
       }));
 
       // Automatic, no confirm — but never into an unconfigured provider,
-      // and never a second time over findings that already exist.
+      // never a second time over findings that already exist, and never
+      // for a review the user cancelled.
       const shouldPost =
         data.aiConfigured &&
         !postAttempted &&
-        (force || (canPost && autoRunRef.current && data.state === "none"));
+        (force ||
+          (canPost && autoRunRef.current && data.state === "none" && !cancelledTargets.has(cancelKey)));
 
       if (shouldPost) {
         postAttempted = true;
@@ -395,6 +425,37 @@ export function useReview(
     setRerunNonce((n) => n + 1);
   }, []);
 
+  const cancel = useCallback(() => {
+    const currentTarget = targetRef.current;
+    if (!currentTarget || !isPending(snapshotRef.current.state)) return;
+    const runId = runIdRef.current;
+    const key = `${repoId}|${reviewTargetKeyOf(currentTarget)}`;
+    cancelledTargets.add(key);
+    setSnapshot((prev) => ({ ...prev, cancelling: true }));
+    // The polling loop is still running (the review is pending) and picks
+    // up the outcome on its next tick; only a refused DELETE is handled here.
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/repos/${encodeURIComponent(repoId)}/review?${reviewTargetQuery(currentTarget)}`,
+          { method: "DELETE" }
+        );
+        if (res.ok) return;
+        const json = (await res.json().catch(() => null)) as ReviewErrorDTO | null;
+        throw new Error(json?.error ?? `Could not cancel the review (${res.status}).`);
+      } catch (err) {
+        cancelledTargets.delete(key);
+        if (runIdRef.current !== runId) return;
+        setSnapshot((prev) => ({
+          ...prev,
+          cancelling: false,
+          notice: err instanceof Error ? err.message : "Could not cancel the review.",
+          noticeCode: null,
+        }));
+      }
+    })();
+  }, [repoId]);
+
   const setResolved = useCallback(
     (findingId: string, resolved: boolean) => {
       const applyResolved = (resolvedAt: string | undefined) =>
@@ -440,8 +501,10 @@ export function useReview(
     !isPending(snapshot.state) &&
     !snapshot.rerunning;
 
+  const canCancel = snapshot.status === "ready" && isPending(snapshot.state) && !snapshot.cancelling;
+
   return useMemo(
-    () => ({ ...snapshot, rerun, retryFailed, canRerun, setResolved }),
-    [snapshot, rerun, retryFailed, canRerun, setResolved]
+    () => ({ ...snapshot, rerun, retryFailed, canRerun, cancel, canCancel, setResolved }),
+    [snapshot, rerun, retryFailed, canRerun, cancel, canCancel, setResolved]
   );
 }

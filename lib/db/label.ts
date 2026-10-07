@@ -108,7 +108,7 @@ export async function setComponentDescription(
   });
 }
 
-/** What `GET /api/repos/[repoId]/label` reports about a repo's labeling state, independent of any job record. */
+/** A repo's labeling state, independent of any job record — what the label route (removed for now, see lib/jobs/label-queue.ts) reported. */
 export interface LabelSummary {
   /** Domain-tier components (any `createdBy`). */
   domains: number;

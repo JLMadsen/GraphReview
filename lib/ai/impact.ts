@@ -185,7 +185,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export async function checkImpact(
   config: AiProviderConfig,
   contracts: readonly ImpactContract[],
-  options: { chat?: typeof chatCompletion; tokenBudget: number }
+  options: { chat?: typeof chatCompletion; tokenBudget: number; signal?: AbortSignal }
 ): Promise<ImpactResult> {
   const chat = options.chat ?? chatCompletion;
   const system = buildImpactSystemPrompt();
@@ -207,7 +207,8 @@ export async function checkImpact(
       { role: "system", content: system },
       { role: "user", content: ["## Changed declarations and their untouched usages", ...sections].join("\n\n") },
     ];
-    const reply = await chat(config, messages, { temperature: 0.1 });
+    options.signal?.throwIfAborted();
+    const reply = await chat(config, messages, { temperature: 0.1, signal: options.signal });
     result.calls += 1;
     if (reply.usage) {
       result.usage.promptTokens += reply.usage.promptTokens;

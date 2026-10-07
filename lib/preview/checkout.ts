@@ -77,8 +77,9 @@ export async function readFileAt(repoDir: string, sha: string, filePath: string)
 
 /** The commit a three-dot diff of `base...head` is anchored on, or `base` when there is none. */
 export async function mergeBaseOf(repoDir: string, base: string, head: string): Promise<string> {
+  if (!isSha(base) || !isSha(head)) return base;
   try {
-    const out = (await git(repoDir).raw(["merge-base", base, head])).trim();
+    const out = (await git(repoDir).raw(["merge-base", "--end-of-options", base, head])).trim();
     return isSha(out) ? out : base;
   } catch {
     return base;

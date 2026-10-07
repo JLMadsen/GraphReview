@@ -167,7 +167,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export async function checkPrIntent(
   config: AiProviderConfig,
   input: PrIntentInput,
-  options: { chat?: typeof chatCompletion; tokenBudget: number }
+  options: { chat?: typeof chatCompletion; tokenBudget: number; signal?: AbortSignal }
 ): Promise<PrIntentResult> {
   const chat = options.chat ?? chatCompletion;
   const budget = options.tokenBudget;
@@ -179,7 +179,10 @@ export async function checkPrIntent(
     { role: "system", content: system },
     { role: "user", content: renderUserMessage(input, patchBudget) },
   ];
-  const result = await chat(config, truncateMessagesToBudget(messages, budget), { temperature: 0.1 });
+  const result = await chat(config, truncateMessagesToBudget(messages, budget), {
+    temperature: 0.1,
+    signal: options.signal,
+  });
   const usage = result.usage ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
   const parsed = extractJson(result.content);

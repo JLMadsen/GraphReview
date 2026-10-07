@@ -12,6 +12,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { gitRefSchema } from "../../../_shared";
 import { enqueuePreview, ensurePreviewScan, getPreviewJob, type ReviewTarget } from "@/lib/jobs";
 import { getRepoById } from "@/lib/db";
 import { symbolStatus } from "@/lib/preview/compare";
@@ -28,8 +29,8 @@ export const dynamic = "force-dynamic";
 
 const targetSchema = z.object({
   prNumber: z.coerce.number().int().positive().optional(),
-  baseRef: z.string().min(1).optional(),
-  headRef: z.string().min(1).optional(),
+  baseRef: gitRefSchema.optional(),
+  headRef: gitRefSchema.optional(),
 });
 
 function toTarget(data: z.infer<typeof targetSchema>): ReviewTarget | null {

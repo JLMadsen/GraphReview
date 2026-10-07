@@ -32,6 +32,7 @@ import {
   reviewTargetKey,
   type ReviewTarget,
 } from "@/lib/jobs";
+import { isSafeGitRef } from "@/lib/jobs/git-ref";
 import { readFileAtCommit } from "@/lib/jobs/pr-context";
 import { emitFindingsChanged } from "./events";
 
@@ -52,11 +53,22 @@ const targetSchema = z
   .string()
   .describe('The review target: "pr:<number>" or "refs:<baseRef>...<headRef>", as list_reviews returns it.');
 
+/**
+ * The refs end up as `git` arguments on a local repo, and the agent calling
+ * this may have read prompt-injected PR text — so a ref that git would parse
+ * as an option (`--output=<path>`) is refused here, not just in the git layer.
+ */
 function parseTarget(raw: string): ReviewTarget {
   const pr = /^pr:(\d+)$/.exec(raw.trim());
   if (pr) return { kind: "pr", prNumber: Number(pr[1]) };
   const refs = /^refs:(.+?)\.\.\.(.+)$/.exec(raw.trim());
-  if (refs) return { kind: "refs", baseRef: refs[1], headRef: refs[2] };
+  if (refs) {
+    const [, baseRef, headRef] = refs;
+    if (!isSafeGitRef(baseRef) || !isSafeGitRef(headRef)) {
+      throw new ToolError(`"${raw}" is not a valid review target — a ref can't start with "-" or contain whitespace.`);
+    }
+    return { kind: "refs", baseRef, headRef };
+  }
   throw new ToolError(`"${raw}" is not a review target — use "pr:<number>" or "refs:<base>...<head>".`);
 }
 

@@ -8,7 +8,7 @@
 // Server-only. Route handlers and `worker/` only.
 
 import { createHash } from "node:crypto";
-import { Queue, type Job, type JobState, type JobsOptions } from "./runner";
+import { Queue, clearFlag, hasFlag, setFlag, type Job, type JobState, type JobsOptions } from "./runner";
 import type { ReviewEffort } from "@/lib/ai/effort";
 import { isPendingJobState } from "./queue";
 
@@ -17,6 +17,13 @@ export const REVIEW_QUEUE_NAME = "review";
 
 /** Job name inside the review queue. */
 export const REVIEW_JOB_NAME = "review-target";
+
+/**
+ * `failedReason` of a review stopped by the user. The status endpoint
+ * reports such a job as `failed` with `cancelled: true` rather than as an
+ * error. Findings of the components that finished before it stopped are kept.
+ */
+export const REVIEW_CANCELLED_REASON = "Cancelled by user.";
 
 /** What a review is about: a GitHub pull request, or an ad-hoc two-ref comparison. */
 export type ReviewTarget =
@@ -179,6 +186,60 @@ export async function getReviewJobLogs(
   return logs;
 }
 
+// ---------------------------------------------------------------------------
+// Cancellation
+// ---------------------------------------------------------------------------
+//
+// Cooperative, exactly like the label queue (./label-queue.ts): the request
+// sets a short-lived flag (./runner.ts), the worker polls it while the job
+// runs and aborts the job's model calls when it appears (worker/index.ts). A
+// job still *waiting* in the queue has no worker yet and is simply removed.
+
+/** Flag the worker polls while a target's review job is active. */
+function reviewCancelKey(repoId: string, targetKey: string): string {
+  return `${reviewJobId(repoId, targetKey)}:cancel`;
+}
+
+/** Long enough to outlive any single model call; short enough that a stray flag can't linger. */
+const CANCEL_FLAG_TTL_SECONDS = 60 * 60;
+
+export type CancelReviewResult =
+  /** Was waiting in the queue and has been removed. */
+  | { outcome: "removed" }
+  /** Is running; the worker will stop it within a second or two. */
+  | { outcome: "requested" }
+  /** Nothing to cancel (never ran, or already finished). */
+  | { outcome: "not_running" };
+
+export async function cancelReview(repoId: string, targetKey: string): Promise<CancelReviewResult> {
+  const queue = getReviewQueue();
+  const jobId = reviewJobId(repoId, targetKey);
+  const state = await queue.getJobState(jobId);
+  if (state === "active") {
+    await setFlag(reviewCancelKey(repoId, targetKey), CANCEL_FLAG_TTL_SECONDS);
+    return { outcome: "requested" };
+  }
+  if (isPendingJobState(state)) {
+    try {
+      await queue.remove(jobId);
+      return { outcome: "removed" };
+    } catch {
+      // Picked up by the worker between the two calls — cancel it running.
+      await setFlag(reviewCancelKey(repoId, targetKey), CANCEL_FLAG_TTL_SECONDS);
+      return { outcome: "requested" };
+    }
+  }
+  return { outcome: "not_running" };
+}
+
+export async function isReviewCancelRequested(repoId: string, targetKey: string): Promise<boolean> {
+  return hasFlag(reviewCancelKey(repoId, targetKey));
+}
+
+export async function clearReviewCancel(repoId: string, targetKey: string): Promise<void> {
+  await clearFlag(reviewCancelKey(repoId, targetKey));
+}
+
 export interface EnqueueReviewResult {
   /** `false` when a job for this exact target was already pending/active — not an error. */
   enqueued: boolean;
@@ -216,6 +277,8 @@ export async function enqueueReview(
   if (previousState !== "unknown") {
     await queue.remove(jobId).catch(() => undefined);
   }
+  // A flag left over from cancelling the previous run must not stop this one.
+  await clearReviewCancel(repoId, targetKey);
 
   await queue.add(
     REVIEW_JOB_NAME,

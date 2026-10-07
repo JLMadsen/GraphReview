@@ -384,7 +384,8 @@ export function impactFindings(
 /**
  * Runs the whole pass. Never throws: a failed lookup or model call is
  * logged and the review goes on without impact findings — the per-component
- * findings are already persisted and paid for.
+ * findings are already persisted and paid for. A cancelled review (`signal`
+ * aborted) ends the pass the same way; the caller checks the signal.
  */
 export async function runImpactPass(args: {
   repoId: string;
@@ -395,6 +396,7 @@ export async function runImpactPass(args: {
   prId?: string;
   revision: Pick<TargetFindingInput, "reviewedBaseSha" | "reviewedHeadSha" | "reviewedAt">;
   log: JobLogger;
+  signal?: AbortSignal;
 }): Promise<ImpactPassResult> {
   const { repoId, files, head, log } = args;
   const spent: ImpactPassResult = { findings: [], contracts: 0, calls: 0, promptTokens: 0, completionTokens: 0 };
@@ -495,6 +497,7 @@ export async function runImpactPass(args: {
     // --- 3. Judgement ----------------------------------------------------------
     const result = await checkImpact(args.aiConfig, contractInputs.map((c) => c.input), {
       tokenBudget: args.tokenBudget,
+      signal: args.signal,
     });
     spent.calls = result.calls;
     spent.promptTokens = result.usage.promptTokens;
@@ -521,7 +524,7 @@ export async function runImpactPass(args: {
   } catch (error) {
     // A call that went out may still be billed.
     spent.calls = Math.max(spent.calls, 1);
-    log(`impact: failed — ${(error as Error).message}`);
+    log(args.signal?.aborted ? "impact: stopped — the review was cancelled" : `impact: failed — ${(error as Error).message}`);
     return spent;
   }
 }

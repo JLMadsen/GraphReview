@@ -128,9 +128,10 @@ diff-impact view — AI review and labeling just show a "not configured" note.
   Then in Settings: Base URL `http://localhost:11434/v1`, API key any
   placeholder (e.g. `local`), Model the tag you pulled. Review/label quality
   with a small local model is well below a hosted frontier model.
-- **AI-assisted domain labeling.** A repo starts with a mechanical
-  folder-based module tier — the higher-level "domain" grouping needs an AI
-  provider and a click on "Generate labels" in the graph toolbar.
+- **AI-described App map.** A repo's map starts out mechanical (folders
+  and file names, grouped by heuristics); **Describe** / **Group features**
+  in the App map's toolbar asks the AI provider to name, group and describe
+  the cards at that level.
 - **Before/after previews** render changed UI components and run changed
   functions at the base and the head, each in a throwaway Docker container
   with no network while the code runs. Meant for repos you trust. Without
@@ -146,7 +147,16 @@ diff-impact view — AI review and labeling just show a "not configured" note.
   makes the next n requests answer 503 "model overloaded" (for testing retries). On Windows, `tsx`
   can leave a child process behind after you stop it — kill the PID still
   listening on the port.
-- **Smoke tests** (plain scripts, from a checkout):
+- **Smoke tests** (plain scripts, from a checkout). `npm test` runs every
+  `lib/**/smoke-test*.ts` one after the other, each with its own temporary
+  data folder, and stops at the first failure:
+  ```bash
+  npm test
+  npm test -- jobs    # only those whose path contains "jobs"
+  ```
+  `npm run lint` and `npm run typecheck` are the other checks CI runs. Each
+  smoke test also runs on its own, and the analysis ones can be pointed at a
+  real repo:
   ```bash
   npx tsx lib/ai/smoke-test.ts
   npx tsx lib/ai/smoke-test-review.ts

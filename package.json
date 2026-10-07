@@ -31,6 +31,8 @@
     "build": "next build",
     "start": "node bin/graphreview.mjs",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "test": "node .github/scripts/smoke-tests.mjs",
     "prepack": "npm run build",
     "release": "node .github/scripts/release.mjs"
   },
@@ -49,7 +51,7 @@
     "next": "15.5.25",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "simple-git": "^3.36.0",
+    "simple-git": "^4.0.2",
     "tw-animate-css": "^1.2.4",
     "undici": "^6.28.1",
     "web-tree-sitter": "^0.27.0",

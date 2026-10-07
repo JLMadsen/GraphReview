@@ -7,9 +7,8 @@
 //                   previous map of the same level stays up during a refresh.
 //   useAppMapJob  — the on-demand AI run: status on mount, POST only from
 //                   `generate`, polling while queued/running, `onCompleted`
-//                   once on the way out of pending. Same shape (and the same
-//                   "the effect never depends on state it sets" rule) as
-//                   useLabels.
+//                   once on the way out of pending. The effect never
+//                   depends on state it sets.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -17,6 +16,7 @@ import {
   type AppMapJobStatusDTO,
   type AppMapLevel,
   type AppMapResponseDTO,
+  type AppMapRunMode,
 } from "./app-map-types";
 
 export interface UseAppMapResult {
@@ -74,7 +74,8 @@ export interface UseAppMapJobResult {
   /** Inline message: a POST refusal, a failed run, a fetch error. */
   notice: string | null;
   running: boolean;
-  generate: (level: AppMapLevel) => void;
+  /** `place` (features only) keeps the stored grouping and just places the files it doesn't cover. */
+  generate: (level: AppMapLevel, mode?: AppMapRunMode) => void;
   cancel: () => void;
 }
 
@@ -83,7 +84,7 @@ export function useAppMapJob(repoId: string, enabled: boolean, onCompleted: () =
   const [notice, setNotice] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [nonce, setNonce] = useState(0);
-  const pendingPost = useRef<AppMapLevel | null>(null);
+  const pendingPost = useRef<{ level: AppMapLevel; mode: AppMapRunMode } | null>(null);
   const wasPending = useRef(false);
   const onCompletedRef = useRef(onCompleted);
   onCompletedRef.current = onCompleted;
@@ -129,7 +130,7 @@ export function useAppMapJob(repoId: string, enabled: boolean, onCompleted: () =
           const res = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ level: post }),
+            body: JSON.stringify(post),
           });
           const json = (await res.json().catch(() => null)) as { error?: string } | null;
           if (!alive) return;
@@ -155,8 +156,8 @@ export function useAppMapJob(repoId: string, enabled: boolean, onCompleted: () =
     };
   }, [repoId, enabled, nonce]);
 
-  const generate = useCallback((level: AppMapLevel) => {
-    pendingPost.current = level;
+  const generate = useCallback((level: AppMapLevel, mode: AppMapRunMode = "full") => {
+    pendingPost.current = { level, mode };
     setNonce((n) => n + 1);
   }, []);
 

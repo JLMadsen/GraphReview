@@ -11,6 +11,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { gitRefSchema } from "../../_shared";
 import {
   ChangedFilesError,
   applyPrMapGrouping,
@@ -29,7 +30,7 @@ export const dynamic = "force-dynamic";
 
 const bodySchema = z.union([
   z.object({ prNumber: z.number().int().positive() }),
-  z.object({ baseRef: z.string().min(1), headRef: z.string().min(1) }),
+  z.object({ baseRef: gitRefSchema, headRef: gitRefSchema }),
   z.object({ filePaths: z.array(z.string()) }),
 ]);
 

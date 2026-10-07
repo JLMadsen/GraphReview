@@ -3,14 +3,14 @@
 // Same policy as the label queue (./label-queue.ts), for the same reasons:
 // a run spends model calls, so it is `attempts: 1` and never retried, and it
 // is strictly on demand — nothing enqueues it except someone pressing
-// "Explain with AI" on the App map. One run per repo at a time (whatever the
+// "Explain with AI" (or "Place N files") on the App map. One run per repo at a time (whatever the
 // level), cancellable cooperatively through a flag the worker polls.
 //
 // Server-only.
 
 import { createHash } from "node:crypto";
 import { Queue, clearFlag, hasFlag, setFlag, type Job, type JobState, type JobsOptions } from "./runner";
-import type { AppMapLevel, AppMapPhaseDTO } from "@/components/graph/app-map-types";
+import type { AppMapLevel, AppMapPhaseDTO, AppMapRunMode } from "@/components/graph/app-map-types";
 import { isPendingJobState } from "./queue";
 
 export const APP_MAP_QUEUE_NAME = "app-map";
@@ -20,6 +20,8 @@ export const APP_MAP_CANCELLED_REASON = "Cancelled by user.";
 export interface AppMapJobData {
   repoId: string;
   level: AppMapLevel;
+  /** Absent on jobs queued before modes existed — `full`. */
+  mode?: AppMapRunMode;
 }
 
 export interface AppMapProgress {
@@ -35,8 +37,13 @@ export interface AppMapProgress {
 export interface AppMapJobResult {
   repoId: string;
   level: AppMapLevel;
+  mode: AppMapRunMode;
   cards: number;
   explained: number;
+  /** Features only: files the placement follow-up put into a feature. */
+  placed: number;
+  /** Features only: files still covered by no member, left to the heuristic. */
+  unplaced: number;
   calls: number;
   promptTokens: number;
   completionTokens: number;
@@ -117,7 +124,8 @@ export async function clearAppMapCancel(repoId: string): Promise<void> {
 /** Enqueues a run unless one is already pending (then `enqueued: false`). See `enqueueLabel` for the remove-first dance. */
 export async function enqueueAppMap(
   repoId: string,
-  level: AppMapLevel
+  level: AppMapLevel,
+  mode: AppMapRunMode = "full"
 ): Promise<{ enqueued: boolean; jobId: string; previousState: JobState | "unknown" }> {
   const queue = getAppMapQueue();
   const jobId = appMapJobId(repoId);
@@ -125,7 +133,7 @@ export async function enqueueAppMap(
   if (isPendingJobState(previousState)) return { enqueued: false, jobId, previousState };
   if (previousState !== "unknown") await queue.remove(jobId).catch(() => undefined);
   await clearAppMapCancel(repoId);
-  await queue.add(APP_MAP_JOB_NAME, { repoId, level }, { jobId });
+  await queue.add(APP_MAP_JOB_NAME, { repoId, level, mode }, { jobId });
   return { enqueued: true, jobId, previousState };
 }
 

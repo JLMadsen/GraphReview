@@ -8,14 +8,26 @@
  * Part B starts the real mock server (mock-server.ts) on an ephemeral port
  * in this process and goes through the REAL `chatCompletion` client, proving
  * client <-> server <-> parser wiring, plus `pingProvider`.
+ * Part C cancels reviews mid-run against a slow mock: each model call of a
+ * review aborts at once, and a whole review job — on a real review worker,
+ * against a throwaway data folder and git repo — stops part-way with the
+ * finished components' findings kept and nothing pruned.
  */
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { AiClientError } from "./errors";
 import { estimateMessagesTokens } from "./budget";
 import { pingProvider, reviewComponentChange } from "./review";
 import type { ReviewInput, ReviewResult } from "./review";
+import { checkImpact } from "./impact";
+import { checkPrIntent } from "./pr-intent";
+import { groupPrMap } from "./pr-map";
 import { mockOutcomeFor, startMockServer } from "./mock-server";
 import type { chatCompletion } from "./client";
 import type { AiProviderConfig, ChatMessage, TokenUsage } from "./types";
+import type { ReviewStatusResponse } from "@/app/api/repos/[repoId]/review/route";
 
 type Chat = typeof chatCompletion;
 
@@ -391,6 +403,24 @@ async function partA(): Promise<void> {
     check("chat errors propagate unchanged (AiClientError, same instance)", caught === boom && caught instanceof AiClientError);
   }
 
+  // --- cancellation -----------------------------------------------------------
+  {
+    const fake = fakeChat(fenced({ findings: [{ summary: "x", assessment: "ok", confidence: 1, rationale: "y" }] }));
+    const controller = new AbortController();
+    await reviewComponentChange(config, baseInput(), { chat: fake.chat, signal: controller.signal });
+    check("signal is forwarded to the chat call", fake.calls[0].options.signal === controller.signal);
+
+    controller.abort();
+    const later = fakeChat("never used");
+    let caught: unknown;
+    try {
+      await reviewComponentChange(config, baseInput(), { chat: later.chat, signal: controller.signal });
+    } catch (err) {
+      caught = err;
+    }
+    check("already-aborted signal: rejects without making a call", caught !== undefined && later.calls.length === 0);
+  }
+
   // --- pingProvider with fake chat ------------------------------------------
   {
     const ok = await pingProvider(config, { chat: fakeChat("ok").chat });
@@ -497,9 +527,244 @@ async function partB(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Part C — cancelling mid-run
+// ---------------------------------------------------------------------------
+
+/**
+ * The slow mock's latency per call. Well above the review worker's 1 s
+ * cancel poll, so a cancel lands while the second batch of component calls
+ * is still in flight.
+ */
+const SLOW_MOCK_DELAY_MS = 3000;
+
+async function waitFor<T>(what: string, read: () => Promise<T>, done: (value: T) => boolean, timeoutMs = 20_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await read();
+    if (done(value)) return value;
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+/** Starts `call`, aborts it 100 ms in, and checks it rejected then — not when the slow mock answered. */
+async function checkAbortsPromptly(label: string, call: (signal: AbortSignal) => Promise<unknown>): Promise<void> {
+  const controller = new AbortController();
+  const started = Date.now();
+  const timer = setTimeout(() => controller.abort(), 100);
+  let caught: unknown;
+  try {
+    await call(controller.signal);
+  } catch (err) {
+    caught = err;
+  }
+  clearTimeout(timer);
+  const elapsed = Date.now() - started;
+  check(
+    `${label}: aborting mid-call rejects at once (${elapsed}ms; the mock answers after ${SLOW_MOCK_DELAY_MS}ms)`,
+    caught !== undefined && elapsed < SLOW_MOCK_DELAY_MS / 2,
+    caught === undefined ? "it resolved" : String(caught)
+  );
+}
+
+async function partC(): Promise<void> {
+  console.log("\ncancelling mid-run (slow mock):");
+  const slow = await startMockServer({ port: 0, host: "127.0.0.1", delayMs: SLOW_MOCK_DELAY_MS, log: () => undefined });
+  const fast = await startMockServer({ port: 0, host: "127.0.0.1", delayMs: 0, log: () => undefined });
+  const slowConfig: AiProviderConfig = { baseUrl: `${slow.url}/v1`, apiKey: "test-key", model: "mock-review-1" };
+
+  // --- every model call a review makes takes the signal ------------------------
+  await checkAbortsPromptly("reviewComponentChange", (signal) => reviewComponentChange(slowConfig, baseInput(), { signal }));
+  await checkAbortsPromptly("checkImpact", (signal) =>
+    checkImpact(
+      slowConfig,
+      [
+        {
+          name: "square",
+          filePath: "src/math/square.ts",
+          kind: "callable",
+          change: "changed",
+          before: "square(n: number): number",
+          after: "square(n: number, m: number): number",
+          usages: [{ id: "u1", path: "src/stats/mean.ts", line: 3, snippet: "3> return square(x);" }],
+        },
+      ],
+      { tokenBudget: 7000, signal }
+    )
+  );
+  await checkAbortsPromptly("checkPrIntent", (signal) =>
+    checkPrIntent(
+      slowConfig,
+      {
+        intent: baseInput().intent,
+        files: [{ path: "src/math/square.ts", additions: 1, deletions: 1, patch: SQUARE_PATCH }],
+        findings: [],
+      },
+      { tokenBudget: 7000, signal }
+    )
+  );
+  await checkAbortsPromptly("groupPrMap", (signal) =>
+    groupPrMap(
+      slowConfig,
+      {
+        files: [{ path: "src/math/square.ts", status: "modified", additions: 1, deletions: 1, group: "Math", highlights: [] }],
+        groups: [{ name: "Math", role: "code" }],
+        context: [],
+        links: [],
+        summaries: [],
+      },
+      { tokenBudget: 7000, signal }
+    )
+  );
+
+  // --- a whole review job, on the review worker's own job body ----------------
+  // Everything below goes to a throwaway data folder, set before anything
+  // opens the database, so the developer's own .data/ is never touched.
+  const root = mkdtempSync(path.join(os.tmpdir(), "graphreview-cancel-"));
+  process.env.GRAPHREVIEW_HOME = path.join(root, "data");
+  process.env.LOCAL_REPOS_ROOT = root;
+
+  // The worker logs every step; that is only worth showing when a check fails.
+  const workerLines: string[] = [];
+  const consoleLog = console.log;
+  console.log = (...args: unknown[]) => {
+    if (typeof args[0] === "string" && args[0].startsWith("[worker]")) workerLines.push(args.join(" "));
+    else consoleLog(...args);
+  };
+  const failuresBefore = failures;
+  let closeWorker: (() => Promise<void>) | undefined;
+  let closeDb: (() => void) | undefined;
+
+  try {
+    // Six modules the branch changes (reviewed three at a time), and one it
+    // doesn't touch — home to a finding from "an earlier run" that only a
+    // completed review may prune.
+    const repoDir = path.join(root, "repo");
+    mkdirSync(repoDir);
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-c", "user.name=smoke", "-c", "user.email=smoke@example.invalid", "-c", "commit.gpgsign=false", ...args], {
+        cwd: repoDir,
+        stdio: "pipe",
+      });
+    const changed = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"];
+    const writeModule = (name: string, body: string) => {
+      mkdirSync(path.join(repoDir, "src", name), { recursive: true });
+      writeFileSync(path.join(repoDir, "src", name, "index.ts"), `export function ${name}(x: number): number {\n  return ${body};\n}\n`);
+    };
+    git("init", "-q", "-b", "main");
+    for (const name of [...changed, "legacy"]) writeModule(name, "x + 1");
+    git("add", "-A");
+    git("commit", "-q", "-m", "base");
+    git("checkout", "-q", "-b", "feature");
+    for (const name of changed) writeModule(name, "x + 2");
+    git("commit", "-q", "-am", "change");
+    git("checkout", "-q", "main");
+
+    const db = await import("../db");
+    closeDb = db.closeDb;
+    const { encrypt } = await import("../crypto");
+    const { runAnalysisJob } = await import("../jobs/analyze");
+    const { Worker } = await import("../jobs/runner");
+    const queue = await import("../jobs/review-queue");
+    const route = await import("../../app/api/repos/[repoId]/review/route");
+    const { processReviewJob } = await import("../../worker/index");
+
+    const repoId = "cancel-smoke";
+    await db.upsertRepo({ id: repoId, name: repoId, provider: "local", localPath: repoDir, defaultBranch: "main" });
+    await runAnalysisJob(repoId, () => undefined);
+    const provider = await db.createAiProvider({
+      name: "slow mock",
+      baseUrl: slowConfig.baseUrl,
+      apiKeyEncrypted: encrypt("test-key"),
+      model: "mock-review-1",
+    });
+
+    const target = { kind: "refs", baseRef: "main", headRef: "feature" } as const;
+    const targetKey = queue.reviewTargetKey(target);
+    const legacyId = `${repoId}:module:legacy`;
+    await db.replaceFindingsForTargetComponent(repoId, targetKey, legacyId, [
+      { id: "seeded-legacy", summary: "From an earlier run.", assessment: "concern", confidence: 0.5, rationale: "Seeded by the smoke test.", model: "mock-review-1" },
+    ]);
+
+    // The route handlers themselves, called the way the review dock calls them.
+    const url = `http://localhost/api/repos/${repoId}/review?baseRef=main&headRef=feature`;
+    const context = { params: Promise.resolve({ repoId }) };
+    const cancel = async () => (await (await route.DELETE(new Request(url, { method: "DELETE" }), context)).json()) as { outcome: string };
+    const status = async () => (await (await route.GET(new Request(url), context)).json()) as ReviewStatusResponse;
+
+    // --- queued: removed outright -----------------------------------------------
+    await queue.enqueueReview(repoId, target);
+    check("queued review: GET says queued", (await status()).state === "queued");
+    const removed = await cancel();
+    check("DELETE on a queued review -> removed, job gone", removed.outcome === "removed" && (await queue.getReviewJobState(repoId, targetKey)) === "unknown");
+    check("DELETE with nothing pending -> not_running", (await cancel()).outcome === "not_running");
+
+    // --- running: stopped part-way ------------------------------------------------
+    const worker = new Worker(queue.REVIEW_QUEUE_NAME, processReviewJob, { concurrency: 1 });
+    closeWorker = () => worker.close();
+    await queue.enqueueReview(repoId, target);
+    const completedSoFar = async () => ((await queue.getReviewJob(repoId, targetKey))?.progress as { completed?: number } | undefined)?.completed ?? 0;
+    await waitFor("the first three components", completedSoFar, (completed) => completed >= 3);
+    const cancelledAt = Date.now();
+    const requested = await cancel();
+    check("DELETE on a running review -> requested, flag set", requested.outcome === "requested" && (await queue.isReviewCancelRequested(repoId, targetKey)));
+    const stopping = await status();
+    check(
+      "GET while it stops: running with cancelRequested",
+      stopping.state === "running" ? stopping.cancelRequested === true : stopping.cancelled === true,
+      JSON.stringify({ state: stopping.state, cancelRequested: stopping.cancelRequested })
+    );
+
+    await waitFor("the job to stop", () => queue.getReviewJobState(repoId, targetKey), (state) => state === "failed" || state === "completed");
+    const stoppedMs = Date.now() - cancelledAt;
+    const final = await status();
+    const reviewed = new Set(final.findings.filter((f) => f.category === "change" && f.componentId !== legacyId).map((f) => f.componentId));
+    check(
+      "ends as failed + cancelled, with no error message",
+      final.state === "failed" && final.cancelled === true && final.error === undefined,
+      JSON.stringify({ state: final.state, cancelled: final.cancelled, error: final.error })
+    );
+    check(`stopped ${stoppedMs}ms after the cancel, before the calls in flight (${SLOW_MOCK_DELAY_MS}ms) answered`, stoppedMs < SLOW_MOCK_DELAY_MS - 500);
+    check("the 3 finished components keep their findings; the 3 cut off have none", reviewed.size === 3, [...reviewed].join(", "));
+    check("no failed-call placeholders for the calls the cancel cut off", !final.findings.some((f) => f.callFailed));
+    check("nothing pruned: the earlier run's finding on the untouched module is still there", final.findings.some((f) => f.id === "seeded-legacy"));
+    check("no impact or intent findings written", final.findings.every((f) => f.category === "change"));
+    check(
+      "final progress: 3 of 6 done, nothing listed as running",
+      final.progress?.completed === 3 && final.progress.total === 6 && final.progress.running.length === 0,
+      JSON.stringify(final.progress)
+    );
+    check("the cancel flag is cleared once the job stopped", !(await queue.isReviewCancelRequested(repoId, targetKey)));
+
+    // --- a re-run completes, and does prune ------------------------------------------
+    // What makes "nothing pruned" above mean something.
+    await db.updateAiProvider(provider.id, { baseUrl: `${fast.url}/v1` });
+    await queue.enqueueReview(repoId, target);
+    await waitFor("the re-run", () => queue.getReviewJobState(repoId, targetKey), (state) => state === "failed" || state === "completed");
+    const rerun = await status();
+    const rerunReviewed = new Set(rerun.findings.filter((f) => f.category === "change").map((f) => f.componentId));
+    check("a re-run after the cancel completes", rerun.state === "completed" && !rerun.cancelled, JSON.stringify({ state: rerun.state, error: rerun.error }));
+    check("…reviews all 6 components and prunes the untouched module's finding", rerunReviewed.size === 6 && !rerunReviewed.has(legacyId));
+  } finally {
+    await closeWorker?.();
+    console.log = consoleLog;
+    if (failures > failuresBefore) for (const line of workerLines) console.log(`       ${line}`);
+    closeDb?.();
+    await slow.close();
+    await fast.close();
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } catch {
+      /* a lingering file lock on Windows; it is in the OS temp folder */
+    }
+  }
+}
+
 async function main(): Promise<void> {
   await partA();
   await partB();
+  await partC();
   console.log(failures === 0 ? "\nAll checks passed." : `\n${failures} check(s) FAILED.`);
   if (failures > 0) process.exitCode = 1;
 }

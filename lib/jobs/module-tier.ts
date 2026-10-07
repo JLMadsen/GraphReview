@@ -14,10 +14,14 @@
 //   5. lets a module without a domain inherit the domain most of its files
 //      were in before, and flags the domain tier as stale when that happens;
 //   6. moves findings along with their files;
-//   7. refreshes the free merge suggestions.
+//   7. refreshes the free merge suggestions — only when the caller passes
+//      `suggestions`. `regroupRepo` (the merge actions) does; analysis
+//      doesn't, because nothing shows suggestions while the merge UI is
+//      removed (docs/ideas.md).
 //
 // Deliberately free of lib/analysis's parser: `regroupRepo` runs inside an
-// API route, and only `clusterByFolderDepth` (pure) is needed from there.
+// API route (the merge actions'), and only `clusterByFolderDepth` (pure) is
+// needed from there.
 
 import { clusterByFolderDepth, DEFAULT_MODULE_DEPTH } from "@/lib/analysis/graph-builder";
 import type { ModuleCluster } from "@/lib/analysis/graph-builder";
@@ -63,21 +67,22 @@ function baseName(filePath: string): string {
 
 export interface ModuleTierInput {
   repoId: string;
-  filePaths: readonly string[];
   edges: ReadonlyArray<{ from: string; to: string }>;
   folderClusters: readonly ModuleCluster[];
-  moduleDepth: number;
+  /** Set to refresh the merge suggestions (step 7) from these; left out, they are not touched. */
+  suggestions?: { filePaths: readonly string[]; moduleDepth: number };
   log: JobLogger;
 }
 
 export interface ModuleTierCounts {
   components: number;
   componentEdges: number;
-  openSuggestions: number;
+  /** Only when suggestions were refreshed. */
+  openSuggestions?: number;
 }
 
 export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTierCounts> {
-  const { repoId, edges, folderClusters, moduleDepth, log } = input;
+  const { repoId, edges, folderClusters, log } = input;
 
   const [mergedModules, previousOwners, domainByModule] = await Promise.all([
     listMergedModules(repoId),
@@ -221,7 +226,8 @@ export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTie
   if (movedFindings > 0) log(`moved ${movedFindings} finding(s) to the module that now owns their file`);
 
   // --- suggestions (free heuristics; never fails the caller) ---------------
-  let openSuggestions = 0;
+  const counts: ModuleTierCounts = { components: liveIds.size, componentEdges: componentEdges.length };
+  if (!input.suggestions) return counts;
   try {
     const modules: HeuristicModule[] = [
       ...ownership.liveFolderModules.map(({ id, cluster }) => ({
@@ -239,19 +245,18 @@ export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTie
       })),
     ];
     const suggestions = computeMergeSuggestions({
-      filePaths: input.filePaths,
+      filePaths: input.suggestions.filePaths,
       edges,
       ownerByFile: ownership.componentIdByFile,
       modules,
-      moduleDepth,
+      moduleDepth: input.suggestions.moduleDepth,
     });
-    openSuggestions = await syncMergeSuggestions(repoId, suggestions);
-    log(`${openSuggestions} open merge suggestion(s)`);
+    counts.openSuggestions = await syncMergeSuggestions(repoId, suggestions);
+    log(`${counts.openSuggestions} open merge suggestion(s)`);
   } catch (error) {
     log(`merge suggestions skipped: ${(error as Error).message}`);
   }
-
-  return { components: liveIds.size, componentEdges: componentEdges.length, openSuggestions };
+  return counts;
 }
 
 /**
@@ -263,10 +268,9 @@ export async function regroupRepo(repoId: string, log: JobLogger): Promise<Modul
   const { filePaths, edges } = await getStoredImportGraph(repoId);
   return writeModuleTier({
     repoId,
-    filePaths,
     edges,
     folderClusters: splitLargeModules(clusterByFolderDepth(filePaths, DEFAULT_MODULE_DEPTH), edges),
-    moduleDepth: DEFAULT_MODULE_DEPTH,
+    suggestions: { filePaths, moduleDepth: DEFAULT_MODULE_DEPTH },
     log,
   });
 }

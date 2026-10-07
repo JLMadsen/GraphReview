@@ -65,7 +65,6 @@ interface PersistCounts {
   components: number;
   fileEdges: number;
   componentEdges: number;
-  openSuggestions: number;
 }
 
 /** Writes an {@link AnalysisResult} into the database as the component/file graph. */
@@ -73,7 +72,6 @@ export async function persistAnalysis(
   repoId: string,
   sha: string,
   result: AnalysisResult,
-  moduleDepth: number,
   log: JobLogger
 ): Promise<PersistCounts> {
   const liveFileIds = new Set(
@@ -106,13 +104,12 @@ export async function persistAnalysis(
   log(`wrote ${result.edges.length} file import edge(s)`);
 
   // --- Module tier: folder modules, merged feature modules, BELONGS_TO,
-  // DEPENDS_ON, findings and merge suggestions (./module-tier.ts) --------
+  // DEPENDS_ON and findings (./module-tier.ts). Merge suggestions are not
+  // refreshed here while nothing shows them (docs/ideas.md). --------------
   const moduleTier = await writeModuleTier({
     repoId,
-    filePaths: result.files.map((file) => file.file),
     edges: result.edges,
     folderClusters: result.modules,
-    moduleDepth,
     log,
   });
 
@@ -162,7 +159,7 @@ export async function runAnalysisJob(
       `${result.modules.length} module(s), ${result.externalPackages.length} external package(s)`
   );
 
-  const counts = await persistAnalysis(repo.id, sha, result, DEFAULT_MODULE_DEPTH, log);
+  const counts = await persistAnalysis(repo.id, sha, result, log);
   await markRepoAnalyzed(repo.id, sha);
 
   const durationMs = Date.now() - startedAt;

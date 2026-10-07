@@ -74,6 +74,7 @@ import {
   type LocalFilePatch,
 } from "./local-git";
 import {
+  REVIEW_CANCELLED_REASON,
   reviewTargetKey,
   type ReviewJob,
   type ReviewJobData,
@@ -400,6 +401,7 @@ async function runPrMapPass(args: {
   aiConfig: AiProviderConfig;
   tokenBudget: number;
   log: JobLogger;
+  signal?: AbortSignal;
 }): Promise<PrMapPassResult> {
   const { repoId, targetKey, files, log } = args;
   const spent: PrMapPassResult = { calls: 0, promptTokens: 0, completionTokens: 0 };
@@ -454,7 +456,7 @@ async function runPrMapPass(args: {
   }
 
   try {
-    const result = await groupPrMap(args.aiConfig, aiInput, { tokenBudget: args.tokenBudget });
+    const result = await groupPrMap(args.aiConfig, aiInput, { tokenBudget: args.tokenBudget, signal: args.signal });
     spent.calls = result.calls;
     spent.promptTokens = result.usage.promptTokens;
     spent.completionTokens = result.usage.completionTokens;
@@ -478,7 +480,7 @@ async function runPrMapPass(args: {
   } catch (error) {
     // As with a failed component call, it went out and may be billed.
     spent.calls = Math.max(spent.calls, 1);
-    log(`PR map: failed — ${(error as Error).message}`);
+    log(args.signal?.aborted ? "PR map: stopped — the review was cancelled" : `PR map: failed — ${(error as Error).message}`);
   }
   return spent;
 }
@@ -498,7 +500,9 @@ const INTENT_ASSESSMENT: Record<PrIntentVerdict, FindingAssessment> = {
  * One call: does the PR, as a whole, deliver what its title, description
  * and linked issues claim? Its answer is one `category: "intent"` finding
  * with no component — a line of the review verdict. A failed call becomes
- * an `unknown` one, the same as a failed component. Never throws.
+ * an `unknown` one, the same as a failed component. Never throws — a
+ * cancelled call comes back as that placeholder too, which the caller then
+ * doesn't write.
  */
 async function runIntentPass(args: {
   intent: ReviewInput["intent"];
@@ -509,6 +513,7 @@ async function runIntentPass(args: {
   prId?: string;
   revision: Pick<TargetFindingInput, "reviewedBaseSha" | "reviewedHeadSha" | "reviewedAt">;
   log: JobLogger;
+  signal?: AbortSignal;
 }): Promise<PrMapPassResult & { finding: TargetFindingInput & { componentId: string } }> {
   const base = {
     id: randomUUID(),
@@ -532,7 +537,7 @@ async function runIntentPass(args: {
         })),
         findings: args.findingLines,
       },
-      { tokenBudget: args.tokenBudget }
+      { tokenBudget: args.tokenBudget, signal: args.signal }
     );
     args.log(`intent: ${result.verdict}${result.parseFailed ? " (model output could not be parsed)" : ""}`);
     return {
@@ -549,7 +554,7 @@ async function runIntentPass(args: {
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    args.log(`intent: model call failed — ${message}`);
+    args.log(args.signal?.aborted ? "intent: stopped — the review was cancelled" : `intent: model call failed — ${message}`);
     return {
       calls: 1,
       promptTokens: 0,
@@ -576,17 +581,62 @@ async function runIntentPass(args: {
  * component whose model call fails is recorded and stepped over, never
  * allowed to abort the run, since by then the other components' calls have
  * already been paid for and `attempts: 1` means there is no second chance.
+ *
+ * `signal` (aborted when the user cancels, worker/index.ts) stops the run
+ * where it is: calls in flight are aborted, no further component is started,
+ * and the job fails with {@link REVIEW_CANCELLED_REASON}. Findings already
+ * written for finished components stay; nothing after that point is written,
+ * and findings of components the target no longer touches are not pruned —
+ * that only happens once every touched component has been reviewed.
  */
 export async function runReviewJob(
   data: ReviewJobData,
   job?: Pick<ReviewJob, "updateProgress">,
-  log: JobLogger = (message) => console.log(`[review] ${message}`)
+  log: JobLogger = (message) => console.log(`[review] ${message}`),
+  signal?: AbortSignal
 ): Promise<ReviewJobResult> {
   const startedAt = Date.now();
   const { repoId, target } = data;
   const targetKey = reviewTargetKey(target);
   const effort = data.effort ?? DEFAULT_REVIEW_EFFORT;
   const effortSettings = REVIEW_EFFORT_SETTINGS[effort];
+
+  const progress: ReviewProgress = {
+    total: 0,
+    completed: 0,
+    failed: 0,
+    calls: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    running: [],
+    unmatchedFiles: 0,
+    effort,
+  };
+  // Keyed by component id, not name: two components can legitimately share a
+  // display name, and removing one from a name-keyed set would drop both
+  // from the "currently running" list.
+  const running = new Map<string, string>();
+  const publishProgress = async (): Promise<void> => {
+    progress.running = [...running.values()];
+    try {
+      // Progress is advisory (a live counter) — a hiccup writing
+      // it must never take down a job that is otherwise succeeding.
+      await job?.updateProgress({ ...progress });
+    } catch {
+      /* ignored */
+    }
+  };
+  /** Ends a cancelled run, leaving the final cost counter behind for the UI. */
+  const stopIfCancelled = async (): Promise<void> => {
+    if (!signal?.aborted) return;
+    running.clear();
+    await publishProgress();
+    log(
+      `cancelled after ${progress.calls} model call(s) — the findings of ` +
+        `${progress.completed + progress.failed} finished component(s) are kept`
+    );
+    throw new UnrecoverableError(REVIEW_CANCELLED_REASON);
+  };
 
   const repo = await getRepoById(repoId);
   if (!repo) {
@@ -601,6 +651,7 @@ export async function runReviewJob(
 
   const resolved = await resolveTarget(repo, target, log);
   log(`diff source: ${resolved.description} — ${resolved.files.length} changed file(s)`);
+  await stopIfCancelled();
   // Stamped on every finding this run writes (see `ResolvedTarget.reviewed`).
   // `reviewedAt` is the moment the shas were captured, not when each
   // component happened to finish.
@@ -614,6 +665,7 @@ export async function runReviewJob(
   // The code as the target leaves it — for related-code context and the
   // impact pass. `null` (logged) falls back to the default branch / skips.
   const head = await openHeadSource(repo, target, resolved.reviewed.headSha, log);
+  await stopIfCancelled();
 
   // --- Map the diff onto the component graph -----------------------------
   const filesByPath = new Map(resolved.files.map((file) => [file.path, file]));
@@ -652,31 +704,8 @@ export async function runReviewJob(
   }
   const toReview = retry ? contexts.filter((context) => retry.componentIds.has(context.id)) : contexts;
 
-  const progress: ReviewProgress = {
-    total: toReview.length,
-    completed: 0,
-    failed: 0,
-    calls: 0,
-    promptTokens: 0,
-    completionTokens: 0,
-    running: [],
-    unmatchedFiles: match.unmatchedFiles.length,
-    effort,
-  };
-  // Keyed by component id, not name: two components can legitimately share a
-  // display name, and removing one from a name-keyed set would drop both
-  // from the "currently running" list.
-  const running = new Map<string, string>();
-  const publishProgress = async (): Promise<void> => {
-    progress.running = [...running.values()];
-    try {
-      // Progress is advisory (a live counter) — a hiccup writing
-      // it must never take down a job that is otherwise succeeding.
-      await job?.updateProgress({ ...progress });
-    } catch {
-      /* ignored */
-    }
-  };
+  progress.total = toReview.length;
+  progress.unmatchedFiles = match.unmatchedFiles.length;
   await publishProgress();
 
   // --- One call per component, a few at a time ---------------------------
@@ -702,6 +731,7 @@ export async function runReviewJob(
 
     let findings: TargetFindingInput[];
     let failed = false;
+    let sent = false;
 
     try {
       const related = await gatherRelatedContext({
@@ -713,6 +743,8 @@ export async function runReviewJob(
         head,
         log: (message) => log(`${context.name}: ${message}`),
       });
+      signal?.throwIfAborted();
+      sent = true;
       const result = await reviewComponentChange(
         aiConfig,
         {
@@ -727,7 +759,7 @@ export async function runReviewJob(
           files,
           related,
         },
-        { tokenBudget: effortSettings.tokenBudget }
+        { tokenBudget: effortSettings.tokenBudget, signal }
       );
 
       progress.calls += result.calls;
@@ -765,6 +797,15 @@ export async function runReviewJob(
           (result.parseFailed ? " (model output could not be parsed)" : "")
       );
     } catch (error) {
+      if (signal?.aborted) {
+        // Cut off by a cancel. Nothing is written, so whatever this component
+        // had from an earlier run stays as it was — and it isn't a failed call
+        // for "Retry failed" to pick up. A call in flight may still be billed.
+        if (sent) progress.calls += 1;
+        running.delete(context.id);
+        await publishProgress();
+        return;
+      }
       failed = true;
       // A rejected call still went out (and, with a hosted provider, may
       // still be billed), so it counts toward the running call counter.
@@ -817,13 +858,17 @@ export async function runReviewJob(
   };
 
   const runner = async (): Promise<void> => {
-    for (let index = nextIndex++; index < toReview.length; index = nextIndex++) {
+    // A cancel stops the next component from starting; the ones in flight
+    // are aborted inside `reviewOne`.
+    for (let index = nextIndex++; index < toReview.length && !signal?.aborted; index = nextIndex++) {
       await reviewOne(toReview[index]);
     }
   };
   await Promise.all(
     Array.from({ length: Math.min(MODEL_CONCURRENCY, toReview.length) }, runner)
   );
+  // Before pruning: a cancelled run hasn't looked at every touched component.
+  await stopIfCancelled();
 
   // --- Drop findings for components this target no longer touches -------
   const prunedFindings = await deleteFindingsForTargetExceptComponents(
@@ -868,11 +913,13 @@ export async function runReviewJob(
         prId: resolved.prId,
         revision,
         log,
+        signal,
       });
       running.delete("__intent");
       progress.calls += intentPass.calls;
       progress.promptTokens += intentPass.promptTokens;
       progress.completionTokens += intentPass.completionTokens;
+      await stopIfCancelled();
       await persistCategory("intent", [intentPass.finding]);
     }
     await publishProgress();
@@ -891,11 +938,14 @@ export async function runReviewJob(
     prId: resolved.prId,
     revision,
     log,
+    signal,
   });
   running.delete("__impact");
   progress.calls += impact.calls;
   progress.promptTokens += impact.promptTokens;
   progress.completionTokens += impact.completionTokens;
+  // A cut-off pass found nothing; writing that would wipe the last run's impact findings.
+  await stopIfCancelled();
   await persistCategory("impact", impact.findings);
   for (const finding of impact.findings) {
     if (finding.assessment !== "ok") findingLines.push(`${finding.filePath}: ${finding.summary} (impact, ${finding.assessment})`);
@@ -914,11 +964,13 @@ export async function runReviewJob(
       prId: resolved.prId,
       revision,
       log,
+      signal,
     });
     running.delete("__intent");
     progress.calls += intentPass.calls;
     progress.promptTokens += intentPass.promptTokens;
     progress.completionTokens += intentPass.completionTokens;
+    await stopIfCancelled();
     await persistCategory("intent", [intentPass.finding]);
   } else {
     await persistCategory("intent", []);
@@ -937,11 +989,13 @@ export async function runReviewJob(
     aiConfig,
     tokenBudget: effortSettings.tokenBudget,
     log,
+    signal,
   });
   running.delete("__pr-map");
   progress.calls += prMapSpent.calls;
   progress.promptTokens += prMapSpent.promptTokens;
   progress.completionTokens += prMapSpent.completionTokens;
+  await stopIfCancelled();
 
   await publishProgress();
   return finish();

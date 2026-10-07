@@ -6,8 +6,10 @@
 // automatically — but unlike a review it is explicitly **on demand**
 // (a review's "no confirmation, no cap" follows a diff selection; re-analysis
 // is frequent and re-labeling after every one of them would spend tokens
-// nobody asked for). Nothing enqueues this except a user pressing "Generate
-// labels".
+// nobody asked for). Nothing enqueues this at the moment: its route
+// (`/api/repos/[repoId]/label`, the "status endpoint" below) and the
+// Relabel button went with the Repo view on 2026-10-06 — see docs/ideas.md
+// for where they would come back.
 //
 // Server-only. Route handlers and `worker/` only.
 
@@ -49,7 +51,7 @@ export const LABEL_CANCELLED_REASON = "Cancelled by user.";
 
 /**
  * Live progress of a labeling run, reported via `job.updateProgress()` and
- * surfaced verbatim by `GET /api/repos/[repoId]/label`.
+ * surfaced verbatim by the status endpoint.
  *
  * `calls`/`promptTokens`/`completionTokens` are a running cost counter,
  * the same idea as `ReviewProgress` — visible as it accrues, gating nothing.

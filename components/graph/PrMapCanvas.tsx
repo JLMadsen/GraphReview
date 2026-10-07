@@ -4,8 +4,8 @@
 // cards with labelled edges, laid out left-to-right by ELK and rendered with
 // React Flow through the shared `CardFlow` canvas (also used by the app map).
 //
-// Why not the Cytoscape canvas: cards are HTML (badges, bars, wrapped
-// names), and Cytoscape draws to a <canvas>. The map is small (a handful of
+// Why not Cytoscape (which drew the removed Repo view): cards are HTML
+// (badges, bars, wrapped names), and Cytoscape draws to a <canvas>. The map is small (a handful of
 // cards), so React Flow's DOM nodes cost nothing.
 //
 // A card is an *area* of the change. Clicking one selects it: the other

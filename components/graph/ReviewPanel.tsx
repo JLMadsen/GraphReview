@@ -25,6 +25,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
+  Ban,
   Boxes,
   Check,
   ChevronRight,
@@ -71,6 +72,7 @@ import { FINDING_BUCKETS, emptyCounts, findingBucket, isAreaFinding, type Findin
 import type { PrMapFileDTO, PrMapResponseDTO } from "./pr-map-types";
 import {
   REVIEW_EFFORT_OPTIONS,
+  formatAgo,
   reviewTargetLabel,
   reviewTargetQuery,
   type FindingDTO,
@@ -102,6 +104,13 @@ export interface ReviewPanelProps {
   onRerun: () => void;
   /** Re-run only what failed (model call errors), keeping the other findings. */
   onRetryFailed: () => void;
+  /** The last run was cancelled (see `useReview`). */
+  cancelled: boolean;
+  /** A cancel was sent and the run hasn't stopped yet. */
+  cancelling: boolean;
+  canCancel: boolean;
+  /** Stops the queued or running review; findings that already came back are kept. */
+  onCancel: () => void;
   /** A finding's component chip — opens that module (GraphView sends it to the app map). */
   onSelectComponent: (componentId: string | null) => void;
   /** Resolve (or reopen) a below-match finding. */
@@ -139,19 +148,6 @@ function Sha({ sha }: { sha: string }) {
       {shortSha(sha)}
     </code>
   );
-}
-
-/** "3 h ago"-style relative time, coarse on purpose; empty when the timestamp is missing/invalid. */
-function timeAgo(iso: string | undefined): string {
-  if (!iso) return "";
-  const ms = Date.now() - Date.parse(iso);
-  if (!Number.isFinite(ms) || ms < 0) return "";
-  const minutes = Math.round(ms / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours} h ago`;
-  return `${Math.round(hours / 24)} days ago`;
 }
 
 /** How each kind of agent reply reads above its text. */
@@ -289,7 +285,7 @@ function Replies({ finding }: { finding: FindingDTO }) {
             >
               <MessageSquare className="size-3 text-brand" aria-hidden />
               <span className="font-medium text-foreground">{reply.author}</span>
-              {RESPONSE_LABELS[reply.kind]} · {timeAgo(reply.createdAt)}
+              {RESPONSE_LABELS[reply.kind]} · {formatAgo(reply.createdAt)}
             </span>
             <p className="mt-0.5 whitespace-pre-line">{reply.body}</p>
           </li>
@@ -922,6 +918,10 @@ export function ReviewPanel({
   canRerun,
   onRerun,
   onRetryFailed,
+  cancelled,
+  cancelling,
+  canCancel,
+  onCancel,
   onSelectComponent,
   onSetResolved,
   effort,
@@ -1075,6 +1075,16 @@ export function ReviewPanel({
   const total = progress?.total ?? 0;
   const done = (progress?.completed ?? 0) + (progress?.failed ?? 0);
   const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  // A re-run in flight is about to replace the cancelled one; say nothing.
+  const showCancelled = cancelled && !running && !rerunning;
+  const cancelledNote =
+    total === 0 || !progress
+      ? "Review cancelled before it started."
+      : done === 0
+        ? "Review cancelled before any component was reviewed."
+        : done >= total
+          ? "Review cancelled after every component was reviewed — the impact, intent and PR map checks didn't finish."
+          : `Review cancelled after ${done} of ${total} components. Their findings are kept; the rest weren't reviewed this time.`;
 
   const notConfigured = status === "ready" && !aiConfigured;
   // Freshness only means something for a settled review on screen: while a
@@ -1093,7 +1103,7 @@ export function ReviewPanel({
   // tooltip, so the dock's header fits on one row.
   const reviewedNote =
     showFreshness && freshness && !freshness.stale && !freshness.checkError
-      ? `Reviewed at ${shortSha(freshness.reviewedHeadSha)}${timeAgo(freshness.reviewedAt) ? `, ${timeAgo(freshness.reviewedAt)}` : ""}${costTitle ? ` · ${costTitle}` : ""}`
+      ? `Reviewed at ${shortSha(freshness.reviewedHeadSha)}${formatAgo(freshness.reviewedAt) ? `, ${formatAgo(freshness.reviewedAt)}` : ""}${costTitle ? ` · ${costTitle}` : ""}`
       : costTitle;
 
   const scopeArea = scopeAreaId ? areas.areas.get(scopeAreaId) : undefined;
@@ -1167,7 +1177,24 @@ export function ReviewPanel({
                 </span>
               </JobLogHover>
             )}
-            {state === "failed" && (
+            {running && (
+              <button
+                type="button"
+                onClick={onCancel}
+                disabled={!canCancel}
+                className="rounded-sm border border-border px-1.5 py-0.5 text-[11px] hover:bg-secondary disabled:opacity-60 disabled:hover:bg-transparent"
+                title="Stop the review — findings that already came back are kept"
+              >
+                {cancelling ? "Cancelling…" : "Cancel"}
+              </button>
+            )}
+            {showCancelled && (
+              <span className="flex items-center gap-1.5 px-1 text-[11px] font-medium text-muted-foreground">
+                <Ban className="size-3" aria-hidden />
+                Cancelled
+              </span>
+            )}
+            {state === "failed" && !cancelled && (
               <span className="flex items-center gap-1.5 px-1 text-[11px] font-medium text-destructive">
                 <TriangleAlert className="size-3" aria-hidden />
                 Failed
@@ -1255,6 +1282,11 @@ export function ReviewPanel({
               {notice}
             </Callout>
           )}
+          {showCancelled && (
+            <Callout tone="info" icon={Ban}>
+              {cancelledNote}
+            </Callout>
+          )}
           {aiConfigured && failedCount > 0 && !running && (
             <Callout
               tone="danger"
@@ -1282,7 +1314,7 @@ export function ReviewPanel({
               {isPullRequest ? "The PR" : "The branch"} has new commits since this review (<Sha sha={freshness.reviewedHeadSha} />
               {" → "}
               <Sha sha={freshness.currentHeadSha} />
-              {timeAgo(freshness.reviewedAt) ? `, reviewed ${timeAgo(freshness.reviewedAt)}` : ""}) — the findings may be out of
+              {formatAgo(freshness.reviewedAt) ? `, reviewed ${formatAgo(freshness.reviewedAt)}` : ""}) — the findings may be out of
               date.
             </Callout>
           )}
@@ -1378,11 +1410,13 @@ export function ReviewPanel({
                 <p className="mt-2 px-2 text-xs text-muted-foreground">
                   {running
                     ? "Waiting for the first component to come back…"
-                    : state === "failed"
-                      ? "The review job failed before it produced any findings."
-                      : state === "none" && !rerunning
-                        ? "Not reviewed yet. Reviews start on their own only for open pull requests and branch comparisons — press Review to run one."
-                        : "No findings for this diff yet."}
+                    : cancelled
+                      ? `No findings. Press ${state === "none" ? "Review" : "Re-run"} to review this diff.`
+                      : state === "failed"
+                        ? "The review job failed before it produced any findings."
+                        : state === "none" && !rerunning
+                          ? "Not reviewed yet. Reviews start on their own only for open pull requests and branch comparisons — press Review to run one."
+                          : "No findings for this diff yet."}
                 </p>
               )
             ))}

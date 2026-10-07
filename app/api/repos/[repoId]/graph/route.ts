@@ -1,16 +1,15 @@
 // GET /api/repos/[repoId]/graph
 //
 // Returns every component of the repo plus the `DEPENDS_ON` edges
-// between them, in the flat DTO shape `components/graph/` renders. The
-// domain tier is populated on demand by the AI labeling job
-// (lib/jobs/label.ts), so a repo may legitimately have none: a component
-// simply has no `parentId` when no `CHILD_OF` edge exists, and the canvas
-// renders a flat graph in that case.
+// between them, in the flat DTO shape `components/graph/` reads (the Graph
+// tab uses it to resolve component ids to names). The domain tier is only
+// written by the AI labeling job (lib/jobs/label.ts), so a repo may
+// legitimately have none: a component simply has no `parentId` when no
+// `CHILD_OF` edge exists.
 //
 // Domain-tier nodes carry no files of their own — `BELONGS_TO` only ever
 // points at a module — so their `fileCount` is **summed from their
-// children**. Reporting the raw 0 would size every domain box's label as
-// "0 files" and, worse, feed a 0 into the canvas's node-size scale.
+// children** rather than reported as a raw 0.
 
 import { NextResponse } from "next/server";
 import {

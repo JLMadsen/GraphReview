@@ -66,10 +66,10 @@ const README_CANDIDATES = ["README.md", "readme.md", "README", "Readme.md", "REA
  * shared helper: that module is the review pipeline and is owned/edited
  * independently, and this is eight lines of settings validation. Both check
  * all three fields together, because a half-configured provider can only
- * produce a confusing failure deep inside an HTTP call. The API route runs
- * the same check *before* enqueueing (returning `ai_not_configured`); this
- * is the worker-side backstop for the window where the active provider is
- * changed/deleted between enqueue and execution.
+ * produce a confusing failure deep inside an HTTP call. The label route
+ * (removed for now, see ./label-queue.ts) ran the same check *before*
+ * enqueueing; this is the worker-side backstop for the window where the
+ * active provider is changed/deleted between enqueue and execution.
  */
 async function loadAiConfig(): Promise<AiProviderConfig> {
   const provider = await getActiveAiProvider();

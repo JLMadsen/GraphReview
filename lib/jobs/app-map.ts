@@ -416,6 +416,53 @@ export function matchMember(
   return best?.key;
 }
 
+/** The files no member of `groups` covers. */
+export function uncoveredFiles(
+  files: readonly string[],
+  groups: ReadonlyArray<{ key: string; members: string[] }>
+): string[] {
+  return files.filter((f) => matchMember(f, groups) === undefined);
+}
+
+/**
+ * Members to add per group key for files placed one by one (`placements`:
+ * file → group key). A folder prefix stands in for its files when *every*
+ * file under it was placed into the same group — the shortest such folder —
+ * so the stored rule stays short and files added there later follow it.
+ * Anything else is listed by exact path. Only placed files can make a folder
+ * uniform, so a new prefix never takes a file another member already covers.
+ */
+export function compactPlacements(
+  files: readonly string[],
+  placements: ReadonlyMap<string, string>
+): Map<string, string[]> {
+  const MIXED = "\u0000";
+  const owner = new Map<string, string>();
+  for (const file of files) {
+    const key = placements.get(file) ?? MIXED;
+    const parts = dirSegments(file);
+    for (let i = 1; i <= parts.length; i++) {
+      const prefix = `${parts.slice(0, i).join("/")}/`;
+      const seen = owner.get(prefix);
+      owner.set(prefix, seen === undefined || seen === key ? key : MIXED);
+    }
+  }
+  const added = new Map<string, Set<string>>();
+  for (const [file, key] of placements) {
+    const parts = dirSegments(file);
+    let member = file;
+    for (let i = 1; i <= parts.length; i++) {
+      const prefix = `${parts.slice(0, i).join("/")}/`;
+      if (owner.get(prefix) === key) {
+        member = prefix;
+        break;
+      }
+    }
+    added.set(key, (added.get(key) ?? new Set()).add(member));
+  }
+  return new Map([...added].map(([key, members]) => [key, [...members].sort()]));
+}
+
 /** Each file's layer: the stored architecture run's placement when there is one, the path heuristic otherwise. */
 export function layerResolver(architecture: StoredAppMap | null): (filePath: string) => AppLayerId {
   if (!architecture) return classifyLayer;

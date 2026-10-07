@@ -12,35 +12,17 @@ export { useReview } from "./useReview";
 export type { ReviewSnapshot, UseReviewResult } from "./useReview";
 
 export {
-  formatLabelCost,
-  isLabelPending,
-  labelPhaseLabel,
-} from "./label-types";
-export type {
-  EnqueueLabelResponseDTO,
-  LabelErrorDTO,
-  LabelPhaseDTO,
-  LabelProgressDTO,
-  LabelSnapshot,
-  LabelStateDTO,
-  LabelStatusResponseDTO,
-} from "./label-types";
-
-export {
   ASSESSMENT_ORDER,
   ASSESSMENT_VISUALS,
-  buildReviewMarkers,
   compareAssessment,
-  countByAssessment,
-  countComponentsByAssessment,
   formatConfidence,
   formatLocation,
-  assessmentClassName,
   worstAssessment,
 } from "./review-visuals";
-export type { AssessmentVisual, ReviewMarker, ReviewMarkerMap } from "./review-visuals";
+export type { AssessmentVisual } from "./review-visuals";
 
 export {
+  formatAgo,
   reviewTargetKeyOf,
   reviewTargetLabel,
   reviewTargetQuery,
@@ -51,8 +33,6 @@ export type {
   GraphNodeTier,
   GraphEdgeDTO,
   GraphResponseDTO,
-  ComponentFileDTO,
-  ComponentFilesResponseDTO,
   DiffImpactRequestDTO,
   DiffImpactResponseDTO,
   EnqueueReviewResponseDTO,

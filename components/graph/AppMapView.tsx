@@ -28,11 +28,12 @@ import {
   APP_LAYERS,
   APP_LAYER_ORDER,
   APP_MAP_LEVELS,
+  isAppMapJobPending,
   layerTint,
   type AppMapLevel,
   type AppMapResponseDTO,
 } from "./app-map-types";
-import { formatAgo } from "./label-types";
+import { formatAgo } from "./types";
 
 // Cards are compact now, so a squarer layout fills the canvas instead of
 // leaving a thin strip across its middle.
@@ -97,6 +98,7 @@ export function AppMapView({
     }
   }, []);
   const hasDiff = Boolean(changedFiles && changedFiles.size > 0);
+  const newFiles = map?.newFiles ?? 0;
 
   const nodes = useMemo(() => map?.nodes ?? [], [map]);
   const cardIds = useMemo(() => nodes.map((n) => n.id), [nodes]);
@@ -284,12 +286,24 @@ export function AppMapView({
         </div>
       </div>
 
-      {(job.notice || (map?.newFiles ?? 0) > 0) && (
-        <p className="flex items-start gap-1.5 border-b border-border bg-warning/5 px-4 py-1.5 text-[11px] text-warning">
+      {(job.notice || newFiles > 0) && (
+        <div className="flex items-start gap-1.5 border-b border-border bg-warning/5 px-4 py-1.5 text-[11px] text-warning">
           <TriangleAlert className="mt-px size-3.5 shrink-0" aria-hidden />
-          {job.notice ??
-            `${map!.newFiles} file${map!.newFiles === 1 ? " isn't" : "s aren't"} in the model's grouping (added since, or skipped) — placed by the heuristic. Describe again to include ${map!.newFiles === 1 ? "it" : "them"}.`}
-        </p>
+          <span className="min-w-0 flex-1">
+            {job.notice ??
+              `${newFiles} file${newFiles === 1 ? " isn't" : "s aren't"} in the model's grouping yet — ${newFiles === 1 ? "it's" : "they're"} on heuristic cards for now.`}
+          </span>
+          {newFiles > 0 && level === "features" && job.status?.aiConfigured && !job.running && (
+            <button
+              type="button"
+              onClick={() => job.generate("features", "place")}
+              className="-my-0.5 shrink-0 rounded-sm border border-warning/50 px-1.5 py-0.5 font-medium hover:bg-warning/10"
+              title="Have the model put just these files into the existing features (a call or two), then re-explain the features that grow"
+            >
+              Place {newFiles} file{newFiles === 1 ? "" : "s"}
+            </button>
+          )}
+        </div>
       )}
 
       <CardFlow
@@ -398,15 +412,19 @@ function AiButton({ job, level }: { job: UseAppMapJobResult; level: AppMapLevel 
     );
   }
   if (job.running) {
-    const p = status.progress;
-    const phase =
-      !p || p.phase === "grouping"
-        ? p?.level === "modules"
+    // The last run's progress stays in the status until the new run reports its own.
+    const p = isAppMapJobPending(status.state) ? status.progress : undefined;
+    const phase = !p
+      ? "Starting"
+      : p.phase === "grouping"
+        ? p.level === "modules"
           ? "Preparing"
           : "Grouping"
-        : p.phase === "explaining"
-          ? `Explaining ${p.done}/${p.total}`
-          : "Saving";
+        : p.phase === "placing"
+          ? `Placing ${p.total} file${p.total === 1 ? "" : "s"}`
+          : p.phase === "explaining"
+            ? `Explaining ${p.done}/${p.total}`
+            : "Saving";
     const tokens = p ? p.promptTokens + p.completionTokens : 0;
     return (
       <span className="flex items-center gap-2 text-[11px] text-muted-foreground">

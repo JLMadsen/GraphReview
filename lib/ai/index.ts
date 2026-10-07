@@ -138,12 +138,17 @@ export {
   APP_FEATURES_TASK_MARKER,
   APP_LAYERS_TASK_MARKER,
   APP_MAP_TOKEN_BUDGET,
+  APP_PLACE_TASK_MARKER,
   explainAppCards,
   groupAppFeatures,
+  knownMembersOf,
   normalizeAppExplanations,
   normalizeAppFeatures,
   normalizeAppLayers,
+  normalizeAppPlacements,
+  placeAppFiles,
   placeAppLayers,
+  resolveMember,
 } from "./app-map";
 export type {
   AppCardExplanation,
@@ -151,11 +156,14 @@ export type {
   AppExplainCard,
   AppExplainInput,
   AppFeatureGroup,
+  AppFeaturesReport,
   AppLayerPlacement,
   AppMapAiFile,
   AppMapAiFolder,
   AppMapCallOptions,
   AppMapTreeInput,
+  AppPlaceInput,
+  KnownMembers,
 } from "./app-map";
 
 export {

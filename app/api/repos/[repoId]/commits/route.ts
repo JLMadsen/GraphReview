@@ -9,6 +9,7 @@
 
 import { NextResponse } from "next/server";
 import { getRepoCommits } from "@/lib/jobs";
+import { isSafeGitRef } from "@/lib/jobs/git-ref";
 import { apiError, errorMessage, loadRepo } from "../../_shared";
 
 export const dynamic = "force-dynamic";
@@ -33,7 +34,7 @@ export async function GET(
   if ("response" in loaded) return loaded.response;
 
   const ref = searchParams.get("ref")?.trim() || undefined;
-  if (ref?.startsWith("-")) return apiError(`"${ref}" is not a valid ref.`, 400);
+  if (ref !== undefined && !isSafeGitRef(ref)) return apiError(`"${ref}" is not a valid ref.`, 400);
 
   const result = await getRepoCommits(loaded.repo, ref, limit).catch((error: unknown) => ({
     linked: true as const,

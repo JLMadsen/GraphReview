@@ -9,6 +9,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { gitRefSchema } from "../../_shared";
 import { enqueuePreview, getPreviewJob, getPreviewJobLogs, type ReviewTarget } from "@/lib/jobs";
 import { getRepoById } from "@/lib/db";
 import { getDockerStatus } from "@/lib/preview/sandbox";
@@ -25,8 +26,8 @@ const casesSchema = z.array(z.object({ label: z.string().max(200), input: inputS
 
 const targetFields = {
   prNumber: z.coerce.number().int().positive().optional(),
-  baseRef: z.string().min(1).optional(),
-  headRef: z.string().min(1).optional(),
+  baseRef: gitRefSchema.optional(),
+  headRef: gitRefSchema.optional(),
 };
 
 const bodySchema = z.object({

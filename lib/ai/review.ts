@@ -111,6 +111,7 @@ export interface ReviewOptions {
   tokenBudget?: number; // default = DEFAULT_TOKEN_BUDGET from budget.ts
   temperature?: number; // default 0.2
   chat?: typeof chatCompletion; // injectable for tests
+  signal?: AbortSignal; // aborts the call in flight (a cancelled review); later parts are never sent
 }
 
 const DEFAULT_TEMPERATURE = 0.2;
@@ -254,7 +255,8 @@ export async function reviewComponentChange(
     const fitted = truncateMessagesToBudget(messages, budget);
     if (fitted !== messages) truncated = true;
 
-    const result = await chat(config, fitted, { temperature });
+    options.signal?.throwIfAborted();
+    const result = await chat(config, fitted, { temperature, signal: options.signal });
     calls += 1;
     if (result.usage) {
       usage.promptTokens += result.usage.promptTokens;
