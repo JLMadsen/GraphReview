@@ -181,6 +181,9 @@ export type {
   PreviewInputsSymbol,
 } from "./preview-inputs";
 
+export { API_SHAPE_TASK_MARKER, buildApiShapeSystemPrompt, inferApiShape, normalizeApiShape } from "./api-shape";
+export type { ApiShapeInput, ApiShapeResult } from "./api-shape";
+
 export {
   IMPACT_TASK_MARKER,
   MAX_IMPACT_CALLS,

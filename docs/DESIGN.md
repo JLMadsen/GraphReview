@@ -587,6 +587,84 @@ Started by reading `GET /api/repos/[repoId]/target-graph` — the Graph tab does
 - Calls on instances (`repo.save(x)`) need types and aren't resolved — they are counted per card, never guessed. Java/Kotlin call graphs are therefore sparse; static and same-class calls work.
 - No layer rules, no working-tree review target (docs/ideas.md), no names for Vue, C#, Go or Rust yet.
 
+### 6.11 The API: an endpoint catalog and what a change does to it (built 2026-10-08)
+
+"A Swagger for the app we're looking at", plus the API diff of a PR. Decided with the user up front (2026-10-08):
+- **Where:** a third Graph view, **App map | API | PR**, as a dense list grouped by resource (method · path · kind · middleware/auth · handler), with the explainer in the right column.
+- **What counts:** HTTP routes, Next.js server actions (listed, labelled **internal**: they're the app's own BFF, not for third parties), tRPC procedures, GraphQL fields. Only the kind is labelled. There's no guessing at public vs private.
+- **Shapes:** read from the code's types where they exist (TS types and interfaces, zod, Pydantic, DTO classes/records, DRF serializers, Fastify JSON schema, GraphQL SDL). Untyped handlers get ✦ **Infer** on demand.
+- **OpenAPI files:** merged in (summaries, schemas). Endpoints only in the code or only in the spec are flagged as **drift**.
+- **Auth:** the middleware chain as far as it's visible. With nothing visible it shows `?`, never "none".
+- **Paths the analysis can't fully read** are shown partially and marked (`{PREFIX}/orders`, `…/orders` for an unknown mount). An endpoint is never dropped.
+- **On a PR:** the API change is **shown, never turned into findings**. "Reached" follows calls transitively (capped) and shows the path.
+- **Integrations:** the review prompts, the intent check, the PR chat and the MCP server all get the API change. No OpenAPI export, and no live "Try it out" (docs/ideas.md).
+
+#### 1. Route facts in the parse (`lib/analysis/syntax/routes.mjs`)
+The parse worker records, per file, the raw syntax endpoints are declared with. It does this alongside the symbol facts, and the results are cached by blob the same way (`SymbolFacts.routes`, `PARSE_VERSION` 3). Nothing at this step decides what is a router:
+- `calls`: `x.get("/p", …)`, `x.use("/p", r)`, `x.route("/p").put(…)`, `register`, `include_router`, `register_blueprint`, …
+- `creates`: module-level `express.Router()`, `new Hono().basePath()`, `APIRouter(prefix=…)`, …
+- `classes`: decorated or annotated classes and methods (NestJS, Spring, JAX-RS, Micronaut).
+- `decorated`: Python route functions.
+- `trpc`: router objects.
+- `resolvers`: GraphQL resolver maps.
+- `gql`: SDL templates.
+- `urlpatterns`: Django URL patterns.
+- `models`: class fields.
+- `useServer` / `actions`: server actions.
+
+Values are kept as data (`Val`: a string, a template with holes, a name, an inline function with its line range and fingerprint, a call, a list or an object). Kotlin is read lexically (`languages/kotlin/routes.ts`) into the same shape as Java.
+
+#### 2. The catalog (`lib/analysis/api/`)
+`buildApiCatalog` runs at the end of `analyzeTree`, so every analysed commit has one (`AnalysisResult.api`). It is built from resolvers over the facts plus the symbol graph's name resolution (`context.ts`):
+- `next.ts`: App Router `route.ts`, `pages/api`, server actions, `middleware.ts` matchers, `basePath`.
+- `file-routes.ts`: SvelteKit `+server.ts`, Nuxt/Nitro `server/api`, Astro.
+- `node-routers.ts`: Express, Fastify, Hono, Koa, Elysia, lambda-api and h3.
+  - Routers are followed through imports, CommonJS `require`, function parameters (plugins) and `register` / `use` / `route` mounts, with path-scoped middleware.
+  - A call only counts when its object can be tied to a framework, so `axios.get("/x")` never qualifies.
+- `decorated.ts`: NestJS (including a global prefix) and code-first GraphQL resolvers; Spring, JAX-RS and Micronaut.
+- `python.ts`: FastAPI, Starlette, Flask, Quart and Django Ninja.
+  - Parameter sources are read FastAPI-style, and `Depends` counts as auth.
+  - Django `urlpatterns` are followed through `include()`, along with DRF routers, viewsets and `@action`.
+- `rpc.ts`: tRPC routers (nested and imported) and schema-first GraphQL SDL linked to resolver maps.
+- `spec.ts`: OpenAPI 3 and Swagger 2 documents (js-yaml).
+
+Each endpoint has a stable id across commits: kind, method and path with parameter names erased (`http GET /orders/{}`).
+- When two services in a monorepo serve the same route, both are kept; the second gets a suffix.
+- Each endpoint carries its handler (a declaration, or an inline function's line range) and **reach**: the functions the handler calls through resolved calls, breadth first, at most 50, with data access marked.
+- A resolver that throws costs only its own endpoints.
+
+#### 3. Storage and the change
+- The default branch's catalog is written by the analysis job to `api_catalogs` (one row per repo, migration 3; `ANALYSIS_VERSION` 3).
+- ✦ inferences live in `kv` under `api-shape:<repo>:<handler fingerprint>`, so they survive re-analysis until the handler changes.
+- The target-graph job adds `api: compareApis(base, head, changed)` to its stored result (`lib/analysis/api/compare.ts`). It reports, per endpoint:
+  - **added** or **removed**. A removal is breaking unless it's a server action or a spec-only endpoint.
+  - **changed**, with deltas for path, method, params, request, response, auth and handler code. A pair of removed and added endpoints with the same handler counts as one re-pathed endpoint. Breaking deltas: new required params or request fields, removed or retyped response fields, new auth.
+  - **reached**: the handler is untouched but calls changed code. This is a BFS over the head's calls, at most 8 hops and 2,000 functions per endpoint, and keeps the call path.
+- `changedDeclarations` was pulled out of `buildCallGraph` so this uses the uncapped set.
+
+#### 4. Where it shows
+- **API view** (`ApiView`, `ApiPanel`; `useApiCatalog`, `api-view-model.ts`):
+  - search, a kind filter, and "Changed only" with the counts when a diff is selected;
+  - rows marked new / removed / changed / reached, with `!` when breaking;
+  - the explainer: summary and spec, the change (deltas and reach paths), handler, middleware & auth, params, request and response (from types / from the spec / ✦), callers of a server action, OpenAPI drift, and the reach tree.
+- **Left column:** an "API" section with `+1 −0 ~2 · 28 reached` and the changes, breaking first. Each line opens the API view at that endpoint.
+- **PR map:**
+  - Files mode: each area card shows `⇄N` for the endpoints it touches, and the area inspector lists them.
+  - **Endpoints** mode (`EndpointMapCanvas`): endpoint cards drawn into the area cards holding their handler ("handled in") or the changed code they reach ("reaches fn").
+- **Review:** each component's prompt gets "Endpoints this change affects" (`ReviewRelatedContext.endpoints`), and the intent check gets the whole list (`describe.ts`).
+- **Chat** and **MCP:** a `list_endpoints` tool in both. The PR chat context carries the API change, and MCP has `get_api_changes`.
+- **Routes:**
+  - `GET /api/repos/[repoId]/api-catalog`
+  - `POST /api/repos/[repoId]/api-catalog/infer` with `{ endpointId }` (one inline model call; `lib/ai/api-shape.ts`, `TASK: api-shape`).
+
+#### Limits
+- **Calls on instances aren't resolved** (§6.10), so reach stops at `service.save()`. On class-based backends (Spring, NestJS services) reach is shallow.
+- **Express handlers' request bodies** are only known from validators (`zValidator`, zod `.parse`) or a schema. Otherwise use ✦ Infer.
+- **No global middleware from outside the code** (API gateways, ingress auth). That is why auth is `?` rather than "none".
+- **Not covered yet:** C#, Go and Ruby frameworks, Remix/React Router loaders, and Spring WebFlux functional routes.
+
+Covered by `npx tsx lib/analysis/api/smoke-test-api.ts`: one fixture app per framework, the spec merge and drift, and the comparison.
+
 ## 7. Data model
 
 One SQLite database (`lib/db/`, schema in `lib/db/schema.ts`); every entity except `Settings` is `repoId`-scoped so multiple repos coexist in one file. The model below is written in the graph notation it was designed in (it lived in Neo4j until 2026-10-03): each label is a table with its full record as JSON plus the columns it is queried by, and each relationship is an edge table that cascades with its endpoints — except that `PART_OF`/`BELONGS_TO (PullRequest→Repo)` are implied by `repoId`, and `ABOUT`/`FOR` are just a finding's `componentId`/`prId` (so pruning a component never deletes its findings).

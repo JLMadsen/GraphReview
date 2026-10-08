@@ -17,6 +17,7 @@ import {
   listFindingsByRepoId,
   listFindingsByTargetKey,
   listRepos,
+  readTargetGraph,
   type FindingAssessment,
   type FindingRecord,
   type FindingWithComponent,
@@ -25,6 +26,8 @@ import {
 import {
   ChangedFilesError,
   checkReviewFreshness,
+  ensureTargetGraph,
+  type TargetGraphData,
   getReviewJob,
   latestReviewedRevision,
   listTargetChangedFiles,
@@ -34,6 +37,9 @@ import {
 } from "@/lib/jobs";
 import { isSafeGitRef } from "@/lib/jobs/git-ref";
 import { readFileAtCommit } from "@/lib/jobs/pr-context";
+import { readServedApiCatalog } from "@/lib/jobs/api-catalog";
+import { describeApiChange } from "@/lib/analysis/api/describe";
+import type { ApiShape, Endpoint } from "@/lib/analysis/api/types";
 import { emitFindingsChanged } from "./events";
 
 const INSTRUCTIONS = `GraphReview reviews pull requests and branch comparisons against a component graph of the codebase. Each review is a list of findings, grouped by component; each finding has an assessment (defect > concern > unknown > ok).
@@ -46,7 +52,33 @@ Typical flow:
 
 Findings come in categories: "change" (the AI review of one component's diff), "impact" (callers the change left behind — an import of a name that no longer exists is certain, the rest are model-judged), "intent" (does the PR deliver what it says) "structure" (an import cycle the change creates, found by static analysis — no model; fix it by breaking the loop, or answer it if the cycle is deliberate) and "chat" (added by the reviewer through GraphReview's chat).
 
-Reviews are advisory and can be wrong — check the code before agreeing with a finding.`;
+Reviews are advisory and can be wrong — check the code before agreeing with a finding.
+
+The API: list_endpoints lists every endpoint the repo's analysed commit exposes (HTTP routes, Next.js server actions — internal, made for the app's own pages —, tRPC procedures, GraphQL fields), with the handler, middleware/auth and request/response shapes static analysis could read. get_api_changes says what a review target does to them: endpoints added, removed or changed (path, method, params, shapes, auth, handler code — marked breaking when a client can fail) and endpoints whose handler calls code the change touched. Static analysis only, never findings.`;
+
+const shapeText = (s: ApiShape | undefined) =>
+  s ? `${s.type ?? "object"}${s.fields?.length ? ` { ${s.fields.map((f) => `${f.name}${f.required ? "" : "?"}: ${f.type}`).join("; ")} }` : ""}${s.source === "ai" ? " (inferred by a model)" : ""}` : undefined;
+
+/** An endpoint as an agent sees it: no reach tree, shapes as one line each. */
+function toAgentEndpoint(e: Endpoint) {
+  return {
+    id: e.id,
+    kind: e.kind,
+    method: e.method,
+    path: e.path,
+    ...(e.partial ? { partial: true } : {}),
+    framework: e.framework,
+    ...(e.internal ? { internal: true } : {}),
+    ...(e.handler ? { handler: `${e.handler.file}:${e.handler.startLine} ${e.handler.name}` } : {}),
+    auth: e.auth.length ? e.auth : "unknown — none found statically",
+    ...(e.params.length ? { params: e.params.map((p) => `${p.name}${p.required === false ? "?" : ""} (${p.in}${p.type ? `, ${p.type}` : ""})`) } : {}),
+    ...(e.request ? { request: shapeText(e.request) } : {}),
+    ...(e.response ? { response: shapeText(e.response) } : {}),
+    ...(e.spec?.summary ? { summary: e.spec.summary } : {}),
+    ...(e.drift ? { drift: e.drift } : {}),
+    reaches: e.reach.length,
+  };
+}
 
 /** Worst first — the order findings and components are listed in. */
 const ASSESSMENT_RANK: Record<FindingAssessment, number> = { defect: 0, concern: 1, unknown: 2, ok: 3 };
@@ -419,6 +451,77 @@ export function createGraphReviewMcpServer(): McpServer {
           if (whole?.source === "commit") return { path, inDiff: false, content: whole.text };
         }
         throw new ToolError(`"${path}" is not part of this diff${sha ? ` and could not be read at ${sha}` : " — pass sha to read it whole"}.`);
+      })
+  );
+
+  server.registerTool(
+    "list_endpoints",
+    {
+      title: "List endpoints",
+      description:
+        "Every endpoint the repo's analysed commit exposes — HTTP routes, server actions, tRPC procedures, GraphQL fields — with handler, middleware/auth, parameters and request/response shapes. Filter by kind or a text query (path, handler, framework).",
+      inputSchema: {
+        repoId: z.string(),
+        kind: z.enum(["http", "action", "trpc", "graphql"]).optional(),
+        query: z.string().max(200).optional(),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    ({ repoId, kind, query }) =>
+      json(async () => {
+        await loadRepo(repoId);
+        const served = readServedApiCatalog(repoId);
+        if (!served) throw new ToolError("This repo hasn't been analysed by a version that lists endpoints yet — open it in GraphReview to re-analyse.");
+        const q = query?.trim().toLowerCase();
+        const endpoints = served.catalog.endpoints.filter(
+          (e) => (!kind || e.kind === kind) && (!q || [e.path, e.framework, e.handler?.file ?? "", e.handler?.name ?? ""].some((t) => t.toLowerCase().includes(q)))
+        );
+        return {
+          analysedCommit: served.sha,
+          frameworks: served.catalog.frameworks,
+          ...(served.catalog.specs.length ? { openApiSpecs: served.catalog.specs } : {}),
+          total: endpoints.length,
+          endpoints: endpoints.slice(0, 300).map(toAgentEndpoint),
+          ...(endpoints.length > 300 ? { truncated: "Showing 300 — narrow it with kind or query." } : {}),
+        };
+      })
+  );
+
+  server.registerTool(
+    "get_api_changes",
+    {
+      title: "Get API changes",
+      description:
+        "What a review target does to the endpoints: added, removed, changed (each delta marked breaking when a client can fail) and reached (the handler calls changed code — with the call path). Computed by comparing the target's base and head; started on first call.",
+      inputSchema: { repoId: z.string(), target: targetSchema },
+      annotations: { readOnlyHint: true },
+    },
+    ({ repoId, target }) =>
+      json(async () => {
+        const repo = await loadRepo(repoId);
+        const parsed = parseTarget(target);
+        if (repo.provider === "local" && parsed.kind === "pr") throw new ToolError("This repo has no git-host link, so it has no PRs — use a refs target.");
+        const stored = readTargetGraph<TargetGraphData>(repoId, reviewTargetKey(parsed));
+        const job = await ensureTargetGraph(repoId, parsed);
+        const state = await job.getState();
+        if (!stored?.data.api) {
+          if (state === "failed") throw new ToolError(`The comparison failed: ${job.failedReason ?? "unknown error"}`);
+          return { state: "computing", message: "Comparing base and head — call again in a few seconds." };
+        }
+        const api = stored.data.api;
+        return {
+          baseSha: stored.baseSha,
+          headSha: stored.headSha,
+          summary: describeApiChange(api, 0)[0],
+          changes: api.changes.map((c) => ({
+            status: c.status,
+            ...(c.breaking ? { breaking: true } : {}),
+            endpoint: toAgentEndpoint(c.endpoint),
+            ...(c.deltas.length ? { deltas: c.deltas } : {}),
+            ...(c.reaches?.length ? { reaches: c.reaches.map((r) => `${r.path.map((p) => p.name).join(" → ")} (${r.status}, ${r.file})`) } : {}),
+          })),
+          ...(state !== "completed" ? { note: "A newer comparison is running; this is the last stored one." } : {}),
+        };
       })
   );
 

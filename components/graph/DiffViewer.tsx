@@ -4,14 +4,18 @@
 // "view diff" action in `ReviewPanel`. Two line-number
 // gutters (old/new), a +/- marker column and monospace content, the same
 // shape GitHub's own file diff uses, so a reviewer already fluent in that
-// convention doesn't have to learn a new one.
+// convention doesn't have to learn a new one. Lines are syntax-highlighted
+// by the file's language (highlight.ts) when it has one.
 
-import { Fragment } from "react";
+import { Fragment, useMemo } from "react";
 import { cn } from "cn";
 import type { DiffHunk, DiffLine } from "./diff-utils";
+import { highlightHunks, languageForPath } from "./highlight";
 
 export interface DiffViewerProps {
   hunks: DiffHunk[];
+  /** The file the diff is of — its extension picks the syntax highlighting. */
+  filePath?: string;
   /** Inclusive `[start, end]` new-file line numbers to highlight — the finding's own location, so the reader can find it inside a multi-hunk file. */
   highlightRange?: [number, number] | null;
 }
@@ -21,7 +25,7 @@ function isHighlighted(line: DiffLine, range: [number, number] | null | undefine
   return line.newLine >= range[0] && line.newLine <= range[1];
 }
 
-function LineRow({ line, highlighted }: { line: DiffLine; highlighted: boolean }) {
+function LineRow({ line, html, highlighted }: { line: DiffLine; html: string | null; highlighted: boolean }) {
   if (line.type === "meta") {
     return (
       <tr>
@@ -57,14 +61,18 @@ function LineRow({ line, highlighted }: { line: DiffLine; highlighted: boolean }
       >
         {line.type === "add" ? "+" : line.type === "remove" ? "−" : ""}
       </td>
-      <td className="w-full px-2 font-mono text-[12px] leading-relaxed whitespace-pre">
-        {line.content || " "}
-      </td>
+      {html ? (
+        // highlight.js output: the line's text, escaped, inside its token spans.
+        <td className="w-full px-2 font-mono text-[12px] leading-relaxed whitespace-pre" dangerouslySetInnerHTML={{ __html: html }} />
+      ) : (
+        <td className="w-full px-2 font-mono text-[12px] leading-relaxed whitespace-pre">{line.content || " "}</td>
+      )}
     </tr>
   );
 }
 
-export function DiffViewer({ hunks, highlightRange }: DiffViewerProps) {
+export function DiffViewer({ hunks, filePath, highlightRange }: DiffViewerProps) {
+  const html = useMemo(() => highlightHunks(hunks, languageForPath(filePath)), [hunks, filePath]);
   if (hunks.length === 0) {
     return (
       <p className="px-3 py-6 text-center text-xs text-muted-foreground">
@@ -88,7 +96,7 @@ export function DiffViewer({ hunks, highlightRange }: DiffViewerProps) {
                 </td>
               </tr>
               {hunk.lines.map((line, j) => (
-                <LineRow key={j} line={line} highlighted={isHighlighted(line, highlightRange)} />
+                <LineRow key={j} line={line} html={html?.[i][j] ?? null} highlighted={isHighlighted(line, highlightRange)} />
               ))}
             </Fragment>
           ))}

@@ -150,9 +150,11 @@ export interface PrMapCardProps {
   selected?: boolean;
   /** Another card is selected: this one steps back. */
   dimmed?: boolean;
+  /** Endpoints this area's change touches (handlers in it, or reached code in it). */
+  endpoints?: number;
 }
 
-export function PrMapCard({ node, area, selected, dimmed }: PrMapCardProps) {
+export function PrMapCard({ node, area, selected, dimmed, endpoints }: PrMapCardProps) {
   const context = node.role === "context";
   const tag = ROLE_TAGS[node.role];
   const files = node.files.length;
@@ -204,6 +206,11 @@ export function PrMapCard({ node, area, selected, dimmed }: PrMapCardProps) {
                 {area.deletions > 0 && <span className="text-destructive">−{NUMBER.format(area.deletions)}</span>}
               </span>
             )}
+            {endpoints ? (
+              <span className="text-info" title={`${endpoints} endpoint${endpoints === 1 ? "" : "s"} touched here (handler or code it reaches)`}>
+                ⇄{endpoints}
+              </span>
+            ) : null}
           </>
         )}
       </p>

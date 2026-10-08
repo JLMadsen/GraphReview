@@ -17,7 +17,7 @@
 // Kept out of lib/jobs' barrel: it pulls in lib/analysis.
 
 import { createHash } from "node:crypto";
-import { buildCallGraph, compareStructure, parseChangedLines, type NewCycle } from "@/lib/analysis";
+import { buildCallGraph, compareApis, compareStructure, parseChangedLines, type NewCycle } from "@/lib/analysis";
 import { getFileOwnerMap, getRepoById, listComponentsByRepoId, syncFindingsForTargetCategory, writeTargetGraph } from "@/lib/db";
 import type { RepoRecord, TargetFindingInput } from "@/lib/db";
 import { emitFindingsChanged } from "@/lib/mcp/events";
@@ -121,6 +121,7 @@ export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger
   const changed = await changedLinesBetween(repoDir, baseSha, headSha);
   const structure = compareStructure(base, head, [...changed.keys()]);
   const callGraph = buildCallGraph(base, head, changed);
+  const api = compareApis(base, head, changed);
 
   const [owners, components] = await Promise.all([getFileOwnerMap(repo.id), listComponentsByRepoId(repo.id)]);
   const ownerOf = ownerLookup(owners);
@@ -179,6 +180,7 @@ export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger
       dependentComponents: dependentComponents.size,
     },
     callGraph,
+    api,
     stats: {
       baseFiles: base.files.length,
       headFiles: head.files.length,
@@ -208,7 +210,8 @@ export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger
   log(
     `${structure.newCycles.length} new import cycle(s), ${result.structure.components.added.length} new / ` +
       `${result.structure.components.removed.length} removed component dependenc(ies), ${structure.orphaned.length} orphaned file(s), ` +
-      `${structure.dependents.count} dependent file(s); call graph: ${callGraph.functions.length} function(s), ${callGraph.edges.length} call(s)`
+      `${structure.dependents.count} dependent file(s); call graph: ${callGraph.functions.length} function(s), ${callGraph.edges.length} call(s); ` +
+      `API: +${api.counts.added} −${api.counts.removed} ~${api.counts.changed} changed, ${api.counts.reached} reached`
   );
   return { baseSha, headSha, cycles: structure.newCycles.length, functions: callGraph.functions.length };
 }

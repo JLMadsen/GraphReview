@@ -9,6 +9,7 @@
 import type { CallFact, DeclFact, DeclKind, ImportFact, SymbolFacts } from "../../ir";
 import { tokenize, type Token } from "../jvm/tokenize";
 import { hashText } from "../../syntax/extract.mjs";
+import { kotlinRoutes } from "./routes";
 
 const MODIFIERS = new Set([
   "public", "private", "protected", "internal", "open", "abstract", "final", "override", "sealed", "data",
@@ -257,6 +258,7 @@ export function kotlinSymbols(source: string): SymbolFacts {
 
   const decls = pending.map((p) => p.fact);
   // A call belongs to the innermost declaration whose range holds it.
+  const routes = kotlinRoutes(source);
   const inDecl = (at: number): number => {
     let best = -1;
     let bestSpan = Infinity;
@@ -276,5 +278,6 @@ export function kotlinSymbols(source: string): SymbolFacts {
     members,
     calls: calls.map(({ at, ...call }) => ({ ...call, inDecl: inDecl(at) })),
     pkg,
+    ...(routes ? { routes } : {}),
   };
 }

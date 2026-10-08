@@ -253,19 +253,25 @@ function overlaps(start: number, end: number, lines: Set<number> | undefined): b
   return false;
 }
 
-export function buildCallGraph(
+/**
+ * Every function, method and class the change touched, with how: added,
+ * removed, moved, signature or body changed. Uncapped — {@link buildCallGraph}
+ * draws a neighbourhood of these, the API comparison follows calls to them.
+ */
+export function changedDeclarations(
   base: Pick<AnalysisResult, "symbols">,
   head: Pick<AnalysisResult, "symbols">,
   changed: ReadonlyMap<string, ChangedLines>,
-): CallGraph {
+): {
+  statusOf: Map<string, FunctionStatus>;
+  moves: Array<{ before: SymbolDecl; after: SymbolDecl; changed: "signature" | "body" | null }>;
+} {
   const baseDecls = new Map(base.symbols.decls.map((d) => [d.id, d]));
   const headDecls = new Map(head.symbols.decls.map((d) => [d.id, d]));
   const statusOf = new Map<string, FunctionStatus>();
-  // Moves: the old id is the new id's past — calls to it at the base are calls to the new one.
   const moves = findMovedDeclarations(base, head, new Set(changed.keys())).filter((m) => CALLABLE.has(m.after.kind));
   const movedTo = new Map(moves.map((m) => [m.before.id, m.after.id]));
   const moveOf = new Map(moves.map((m) => [m.after.id, m]));
-  const current = (id: string) => movedTo.get(id) ?? id;
 
   // Declarations in changed files, on either side.
   for (const decl of head.symbols.decls) {
@@ -286,6 +292,21 @@ export function buildCallGraph(
     statusOf.set(decl.id, "removed");
   }
   for (const [id, status] of [...statusOf]) if (status === "unchanged") statusOf.delete(id);
+  return { statusOf, moves };
+}
+
+export function buildCallGraph(
+  base: Pick<AnalysisResult, "symbols">,
+  head: Pick<AnalysisResult, "symbols">,
+  changed: ReadonlyMap<string, ChangedLines>,
+): CallGraph {
+  const baseDecls = new Map(base.symbols.decls.map((d) => [d.id, d]));
+  const headDecls = new Map(head.symbols.decls.map((d) => [d.id, d]));
+  const { statusOf, moves } = changedDeclarations(base, head, changed);
+  // Moves: the old id is the new id's past — calls to it at the base are calls to the new one.
+  const movedTo = new Map(moves.map((m) => [m.before.id, m.after.id]));
+  const moveOf = new Map(moves.map((m) => [m.after.id, m]));
+  const current = (id: string) => movedTo.get(id) ?? id;
 
   const changedIds = new Set(statusOf.keys());
   const callKey = (c: { from: string; to: string }) => `${c.from}\u0000${c.to}`;

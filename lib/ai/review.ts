@@ -88,6 +88,8 @@ export interface ReviewRelatedContext {
   files?: ReviewRelatedFile[];
   /** Moved and changed code touching this component (DESIGN.md §6.10). */
   moves?: ReviewMovedCode[];
+  /** Endpoints whose handler is in this component's change or reaches it (DESIGN.md §6.11), one line each. */
+  endpoints?: string[];
 }
 
 export interface ReviewInput {

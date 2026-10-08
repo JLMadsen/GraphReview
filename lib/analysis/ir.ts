@@ -111,6 +111,155 @@ export interface SymbolFacts {
   pkg?: string;
   /** Python `__all__`. */
   all?: string[];
+  /** Raw route declarations (./syntax/routes.mjs), resolved into endpoints by ./api/. */
+  routes?: RouteFacts;
+}
+
+// ---------------------------------------------------------------------------
+// Route facts — see ./syntax/routes.mjs. Raw syntax only: which object is a
+// router and what a path resolves to is decided across files in ./api/.
+// ---------------------------------------------------------------------------
+
+/** A value as written in the source. */
+export type Val =
+  | { s: string }
+  /** A string with holes: `{expr}` where the source interpolates. */
+  | { t: string }
+  | { id: string }
+  /** An inline function: its line range, text fingerprint and head. */
+  | { fn: [number, number]; hash: string; sig?: string }
+  | { call: string; args: Val[]; kw?: Record<string, Val> }
+  | { list: Val[] }
+  | { obj: Record<string, Val> }
+  | { x: string };
+
+export interface RouteDecorator {
+  /** `Get`, `router.get`, `GetMapping`. */
+  name: string;
+  args: Val[];
+  /** Keyword arguments (Python) / annotation pairs (Java). */
+  kw?: Record<string, Val>;
+}
+
+export interface RouteParamFact {
+  name: string;
+  type?: string;
+  optional?: boolean;
+  default?: Val;
+  decorators?: RouteDecorator[];
+  annotations?: RouteDecorator[];
+}
+
+export interface RouteMethodFact {
+  name: string;
+  line: number;
+  endLine: number;
+  hash: string;
+  decorators?: RouteDecorator[];
+  annotations?: RouteDecorator[];
+  params: RouteParamFact[];
+  returns?: string;
+}
+
+export interface RouteClassFact {
+  name: string;
+  line: number;
+  endLine: number;
+  decorators?: RouteDecorator[];
+  annotations?: RouteDecorator[];
+  methods: RouteMethodFact[];
+}
+
+/** `obj.m(args)`: a JS route registration or mount, or a Python mount (`include_router`). */
+export interface RouteCallFact {
+  obj: string;
+  m: string;
+  args: Val[];
+  kw?: Record<string, Val>;
+  line: number;
+  endLine?: number;
+  /** `router.route("/x").get(…)`: the path of the `route()` in the chain. */
+  route?: Val;
+  /** Index of the declaration it sits in (JS). */
+  inDecl?: number;
+  /** Name of the function it sits in (Python). */
+  inFn?: string;
+}
+
+export interface RouterCreateFact {
+  local: string;
+  /** The factory as written: `express.Router`, `new Hono`, `APIRouter`. */
+  callee: string;
+  args: Val[];
+  kw?: Record<string, Val>;
+  line: number;
+}
+
+export interface TrpcEntryFact {
+  key: string;
+  line: number;
+  endLine?: number;
+  /** A sub-router by name. */
+  ref?: string;
+  nested?: TrpcEntryFact[];
+  op?: "query" | "mutation" | "subscription";
+  hash?: string;
+  /** The procedure it builds on (`publicProcedure`, `protectedProcedure`). */
+  base?: string;
+  input?: string;
+  output?: string;
+  middleware?: string[];
+  fn?: [number, number];
+}
+
+export interface PyDecoratedFact {
+  name: string;
+  parent?: string;
+  kind?: "class";
+  line: number;
+  endLine: number;
+  hash: string;
+  decorators: RouteDecorator[];
+  params: RouteParamFact[];
+  returns?: string;
+}
+
+export interface ModelFieldFact {
+  name: string;
+  type: string;
+  optional?: boolean;
+  default?: string;
+  /** A field declared by a call (`serializers.CharField(required=False)`). */
+  call?: string;
+  annotations?: string[];
+}
+
+/** A class's fields, for request/response shapes (Pydantic, dataclasses, DTOs, serializers). */
+export interface ModelFact {
+  name: string;
+  line: number;
+  bases: string[];
+  fields: ModelFieldFact[];
+  /** Django REST serializer `class Meta`. */
+  meta?: Record<string, Val>;
+  /** Class attributes the views need: `serializer_class`, `permission_classes`, `queryset`, … */
+  attrs?: Record<string, Val>;
+}
+
+export interface RouteFacts {
+  calls?: RouteCallFact[];
+  creates?: RouterCreateFact[];
+  classes?: RouteClassFact[];
+  decorated?: PyDecoratedFact[];
+  trpc?: Array<{ line: number; local?: string; inDecl?: number; entries: TrpcEntryFact[] }>;
+  resolvers?: Array<{ type: string; field: string; line: number; endLine: number; hash?: string; ref?: string }>;
+  gql?: Array<{ line: number; text: string }>;
+  urlpatterns?: Array<{ line: number; value: Val }>;
+  models?: ModelFact[];
+  /** The file starts with `"use server"`: every exported async function is a server action. */
+  useServer?: true;
+  /** Functions with their own `"use server"` directive. */
+  actions?: string[];
 }
 
 /** One analyzed source file. */

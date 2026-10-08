@@ -22,3 +22,4 @@ export * from "./ai-provider";
 export * from "./kv";
 export * from "./parse-cache";
 export * from "./target-graph";
+export * from "./api-catalog";

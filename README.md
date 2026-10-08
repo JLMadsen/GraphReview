@@ -38,6 +38,14 @@ or plain branches in a local checkout. No account, no cloud, nothing to host.
 Unchanged neighbours are one click away when you want to know who calls the
 thing that changed.
 
+**Lists the API, and what the PR does to it.** The API view is a
+Swagger-like list of every endpoint: HTTP routes in Next.js, Express,
+Fastify, Hono, NestJS, FastAPI, Flask, Django, Spring and more, plus server
+actions, tRPC procedures and GraphQL fields. Each one comes with its
+handler, middleware and auth, request and response shapes, and every
+function it reaches. On a PR it marks endpoints that are new, removed,
+changed (breaking or not), or that call code the PR touched.
+
 **Checks the basics.** Does the PR have a description, link an issue, stay
 under a reviewable size, explain *why*? Small things, but they're the first
 things a reviewer asks about.

@@ -61,6 +61,7 @@ import { APP_EXPLAIN_TASK_MARKER, APP_FEATURES_TASK_MARKER, APP_LAYERS_TASK_MARK
 import { PREVIEW_INPUTS_TASK_MARKER } from "./preview-inputs";
 import { IMPACT_TASK_MARKER } from "./impact";
 import { PR_INTENT_TASK_MARKER } from "./pr-intent";
+import { API_SHAPE_TASK_MARKER } from "./api-shape";
 
 export const DEFAULT_MOCK_PORT = 4010;
 export const DEFAULT_MOCK_DELAY_MS = 900;
@@ -246,6 +247,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
                     ? impactContent(userText)
                     : prompt.includes(PR_INTENT_TASK_MARKER)
                     ? prIntentContent(userText)
+                    : prompt.includes(API_SHAPE_TASK_MARKER)
+                    ? apiShapeContent(userText)
                     : prompt.includes(CHECKLIST_TASK_MARKER)
                       ? checklistContent(userText)
                       : prompt.includes(PR_CHAT_TASK_MARKER)
@@ -273,6 +276,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
 
   sendJson(res, 404, errorBody(`No mock route for ${method} ${path}`, "invalid_request_error"));
   done(404);
+}
+
+/** `TASK: api-shape`: every `req.body.<name>` the handler reads becomes a request field; the response is `{ ok }`. */
+function apiShapeContent(userText: string): { content: string; note: string } {
+  const fields = [...new Set([...userText.matchAll(/(?:req|request)\.body\.(\w+)/g)].map((m) => m[1]))];
+  const queries = [...new Set([...userText.matchAll(/(?:req|request)\.query\.(\w+)/g)].map((m) => m[1]))];
+  const answer = {
+    summary: "Mock summary of the endpoint.",
+    params: queries.map((name) => ({ name, in: "query", type: "string", required: false })),
+    request: fields.length ? { type: null, fields: fields.map((name) => ({ name, type: "string", required: true })) } : null,
+    response: { type: null, fields: [{ name: "ok", type: "boolean", required: true }] },
+  };
+  return { content: "```json\n" + JSON.stringify(answer) + "\n```", note: "api-shape" };
 }
 
 function extractMessages(payload: unknown): Array<{ role: string; content: string }> | null {

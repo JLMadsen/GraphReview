@@ -11,7 +11,7 @@
 // Server-only.
 
 import { createHash } from "node:crypto";
-import type { CallGraph, StructureChange } from "@/lib/analysis";
+import type { ApiChange, CallGraph, StructureChange } from "@/lib/analysis";
 import { Queue, type Job, type JobsOptions } from "./runner";
 import { isPendingJobState } from "./queue";
 import { reviewTargetKey, type ReviewTarget } from "./review-queue";
@@ -44,6 +44,8 @@ export interface TargetGraphData {
     dependentComponents: number;
   };
   callGraph: CallGraph;
+  /** What the change does to the endpoints (lib/analysis/api/compare.ts) — shown, never findings. Absent in results stored before it existed. */
+  api?: ApiChange;
   /** Owning component of each file the call graph and the edge changes mention. */
   fileComponents: Record<string, { id: string; name: string }>;
   stats: {

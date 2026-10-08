@@ -13,6 +13,8 @@
  * analysing a PR's base and head, only parses the files that changed.
  */
 import { stat } from "node:fs/promises";
+import { buildApiCatalog } from "./api/catalog";
+import type { ApiCatalog } from "./api/types";
 import type { AnalyzerContext, LanguageAnalyzer, RawImport } from "./analyzer";
 import { countLines, type FileAnalysis, type FileImport, type SymbolFacts } from "./ir";
 import { dirOf, extensionOf } from "./paths";
@@ -68,6 +70,8 @@ export interface AnalysisResult {
   externalPackages: string[];
   /** Declarations, uses and calls across files (./symbols.ts) — TS/JS, Python, Java, Kotlin. */
   symbols: SymbolGraph;
+  /** Every endpoint the tree exposes (./api/, DESIGN.md §6.11). */
+  api: ApiCatalog;
   /** Files counted but not parsed. */
   skipped: { binary: number; large: number; failed: number };
   /** Files whose parse came from the cache. */
@@ -90,7 +94,7 @@ const READ_CONCURRENCY = 24;
  * Bumped whenever what a parse produces changes (queries, extractors, the
  * cached shape), so stale cache entries are never read back.
  */
-export const PARSE_VERSION = 2;
+export const PARSE_VERSION = 3;
 
 /** What a file's own syntax says — the cached unit. */
 export interface CachedParse {
@@ -526,6 +530,13 @@ export async function analyzeTree(tree: SourceTree, options: AnalyzeRepoOptions 
     }
   }
 
+  const api = await buildApiCatalog({ files, symbols, allFiles: ctx.files, readText: (relPath) => tree.readConfig(relPath) }).catch(
+    (error: unknown): ApiCatalog => {
+      console.warn(`[analysis] endpoint catalog failed: ${(error as Error).message}`);
+      return { endpoints: [], specs: [], frameworks: [], unresolvedMounts: 0 };
+    },
+  );
+
   edges.sort(
     (a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to) || a.kind.localeCompare(b.kind),
   );
@@ -543,6 +554,7 @@ export async function analyzeTree(tree: SourceTree, options: AnalyzeRepoOptions 
     ),
     externalPackages: [...externals].sort(),
     symbols,
+    api,
     skipped: { ...tree.skipped, failed },
     cached,
   };

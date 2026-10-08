@@ -120,3 +120,13 @@ the ones that break a rule into findings, the way new import cycles are
 app's database (nothing written to the target repo, decision #9) or a file
 read from the analysed commit (versioned with the code). See first how noisy
 the shown-not-counted dependency changes are in practice.
+
+## "Try it out" on the API view (noted 2026-10-08)
+
+The API view (DESIGN.md §6.11) is Swagger without the "Try it out" button.
+Calling an endpoint means running the app with its database, environment
+and network — far more than the preview sandbox (§6.9) runs, which is one
+file's functions with no network. Possible later as "send to a running
+instance": the reviewer gives a base URL (their dev server, a staging
+deploy) and GraphReview fills the request from the endpoint's params and
+shapes. Parked; also parked: an OpenAPI export of the catalog.

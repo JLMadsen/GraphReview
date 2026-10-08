@@ -20,7 +20,10 @@
 // ghosted (from the base/head comparison, `useTargetGraph`) — and
 // **Functions** — every area opened into the functions the change touches,
 // with their untouched callers and callees on neighbour cards and the calls
-// drawn row to row (`FunctionCard`, `buildFunctionView`).
+// drawn row to row (`FunctionCard`, `buildFunctionView`). A third,
+// **Endpoints** (DESIGN.md §6.11), draws the endpoints the change touches
+// into the areas that hold their handlers or the changed code they reach
+// (`EndpointMapCanvas`); in Files mode each card counts them (⇄).
 
 import { useCallback, useMemo, useState } from "react";
 import { Eye, EyeOff, LoaderCircle, TriangleAlert } from "lucide-react";
@@ -37,8 +40,10 @@ import type { PrMapNodeDTO, PrMapResponseDTO } from "./pr-map-types";
 import type { TargetGraphData } from "./target-graph-types";
 import type { UseTargetGraphResult } from "./useTargetGraph";
 import { VIEW_CANVAS, VIEW_TOOLBAR } from "./view-chrome";
+import { EndpointMapCanvas } from "./EndpointMapCanvas";
+import { ChangeCounts } from "./ApiView";
 
-export type PrMapMode = "files" | "functions";
+export type PrMapMode = "files" | "functions" | "endpoints";
 
 export interface PrMapCanvasProps {
   map: PrMapResponseDTO | null;
@@ -68,6 +73,10 @@ export interface PrMapCanvasProps {
   onHideCard?: (cardId: string) => void;
   /** Puts everything hidden back on the map. */
   onShowHidden?: () => void;
+  /** Endpoints each area touches (Files mode shows the count on the card). */
+  endpointCounts?: ReadonlyMap<string, number>;
+  selectedEndpointId?: string | null;
+  onSelectEndpoint?: (id: string | null) => void;
 }
 
 export function PrMapCanvas({
@@ -90,6 +99,9 @@ export function PrMapCanvas({
   onHideFunction,
   onHideCard,
   onShowHidden,
+  endpointCounts,
+  selectedEndpointId = null,
+  onSelectEndpoint,
 }: PrMapCanvasProps) {
   const [showContext, setShowContext] = useState(true);
   const structure = targetGraph?.graph?.data;
@@ -131,10 +143,11 @@ export function PrMapCanvas({
           area={areas.areas.get(card.id)}
           selected={highlighted.has(card.id)}
           dimmed={Boolean(selectedCardId) && card.id !== selectedCardId}
+          endpoints={endpointCounts?.get(card.id)}
         />
       );
     },
-    [cards, areas, highlighted, selectedCardId]
+    [cards, areas, highlighted, selectedCardId, endpointCounts]
   );
 
   // Only what changes a card's size or the edge set re-runs the layout: the
@@ -143,10 +156,10 @@ export function PrMapCanvas({
   const layoutKey = useMemo(
     () =>
       JSON.stringify([
-        cards.map((c) => [c.id, c.name, c.role]),
+        cards.map((c) => [c.id, c.name, c.role, endpointCounts?.get(c.id) ?? 0]),
         links.map((e) => [e.source, e.target, e.tone ?? ""]),
       ]),
-    [cards, links]
+    [cards, links, endpointCounts]
   );
   const cardIdList = useMemo(() => cards.map((c) => c.id), [cards]);
   const flowLinks = useMemo<CardFlowLink[]>(() => {
@@ -178,6 +191,7 @@ export function PrMapCanvas({
             </span>
           )}
           {map && mode === "files" && <SourceNote map={map} reviewPending={reviewPending} />}
+          {mode === "endpoints" && structure?.api && <ChangeCounts change={structure.api} />}
           {loading && <LoaderCircle className="size-3.5 animate-spin" aria-label="Loading" />}
           {targetGraph && <StructureNote targetGraph={targetGraph} />}
         </div>
@@ -231,13 +245,29 @@ export function PrMapCanvas({
                   label: "Functions",
                   title: "The functions the change touches, their callers and callees, and the calls between them",
                 },
+                {
+                  value: "endpoints" as const,
+                  label: "Endpoints",
+                  title: "The endpoints the change touches, drawn into the areas that hold their handlers or the changed code they call",
+                },
               ]}
             />
           )}
         </div>
       </div>
 
-      {mode === "functions" ? (
+      {mode === "endpoints" ? (
+        <EndpointMapCanvas
+          map={map}
+          areas={areas}
+          change={structure?.api}
+          pending={Boolean(targetGraph?.pending)}
+          selectedEndpointId={selectedEndpointId}
+          onSelectEndpoint={onSelectEndpoint ?? (() => undefined)}
+          selectedCardId={selectedCardId}
+          onSelectCard={onSelectCard}
+        />
+      ) : mode === "functions" ? (
         <FunctionCanvas
           view={functionView ?? null}
           targetGraph={targetGraph}

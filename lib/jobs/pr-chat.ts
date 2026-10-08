@@ -34,8 +34,13 @@ import {
   listComponentsByRepoId,
   listFindingsByTargetKey,
   getComponentOverview,
+  readTargetGraph,
   upsertFinding,
 } from "@/lib/db";
+import type { ApiChange } from "@/lib/analysis/api/types";
+import { describeApiChange, endpointLabel } from "@/lib/analysis/api/describe";
+import { readServedApiCatalog } from "./api-catalog";
+import type { TargetGraphData } from "./target-graph-queue";
 import type { ChatMessageRecord, ComponentRecord, FindingWithComponent, RepoRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import { loadAiConfigOrNull } from "./merge-naming";
@@ -71,6 +76,11 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
     description: "a component of the repo graph: what it's for, its files, what it depends on and what depends on it",
   },
   {
+    name: "list_endpoints",
+    args: '{"query":"<optional text in the path, handler or framework>"}',
+    description: "the app's API: endpoints (HTTP routes, server actions, tRPC, GraphQL) with handler, middleware/auth and request/response shapes",
+  },
+  {
     name: "get_findings",
     args: '{"component":"<optional component name>"}',
     description: "the AI review's findings for this change, optionally for one component",
@@ -83,7 +93,7 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
   },
 ];
 
-const REPO_TOOL_NAMES = new Set(["read_file", "search_code", "get_component"]);
+const REPO_TOOL_NAMES = new Set(["read_file", "search_code", "get_component", "list_endpoints"]);
 
 export const REPO_CHAT_TOOLS: PrChatTool[] = [
   {
@@ -113,6 +123,8 @@ interface ToolContext {
   targetKey: string;
   prId?: string;
   model: string;
+  /** What the change does to the endpoints, when the base/head comparison has run (DESIGN.md §6.11). */
+  api?: ApiChange;
 }
 
 const ASSESSMENTS = new Set(["defect", "concern", "unknown", "ok"]);
@@ -194,6 +206,29 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
   const ctx = tc.ctx;
   if (!ctx && (name === "list_changed_files" || name === "get_diff" || name === "get_findings" || name === "add_finding")) return NO_CHANGE;
   switch (name) {
+    case "list_endpoints": {
+      const served = readServedApiCatalog(tc.repo.id);
+      if (!served) return { text: "The endpoint list isn't built yet — the repo needs a re-analysis.", summary: "no endpoint list yet" };
+      const q = typeof args.query === "string" ? args.query.trim().toLowerCase() : "";
+      const list = served.catalog.endpoints.filter((e) => !q || [e.path, e.framework, e.handler?.file ?? "", e.handler?.name ?? ""].some((t) => t.toLowerCase().includes(q)));
+      const lines = list.slice(0, 60).map((e) => {
+        const shape = (s: typeof e.request) => (s?.fields?.length ? `{ ${s.fields.map((f) => `${f.name}${f.required ? "" : "?"}`).join(", ")} }` : s?.type);
+        return [
+          `- ${endpointLabel(e)}`,
+          e.handler ? ` → ${e.handler.file}:${e.handler.startLine}` : " (spec only)",
+          e.auth.length ? `; auth: ${e.auth.join(" → ")}` : "",
+          shape(e.request) ? `; body ${shape(e.request)}` : "",
+          shape(e.response) ? `; returns ${shape(e.response)}` : "",
+        ].join("");
+      });
+      if (list.length > 60) lines.push(`… ${list.length - 60} more — narrow it with a query`);
+      return {
+        text: lines.join("\n") || "(no endpoints match)",
+        summary: `listed ${Math.min(list.length, 60)} endpoint(s)`,
+        files: [...new Set(list.slice(0, 8).map((e) => e.handler?.file).filter((f): f is string => Boolean(f)))],
+      };
+    }
+
     case "list_components": {
       const counts = fileCounts(tc);
       const modules = tc.components.filter((c) => c.tier === "module").sort((a, b) => a.name.localeCompare(b.name));
@@ -393,6 +428,10 @@ function renderRepoContext(tc: ToolContext): string {
     lines.push(`- ${c.name} (${counts.get(c.id) ?? 0} files)${c.description ? `: ${c.description}` : ""}`);
   }
   if (modules.length > CONTEXT_MAX_FILES) lines.push(`- … ${modules.length - CONTEXT_MAX_FILES} more (use list_components)`);
+  const served = readServedApiCatalog(repo.id);
+  if (served && served.catalog.endpoints.length > 0) {
+    lines.push("", `API: ${served.catalog.endpoints.length} endpoint(s) (${served.catalog.frameworks.join(", ")}) — use list_endpoints.`);
+  }
   return lines.join("\n");
 }
 
@@ -424,6 +463,10 @@ function renderContext(tc: ToolContext): string {
     }
   } else {
     lines.push("", "AI review: no findings yet.");
+  }
+  if (tc.api) {
+    lines.push("", "What the change does to the API (static analysis of base and head; list_endpoints for the whole API):");
+    for (const line of describeApiChange(tc.api, 15)) lines.push(`- ${line}`);
   }
   return lines.join("\n");
 }
@@ -470,6 +513,7 @@ export async function runChatTurn(args: {
     targetKey,
     ...(target?.kind === "pr" ? { prId: `${repo.id}:pr:${target.prNumber}` } : {}),
     model: config.model,
+    ...(target ? { api: readTargetGraph<TargetGraphData>(repo.id, targetKey)?.data.api } : {}),
   };
 
   const userMessage = await addChatMessage({

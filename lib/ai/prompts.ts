@@ -231,6 +231,16 @@ export function renderRelatedSections(related: ReviewRelatedContext): string {
     }
   }
 
+  const endpoints = related.endpoints ?? [];
+  if (endpoints.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("## Endpoints this change affects (from static analysis of base and head)");
+    lines.push(
+      "Public API surface the changed code serves or sits behind. A removed endpoint, a renamed path, a new required input or a removed response field can break clients outside this repo — judge whether that looks intended."
+    );
+    for (const line of endpoints) lines.push(`- ${oneLine(line)}`);
+  }
+
   return lines.join("\n");
 }
 

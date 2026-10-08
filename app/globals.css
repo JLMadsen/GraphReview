@@ -306,3 +306,92 @@
 .cardflow .react-flow__edge-path {
   vector-effect: non-scaling-stroke;
 }
+
+/*
+ * Syntax colours for the code views (components/graph/highlight.ts), GitHub's
+ * dark palette — the one a reviewer reads diffs in already. They sit on top
+ * of the diff's green/red row tints, so every colour stays light enough to
+ * read on both. Plain code (punctuation, names) keeps the foreground.
+ */
+.hljs-keyword,
+.hljs-doctag,
+.hljs-meta .hljs-keyword,
+.hljs-template-tag,
+.hljs-template-variable,
+.hljs-type,
+.hljs-variable.language_ {
+  color: #ff7b72;
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-title.class_.inherited__ {
+  color: #d2a8ff;
+}
+.hljs-title.class_,
+.hljs-built_in,
+.hljs-symbol {
+  color: #ffa657;
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-literal,
+.hljs-meta,
+.hljs-number,
+.hljs-operator,
+.hljs-variable,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-id,
+.hljs-property {
+  color: #79c0ff;
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-meta .hljs-string {
+  color: #a5d6ff;
+}
+.hljs-name,
+.hljs-quote,
+.hljs-selector-tag,
+.hljs-selector-pseudo,
+.hljs-section {
+  color: #7ee787;
+}
+.hljs-comment,
+.hljs-code,
+.hljs-formula {
+  color: #8b949e;
+}
+.hljs-subst {
+  color: var(--foreground);
+}
+.hljs-section,
+.hljs-strong {
+  font-weight: 600;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-addition {
+  color: #aff5b4;
+}
+.hljs-deletion {
+  color: #ffdcd7;
+}
+
+/*
+ * Middle-click autoscroll (components/graph/middle-scroll.ts): the scroll
+ * cursor wherever the pointer goes while it runs, and no text selection.
+ */
+html[data-middle-scroll="all"] * {
+  cursor: all-scroll !important;
+}
+html[data-middle-scroll="ns"] * {
+  cursor: ns-resize !important;
+}
+html[data-middle-scroll="ew"] * {
+  cursor: ew-resize !important;
+}
+html[data-middle-scroll] * {
+  user-select: none !important;
+}

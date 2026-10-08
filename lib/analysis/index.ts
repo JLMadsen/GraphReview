@@ -53,10 +53,14 @@ export {
 export { DEFAULT_IGNORED_DIRS, walkRepo, type WalkOptions } from "./walk";
 export { diskSourceTree, gitSourceTree, isGitRepo, type SourceTree } from "./source-tree";
 export type { DeadImport, SymbolCall, SymbolDecl, SymbolGraph, SymbolUse } from "./symbols";
+export { buildApiCatalog, endpointId } from "./api/catalog";
+export { compareApis } from "./api/compare";
+export type * from "./api/types";
 export { disposeTreeSitter, initTreeSitter, withSyntaxTree } from "./tree-sitter";
 export { dirOf, extensionOf, joinPosix, repoRelative, toPosix } from "./paths";
 export {
   buildCallGraph,
+  changedDeclarations,
   compareStructure,
   findMovedDeclarations,
   parseChangedLines,

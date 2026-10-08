@@ -61,6 +61,8 @@ import { resolveGitHubAccess } from "./github-access";
 import { openHeadSource } from "./head-source";
 import { runImpactPass } from "./impact";
 import { blockDiff, loadTargetAnalyses, movedCodeChanges, symbolRelatedFiles } from "./symbol-context";
+import { compareApis } from "@/lib/analysis/api/compare";
+import { changesTouching, describeApiChange, describeEndpointChange } from "@/lib/analysis/api/describe";
 import { gatherRelatedContext } from "./review-context";
 import {
   assemblePrMap,
@@ -518,6 +520,8 @@ async function runIntentPass(args: {
   intent: ReviewInput["intent"];
   files: LocalFilePatch[];
   findingLines: string[];
+  /** The change to the endpoints, one line each (DESIGN.md §6.11). */
+  apiLines?: string[];
   aiConfig: AiProviderConfig;
   tokenBudget: number;
   prId?: string;
@@ -546,6 +550,7 @@ async function runIntentPass(args: {
           patch: file.patch,
         })),
         findings: args.findingLines,
+        ...(args.apiLines ? { api: args.apiLines } : {}),
       },
       { tokenBudget: args.tokenBudget, signal: args.signal }
     );
@@ -685,6 +690,10 @@ export async function runReviewJob(
   // old copy against the new one, and the impact pass judges the callers against it.
   const moved = analyses && head ? await movedCodeChanges(analyses, (path) => head.read(path)) : [];
   if (moved.length > 0) log(`moved and changed on the way: ${moved.map((m) => `${m.name} (${m.from} → ${m.to}, ${m.changed})`).join(", ")}`);
+  // What the change does to the endpoints: each component's review sees the
+  // ones it serves or sits behind, the intent check sees all of them.
+  const apiChange = analyses ? compareApis(analyses.base, analyses.head, analyses.changed) : null;
+  if (apiChange && apiChange.changes.length > 0) log(`API: ${describeApiChange(apiChange, 0)[0]}`);
 
   // --- Map the diff onto the component graph -----------------------------
   const filesByPath = new Map(resolved.files.map((file) => [file.path, file]));
@@ -773,7 +782,11 @@ export async function runReviewJob(
       const componentMoves = moved
         .filter((m) => paths.includes(m.from) || paths.includes(m.to))
         .map((m) => ({ name: m.name, from: m.from, to: m.to, diff: blockDiff(m.before, m.after) }));
-      const relatedWithMoves = componentMoves.length > 0 ? { ...(related ?? {}), moves: componentMoves } : related;
+      const componentEndpoints = apiChange ? changesTouching(apiChange, new Set(paths)).slice(0, 12).map(describeEndpointChange) : [];
+      const relatedWithMoves =
+        componentMoves.length > 0 || componentEndpoints.length > 0
+          ? { ...(related ?? {}), ...(componentMoves.length ? { moves: componentMoves } : {}), ...(componentEndpoints.length ? { endpoints: componentEndpoints } : {}) }
+          : related;
       signal?.throwIfAborted();
       sent = true;
       const result = await reviewComponentChange(
@@ -939,6 +952,7 @@ export async function runReviewJob(
         intent: resolved.intent,
         files: resolved.files,
         findingLines: lines,
+        ...(apiChange && apiChange.changes.length ? { apiLines: describeApiChange(apiChange) } : {}),
         aiConfig,
         tokenBudget: effortSettings.tokenBudget,
         prId: resolved.prId,
@@ -992,6 +1006,7 @@ export async function runReviewJob(
       intent: resolved.intent,
       files: resolved.files,
       findingLines,
+      ...(apiChange && apiChange.changes.length ? { apiLines: describeApiChange(apiChange) } : {}),
       aiConfig,
       tokenBudget: effortSettings.tokenBudget,
       prId: resolved.prId,

@@ -226,6 +226,15 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (repo_id, target_key)
   );
   `,
+  // 3 — the endpoint catalog of each repo's analysed commit (lib/analysis/api/).
+  `
+  CREATE TABLE api_catalogs (
+    repo_id     TEXT PRIMARY KEY,
+    sha         TEXT NOT NULL,
+    computed_at TEXT NOT NULL,
+    data        TEXT NOT NULL
+  );
+  `,
 ];
 
 /** Brings the database up to the latest schema version. */

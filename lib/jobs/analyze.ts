@@ -22,6 +22,7 @@ import {
   markRepoAnalyzed,
   setRepoDefaultBranch,
   upsertFiles,
+  writeApiCatalog,
 } from "@/lib/db";
 import { writeModuleTier } from "./module-tier";
 import { ANALYSIS_VERSION, type AnalysisJobResult } from "./queue";
@@ -192,6 +193,12 @@ export async function runAnalysisJob(
   );
 
   const counts = await persistAnalysis(repo.id, sha, result, log);
+  writeApiCatalog(repo.id, sha, result.api);
+  log(
+    `endpoint catalog: ${result.api.endpoints.length} endpoint(s)` +
+      (result.api.frameworks.length ? ` (${result.api.frameworks.join(", ")})` : "") +
+      (result.api.specs.length ? `, ${result.api.specs.length} OpenAPI document(s)` : "")
+  );
   await markRepoAnalyzed(repo.id, sha, ANALYSIS_VERSION);
 
   const durationMs = Date.now() - startedAt;

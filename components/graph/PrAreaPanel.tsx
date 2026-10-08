@@ -13,6 +13,9 @@ import { LayoutGrid, X } from "lucide-react";
 import { cn } from "cn";
 import { FindingCounts, LIFECYCLE_STYLES, OpenBadge, STATUS_BADGES } from "./PrMapNode";
 import { areaLifecycle, type PrArea, type PrAreas } from "./pr-areas";
+import { MethodBadge } from "./ApiView";
+import { CHANGE_STYLES } from "./api-view-model";
+import type { EndpointChange } from "./api-types";
 
 const NUMBER = new Intl.NumberFormat("en-US");
 
@@ -28,6 +31,10 @@ export interface PrAreaPanelProps {
   /** Opens a file's diff. Absent when there is no diff to show (pasted paths). */
   onOpenFile?: (path: string) => void;
   onShowInAppMap?: (componentId: string) => void;
+  /** Endpoints whose handler sits in this area or reaches changed code in it. */
+  endpoints?: EndpointChange[];
+  /** Opens the API view at an endpoint. */
+  onOpenEndpoint?: (endpointId: string) => void;
   onClose: () => void;
 }
 
@@ -38,6 +45,8 @@ export function PrAreaPanel({
   onSelectComponent,
   onOpenFile,
   onShowInAppMap,
+  endpoints,
+  onOpenEndpoint,
   onClose,
 }: PrAreaPanelProps) {
   const { node } = area;
@@ -121,6 +130,31 @@ export function PrAreaPanel({
         </dl>
       )}
       <FindingCounts counts={area.counts} className="mt-2" />
+
+      {endpoints && endpoints.length > 0 && (
+        <>
+          <p className="mt-3 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">Endpoints</p>
+          <ul className="mt-1 space-y-0.5 text-[11px]">
+            {endpoints.map((c) => (
+              <li key={c.id}>
+                <button
+                  type="button"
+                  onClick={() => onOpenEndpoint?.(c.id)}
+                  className="group flex w-full min-w-0 items-baseline gap-1.5 py-0.5 text-left"
+                  title={CHANGE_STYLES[c.status].title}
+                >
+                  <span className={cn("w-12 shrink-0 font-mono text-[10px]", CHANGE_STYLES[c.status].className)}>
+                    {CHANGE_STYLES[c.status].word}
+                    {c.breaking && <span className="text-destructive">!</span>}
+                  </span>
+                  <MethodBadge method={c.endpoint.method} className="text-[10px]" />
+                  <span className="min-w-0 truncate font-mono group-hover:underline">{c.endpoint.path}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
 
       {components.length > 0 && (
         <>
