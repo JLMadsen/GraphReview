@@ -211,7 +211,7 @@ export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger
     `${structure.newCycles.length} new import cycle(s), ${result.structure.components.added.length} new / ` +
       `${result.structure.components.removed.length} removed component dependenc(ies), ${structure.orphaned.length} orphaned file(s), ` +
       `${structure.dependents.count} dependent file(s); call graph: ${callGraph.functions.length} function(s), ${callGraph.edges.length} call(s); ` +
-      `API: +${api.counts.added} −${api.counts.removed} ~${api.counts.changed} changed, ${api.counts.reached} reached`
+      `API: +${api.counts.added} −${api.counts.removed} ~${api.counts.changed} changed (${api.counts.breaking} breaking); logic changed behind ${api.counts.logic}`
   );
   return { baseSha, headSha, cycles: structure.newCycles.length, functions: callGraph.functions.length };
 }

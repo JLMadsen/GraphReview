@@ -38,7 +38,7 @@ import {
 import { isSafeGitRef } from "@/lib/jobs/git-ref";
 import { readFileAtCommit } from "@/lib/jobs/pr-context";
 import { readServedApiCatalog } from "@/lib/jobs/api-catalog";
-import { describeApiChange } from "@/lib/analysis/api/describe";
+import { apiChangeSummary } from "@/lib/analysis/api/describe";
 import type { ApiShape, Endpoint } from "@/lib/analysis/api/types";
 import { emitFindingsChanged } from "./events";
 
@@ -54,7 +54,7 @@ Findings come in categories: "change" (the AI review of one component's diff), "
 
 Reviews are advisory and can be wrong — check the code before agreeing with a finding.
 
-The API: list_endpoints lists every endpoint the repo's analysed commit exposes (HTTP routes, Next.js server actions — internal, made for the app's own pages —, tRPC procedures, GraphQL fields), with the handler, middleware/auth and request/response shapes static analysis could read. get_api_changes says what a review target does to them: endpoints added, removed or changed (path, method, params, shapes, auth, handler code — marked breaking when a client can fail) and endpoints whose handler calls code the change touched. Static analysis only, never findings.`;
+The API: list_endpoints lists every endpoint the repo's analysed commit exposes (HTTP routes, Next.js server actions — internal, made for the app's own pages —, tRPC procedures, GraphQL fields), with the handler, middleware/auth and request/response shapes static analysis could read. get_api_changes says what a review target does to them: endpoints added, removed or changed (path, method, params, shapes, auth — marked breaking when a client can fail), and separately (logicChanged) endpoints whose contract stayed the same but whose handler code, or code it calls, changed. Static analysis only, never findings.`;
 
 const shapeText = (s: ApiShape | undefined) =>
   s ? `${s.type ?? "object"}${s.fields?.length ? ` { ${s.fields.map((f) => `${f.name}${f.required ? "" : "?"}: ${f.type}`).join("; ")} }` : ""}${s.source === "ai" ? " (inferred by a model)" : ""}` : undefined;
@@ -492,7 +492,7 @@ export function createGraphReviewMcpServer(): McpServer {
     {
       title: "Get API changes",
       description:
-        "What a review target does to the endpoints: added, removed, changed (each delta marked breaking when a client can fail) and reached (the handler calls changed code — with the call path). Computed by comparing the target's base and head; started on first call.",
+        "What a review target does to the API: endpoints added, removed or changed (path, method, params, request/response, auth — each delta marked breaking when a client can fail). Separately, logicChanged: endpoints with the same contract whose handler code, or code it calls, changed (with the call path). Computed by comparing the target's base and head; started on first call.",
       inputSchema: { repoId: z.string(), target: targetSchema },
       annotations: { readOnlyHint: true },
     },
@@ -512,13 +512,18 @@ export function createGraphReviewMcpServer(): McpServer {
         return {
           baseSha: stored.baseSha,
           headSha: stored.headSha,
-          summary: describeApiChange(api, 0)[0],
+          summary: apiChangeSummary(api),
           changes: api.changes.map((c) => ({
             status: c.status,
             ...(c.breaking ? { breaking: true } : {}),
             endpoint: toAgentEndpoint(c.endpoint),
             ...(c.deltas.length ? { deltas: c.deltas } : {}),
-            ...(c.reaches?.length ? { reaches: c.reaches.map((r) => `${r.path.map((p) => p.name).join(" → ")} (${r.status}, ${r.file})`) } : {}),
+          })),
+          logicChanged: (api.logic ?? []).map((l) => ({
+            endpoint: `${l.endpoint.method} ${l.endpoint.path}`,
+            ...(l.endpoint.handler ? { handler: `${l.endpoint.handler.file}:${l.endpoint.handler.startLine}` } : {}),
+            ...(l.handlerChanged ? { handlerChanged: true } : {}),
+            ...(l.reaches.length ? { callsChangedCode: l.reaches.map((r) => `${r.path.map((p) => p.name).join(" → ")} (${r.status}, ${r.file})`) } : {}),
           })),
           ...(state !== "completed" ? { note: "A newer comparison is running; this is the last stored one." } : {}),
         };

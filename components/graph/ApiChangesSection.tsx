@@ -1,7 +1,7 @@
 "use client";
 
 // "API" in the Graph tab's left summary (DESIGN.md §6.11): what the
-// selected diff does to the endpoints — "+2 −1 ~3 · 7 reached", breaking
+// selected diff does to the API — "+2 −1 ~3", breaking
 // ones first — from the base/head comparison. Each line opens the API view
 // at that endpoint. Shown, never counted as findings.
 
@@ -35,15 +35,17 @@ export function ApiChangesSection({
     ) : null;
   }
   if (change.total === 0 && change.changes.length === 0) return null;
-  const shown = all ? change.changes : change.changes.slice(0, SHOWN);
+  // Only API changes; results stored before code changes were split off can still say "reached".
+  const changes = change.changes.filter((c) => c.status in CHANGE_STYLES);
+  const shown = all ? changes : changes.slice(0, SHOWN);
   return (
     <section className="mt-3 border-t border-border pt-2.5 text-[11px]">
       <div className="flex items-baseline gap-2">
         <p className="min-w-0 flex-1 font-semibold tracking-wide whitespace-nowrap text-muted-foreground uppercase">API</p>
         <ChangeCounts change={change} />
       </div>
-      {change.changes.length === 0 ? (
-        <p className="mt-0.5 text-muted-foreground">No endpoint touched ({change.total} in all)</p>
+      {changes.length === 0 ? (
+        <p className="mt-0.5 text-muted-foreground">No API change ({change.total} endpoints)</p>
       ) : (
         <ul className="mt-1.5 space-y-0.5">
           {shown.map((c) => (
@@ -65,9 +67,9 @@ export function ApiChangesSection({
           ))}
         </ul>
       )}
-      {change.changes.length > SHOWN && (
+      {changes.length > SHOWN && (
         <button type="button" onClick={() => setAll((v) => !v)} className="mt-1 text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
-          {all ? "show fewer" : `${change.changes.length - SHOWN} more`}
+          {all ? "show fewer" : `${changes.length - SHOWN} more`}
         </button>
       )}
     </section>

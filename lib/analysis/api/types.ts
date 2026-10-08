@@ -134,11 +134,17 @@ export const MAX_REACH_DEPTH = 8;
 // A review target's API change (./compare.ts)
 // ---------------------------------------------------------------------------
 
-export type EndpointChangeStatus = "added" | "removed" | "changed" | "reached";
+/**
+ * A change to the API itself — what a client sees: an endpoint added or
+ * removed, or its path, method, parameters, request or response shape or
+ * auth changed. Code changes behind an unchanged endpoint are not API
+ * changes; they are {@link EndpointLogicChange}s.
+ */
+export type EndpointChangeStatus = "added" | "removed" | "changed";
 
-/** One aspect of an endpoint that differs between base and head. */
+/** One aspect of an endpoint's contract that differs between base and head. */
 export interface EndpointDelta {
-  aspect: "path" | "method" | "params" | "request" | "response" | "auth" | "handler";
+  aspect: "path" | "method" | "params" | "request" | "response" | "auth";
   before?: string;
   after?: string;
   /** A client written against the base can break (a removed field, a new required param, …). */
@@ -156,17 +162,38 @@ export interface EndpointChange {
   deltas: EndpointDelta[];
   /** Any delta (or the removal) can break an existing client. */
   breaking?: true;
-  /**
-   * For `reached` (and `changed` endpoints whose handler didn't change but
-   * reach changed code): the changed functions it reaches, each with the
-   * call path that leads there (handler first).
-   */
-  reaches?: Array<{ id: string; name: string; file: string; status: string; path: Array<{ id: string; name: string; file: string }> }>;
+}
+
+/** A changed function an endpoint's handler calls, with the call path from the handler. */
+export interface EndpointReach {
+  id: string;
+  name: string;
+  file: string;
+  status: string;
+  path: Array<{ id: string; name: string; file: string }>;
+}
+
+/**
+ * Behaviour that may have changed behind an endpoint, without its contract
+ * changing: its handler's code changed, or the handler calls code that did.
+ * Not shown as an API change; handed to the AI review, the chat and agents
+ * as context.
+ */
+export interface EndpointLogicChange {
+  id: string;
+  endpoint: Endpoint;
+  /** The handler's own lines changed. */
+  handlerChanged: boolean;
+  /** Changed functions the handler calls (at most a few), each with its call path. */
+  reaches: EndpointReach[];
 }
 
 export interface ApiChange {
+  /** Changes to the API itself. */
   changes: EndpointChange[];
-  counts: { added: number; removed: number; changed: number; reached: number; breaking: number };
+  /** Endpoints at the base and head whose code behind them changed. */
+  logic: EndpointLogicChange[];
+  counts: { added: number; removed: number; changed: number; breaking: number; logic: number };
   /** Endpoints at the head — for "N of M endpoints". */
   total: number;
   /** The reach search stopped early on a very large graph. */

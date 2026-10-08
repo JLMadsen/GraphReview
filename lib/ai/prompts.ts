@@ -236,7 +236,7 @@ export function renderRelatedSections(related: ReviewRelatedContext): string {
     if (lines.length > 0) lines.push("");
     lines.push("## Endpoints this change affects (from static analysis of base and head)");
     lines.push(
-      "Public API surface the changed code serves or sits behind. A removed endpoint, a renamed path, a new required input or a removed response field can break clients outside this repo — judge whether that looks intended."
+      "API changes (added, removed, changed contract) can break clients outside this repo — a removed endpoint, a renamed path, a new required input, a removed response field: judge whether that looks intended. Lines marked \"same contract\" are not API changes: the endpoint's code changed behind an unchanged interface, so its behaviour may differ."
     );
     for (const line of endpoints) lines.push(`- ${oneLine(line)}`);
   }

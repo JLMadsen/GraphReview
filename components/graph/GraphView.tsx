@@ -65,7 +65,7 @@ import { ApiView } from "./ApiView";
 import { ApiPanel } from "./ApiPanel";
 import { ApiChangesSection } from "./ApiChangesSection";
 import { useApiCatalog } from "./useApiCatalog";
-import { apiChangesByArea, buildApiRows } from "./api-view-model";
+import { buildApiRows } from "./api-view-model";
 import {
   DEFAULT_REVIEW_EFFORT,
   reviewTargetLabel,
@@ -166,7 +166,7 @@ export function GraphView({
       if (isAppMapLevel(level)) setAppLevelState(level);
       if (window.localStorage.getItem(REVIEW_EXPANDED_STORAGE_KEY) === "1") setReviewExpandedState(true);
       const storedMode = window.localStorage.getItem(PR_MODE_STORAGE_KEY);
-      if (storedMode === "functions" || storedMode === "endpoints") setPrModeState(storedMode);
+      if (storedMode === "functions") setPrModeState(storedMode);
     } catch {
       /* storage unavailable — keep the defaults */
     }
@@ -447,9 +447,11 @@ export function GraphView({
   const apiChange = reviewTarget ? targetGraph.graph?.data?.api : undefined;
   const apiRows = useMemo(() => buildApiRows(apiCatalog.catalog, apiChange), [apiCatalog.catalog, apiChange]);
   const [selectedEndpoint, setSelectedEndpoint] = useState<string | null>(null);
-  const [apiChangedOnly, setApiChangedOnly] = useState(false);
+  /** With a diff selected the API view lists only its API changes; "All endpoints" shows the whole catalog with them marked. */
+  const [apiChangedOnly, setApiChangedOnly] = useState(true);
   useEffect(() => setSelectedEndpoint(null), [repoId]);
-  /** Every endpoint link (the left column's API section, an area's endpoints) opens the API view at it. */
+  useEffect(() => setApiChangedOnly(true), [reviewTarget]);
+  /** Every endpoint link (the left column's API section) opens the API view at it. */
   const openEndpoint = useCallback(
     (endpointId: string) => {
       setApiMounted(true);
@@ -458,10 +460,8 @@ export function GraphView({
     },
     [setPreferredView]
   );
-  const apiByArea = useMemo(() => apiChangesByArea(prMap.map, apiChange), [prMap.map, apiChange]);
-  const endpointCounts = useMemo(() => new Map([...apiByArea].map(([area, list]) => [area, list.length])), [apiByArea]);
   const selectedApiRow = selectedEndpoint ? apiRows.find((r) => r.endpoint.id === selectedEndpoint) : undefined;
-  const showApiPanel = Boolean(selectedApiRow) && (view === "api" || (view === "pr" && prMode === "endpoints"));
+  const showApiPanel = Boolean(selectedApiRow) && view === "api";
 
   useEffect(() => {
     setOpenFile(null);
@@ -511,7 +511,7 @@ export function GraphView({
           label: "App map",
           title: "The whole app as cards — by architecture, feature or module, with explanations",
         },
-        { value: "api" as const, label: "API", title: "Every endpoint the app exposes, with what this diff does to them" },
+        { value: "api" as const, label: "API", title: "Every endpoint the app exposes — with a diff selected, its changes to the API" },
         ...(prRequest ? [{ value: "pr" as const, label: "PR", title: "Only what this diff touches" }] : []),
       ]}
     />
@@ -630,9 +630,6 @@ export function GraphView({
             onHideFunction={hideFunction}
             onHideCard={hideFunctionCard}
             onShowHidden={showHiddenFunctions}
-            endpointCounts={reviewTarget ? endpointCounts : undefined}
-            selectedEndpointId={selectedEndpoint}
-            onSelectEndpoint={setSelectedEndpoint}
           />
           </div>
         )}
@@ -744,8 +741,6 @@ export function GraphView({
                     onSelectComponent={setPrAreaComponent}
                     onOpenFile={openFilePath}
                     onShowInAppMap={showInAppMap}
-                    endpoints={apiByArea.get(selectedPrArea.node.id)}
-                    onOpenEndpoint={openEndpoint}
                     onClose={() => selectPrArea(null)}
                   />
                 ) : (

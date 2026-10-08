@@ -62,7 +62,7 @@ import { openHeadSource } from "./head-source";
 import { runImpactPass } from "./impact";
 import { blockDiff, loadTargetAnalyses, movedCodeChanges, symbolRelatedFiles } from "./symbol-context";
 import { compareApis } from "@/lib/analysis/api/compare";
-import { changesTouching, describeApiChange, describeEndpointChange } from "@/lib/analysis/api/describe";
+import { apiChangeSummary, changesTouching, describeApiChange, describeEndpointChange, describeLogicChange, logicTouching } from "@/lib/analysis/api/describe";
 import { gatherRelatedContext } from "./review-context";
 import {
   assemblePrMap,
@@ -693,7 +693,7 @@ export async function runReviewJob(
   // What the change does to the endpoints: each component's review sees the
   // ones it serves or sits behind, the intent check sees all of them.
   const apiChange = analyses ? compareApis(analyses.base, analyses.head, analyses.changed) : null;
-  if (apiChange && apiChange.changes.length > 0) log(`API: ${describeApiChange(apiChange, 0)[0]}`);
+  if (apiChange && (apiChange.changes.length > 0 || apiChange.logic.length > 0)) log(`API: ${apiChangeSummary(apiChange)} Logic changed behind ${apiChange.logic.length}.`);
 
   // --- Map the diff onto the component graph -----------------------------
   const filesByPath = new Map(resolved.files.map((file) => [file.path, file]));
@@ -782,7 +782,13 @@ export async function runReviewJob(
       const componentMoves = moved
         .filter((m) => paths.includes(m.from) || paths.includes(m.to))
         .map((m) => ({ name: m.name, from: m.from, to: m.to, diff: blockDiff(m.before, m.after) }));
-      const componentEndpoints = apiChange ? changesTouching(apiChange, new Set(paths)).slice(0, 12).map(describeEndpointChange) : [];
+      const pathSet = new Set(paths);
+      const componentEndpoints = apiChange
+        ? [
+            ...changesTouching(apiChange, pathSet).slice(0, 12).map(describeEndpointChange),
+            ...logicTouching(apiChange, pathSet).slice(0, 8).map(describeLogicChange),
+          ]
+        : [];
       const relatedWithMoves =
         componentMoves.length > 0 || componentEndpoints.length > 0
           ? { ...(related ?? {}), ...(componentMoves.length ? { moves: componentMoves } : {}), ...(componentEndpoints.length ? { endpoints: componentEndpoints } : {}) }
@@ -952,7 +958,7 @@ export async function runReviewJob(
         intent: resolved.intent,
         files: resolved.files,
         findingLines: lines,
-        ...(apiChange && apiChange.changes.length ? { apiLines: describeApiChange(apiChange) } : {}),
+        ...(apiChange && (apiChange.changes.length || apiChange.logic.length) ? { apiLines: describeApiChange(apiChange) } : {}),
         aiConfig,
         tokenBudget: effortSettings.tokenBudget,
         prId: resolved.prId,
@@ -1006,7 +1012,7 @@ export async function runReviewJob(
       intent: resolved.intent,
       files: resolved.files,
       findingLines,
-      ...(apiChange && apiChange.changes.length ? { apiLines: describeApiChange(apiChange) } : {}),
+      ...(apiChange && (apiChange.changes.length || apiChange.logic.length) ? { apiLines: describeApiChange(apiChange) } : {}),
       aiConfig,
       tokenBudget: effortSettings.tokenBudget,
       prId: resolved.prId,

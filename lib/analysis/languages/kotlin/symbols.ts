@@ -8,7 +8,7 @@
  */
 import type { CallFact, DeclFact, DeclKind, ImportFact, SymbolFacts } from "../../ir";
 import { tokenize, type Token } from "../jvm/tokenize";
-import { hashText } from "../../syntax/extract.mjs";
+import { hashText } from "../../syntax/hash.mjs";
 import { kotlinRoutes } from "./routes";
 
 const MODIFIERS = new Set([

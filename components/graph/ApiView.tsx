@@ -7,9 +7,11 @@
 // path · kind · middleware/auth · handler. Selecting a row opens the
 // explainer in the right column (`ApiPanel`).
 //
-// With a diff selected, rows carry what the change does to them (new,
-// removed, changed — breaking or not — or reached: the handler calls code
-// that changed) and "Changed only" narrows the list to those.
+// With a diff selected, the list shows only its changes to the API: new,
+// removed and changed endpoints (path, method, parameters, request or
+// response shape, auth), breaking ones marked. "All endpoints" brings back
+// the whole catalog with the changes marked in it. Code changed behind an
+// unchanged endpoint is not an API change and isn't listed.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { LoaderCircle, Search, TriangleAlert, X } from "lucide-react";
@@ -116,19 +118,19 @@ export function ApiView({
           />
         )}
         {change && (
-          <button
-            type="button"
-            onClick={() => onChangedOnlyChange(!changedOnly)}
-            aria-pressed={changedOnly}
-            className={cn(
-              "flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
-              changedOnly ? "border-foreground/25 bg-secondary text-foreground" : "border-border text-muted-foreground hover:text-foreground"
-            )}
-            title="Only endpoints this diff adds, removes or changes, or whose handler reaches changed code"
-          >
-            Changed only
+          <>
+            <Segmented
+              label="Show"
+              size="xs"
+              value={changedOnly ? "changes" : "all"}
+              onChange={(v) => onChangedOnlyChange(v === "changes")}
+              options={[
+                { value: "changes" as const, label: "API changes", title: "Only what this diff changes in the API: endpoints added, removed, or with a new path, method, parameters, request or response shape, or auth" },
+                { value: "all" as const, label: "All endpoints", title: "Every endpoint, with this diff's changes marked" },
+              ]}
+            />
             <ChangeCounts change={change} />
-          </button>
+          </>
         )}
         {changePending && !change && (
           <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
@@ -180,7 +182,7 @@ export function ApiView({
         )}
         {catalog?.state === "ready" && visible.length === 0 && (total > 0 || change) && (
           <p className="px-6 py-12 text-center text-sm text-muted-foreground">
-            {changedOnly && change ? "This diff doesn't touch any endpoint." : "Nothing matches."}
+            {changedOnly && change && change.changes.length === 0 ? "This diff doesn't change the API — no endpoint was added, removed, or changed its path, method, parameters, shapes or auth." : "Nothing matches."}
           </p>
         )}
 
@@ -214,7 +216,6 @@ export function ChangeCounts({ change, className }: { change: ApiChange; classNa
   if (c.added) parts.push([`+${c.added}`, "text-success", `${c.added} new`]);
   if (c.removed) parts.push([`−${c.removed}`, "text-destructive", `${c.removed} removed`]);
   if (c.changed) parts.push([`~${c.changed}`, "text-warning", `${c.changed} changed`]);
-  if (c.reached) parts.push([`${c.reached} reached`, "text-info", `${c.reached} reach changed code`]);
   if (parts.length === 0) return <span className={cn("font-mono text-[11px] font-normal text-muted-foreground", className)}>none</span>;
   return (
     <span className={cn("flex items-center gap-1.5 font-mono text-[11px] font-normal", className)}>

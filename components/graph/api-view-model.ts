@@ -1,11 +1,11 @@
-// One object for every place the API shows (DESIGN.md §6.11): the API view's
-// list and explainer, the left column's API section, the PR map's area cards
-// and inspector, and the Endpoints mode. Rows are the analysed commit's
-// catalog with the selected change laid over it — added and changed
-// endpoints as they are at the head, removed ones kept and marked.
+// One object for the places the API shows (DESIGN.md §6.11): the API view's
+// list and explainer and the left column's API section. Rows are the
+// analysed commit's catalog with the selected diff's API changes laid over
+// it — added and changed endpoints as they are at the head, removed ones
+// kept and marked. Only changes to the API itself: code changed behind an
+// unchanged endpoint isn't shown here.
 
 import type { ApiCatalogResponseDTO, ApiChange, EndpointChange, ServedEndpoint } from "./api-types";
-import type { PrMapResponseDTO } from "./pr-map-types";
 
 export interface ApiRow {
   endpoint: ServedEndpoint;
@@ -15,7 +15,8 @@ export interface ApiRow {
 export function buildApiRows(catalog: ApiCatalogResponseDTO | null, api: ApiChange | undefined): ApiRow[] {
   const rows = new Map<string, ApiRow>();
   for (const endpoint of catalog?.endpoints ?? []) rows.set(endpoint.id, { endpoint });
-  for (const change of api?.changes ?? []) {
+  // Results stored before logic changes were split off can still say "reached".
+  for (const change of (api?.changes ?? []).filter((c) => c.status in CHANGE_STYLES)) {
     const existing = rows.get(change.id);
     // The catalog's copy carries inferred shapes; the change's is the head as compared.
     const endpoint = existing && change.status !== "removed" && change.status !== "added" ? { ...change.endpoint, ...pickInferred(existing.endpoint) } : change.endpoint;
@@ -64,41 +65,8 @@ export function methodTone(method: string): string {
 export const CHANGE_STYLES: Record<EndpointChange["status"], { word: string; className: string; title: string }> = {
   added: { word: "new", className: "text-success", title: "This change adds the endpoint" },
   removed: { word: "removed", className: "text-destructive", title: "This change removes the endpoint" },
-  changed: { word: "changed", className: "text-warning", title: "Its path, inputs, outputs, auth or handler code changed" },
-  reached: { word: "reached", className: "text-info", title: "Its handler didn't change, but it calls code that did" },
+  changed: { word: "changed", className: "text-warning", title: "Its path, method, parameters, request or response shape, or auth changed" },
 };
-
-/** The PR map area (card) holding a file, if any. */
-function areaOfFile(map: PrMapResponseDTO, file: string): string | undefined {
-  return map.nodes.find((n) => n.role !== "context" && n.files.some((f) => f.path === file))?.id;
-}
-
-/** Areas an endpoint change lands in: its handler's, and those holding the changed code it reaches. */
-export function areasOfChange(map: PrMapResponseDTO, change: EndpointChange): Array<{ areaId: string; via: "handler" | "reach"; fn?: string }> {
-  const out: Array<{ areaId: string; via: "handler" | "reach"; fn?: string }> = [];
-  const handlerFile = change.endpoint.handler?.file;
-  const handlerArea = handlerFile ? areaOfFile(map, handlerFile) : undefined;
-  if (handlerArea && change.status !== "reached") out.push({ areaId: handlerArea, via: "handler" });
-  for (const r of change.reaches ?? []) {
-    const area = areaOfFile(map, r.file);
-    if (area && !out.some((o) => o.areaId === area)) out.push({ areaId: area, via: "reach", fn: r.name });
-  }
-  return out;
-}
-
-/** Each area's endpoint changes. */
-export function apiChangesByArea(map: PrMapResponseDTO | null, api: ApiChange | undefined): Map<string, EndpointChange[]> {
-  const out = new Map<string, EndpointChange[]>();
-  if (!map || !api) return out;
-  for (const change of api.changes) {
-    for (const { areaId } of areasOfChange(map, change)) {
-      const list = out.get(areaId) ?? [];
-      list.push(change);
-      out.set(areaId, list);
-    }
-  }
-  return out;
-}
 
 /** `/orders/{id}` with its parameters picked out, for rendering. */
 export function pathParts(path: string): Array<{ text: string; param: boolean }> {

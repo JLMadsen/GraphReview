@@ -7,7 +7,7 @@
  * contents are kept only where an annotation argument needs them.
  */
 import type { ModelFact, RouteClassFact, RouteDecorator, RouteFacts, RouteMethodFact, RouteParamFact, Val } from "../../ir";
-import { hashText } from "../../syntax/extract.mjs";
+import { hashText } from "../../syntax/hash.mjs";
 
 const MAX_FIELDS = 40;
 

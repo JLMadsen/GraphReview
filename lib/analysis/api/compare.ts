@@ -1,9 +1,11 @@
 /**
  * What a change does to the API (DESIGN.md §6.11): endpoints added and
- * removed, endpoints whose path, method, parameters, request or response
- * shape, auth chain or handler code changed — each delta marked breaking
- * when a client written against the base can fail — and endpoints whose
- * handler didn't change but calls into code that did, with the call path.
+ * removed, and endpoints whose path, method, parameters, request or
+ * response shape or auth chain changed — each delta marked breaking when a
+ * client written against the base can fail. Separately (`logic`), the
+ * endpoints whose contract stayed but whose handler code changed or calls
+ * code that did, with the call path: not API changes, context for the
+ * review.
  *
  * Pure: two analyses and the changed lines in, data out. Shown, never
  * turned into findings.
@@ -19,6 +21,8 @@ import {
   type Endpoint,
   type EndpointChange,
   type EndpointDelta,
+  type EndpointLogicChange,
+  type EndpointReach,
 } from "./types";
 
 type Side = Pick<AnalysisResult, "symbols" | "api">;
@@ -83,7 +87,7 @@ function compareShape(aspect: "request" | "response", before: ApiShape | undefin
   return out;
 }
 
-function compareEndpoint(before: Endpoint, after: Endpoint, changed: ReadonlyMap<string, ChangedLines>): EndpointDelta[] {
+function compareEndpoint(before: Endpoint, after: Endpoint): EndpointDelta[] {
   const deltas: EndpointDelta[] = [];
   if (before.path !== after.path) deltas.push({ aspect: "path", before: before.path, after: after.path, ...(before.kind !== "action" ? { breaking: true as const } : {}) });
   if (before.method !== after.method) deltas.push({ aspect: "method", before: before.method, after: after.method, ...(before.kind !== "action" ? { breaking: true as const } : {}) });
@@ -96,14 +100,16 @@ function compareEndpoint(before: Endpoint, after: Endpoint, changed: ReadonlyMap
     const added = after.auth.filter((a) => !before.auth.includes(a));
     deltas.push({ aspect: "auth", before: authBefore || undefined, after: authAfter || undefined, ...(added.length ? { breaking: true as const } : {}) });
   }
+  return deltas;
+}
+
+/** The handler's own lines changed (at the head, or its old lines at the base). */
+function handlerChanged(before: Endpoint, after: Endpoint, changed: ReadonlyMap<string, ChangedLines>): boolean {
   const h = after.handler;
   const hb = before.handler;
-  if (h && (overlaps(h.startLine, h.endLine, changed.get(h.file)?.added) || (hb && overlaps(hb.startLine, hb.endLine, changed.get(hb.file)?.removed)))) {
-    deltas.push({ aspect: "handler", after: `${h.file}:${h.startLine}` });
-  } else if (h && hb && (h.file !== hb.file || h.name !== hb.name)) {
-    deltas.push({ aspect: "handler", before: `${hb.name} (${hb.file})`, after: `${h.name} (${h.file})` });
-  }
-  return deltas;
+  return Boolean(
+    (h && overlaps(h.startLine, h.endLine, changed.get(h.file)?.added)) || (hb && overlaps(hb.startLine, hb.endLine, changed.get(hb.file)?.removed))
+  );
 }
 
 /** The same handler code: one declaration, or one inline function's unchanged text. */
@@ -132,9 +138,9 @@ export function compareApis(base: Side, head: Side, changed: ReadonlyMap<string,
   const calls = indexCalls(head.symbols);
   const declById = new Map(head.symbols.decls.map((d) => [d.id, d]));
   let reachCapped = false;
-  const reachesOf = (e: Endpoint): NonNullable<EndpointChange["reaches"]> => {
+  const reachesOf = (e: Endpoint): EndpointReach[] => {
     if (!e.handler || statusOf.size === 0) return [];
-    const out: NonNullable<EndpointChange["reaches"]> = [];
+    const out: EndpointReach[] = [];
     const previous = new Map<string, string | null>();
     let frontier: string[] = [];
     for (const call of handlerCalls(calls, e.handler)) {
@@ -175,33 +181,35 @@ export function compareApis(base: Side, head: Side, changed: ReadonlyMap<string,
     return out;
   };
 
+  const logic: EndpointLogicChange[] = [];
   for (const e of head.api.endpoints) {
     const before = baseById.get(e.id) ?? pairedAfter.get(e.id);
     if (!before) {
       changes.push({ id: e.id, status: "added", endpoint: e, deltas: [] });
       continue;
     }
-    const deltas = compareEndpoint(before, e, changed);
-    const handlerChanged = deltas.some((d) => d.aspect === "handler");
-    const reaches = handlerChanged ? [] : reachesOf(e);
+    const deltas = compareEndpoint(before, e);
     if (deltas.length > 0) {
       const breaking = deltas.some((d) => d.breaking);
-      changes.push({ id: e.id, status: "changed", endpoint: e, before, deltas, ...(breaking ? { breaking: true as const } : {}), ...(reaches.length ? { reaches } : {}) });
-    } else if (reaches.length > 0) {
-      changes.push({ id: e.id, status: "reached", endpoint: e, deltas: [], reaches });
+      changes.push({ id: e.id, status: "changed", endpoint: e, before, deltas, ...(breaking ? { breaking: true as const } : {}) });
     }
+    // The code behind it — not an API change, context for the review.
+    const own = handlerChanged(before, e, changed);
+    const reaches = reachesOf(e);
+    if (own || reaches.length > 0) logic.push({ id: e.id, endpoint: e, handlerChanged: own, reaches });
   }
   for (const e of removed) {
     if (pairedBefore.has(e.id)) continue;
     changes.push({ id: e.id, status: "removed", endpoint: e, deltas: [], ...(e.kind !== "action" && e.drift !== "spec-only" ? { breaking: true as const } : {}) });
   }
 
-  const order = { removed: 0, changed: 1, added: 2, reached: 3 };
+  const order = { removed: 0, changed: 1, added: 2 };
   changes.sort((a, b) => Number(Boolean(b.breaking)) - Number(Boolean(a.breaking)) || order[a.status] - order[b.status] || a.endpoint.path.localeCompare(b.endpoint.path));
   const count = (s: EndpointChange["status"]) => changes.filter((c) => c.status === s).length;
   return {
     changes,
-    counts: { added: count("added"), removed: count("removed"), changed: count("changed"), reached: count("reached"), breaking: changes.filter((c) => c.breaking).length },
+    logic,
+    counts: { added: count("added"), removed: count("removed"), changed: count("changed"), breaking: changes.filter((c) => c.breaking).length, logic: logic.length },
     total: head.api.endpoints.length,
     ...(reachCapped ? { reachCapped: true as const } : {}),
   };

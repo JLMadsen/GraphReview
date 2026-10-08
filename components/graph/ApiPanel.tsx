@@ -6,7 +6,7 @@
 // types, the spec, or ✦ a model's reading of the handler, on request), the
 // middleware and auth in front of it — plus what Swagger can't show: the
 // handler itself and every function it reaches, down to data access. With
-// a diff selected, what the change does to it comes first.
+// a diff selected, what the change does to its contract comes first.
 
 import { useState } from "react";
 import { Database, LoaderCircle, X } from "lucide-react";
@@ -45,7 +45,6 @@ const DELTA_LABELS: Record<EndpointDelta["aspect"], string> = {
   request: "Request",
   response: "Response",
   auth: "Middleware & auth",
-  handler: "Handler",
 };
 
 function SourceTag({ shape }: { shape: ApiShape }) {
@@ -175,40 +174,16 @@ export function ApiPanel({ row, aiConfigured, inferring, inferError, onInfer, on
                     {DELTA_LABELS[d.aspect]}
                     {d.breaking && " !"}
                   </span>{" "}
-                  {d.aspect === "handler" && !d.before ? (
-                    <span className="text-muted-foreground">its code changed</span>
-                  ) : (
-                    <span className="font-mono">
-                      {d.before && <span className="text-destructive line-through decoration-destructive/50">{d.before}</span>}
-                      {d.before && d.after && <span className="text-muted-foreground"> → </span>}
-                      {d.after && <span className="text-success">{d.after}</span>}
-                      {!d.after && d.before && <span className="text-muted-foreground"> (removed)</span>}
-                      {d.after && !d.before && <span className="text-muted-foreground"> (new)</span>}
-                    </span>
-                  )}
+                  <span className="font-mono">
+                    {d.before && <span className="text-destructive line-through decoration-destructive/50">{d.before}</span>}
+                    {d.before && d.after && <span className="text-muted-foreground"> → </span>}
+                    {d.after && <span className="text-success">{d.after}</span>}
+                    {!d.after && d.before && <span className="text-muted-foreground"> (removed)</span>}
+                    {d.after && !d.before && <span className="text-muted-foreground"> (new)</span>}
+                  </span>
                 </li>
               ))}
             </ul>
-          )}
-          {change.reaches && change.reaches.length > 0 && (
-            <div className="mt-1.5">
-              <p className="mb-1 text-[11px] text-muted-foreground">Calls code this diff changed:</p>
-              <ul className="space-y-1">
-                {change.reaches.map((r) => (
-                  <li key={r.id} className="font-mono text-[11px] leading-snug">
-                    {r.path.map((p, i) => (
-                      <span key={p.id}>
-                        {i > 0 && <span className="text-muted-foreground/60"> → </span>}
-                        <button type="button" onClick={() => onOpenFile(p.file)} className={cn("hover:underline", i === r.path.length - 1 && "text-warning")} title={p.file}>
-                          {p.name}
-                        </button>
-                      </span>
-                    ))}
-                    <span className="text-muted-foreground"> ({r.status})</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
           )}
         </Section>
       )}

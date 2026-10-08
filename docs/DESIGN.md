@@ -636,23 +636,25 @@ Each endpoint has a stable id across commits: kind, method and path with paramet
 #### 3. Storage and the change
 - The default branch's catalog is written by the analysis job to `api_catalogs` (one row per repo, migration 3; `ANALYSIS_VERSION` 3).
 - ✦ inferences live in `kv` under `api-shape:<repo>:<handler fingerprint>`, so they survive re-analysis until the handler changes.
-- The target-graph job adds `api: compareApis(base, head, changed)` to its stored result (`lib/analysis/api/compare.ts`). It reports, per endpoint:
-  - **added** or **removed**. A removal is breaking unless it's a server action or a spec-only endpoint.
-  - **changed**, with deltas for path, method, params, request, response, auth and handler code. A pair of removed and added endpoints with the same handler counts as one re-pathed endpoint. Breaking deltas: new required params or request fields, removed or retyped response fields, new auth.
-  - **reached**: the handler is untouched but calls changed code. This is a BFS over the head's calls, at most 8 hops and 2,000 functions per endpoint, and keeps the call path.
+- The target-graph job adds `api: compareApis(base, head, changed)` to its stored result (`lib/analysis/api/compare.ts`). Two separate lists:
+  - `changes`, **changes to the API itself**, the contract a client sees:
+    - **added** or **removed**. A removal is breaking unless it's a server action or a spec-only endpoint.
+    - **changed**, with deltas for path, method, params, request, response and auth. A pair of removed and added endpoints with the same handler counts as one re-pathed endpoint.
+    - Breaking deltas: new required params or request fields, removed or retyped response fields, new auth.
+  - `logic`, **code changed behind an unchanged contract**: the handler's own lines changed, or it calls changed code. The calls are followed by a BFS over the head's call graph (at most 8 hops and 2,000 functions per endpoint), and the call path is kept.
+    - These are not API changes and aren't shown in the UI. They go to the review, the chat and MCP, labelled as such.
+    - **Changed 2026-10-08, after the user's feedback:** the first build listed these as a "reached" status beside the API changes, with a handler-code delta, and drew both on an Endpoints mode of the PR map. "Did the endpoint change or the logic behind it?" wasn't answerable at a glance, so the UI now shows only contract changes, and the map mode is gone.
 - `changedDeclarations` was pulled out of `buildCallGraph` so this uses the uncapped set.
 
 #### 4. Where it shows
 - **API view** (`ApiView`, `ApiPanel`; `useApiCatalog`, `api-view-model.ts`):
-  - search, a kind filter, and "Changed only" with the counts when a diff is selected;
-  - rows marked new / removed / changed / reached, with `!` when breaking;
-  - the explainer: summary and spec, the change (deltas and reach paths), handler, middleware & auth, params, request and response (from types / from the spec / ✦), callers of a server action, OpenAPI drift, and the reach tree.
-- **Left column:** an "API" section with `+1 −0 ~2 · 28 reached` and the changes, breaking first. Each line opens the API view at that endpoint.
-- **PR map:**
-  - Files mode: each area card shows `⇄N` for the endpoints it touches, and the area inspector lists them.
-  - **Endpoints** mode (`EndpointMapCanvas`): endpoint cards drawn into the area cards holding their handler ("handled in") or the changed code they reach ("reaches fn").
-- **Review:** each component's prompt gets "Endpoints this change affects" (`ReviewRelatedContext.endpoints`), and the intent check gets the whole list (`describe.ts`).
-- **Chat** and **MCP:** a `list_endpoints` tool in both. The PR chat context carries the API change, and MCP has `get_api_changes`.
+  - search and a kind filter;
+  - with a diff selected, **API changes | All endpoints**. The view opens on the changes only (new, removed, changed, with `!` when breaking); "All endpoints" shows the catalog with them marked;
+  - the explainer: summary and spec, the change (before → after per delta), handler, middleware & auth, params, request and response (from types / from the spec / ✦), callers of a server action, OpenAPI drift, and the reach tree.
+- **Left column:** an "API" section with `+1 −0 ~2` and the changes, breaking first. Each line opens the API view at that endpoint.
+- **PR map:** not involved. It shows files and functions.
+- **Review:** each component's prompt gets "Endpoints this change affects" (`ReviewRelatedContext.endpoints`): its API changes, then its "same contract" logic changes. The intent check gets the whole list (`describe.ts`).
+- **Chat** and **MCP:** a `list_endpoints` tool in both. The PR chat context carries the API change, and MCP's `get_api_changes` returns `changes` and, separately, `logicChanged`.
 - **Routes:**
   - `GET /api/repos/[repoId]/api-catalog`
   - `POST /api/repos/[repoId]/api-catalog/infer` with `{ endpointId }` (one inline model call; `lib/ai/api-shape.ts`, `TASK: api-shape`).

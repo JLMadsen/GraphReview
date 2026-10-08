@@ -409,8 +409,10 @@ async function main(): Promise<void> {
       const by = (status: string, method: string, p: string) => diff.changes.find((c) => c.status === status && c.endpoint.method === method && c.endpoint.path === p);
       check("added endpoint", by("added", "GET", "/api/users/{id}/sessions") !== undefined, diff.changes.map((c) => `${c.status} ${c.endpoint.method} ${c.endpoint.path}`).join(", "));
       check("removed endpoint is breaking", by("removed", "PUT", "/api/users/{id}/avatar")?.breaking === true);
-      const reached = by("reached", "GET", "/api/users/{id}");
-      check("reached through two calls, with the path", reached?.reaches?.[0]?.path.map((p) => p.name).join(" → ") === "findUser → query", JSON.stringify(reached?.reaches));
+      check("code changed behind an endpoint is not an API change", !diff.changes.some((c) => c.endpoint.method === "GET" && c.endpoint.path === "/api/users/{id}"));
+      const logic = diff.logic.find((l) => l.endpoint.method === "GET" && l.endpoint.path === "/api/users/{id}");
+      check("logic change: reached through two calls, with the path", logic?.reaches[0]?.path.map((p) => p.name).join(" → ") === "findUser → query" && !logic.handlerChanged, JSON.stringify(logic));
+      check("a model field edit is not a handler change", diff.logic.some((l) => l.endpoint.path === "/api/users/{user_id}" && l.handlerChanged) === false);
       const pyChange = by("changed", "GET", "/api/users/{user_id}");
       check("response field removed is breaking", pyChange?.breaking === true && pyChange.deltas.some((d) => d.aspect === "response" && d.before?.startsWith("nickname")), JSON.stringify(pyChange?.deltas));
       check("counts", diff.counts.added === 1 && diff.counts.removed === 1 && diff.counts.breaking >= 2, JSON.stringify(diff.counts));
