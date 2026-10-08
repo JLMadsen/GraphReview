@@ -53,6 +53,11 @@ SQLite database by `runner.ts`, so a queued job survives a restart.
 | `smoke-test-impact.ts` | `npx tsx lib/jobs/smoke-test-impact.ts` — contract detection, the usage filter, and the impact / PR-intent model calls (fake chat + mock server). |
 | `preview-scan.ts` | The scan behind the Graph tab's "Looks different" list: parses both versions of each changed JSX-capable file and keeps the changed **components** (not plain functions). No Docker, no model. Its queue (`preview-scan`, in `preview-queue.ts`) is started by reading `GET …/preview/scan` and re-scans after 5 minutes (`ensurePreviewScan`). Not re-exported (pulls in `lib/analysis`). |
 
+| `commit-analysis.ts` | `analyzeRepoCommit(dir, sha)`: one commit analysed with the SQLite parse cache (`dbParseCache`) and the last three results memoised in memory. Not re-exported (pulls in lib/analysis). |
+| `target-graph-queue.ts` / `target-graph.ts` | The `target-graph` queue and job (DESIGN.md §6.10): a target's merge-base vs head — structure change (new import cycles become `structure` findings), call graph — stored in `target_graphs`. Started by reading `GET …/target-graph`; redone after 5 minutes. The job body is not re-exported. |
+| `symbol-context.ts` | The review's view from names: `loadTargetAnalyses`, `symbolContracts`/`symbolUsages` and `newDeadImports` for the impact pass, `symbolRelatedFiles` for the per-component context. Not re-exported. |
+| `smoke-test-symbol-impact.ts` | `npx tsx lib/jobs/smoke-test-symbol-impact.ts` — the name-based impact pass, replaying the first real review's false positives. |
+
 `worker/` owns the consumer wiring; nothing in this directory starts a
 `Worker`. The actual parsing (`lib/analysis/`) and AI (`lib/ai/`) logic stays
 in those packages.

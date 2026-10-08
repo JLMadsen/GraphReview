@@ -194,7 +194,14 @@ export function renderRelatedSections(related: ReviewRelatedContext): string {
     if (lines.length > 0) lines.push("");
     lines.push("## Related code (context only — not part of the change)");
     for (const file of files) {
-      const relation = file.relation === "imported" ? "imported by the changed files" : "imports the changed files";
+      const relation =
+        file.relation === "imported"
+          ? "imported by the changed files"
+          : file.relation === "importer"
+            ? "imports the changed files"
+            : file.relation === "defines"
+              ? "declares names the changed code uses"
+              : "calls code this change touched";
       lines.push(`Related file: ${oneLine(file.path)} (component ${oneLine(file.componentName)}; ${relation})`);
       if (file.signatures.length > 0) {
         const body = file.signatures.map((sig) => clip(oneLine(sig), MAX_SIGNATURE_CHARS)).join("\n");
@@ -204,7 +211,8 @@ export function renderRelatedSections(related: ReviewRelatedContext): string {
       for (const snippet of file.snippets) {
         const body = snippet.code.replace(/\s+$/, "");
         const fence = "`".repeat(Math.max(3, longestBacktickRun(body) + 1));
-        lines.push(`Source of ${oneLine(snippet.name)} (referenced by the diff):\n${fence}\n${body}\n${fence}`);
+        const label = file.relation === "caller" ? `Caller ${oneLine(snippet.name)}` : `Source of ${oneLine(snippet.name)} (referenced by the diff)`;
+        lines.push(`${label}:\n${fence}\n${body}\n${fence}`);
       }
     }
   }

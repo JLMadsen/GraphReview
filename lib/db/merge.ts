@@ -43,19 +43,19 @@ export async function getFileOwnerMap(repoId: string): Promise<Map<string, strin
 /** Every stored file path and file-level import edge of a repo — enough to regroup without re-parsing. */
 export async function getStoredImportGraph(
   repoId: string
-): Promise<{ filePaths: string[]; edges: Array<{ from: string; to: string }> }> {
+): Promise<{ filePaths: string[]; edges: Array<{ from: string; to: string; weight: number }> }> {
   const filePaths = all<{ path: string }>(`SELECT path FROM files WHERE repo_id = ? ORDER BY path`, repoId).map(
     (row) => row.path
   );
-  const edges = all<{ source: string; target: string }>(
-    `SELECT a.path AS source, b.path AS target
+  const edges = all<{ source: string; target: string; weight: number }>(
+    `SELECT a.path AS source, b.path AS target, i.weight AS weight
      FROM file_imports i
      JOIN files a ON a.id = i.from_id
      JOIN files b ON b.id = i.to_id
      WHERE a.repo_id = ? AND b.repo_id = ?`,
     repoId,
     repoId
-  ).map((row) => ({ from: row.source, to: row.target }));
+  ).map((row) => ({ from: row.source, to: row.target, weight: Number(row.weight) || 1 }));
   return { filePaths, edges };
 }
 

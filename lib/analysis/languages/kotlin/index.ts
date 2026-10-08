@@ -23,6 +23,7 @@ import type {
 } from "../../analyzer";
 import { indexJvmDeclarations, jvmExternalPackage, prepareJvm, resolveJvmImportPaths } from "../jvm/resolve";
 import { analyzeKotlinSource } from "./lexical";
+import { kotlinSymbols } from "./symbols";
 
 export const kotlinAnalyzer: LanguageAnalyzer = {
   id: "kotlin",
@@ -34,6 +35,10 @@ export const kotlinAnalyzer: LanguageAnalyzer = {
 
   analyzeSource(input: SourceInput): SyntaxFacts {
     return analyzeKotlinSource(input.file, input.source);
+  },
+
+  analyzeSymbols(input: SourceInput) {
+    return kotlinSymbols(input.source);
   },
 
   resolveImportPath(raw: string, fromFile: string, ctx: AnalyzerContext) {

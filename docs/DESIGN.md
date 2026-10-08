@@ -83,6 +83,7 @@ The goal is an import/dependency graph across multiple languages without turning
   ```
 - **Extension point**: `lib/analysis/languages/<lang>/{grammar.wasm, queries.scm, resolve.ts}`, implementing a shared `LanguageAnalyzer` interface and registered by file extension in a central registry. Adding language *N+1* means implementing the interface and shipping its grammar — no change to the graph builder.
 - **Call-graph edges** (as opposed to file-level import edges) are deferred past v1 — reliable call/scope resolution is much harder and highly language-specific. v1 ships file-level import edges only, which already satisfies decision #2 ("edges = code dependencies").
+  **As built (2026-10-08):** names, a base/head comparison and call edges for TS/JS, Python, Java and Kotlin, and graphs read from the default branch's tip commit (git objects) instead of the working tree — see §6.10.
 - Unresolvable external packages (npm/PyPI/etc.) become optional grouped "external" nodes for context, rather than being expanded individually.
 
 ## 6. Component/node inference
@@ -550,6 +551,38 @@ The worker uses whatever `docker` is on GraphReview's PATH, talking to the machi
 - Server pages that load data while rendering have no network or database in the sandbox. They render their own "couldn't load" or empty state, so different inputs often produce the same markup.
 - pnpm workspaces lose per-package `node_modules` symlinks; the hoisted install covers most cases.
 - Only JS/TS and Python.
+
+### 6.10 Names, base/head comparison and the call graph (built 2026-10-08)
+
+Until this, analysis knew *which files* import which, never *which names*: everything that needed names — the impact pass's "is this caller still pointing at the changed declaration", the review's related-code context, contract detection — re-read the code with regexes, and the impact pass carried its own loose import resolver. All 17 impact "defects" of the first real review were false positives of that layer (a symbol moved and re-exported, an alias, a module moved with its importers updated). The decisions were settled up front (2026-10-07); the build:
+
+#### 1. Graphs come from commits, not the working tree
+- A repo's graph is its **default branch's tip commit**, read from git's object store (`lib/analysis/source-tree.ts`: `git ls-tree -r -l` plus one long-running `git cat-file --batch`). Uncommitted edits, untracked and ignored files, and whichever branch the checkout is on never count; `lastAnalyzedSha` is exactly what was analysed. Local repos must be git repos (a non-git folder is refused when added). A local repo's default branch is what `origin/HEAD` points at, else `main`/`master`, else the checked-out branch; repos added earlier stored the checked-out branch and are re-detected once.
+- Binary files (a NUL in the first 8 KB) and files over 1.5 MB are counted, not parsed. (A folder of 18k binary video segments named `.ts` used to be parsed as TypeScript at ~100 ms each.)
+- **Parsing runs in a worker thread** (`lib/analysis/syntax/parse-pool.ts` starting `parse-worker.mjs`, plain JS shipped in the package, never bundled). A file that takes over 20 s, or crashes the WASM runtime, costs that file; the pool starts a fresh worker. Without the worker script on disk (or with `GRAPHREVIEW_PARSE_IN_PROCESS=1`) parsing runs in-process.
+- **Parse cache by git blob** (`parse_cache` table, keyed `PARSE_VERSION:analyzer:ext:blob`, entries unused for 30 days dropped at startup): a file's syntax is never parsed twice — across re-analyses, and between a PR's base and head. The last three analyses are also kept in memory (`lib/jobs/commit-analysis.ts`), so the target-graph job and a review right after share them.
+- `ANALYSIS_VERSION` (`lib/jobs/queue.ts`) is stored on the repo; a repo analysed by an older version is re-analysed on its next view, like a moved branch.
+
+#### 2. Names
+- `lib/analysis/syntax/extract.mjs` walks the tree-sitter trees of TS/JS/TSX, Python and Java (Kotlin: `languages/kotlin/symbols.ts`, lexical like the rest of its analyzer) and records per file: module-level declarations and the methods of module-level classes (name, kind, export name, line range, **signature** — a function's text up to its body, a type's whole shape, a constant's declaration), imports with the names they bind, JS/TS export clauses and re-exports, every identifier occurrence by line, `object.member` accesses, and call sites with the declaration they sit in.
+- `lib/analysis/symbols.ts` resolves them across files with the analyzers' own import resolvers: re-export chains (`export { a as b } from`, `export *`, `export * as ns`), default exports, Python package `__init__` re-exports and submodules, `from x import *`, Java/Kotlin simple names through explicit imports, then the own package, then wildcard imports, and static imports. Result: `decls` (ids `<file>#<name>` and `<file>#<Class>.<method>`), `uses` (file F refers to declaration D on these lines), `calls`, `deadImports` (an import of a name its module doesn't provide), counts of calls that name a repo function but can't be resolved, and type-only file edges. A module whose exports can't be listed statically (CommonJS, `export =`) resolves to "unknown", never to "dead".
+- Import edges now carry `weight` (lines that use the imported file's names) and `typeOnly`; module dependency weights sum the former.
+- Go and Rust have no names yet: their files keep the text-based impact and context paths.
+
+#### 3. Base vs head (`lib/jobs/target-graph.ts`, queue `target-graph`)
+Started by reading `GET /api/repos/[repoId]/target-graph` — the Graph tab does when a target loads; redone after 5 minutes — and static analysis only. It pins the target to its **merge-base** and head (`resolveCommits`, as the preview does), analyses both, takes the changed lines from a local `git diff -U0` (not the host API, which drops big patches) and stores one document per target in `target_graphs`:
+- **Structure** (`compareStructure` in `lib/analysis/compare.ts`): import cycles the change creates — over runtime imports only (`import type` and lazy `import()` can't deadlock loading), skipped when the two files already depended on each other at the base; added and removed file edges, rolled up into component dependencies; files nothing imports any more; how many files transitively depend on what changed. **Only new file-level cycles become findings** (`category: "structure"`, `concern`, with ids derived from the cycle so replies survive a recomputation — `syncFindingsForTargetCategory`); the rest is shown, not counted. No layer rules yet.
+- **Call graph** (`buildCallGraph`): functions in changed files marked `added`, `removed`, `signature` or `body`, plus their callers and callees one hop out (`unchanged`); calls marked `new`, `removed` or `existing`, and **`notUpdated`** for a call to a changed signature on a line the change didn't touch. Capped at 400 functions.
+
+#### 4. Where it shows
+- **PR map** (§6.4) gains a **Files / Functions** switch. Files: links the change adds between areas are drawn in its colour (added to the map when it didn't have them) and removed ones ghosted; the toolbar says e.g. "1 new import cycle · +3 dependencies · 74 files depend on it". Functions: each area card opens into its function rows (at most 12, then "+N more", and "N calls not resolved"); untouched callers and callees sit on neighbour cards, one per component; calls are drawn row to row (`CardFlow`'s `ports`: ELK fixed-position ports measured from the rendered rows). Picking a function opens `FunctionPanel` in the right column: its signature before and after, its callers (updated / **not updated** / new) and its callees, each file:line opening the file at that line.
+- **Review dock**: structure findings appear without any AI review, with a **Structure** chip that shows only them; the job tells an open dock to refetch.
+- **MCP**: `get_review` returns structure findings like any other; the server's instructions explain the category.
+- **Review job**: analyses the target from names (`lib/jobs/symbol-context.ts`). The impact pass compares declarations base vs head (a removed export the old module still re-exports is no contract), finds usages through resolved imports, namespace members, calls and same-file references, reports **imports of names that no longer exist as certain findings, without a model call**, and sends only the remaining untouched usages to the model. The per-component context adds the definitions the changed lines use and the callers of what changed.
+
+#### Limits
+- Calls on instances (`repo.save(x)`) need types and aren't resolved — they are counted per card, never guessed. Java/Kotlin call graphs are therefore sparse; static and same-class calls work.
+- No layer rules, no working-tree review target (docs/ideas.md), no names for Vue, C#, Go or Rust yet.
 
 ## 7. Data model
 

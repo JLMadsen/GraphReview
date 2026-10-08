@@ -206,6 +206,12 @@ export interface GatherRelatedContextInput {
   settings: ReviewEffortSettings;
   /** Read related files at the reviewed head when given; else from the checkout on disk. */
   head?: HeadSource | null;
+  /**
+   * Related files found from names (lib/jobs/symbol-context.ts: definitions
+   * the changed lines use, callers of what changed). They come first; the
+   * import-hop files below fill the remaining slots.
+   */
+  symbolFiles?: ReviewRelatedFile[];
   log: JobLogger;
 }
 
@@ -217,6 +223,7 @@ export async function gatherRelatedContext({
   patches,
   settings,
   head,
+  symbolFiles,
   log,
 }: GatherRelatedContextInput): Promise<ReviewRelatedContext | undefined> {
   if (!settings.neighborDescriptions && !settings.signatures && !settings.relatedSource) {
@@ -260,7 +267,9 @@ export async function gatherRelatedContext({
           files.push({ ...ref, signatures, snippets });
         }
       }
-      context.files = files;
+      const named = symbolFiles ?? [];
+      const namedPaths = new Set(named.map((f) => f.path));
+      context.files = [...named, ...files.filter((f) => !namedPaths.has(f.path))].slice(0, MAX_RELATED_FILES);
       if (!dir) log("no checkout on disk — reviewing without related-file context");
     } catch (error) {
       log(`related-file lookup failed (continuing without it): ${(error as Error).message}`);

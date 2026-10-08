@@ -20,6 +20,7 @@
     "!.next/trace",
     "!.next/types/",
     "lib/analysis/languages/**/*.scm",
+    "lib/analysis/syntax/*.mjs",
     "lib/preview/harness/",
     "lib/runtime/config-env.mjs",
     "next.config.mjs",

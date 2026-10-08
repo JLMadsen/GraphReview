@@ -39,6 +39,8 @@ import {
 import {
   deleteFindingsForTargetExceptComponents,
   getActiveAiProvider,
+  getFileOwnerMap,
+  listComponentsByRepoId,
   getRepoById,
   listFindingsByTargetKey,
   prMapFilesKey,
@@ -58,6 +60,7 @@ import {
 import { resolveGitHubAccess } from "./github-access";
 import { openHeadSource } from "./head-source";
 import { runImpactPass } from "./impact";
+import { loadTargetAnalyses, symbolRelatedFiles } from "./symbol-context";
 import { gatherRelatedContext } from "./review-context";
 import {
   assemblePrMap,
@@ -98,6 +101,13 @@ const MODEL_CONCURRENCY = 3;
 /** Stable pull request record id for a repo + PR number — mirrors the `<repoId>:<kind>:<key>` convention `analyze.ts` uses for components and files. */
 function pullRequestNodeId(repoId: string, prNumber: number): string {
   return `${repoId}:pr:${prNumber}`;
+}
+
+/** A path's owning component name ("" when it has none), for related-code headings. */
+async function loadOwnerNames(repoId: string): Promise<(path: string) => string> {
+  const [owners, components] = await Promise.all([getFileOwnerMap(repoId), listComponentsByRepoId(repoId)]);
+  const names = new Map(components.map((c) => [c.id, c.name]));
+  return (path) => names.get(owners.get(path) ?? "") ?? "";
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +676,11 @@ export async function runReviewJob(
   // impact pass. `null` (logged) falls back to the default branch / skips.
   const head = await openHeadSource(repo, target, resolved.reviewed.headSha, log);
   await stopIfCancelled();
+  // The target's base and head analysed from names (TS/JS, Python, Java,
+  // Kotlin): the impact pass and the related-code context read from it.
+  const analyses = await loadTargetAnalyses(repo, target, resolved.reviewed, head, log);
+  await stopIfCancelled();
+  const ownerNames = analyses ? await loadOwnerNames(repoId) : null;
 
   // --- Map the diff onto the component graph -----------------------------
   const filesByPath = new Map(resolved.files.map((file) => [file.path, file]));
@@ -734,6 +749,13 @@ export async function runReviewJob(
     let sent = false;
 
     try {
+      const symbolFiles =
+        analyses && head && ownerNames && (effortSettings.signatures || effortSettings.relatedSource)
+          ? await symbolRelatedFiles(analyses, paths, ownerNames, (path) => head.read(path), {
+              signatures: effortSettings.signatures,
+              source: effortSettings.relatedSource,
+            })
+          : undefined;
       const related = await gatherRelatedContext({
         repo,
         componentId: context.id,
@@ -741,6 +763,7 @@ export async function runReviewJob(
         patches: files.map((file) => file.patch ?? ""),
         settings: effortSettings,
         head,
+        symbolFiles,
         log: (message) => log(`${context.name}: ${message}`),
       });
       signal?.throwIfAborted();
@@ -939,6 +962,7 @@ export async function runReviewJob(
     revision,
     log,
     signal,
+    analyses,
   });
   running.delete("__impact");
   progress.calls += impact.calls;

@@ -40,6 +40,31 @@ const IGNORED_FILE_PATTERNS: readonly RegExp[] = [
   /-lock\.json$/i,
 ];
 
+/**
+ * The walk's skip rules applied to a file list that came from somewhere else
+ * (a commit's tree): dot-directories, {@link DEFAULT_IGNORED_DIRS} (plus
+ * `extraIgnored`), `*.egg-info`, Cargo's `target/` next to a `Cargo.toml`,
+ * and minified bundles / lockfiles.
+ */
+export function isWalkIgnored(
+  relPath: string,
+  hasFile: (relPath: string) => boolean,
+  extraIgnored: readonly string[] = [],
+): boolean {
+  const segments = relPath.split("/");
+  const name = segments[segments.length - 1];
+  if (IGNORED_FILE_PATTERNS.some((pattern) => pattern.test(name))) return true;
+  for (let i = 0; i < segments.length - 1; i++) {
+    const dir = segments[i];
+    if (dir.startsWith(".") || DEFAULT_IGNORED_DIRS.includes(dir) || extraIgnored.includes(dir) || dir.endsWith(".egg-info")) {
+      return true;
+    }
+    const evidence = CONDITIONALLY_IGNORED_DIRS.get(dir);
+    if (evidence && hasFile([...segments.slice(0, i), evidence].join("/"))) return true;
+  }
+  return false;
+}
+
 export interface WalkOptions {
   /** Extra directory names to skip, on top of {@link DEFAULT_IGNORED_DIRS}. */
   ignoreDirs?: readonly string[];

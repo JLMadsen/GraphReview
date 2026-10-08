@@ -34,7 +34,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { cn } from "cn";
 import { FileDiffModal } from "./FileDiffModal";
-import { PrMapCanvas } from "./PrMapCanvas";
+import { PrMapCanvas, type PrMapMode } from "./PrMapCanvas";
+import { FunctionPanel } from "./FunctionPanel";
+import { buildFunctionView } from "./call-graph-view";
+import { useTargetGraph } from "./useTargetGraph";
 import { PrAreaList, PrAreaPanel } from "./PrAreaPanel";
 import { buildPrAreas } from "./pr-areas";
 import { usePrMap } from "./usePrMap";
@@ -76,6 +79,7 @@ function viewLayerClass(active: boolean): string {
 const VIEW_STORAGE_KEY = "graphreview.graph.view";
 const APP_LEVEL_STORAGE_KEY = "graphreview.appmap.level";
 const REVIEW_EXPANDED_STORAGE_KEY = "graphreview.review.expanded";
+const PR_MODE_STORAGE_KEY = "graphreview.prmap.mode";
 
 /** Trimmed shape of `GET /api/repos/[repoId]` — see this repo's task brief. Only the fields this view needs. */
 interface RepoContext {
@@ -124,6 +128,20 @@ export function GraphView({
   const checklist = useChecklist(repoId, reviewTarget, review.state, autoReview && !review.cancelled);
   const chat = usePrChat(repoId, reviewTarget);
   const previewScan = usePreviewScan(repoId, reviewTarget);
+  /** The target's base vs head: structure change and call graph (static analysis, no model). */
+  const targetGraph = useTargetGraph(repoId, reviewTarget);
+  /** The PR map shows areas (files) or opens them into functions — remembered per browser. */
+  const [prMode, setPrModeState] = useState<PrMapMode>("files");
+  const [selectedFunction, setSelectedFunction] = useState<string | null>(null);
+  const setPrMode = useCallback((mode: PrMapMode) => {
+    setPrModeState(mode);
+    setSelectedFunction(null);
+    try {
+      window.localStorage.setItem(PR_MODE_STORAGE_KEY, mode);
+    } catch {
+      /* ignored */
+    }
+  }, []);
   /** The view last chosen — remembered per browser, `pr` by default. With no diff selected, `pr` falls back to the App map. */
   const [preferredView, setPreferredViewState] = useState<GraphViewMode>("pr");
   const [appLevel, setAppLevelState] = useState<AppMapLevel>("architecture");
@@ -137,6 +155,7 @@ export function GraphView({
       const level = window.localStorage.getItem(APP_LEVEL_STORAGE_KEY);
       if (isAppMapLevel(level)) setAppLevelState(level);
       if (window.localStorage.getItem(REVIEW_EXPANDED_STORAGE_KEY) === "1") setReviewExpandedState(true);
+      if (window.localStorage.getItem(PR_MODE_STORAGE_KEY) === "functions") setPrModeState("functions");
     } catch {
       /* storage unavailable — keep the defaults */
     }
@@ -167,8 +186,9 @@ export function GraphView({
   // (the dock's Files tab, an area's most-changed files) open on the diff;
   // the rest (the explainer's files, chat) on the
   // whole file, its changed lines marked.
-  const [openFile, setOpenFile] = useState<{ path: string; component?: string; tab?: "diff" | "file" } | null>(null);
+  const [openFile, setOpenFile] = useState<{ path: string; component?: string; tab?: "diff" | "file"; line?: number } | null>(null);
   const openFilePath = useCallback((path: string) => setOpenFile({ path }), []);
+  const openFileAtLine = useCallback((path: string, line?: number) => setOpenFile({ path, line }), []);
   const openFileView = useCallback((path: string) => setOpenFile({ path, tab: "file" }), []);
   const [leftWidth, setLeftWidth] = usePanelWidth("graphreview.panel.diff", 236, 200, 480);
   const [chatWidth, setChatWidth] = usePanelWidth("graphreview.panel.chat", 380, 300, 720);
@@ -280,6 +300,8 @@ export function GraphView({
   const prMap = usePrMap(repoId, prRequest, review.state);
   /** The PR map's cards as areas, with their findings — one object for the canvas, the dock and the inspector. */
   const prAreas = useMemo(() => buildPrAreas(prMap.map, review.findings), [prMap.map, review.findings]);
+  const functionView = useMemo(() => buildFunctionView(prMap.map, targetGraph.graph?.data), [prMap.map, targetGraph.graph]);
+  useEffect(() => setSelectedFunction(null), [prRequest]);
   /** The area (PR map card) the PR view is focused on, and optionally one of its components — they scope the dock. */
   const [prArea, setPrArea] = useState<string | null>(null);
   const [prAreaComponent, setPrAreaComponent] = useState<string | null>(null);
@@ -381,6 +403,8 @@ export function GraphView({
   /** On the PR view the inspector explains the selected area, or lists them all. */
   const showPrPanel = view === "pr" && prMap.map !== null;
   const selectedPrArea = prArea ? prAreas.areas.get(prArea) : undefined;
+  const selectedFn =
+    view === "pr" && prMode === "functions" && selectedFunction ? functionView?.functionById.get(selectedFunction) : undefined;
   const hasInspector = showAppPanel || showPrPanel;
   const chatFocus =
     showPrPanel && prAreaComponent
@@ -492,6 +516,12 @@ export function GraphView({
             onSelectCard={selectPrArea}
             selectedComponentId={prAreaComponent}
             reviewPending={review.state === "queued" || review.state === "running"}
+            mode={reviewTarget ? prMode : "files"}
+            onModeChange={reviewTarget ? setPrMode : undefined}
+            targetGraph={reviewTarget ? targetGraph : undefined}
+            functionView={functionView}
+            selectedFunctionId={selectedFunction}
+            onSelectFunction={setSelectedFunction}
           />
           </div>
         )}
@@ -500,7 +530,7 @@ export function GraphView({
         <FileDiffModal
           repoId={repoId}
           target={reviewTarget}
-          finding={openFile ? { filePath: openFile.path } : null}
+          finding={openFile ? { filePath: openFile.path, ...(openFile.line ? { lineRange: String(openFile.line) } : {}) } : null}
           initialComponent={openFile?.component}
           initialTab={openFile?.tab}
           onClose={() => setOpenFile(null)}
@@ -570,7 +600,17 @@ export function GraphView({
                   />
                 </div>
               )}
-              {showPrPanel &&
+              {showPrPanel && selectedFn && functionView ? (
+                <FunctionPanel
+                  key={selectedFn.id}
+                  fn={selectedFn}
+                  view={functionView}
+                  onSelectFunction={setSelectedFunction}
+                  onOpenFile={openFileAtLine}
+                  onClose={() => setSelectedFunction(null)}
+                />
+              ) : (
+              showPrPanel &&
                 (selectedPrArea ? (
                   <PrAreaPanel
                     key={selectedPrArea.node.id}
@@ -584,7 +624,8 @@ export function GraphView({
                   />
                 ) : (
                   <PrAreaList areas={prAreas} onSelect={selectPrArea} />
-                ))}
+                ))
+              )}
             </div>
           )}
           <div className="min-h-0 flex-1">

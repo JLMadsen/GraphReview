@@ -40,10 +40,8 @@
  * when a crate has both (`crate::Item` from a non-root file prefers `lib.rs`,
  * unless its top-level module is declared only by `main.rs`).
  */
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import type { AnalyzerContext } from "../../analyzer";
-import { dirOf, joinPosix } from "../../paths";
+import { dirOf, joinPosix, readRepoText } from "../../paths";
 
 const CACHE_KEY = "rust:state";
 
@@ -138,7 +136,7 @@ export async function prepareRust(ctx: AnalyzerContext): Promise<void> {
       state.hasManifest = true;
       try {
         manifests.push(
-          parseCargoToml(await readFile(path.join(ctx.rootDir, file), "utf8"), dirOf(file)),
+          parseCargoToml(await readRepoText(ctx, file), dirOf(file)),
         );
       } catch {
         // Unreadable manifest: fall back to file-name conventions for its crate.
@@ -207,7 +205,7 @@ export async function prepareRust(ctx: AnalyzerContext): Promise<void> {
     try {
       const [libMods, mainMods] = await Promise.all(
         [lib, main].map(async (f) =>
-          declaredModules(await readFile(path.join(ctx.rootDir, f), "utf8")),
+          declaredModules(await readRepoText(ctx, f)),
         ),
       );
       const binOnly = new Set([...mainMods].filter((m) => !libMods.has(m)));

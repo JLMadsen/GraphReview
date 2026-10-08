@@ -1,16 +1,18 @@
 // The analysis job body.
 //
-// Pipeline: resolve the repo's source on disk → `analyzeRepo()` from
-// lib/analysis → persist the resulting graph through lib/db's typed
-// repository functions → record `lastAnalyzedAt`/`lastAnalyzedSha`.
+// Pipeline: resolve the repo's source on disk and its default branch's tip
+// commit → analyse that commit (lib/analysis `analyzeCommit`, through
+// ./commit-analysis.ts: read from git objects, parses cached by blob) →
+// persist the resulting graph through lib/db's typed repository functions →
+// record `lastAnalyzedAt`/`lastAnalyzedSha`/`analysisVersion`.
 //
 // Kept out of `worker/index.ts` on purpose: the worker entrypoint is just
 // job-runner plumbing, while this is the actual unit of work, importable from a
 // script or test without starting a queue consumer.
 
 import { UnrecoverableError } from "./runner";
-import { analyzeRepo, DEFAULT_MODULE_DEPTH } from "@/lib/analysis";
 import type { AnalysisResult } from "@/lib/analysis";
+import { analyzeRepoCommit } from "./commit-analysis";
 import {
   clearRepoFileImports,
   deleteFiles,
@@ -18,11 +20,12 @@ import {
   linkFileImports,
   listFilesByRepoId,
   markRepoAnalyzed,
+  setRepoDefaultBranch,
   upsertFiles,
 } from "@/lib/db";
 import { writeModuleTier } from "./module-tier";
-import type { AnalysisJobResult } from "./queue";
-import { LocalPathOutsideRootError, RepoAccessError, prepareRepoSource } from "./source";
+import { ANALYSIS_VERSION, type AnalysisJobResult } from "./queue";
+import { LocalPathOutsideRootError, RepoAccessError, prepareRepoSource, readLocalDefaultBranch, validateLocalRepoPath } from "./source";
 
 export type JobLogger = (message: string) => void;
 
@@ -99,6 +102,8 @@ export async function persistAnalysis(
       fromFileId: fileNodeId(repoId, edge.from),
       toFileId: fileNodeId(repoId, edge.to),
       kind: edge.kind,
+      weight: edge.weight,
+      typeOnly: edge.typeOnly,
     }))
   );
   log(`wrote ${result.edges.length} file import edge(s)`);
@@ -141,6 +146,21 @@ export async function runAnalysisJob(
   }
   log(`repo ${repo.name} (${repo.provider}) — resolving source`);
 
+  // Local repos added before graphs followed the default branch stored the
+  // branch that happened to be checked out then; detect it properly once.
+  if (repo.provider === "local" && repo.analysisVersion === undefined && repo.localPath) {
+    try {
+      const detected = await readLocalDefaultBranch(await validateLocalRepoPath(repo.localPath));
+      if (detected && detected !== repo.defaultBranch) {
+        log(`default branch is ${detected}, not ${repo.defaultBranch} — updating`);
+        await setRepoDefaultBranch(repo.id, detected);
+        repo.defaultBranch = detected;
+      }
+    } catch {
+      /* keep the stored one */
+    }
+  }
+
   let dir: string;
   let sha: string;
   try {
@@ -153,14 +173,26 @@ export async function runAnalysisJob(
   }
   log(`analyzing ${dir} at ${sha.slice(0, 12)}`);
 
-  const result = await analyzeRepo(dir, { moduleDepth: DEFAULT_MODULE_DEPTH });
+  let lastLogged = 0;
+  const result = await analyzeRepoCommit(dir, sha, ({ analyzed, total }) => {
+    if (analyzed - lastLogged >= 500) {
+      lastLogged = analyzed;
+      log(`parsed ${analyzed} of ${total} file(s)`);
+    }
+  });
+  const skipped = result.skipped;
   log(
-    `static analysis done: ${result.files.length} file(s), ${result.edges.length} import edge(s), ` +
-      `${result.modules.length} module(s), ${result.externalPackages.length} external package(s)`
+    `static analysis done: ${result.files.length} file(s) (${result.cached} from the cache), ` +
+      `${result.edges.length} import edge(s), ${result.symbols.decls.length} declaration(s), ` +
+      `${result.symbols.calls.length} resolved call(s), ${result.modules.length} module(s), ` +
+      `${result.externalPackages.length} external package(s)` +
+      (skipped.binary + skipped.large + skipped.failed > 0
+        ? `; skipped ${skipped.binary} binary, ${skipped.large} oversized, ${skipped.failed} unparseable`
+        : "")
   );
 
   const counts = await persistAnalysis(repo.id, sha, result, log);
-  await markRepoAnalyzed(repo.id, sha);
+  await markRepoAnalyzed(repo.id, sha, ANALYSIS_VERSION);
 
   const durationMs = Date.now() - startedAt;
   log(`persisted graph and marked repo analyzed at ${sha.slice(0, 12)} in ${durationMs}ms`);

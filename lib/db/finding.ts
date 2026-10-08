@@ -309,6 +309,46 @@ export async function replaceFindingsForTargetCategory(
   return records;
 }
 
+/**
+ * Like {@link replaceFindingsForTargetCategory}, for findings whose ids are
+ * stable across runs (derived from what they are about — a cycle's files):
+ * findings no longer produced are deleted, the rest are rewritten in place,
+ * keeping their `createdAt`, `resolvedAt` and replies. A cycle someone
+ * already answered stays answered when the target is recomputed.
+ */
+export async function syncFindingsForTargetCategory(
+  repoId: string,
+  targetKey: string,
+  category: Exclude<FindingCategory, "change">,
+  findings: ReadonlyArray<TargetFindingInput & { componentId: string }>
+): Promise<FindingRecord[]> {
+  const now = new Date().toISOString();
+  const keep = findings.map((f) => f.id);
+  const records: FindingRecord[] = [];
+  transaction(() => {
+    run(
+      `DELETE FROM findings WHERE repo_id = ? AND target_key = ? AND category = ?
+         AND id NOT IN (${keep.length ? placeholders(keep.length) : "SELECT NULL WHERE 0"})`,
+      repoId,
+      targetKey,
+      category,
+      ...keep
+    );
+    for (const finding of findings) {
+      const existing = get<{ data: string }>(`SELECT data FROM findings WHERE id = ?`, finding.id);
+      const previous = existing ? toFindingRecord(unpack(existing.data)) : undefined;
+      const record = toStoredFinding(
+        { ...finding, createdAt: previous?.createdAt ?? finding.createdAt, resolvedAt: previous?.resolvedAt, responses: previous?.responses },
+        { repoId, targetKey, componentId: finding.componentId, category },
+        now
+      );
+      writeFinding(record);
+      records.push(record);
+    }
+  });
+  return records;
+}
+
 /** `(Finding)-[:ABOUT]->(Component)`. Sets the finding's `componentId`. */
 export async function linkFindingAboutComponent(findingId: string, componentId: string): Promise<void> {
   const row = get<{ data: string }>(`SELECT data FROM findings WHERE id = ?`, findingId);

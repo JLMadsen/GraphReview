@@ -18,6 +18,11 @@ export interface RepoRecord {
   lastAnalyzedAt?: string;
   lastAnalyzedSha?: string;
   /**
+   * `ANALYSIS_VERSION` (lib/jobs/analyze.ts) of the last analysis: a repo
+   * analysed by an older version is re-analysed, like a moved branch.
+   */
+  analysisVersion?: number;
+  /**
    * Set when a feature merge/unmerge moved modules between domains after the
    * last labeling run (DESIGN.md §6.3), so the domain tier may no longer fit.
    * Cleared by the next labeling run.
@@ -155,7 +160,12 @@ export type FindingKind = "fix" | "feature" | "refactor" | "test" | "docs" | "co
  * (its file is usually outside the diff); `intent` — the one PR-level
  * "does it deliver what it claims" verdict (no component).
  */
-export type FindingCategory = "change" | "impact" | "intent";
+/**
+ * `change` (per component), `impact` (callers the change left behind),
+ * `intent` (does the PR deliver what it says), `structure` (an import cycle
+ * the change creates — static analysis, no model).
+ */
+export type FindingCategory = "change" | "impact" | "intent" | "structure";
 
 export interface FindingRecord {
   id: string;
@@ -243,6 +253,10 @@ export interface FindingResponse {
 export type ImportKind = "import" | "require" | "call";
 export interface ImportsProps {
   kind: ImportKind;
+  /** How much the importer uses the imported file (lines referring to its names); 1 when unknown. */
+  weight?: number;
+  /** Every import between the two files is type-only. */
+  typeOnly?: boolean;
 }
 
 /** `(Component)-[:DEPENDS_ON {weight}]->(Component)` */

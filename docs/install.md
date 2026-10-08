@@ -105,6 +105,17 @@ Deleting it resets GraphReview completely.
 Without an AI provider the app is still fully usable for the graph and
 diff-impact view — AI review and labeling just show a "not configured" note.
 
+### What gets analysed
+
+A repo's graph is built from the **last commit of its default branch**, read
+from git itself — not from the files on disk. Uncommitted changes, untracked
+and git-ignored files, and whichever branch your checkout is on don't affect
+it, and a local folder has to be a git repository. Commit (or compare a
+branch) to see work in progress. Binary files and files over 1.5 MB are
+skipped. Each file is parsed once per version of it and cached in the
+database, so re-analysing after a pull, or comparing a PR's base with its
+head, only parses what changed.
+
 ## 6. Optional features
 
 - **Busy or flaky providers.** A 429/5xx or network error is retried up to

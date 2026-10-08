@@ -13,7 +13,7 @@
 
 import { getRepoById } from "@/lib/db";
 import type { RepoRecord } from "@/lib/db";
-import { enqueueAnalysis } from "./queue";
+import { ANALYSIS_VERSION, enqueueAnalysis } from "./queue";
 import { readCurrentSha } from "./source";
 
 export interface StalenessResult {
@@ -56,10 +56,10 @@ export async function checkAndEnqueueIfStaleForRepo(
 ): Promise<StalenessResult> {
   const shouldEnqueue = options.enqueue ?? true;
 
-  // Never analyzed: unambiguously stale, no probe needed.
-  if (!repo.lastAnalyzedSha) {
+  // Never analyzed, or by an older analysis: unambiguously stale, no probe needed.
+  if (!repo.lastAnalyzedSha || repo.analysisVersion !== ANALYSIS_VERSION) {
     const enqueued = shouldEnqueue ? await enqueueSafely(repo.id) : false;
-    return { stale: true, enqueued, checked: true };
+    return { stale: true, enqueued, checked: true, ...(repo.lastAnalyzedSha ? { lastAnalyzedSha: repo.lastAnalyzedSha } : {}) };
   }
 
   const currentSha = options.expectedSha ?? (await readCurrentSha(repo));

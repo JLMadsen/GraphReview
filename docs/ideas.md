@@ -100,3 +100,23 @@ Two controls only lived in its toolbar and went with it. Their routes are gone (
 
 - **Relabel** (`/api/repos/[repoId]/label` — deleted; `lib/jobs/label.ts`, `label-queue.ts` — kept) — the AI pass that groups modules into domains and writes each module's description. Descriptions already written stay and keep being used (app map card fallback, PR map card descriptions, the chat's context). Domains were only drawn by the Repo view. If descriptions should be refreshable again, a "Describe modules" action on the App map's Modules level is the natural home (the App map already has its own Describe for its cards).
 - **Merge suggestions** (`/api/repos/[repoId]/merges/**` — deleted; `lib/jobs/merges.ts`, `merge-heuristics.ts`, `merge-naming.ts` — kept; DESIGN.md §6.3) — "these folders are one feature, merge them into one module", accept/reject, plus rename / name with AI / unmerge on a merged module. Merges already accepted stay in effect (the App map, PR map and review all see the merged module). Analysis no longer computes suggestions: `writeModuleTier` only refreshes them when passed `suggestions`, which only `regroupRepo` (the merge actions) does. The rows already stored are left as they were. To bring suggestions back, pass `suggestions` from `persistAnalysis` in `lib/jobs/analyze.ts` again. If they come back: a "Merges (N)" button on the App map's Modules level, the list in the right column, and rename/unmerge in the app map explainer for a merged module's card.
+
+## Reviewing the working tree (noted 2026-10-07)
+
+Graphs are built from commits since 2026-10-08 (DESIGN.md §6.10), so
+uncommitted work is invisible to GraphReview. A third review target kind,
+`worktree` (HEAD vs the files on disk), would let a coding agent run a review
+before committing or pushing. It touches the review, PR map, MCP and diff
+code paths (every `ReviewTarget` switch), plus a disk-backed `SourceTree`
+for the head side — `diskSourceTree` in lib/analysis/source-tree.ts already
+exists for fixtures. Deferred, not rejected.
+
+## Layer rules (noted 2026-10-07)
+
+The base/head comparison already knows which component dependencies a change
+adds. Rules like "`components/**` must not import `lib/db/**`" would turn
+the ones that break a rule into findings, the way new import cycles are
+(DESIGN.md §6.10). Open question when it comes back: rules per repo in the
+app's database (nothing written to the target repo, decision #9) or a file
+read from the analysed commit (versioned with the code). See first how noisy
+the shown-not-counted dependency changes are in practice.

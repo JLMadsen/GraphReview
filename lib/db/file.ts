@@ -101,15 +101,20 @@ export async function unlinkFileFromComponent(fileId: string): Promise<void> {
   run(`DELETE FROM file_owners WHERE file_id = ?`, fileId);
 }
 
-function insertImport(fromFileId: string, toFileId: string, kind: ImportsProps["kind"]): void {
+function insertImport(fromFileId: string, toFileId: string, props: ImportsProps): void {
   run(
-    `INSERT INTO file_imports (from_id, to_id, kind)
-     SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM files WHERE id = ?)
-                      AND EXISTS (SELECT 1 FROM files WHERE id = ?)
-     ON CONFLICT (from_id, to_id) DO UPDATE SET kind = excluded.kind`,
+    `INSERT INTO file_imports (from_id, to_id, kind, weight, type_only)
+     SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM files WHERE id = ?)
+                            AND EXISTS (SELECT 1 FROM files WHERE id = ?)
+     ON CONFLICT (from_id, to_id) DO UPDATE SET
+       kind = excluded.kind,
+       weight = MAX(file_imports.weight, excluded.weight),
+       type_only = MIN(file_imports.type_only, excluded.type_only)`,
     fromFileId,
     toFileId,
-    kind,
+    props.kind,
+    Math.max(1, Math.round(props.weight ?? 1)),
+    props.typeOnly ? 1 : 0,
     fromFileId,
     toFileId
   );
@@ -117,15 +122,15 @@ function insertImport(fromFileId: string, toFileId: string, kind: ImportsProps["
 
 /** `(File)-[:IMPORTS {kind}]->(File)` — one file-level dependency edge from static analysis. */
 export async function linkFileImport(fromFileId: string, toFileId: string, props: ImportsProps): Promise<void> {
-  insertImport(fromFileId, toFileId, props.kind);
+  insertImport(fromFileId, toFileId, props);
 }
 
 /** Bulk {@link linkFileImport}, in one transaction. */
 export async function linkFileImports(
-  edges: ReadonlyArray<{ fromFileId: string; toFileId: string; kind: ImportsProps["kind"] }>
+  edges: ReadonlyArray<{ fromFileId: string; toFileId: string } & ImportsProps>
 ): Promise<void> {
   transaction(() => {
-    for (const edge of edges) insertImport(edge.fromFileId, edge.toFileId, edge.kind);
+    for (const edge of edges) insertImport(edge.fromFileId, edge.toFileId, edge);
   });
 }
 

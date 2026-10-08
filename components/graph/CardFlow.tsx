@@ -117,17 +117,37 @@ export const DEFAULT_ELK_OPTIONS: Record<string, string> = {
 };
 
 export interface CardFlowLink {
+  /** Unique id when several links join the same two cards (function calls); defaults to `source->target`. */
+  id?: string;
   source: string;
   target: string;
   label: string;
   weight: number;
   /** Drawn dashed — e.g. an edge to a faded context card. */
   dashed?: boolean;
+  /**
+   * Port keys (`data-port` of a row inside the card): the edge leaves the
+   * source row's right side and enters the target row's left side, instead
+   * of the cards' sides. Needs `ports` on the canvas.
+   */
+  sourcePort?: string;
+  targetPort?: string;
+  /** `new` (added by the change), `removed` (gone at the head, drawn ghosted), `broken` (a caller left behind). */
+  tone?: "new" | "removed" | "broken";
 }
 
-export function linkId(link: { source: string; target: string }): string {
-  return `${link.source}->${link.target}`;
+export function linkId(link: { id?: string; source: string; target: string }): string {
+  return link.id ?? `${link.source}->${link.target}`;
 }
+
+/** Edge colours per tone — concrete values, see EDGE_COLOR. */
+const TONE_COLORS: Record<NonNullable<CardFlowLink["tone"]>, string> = {
+  new: "#d8703a",
+  removed: "#8a909c",
+  broken: "#e5484d",
+};
+
+const portId = (card: string, port: string, side: "in" | "out") => `${card}::${port}::${side}`;
 
 type CardData = { content: ReactNode; height: number };
 
@@ -252,6 +272,14 @@ export interface CardFlowProps {
   onLinkClick?: (link: CardFlowLink) => void;
   /** Above this many edges, labels only show on highlighted edges. */
   alwaysLabelEdges?: number;
+  /**
+   * Rows inside the cards carry `data-port="<key>"`: links with
+   * `sourcePort`/`targetPort` are routed between those rows. Measured with
+   * the cards, so a port is where its row is.
+   */
+  ports?: boolean;
+  /** Links drawn lit, overriding the highlighted-card rule (`linkId`s). */
+  activeLinks?: Set<string>;
   elkOptions?: Record<string, string>;
   /** Classes for the canvas pane (size, rounding, ring). */
   className?: string;
@@ -279,6 +307,8 @@ function CardFlowInner({
   onPaneClick,
   onLinkClick,
   alwaysLabelEdges = 12,
+  ports = false,
+  activeLinks,
   elkOptions = DEFAULT_ELK_OPTIONS,
   className,
   children,
@@ -298,19 +328,49 @@ function CardFlowInner({
       setPositions(null);
       return;
     }
-    const children = cardIds.map((id) => ({
-      id,
-      width: cardWidth,
-      height: Math.ceil(
+    /** Each card's rows that carry a port, and where their middle is. */
+    const portRows = new Map<string, Map<string, number>>();
+    if (ports) {
+      for (const id of cardIds) {
+        const el = measureRefs.current.get(id);
+        if (!el) continue;
+        const top = el.getBoundingClientRect().top;
+        const rows = new Map<string, number>();
+        for (const row of el.querySelectorAll<HTMLElement>("[data-port]")) {
+          const rect = row.getBoundingClientRect();
+          rows.set(row.dataset.port!, Math.round(rect.top - top + rect.height / 2));
+        }
+        portRows.set(id, rows);
+      }
+    }
+    const children = cardIds.map((id) => {
+      const height = Math.ceil(
         Math.max(measureRefs.current.get(id)?.offsetHeight ?? 120, measureFarRefs.current.get(id)?.offsetHeight ?? 0)
-      ),
-    }));
+      );
+      const rows = portRows.get(id);
+      if (!rows || rows.size === 0) return { id, width: cardWidth, height };
+      return {
+        id,
+        width: cardWidth,
+        height,
+        layoutOptions: { "elk.portConstraints": "FIXED_POS" },
+        ports: [...rows].flatMap(([key, y]) => [
+          { id: portId(id, key, "in"), x: 0, y, width: 0, height: 0, layoutOptions: { "elk.port.side": "WEST" } },
+          { id: portId(id, key, "out"), x: cardWidth, y, width: 0, height: 0, layoutOptions: { "elk.port.side": "EAST" } },
+        ]),
+      };
+    });
+    const hasPort = (card: string, key: string | undefined) => Boolean(key && portRows.get(card)?.has(key));
     const laidOut = links.map(linkId);
     const graph = {
       id: "root",
       layoutOptions: elkOptions,
       children,
-      edges: links.map((e, i) => ({ id: `e${i}`, sources: [e.source], targets: [e.target] })),
+      edges: links.map((e, i) => ({
+        id: `e${i}`,
+        sources: [hasPort(e.source, e.sourcePort) ? portId(e.source, e.sourcePort!, "out") : e.source],
+        targets: [hasPort(e.target, e.targetPort) ? portId(e.target, e.targetPort!, "in") : e.target],
+      })),
     };
     getElk()
       .then((elk) => elk.layout(graph))
@@ -419,9 +479,11 @@ function CardFlowInner({
     () =>
       links.map((link) => {
         const id = linkId(link);
-        const active = id === selectedLink || highlighted.has(link.source) || highlighted.has(link.target);
-        const dimmed = (highlighted.size > 0 || Boolean(selectedLink)) && !active;
-        const color = active ? EDGE_ACTIVE_COLOR : EDGE_COLOR;
+        const active = activeLinks
+          ? activeLinks.has(id)
+          : id === selectedLink || highlighted.has(link.source) || highlighted.has(link.target);
+        const dimmed = (activeLinks ? activeLinks.size > 0 : highlighted.size > 0 || Boolean(selectedLink)) && !active;
+        const color = link.tone ? TONE_COLORS[link.tone] : active ? EDGE_ACTIVE_COLOR : EDGE_COLOR;
         const labelled = active || links.length <= alwaysLabelEdges;
         return {
           id,
@@ -441,8 +503,8 @@ function CardFlowInner({
             cursor: onLinkClick ? "pointer" : undefined,
             // Heavier for edges that stand for many imports.
             strokeWidth: (active ? 0.6 : 0) + (id === selectedLink ? 0.8 : 0) + 1.2 + Math.min(1.6, Math.log2(link.weight) * 0.5),
-            strokeDasharray: link.dashed ? "5 4" : undefined,
-            opacity: dimmed ? 0.25 : 1,
+            strokeDasharray: link.tone === "removed" ? "3 4" : link.tone === "broken" ? "6 3" : link.dashed ? "5 4" : undefined,
+            opacity: dimmed ? 0.2 : link.tone === "removed" ? 0.7 : 1,
           },
           labelStyle: { fill: "var(--muted-foreground)", fontSize: 11, opacity: dimmed ? 0.4 : 1 },
           labelBgStyle: { fill: "var(--canvas)" },
@@ -450,7 +512,7 @@ function CardFlowInner({
           labelBgBorderRadius: 2,
         };
       }),
-    [links, routes, highlighted, selectedLink, alwaysLabelEdges, onLinkClick]
+    [links, routes, highlighted, selectedLink, alwaysLabelEdges, onLinkClick, activeLinks]
   );
 
   const linkById = useMemo(() => new Map(links.map((l) => [linkId(l), l])), [links]);

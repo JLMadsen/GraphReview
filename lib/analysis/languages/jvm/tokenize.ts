@@ -21,6 +21,8 @@ export interface Token {
   k: "id" | "p";
   /** The identifier text, or the punctuation (`{ } ( ) < > . , : ; = @ * ? ::`, `->`). */
   v: string;
+  /** Offset of the token in the source. */
+  at: number;
 }
 
 export interface TokenizeOptions {
@@ -185,7 +187,7 @@ export function tokenize(source: string, options: TokenizeOptions): Token[] {
           i++;
           continue;
         }
-        tokens.push({ k: "id", v: source.slice(i + 1, close) });
+        tokens.push({ k: "id", v: source.slice(i + 1, close), at: i });
         i = close + 1;
         continue;
       }
@@ -193,7 +195,7 @@ export function tokenize(source: string, options: TokenizeOptions): Token[] {
         const start = i;
         i++;
         while (i < n && isIdentPart(source.charCodeAt(i))) i++;
-        tokens.push({ k: "id", v: source.slice(start, i) });
+        tokens.push({ k: "id", v: source.slice(start, i), at: start });
         continue;
       }
       if (c >= 48 && c <= 57) {
@@ -203,12 +205,12 @@ export function tokenize(source: string, options: TokenizeOptions): Token[] {
         continue;
       }
       if (c === C.Colon && source.charCodeAt(i + 1) === C.Colon) {
-        tokens.push({ k: "p", v: "::" });
+        tokens.push({ k: "p", v: "::", at: i });
         i += 2;
         continue;
       }
       if (c === C.Dash && source.charCodeAt(i + 1) === C.Gt) {
-        tokens.push({ k: "p", v: "->" });
+        tokens.push({ k: "p", v: "->", at: i });
         i += 2;
         continue;
       }
@@ -220,7 +222,7 @@ export function tokenize(source: string, options: TokenizeOptions): Token[] {
         }
         depth--;
       }
-      tokens.push({ k: "p", v: source[i] });
+      tokens.push({ k: "p", v: source[i], at: i });
       i++;
     }
   }
