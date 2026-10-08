@@ -23,7 +23,7 @@ grouped into components, the components are wired together by the imports and
 calls between them, and you can see at a glance which parts of the app a
 change actually touches and which ones depend on it.
 
-![A change laid out as area cards in GraphReview's PR view, with the AI review's findings underneath](docs/images/example3.png)
+![A change laid out as area cards in GraphReview's PR view, with the AI review's findings underneath](docs/images/example_repo_graph.png)
 
 It runs on your machine, against GitHub pull requests, GitLab merge requests
 or plain branches in a local checkout. No account, no cloud, nothing to host.
@@ -46,6 +46,8 @@ handler, middleware and auth, request and response shapes, and every
 function it reaches. On a PR the API view shows only the API changes:
 endpoints that are new, removed, or have a changed path, parameters,
 request/response shape or auth, with breaking changes marked.
+
+![PR Graph](docs/images/example_pr_graph.png)
 
 **Checks the basics.** Does the PR have a description, link an issue, stay
 under a reviewable size, explain *why*? Small things, but they're the first
