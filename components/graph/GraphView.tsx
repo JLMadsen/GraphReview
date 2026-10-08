@@ -10,8 +10,9 @@
 //     architecture, feature or module level of detail, carrying the diff's
 //     changes and the review's verdicts. The default with no diff selected.
 //   - **API** (`ApiView`) — every endpoint the app exposes, like an OpenAPI
-//     page, with the diff's API change laid over it; the explainer
-//     (`ApiPanel`) opens in the right column.
+//     page, each opening in place; with a diff selected, its API changes
+//     with before / after payloads. It takes the whole column (the review
+//     dock stays with the PR view).
 //   - **PR** (`PrMapCanvas`) — only what the diff touches, as area cards.
 // Both stay mounted once opened, stacked in one grid cell with the inactive
 // one transparent and `inert`, so each keeps its layout and zoom. (Not
@@ -62,7 +63,6 @@ import { Segmented } from "./Segmented";
 import { effectiveAssessment, worstAssessment } from "./review-visuals";
 import { useReview } from "./useReview";
 import { ApiView } from "./ApiView";
-import { ApiPanel } from "./ApiPanel";
 import { ApiChangesSection } from "./ApiChangesSection";
 import { useApiCatalog } from "./useApiCatalog";
 import { buildApiRows } from "./api-view-model";
@@ -446,22 +446,23 @@ export function GraphView({
   const apiCatalog = useApiCatalog(repoId, apiMounted, graphNonce);
   const apiChange = reviewTarget ? targetGraph.graph?.data?.api : undefined;
   const apiRows = useMemo(() => buildApiRows(apiCatalog.catalog, apiChange), [apiCatalog.catalog, apiChange]);
-  const [selectedEndpoint, setSelectedEndpoint] = useState<string | null>(null);
+  /** An endpoint asked for from the left column — the API view opens it and scrolls to it. */
+  const [apiFocus, setApiFocus] = useState<{ id: string } | null>(null);
   /** With a diff selected the API view lists only its API changes; "All endpoints" shows the whole catalog with them marked. */
   const [apiChangedOnly, setApiChangedOnly] = useState(true);
-  useEffect(() => setSelectedEndpoint(null), [repoId]);
+  useEffect(() => setApiFocus(null), [repoId]);
   useEffect(() => setApiChangedOnly(true), [reviewTarget]);
   /** Every endpoint link (the left column's API section) opens the API view at it. */
   const openEndpoint = useCallback(
     (endpointId: string) => {
       setApiMounted(true);
-      setSelectedEndpoint(endpointId);
+      setApiFocus({ id: endpointId });
       setPreferredView("api");
     },
     [setPreferredView]
   );
-  const selectedApiRow = selectedEndpoint ? apiRows.find((r) => r.endpoint.id === selectedEndpoint) : undefined;
-  const showApiPanel = Boolean(selectedApiRow) && view === "api";
+  /** The API view takes the whole column: no review dock under it, nothing folded. */
+  const apiFull = view === "api";
 
   useEffect(() => {
     setOpenFile(null);
@@ -490,7 +491,7 @@ export function GraphView({
   const selectedPrArea = prArea ? prAreas.areas.get(prArea) : undefined;
   const selectedFn =
     view === "pr" && prMode === "functions" && selectedFunction ? functionView?.functionById.get(selectedFunction) : undefined;
-  const hasInspector = showAppPanel || showPrPanel || showApiPanel;
+  const hasInspector = showAppPanel || showPrPanel;
   const chatFocus =
     showPrPanel && prAreaComponent
       ? { id: prAreaComponent, name: componentNameById(prAreaComponent) ?? prAreaComponent }
@@ -561,15 +562,17 @@ export function GraphView({
             folds it to nothing (the canvases skip a zero size and refit when
             it comes back), so the findings get the whole column. */}
         <div
-          className={cn("grid shrink-0 grid-rows-[minmax(0,1fr)] transition-[height] duration-200", mapFolded && "overflow-hidden")}
+          className={cn("grid shrink-0 grid-rows-[minmax(0,1fr)] transition-[height] duration-200", mapFolded && !apiFull && "overflow-hidden")}
           style={{
-            height: mapFolded
+            height: apiFull
+              ? "var(--tab-h, 100vh)"
+              : mapFolded
               ? 0
               : reviewTarget
                 ? "calc(var(--tab-h, 100vh) * 0.5)"
                 : "var(--tab-h, 100vh)",
           }}
-          inert={mapFolded}
+          inert={mapFolded && !apiFull}
         >
         {appMounted && (
           <div className={viewLayerClass(view === "app")} inert={view !== "app"}>
@@ -603,8 +606,9 @@ export function GraphView({
               changePending={Boolean(reviewTarget) && targetGraph.pending}
               changedOnly={apiChangedOnly}
               onChangedOnlyChange={setApiChangedOnly}
-              selectedId={selectedEndpoint}
-              onSelect={setSelectedEndpoint}
+              focus={apiFocus}
+              infer={apiCatalog}
+              onOpenFile={openFileAtLine}
             />
           </div>
         )}
@@ -647,7 +651,7 @@ export function GraphView({
         {/* Under the graph, full width: the AI review, exceptions first —
             see ReviewPanel's header for why it lives here rather than in a
             sidebar. The checklist sits in the diff summary on the left. */}
-        {reviewTarget && (
+        {reviewTarget && !apiFull && (
           <ReviewPanel
             repoId={repoId}
             target={reviewTarget}
@@ -708,19 +712,7 @@ export function GraphView({
                   />
                 </div>
               )}
-              {showApiPanel && selectedApiRow && (
-                <ApiPanel
-                  key={selectedApiRow.endpoint.id}
-                  row={selectedApiRow}
-                  aiConfigured={apiCatalog.catalog?.aiConfigured ?? false}
-                  inferring={apiCatalog.inferring.has(selectedApiRow.endpoint.id)}
-                  inferError={apiCatalog.inferErrors.get(selectedApiRow.endpoint.id)}
-                  onInfer={() => void apiCatalog.infer(selectedApiRow.endpoint.id)}
-                  onOpenFile={openFileAtLine}
-                  onClose={() => setSelectedEndpoint(null)}
-                />
-              )}
-              {showApiPanel ? null : showPrPanel && selectedFn && functionView ? (
+              {showPrPanel && selectedFn && functionView ? (
                 <FunctionPanel
                   key={selectedFn.id}
                   fn={selectedFn}

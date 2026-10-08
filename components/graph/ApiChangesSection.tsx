@@ -60,7 +60,7 @@ export function ApiChangesSection({
                   {CHANGE_STYLES[c.status].word}
                   {c.breaking && <span className="text-destructive">!</span>}
                 </span>
-                <MethodBadge method={c.endpoint.method} className="text-[10px]" />
+                <MethodBadge method={c.endpoint.method} className="w-12 text-[9px]" />
                 <span className={cn("min-w-0 truncate font-mono group-hover:underline", c.status === "removed" && "line-through")}>{c.endpoint.path}</span>
               </button>
             </li>

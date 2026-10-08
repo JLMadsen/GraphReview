@@ -590,7 +590,7 @@ Started by reading `GET /api/repos/[repoId]/target-graph` — the Graph tab does
 ### 6.11 The API: an endpoint catalog and what a change does to it (built 2026-10-08)
 
 "A Swagger for the app we're looking at", plus the API diff of a PR. Decided with the user up front (2026-10-08):
-- **Where:** a third Graph view, **App map | API | PR**, as a dense list grouped by resource (method · path · kind · middleware/auth · handler), with the explainer in the right column.
+- **Where:** a third Graph view, **App map | API | PR**, read like an OpenAPI page: rows that open in place. (The first build put the details in the right column; see §4 below.)
 - **What counts:** HTTP routes, Next.js server actions (listed, labelled **internal**: they're the app's own BFF, not for third parties), tRPC procedures, GraphQL fields. Only the kind is labelled. There's no guessing at public vs private.
 - **Shapes:** read from the code's types where they exist (TS types and interfaces, zod, Pydantic, DTO classes/records, DRF serializers, Fastify JSON schema, GraphQL SDL). Untyped handlers get ✦ **Infer** on demand.
 - **OpenAPI files:** merged in (summaries, schemas). Endpoints only in the code or only in the spec are flagged as **drift**.
@@ -647,10 +647,18 @@ Each endpoint has a stable id across commits: kind, method and path with paramet
 - `changedDeclarations` was pulled out of `buildCallGraph` so this uses the uncapped set.
 
 #### 4. Where it shows
-- **API view** (`ApiView`, `ApiPanel`; `useApiCatalog`, `api-view-model.ts`):
-  - search and a kind filter;
-  - with a diff selected, **API changes | All endpoints**. The view opens on the changes only (new, removed, changed, with `!` when breaking); "All endpoints" shows the catalog with them marked;
-  - the explainer: summary and spec, the change (before → after per delta), handler, middleware & auth, params, request and response (from types / from the spec / ✦), callers of a server action, OpenAPI drift, and the reach tree.
+- **API view** (`ApiView`, `ApiEndpointDetail`; `useApiCatalog`, `api-view-model.ts`):
+  - It takes the **whole column**. The review dock stays with the PR view.
+  - The toolbar is one row: the view switch, then with a diff selected **API changes N | All endpoints M**, then the kind filter and search.
+  - A row is a method pill, the path, the spec's or ✦ summary, and tags for new / removed / changed, breaking, internal and spec drift.
+  - **A row opens in place**, so nothing needs the right column. It shows:
+    - contract changes (path, method, auth) as before → after;
+    - parameters, request body and response;
+    - one footer line: handler (opens the file), auth chain, framework, spec file and drift, with ✦ Infer payloads when a payload isn't readable from types;
+    - callers of a server action, and a collapsed "Calls N functions" list.
+  - **For a changed endpoint**, parameters, request and response show as a **before / after table** aligned by name: added rows green +, removed red −, changed amber ~, unchanged dimmed.
+  - "API changes" is a flat list, breaking first, with the changed endpoints already open (up to 8). "All endpoints" groups by resource.
+  - **Redesign (2026-10-08, user feedback):** the first build's list was method · path · kind · auth · handler columns, with every detail in a right-column panel (`ApiPanel`, removed). It sat in half the column above the review dock, and changes showed as one-line deltas. The user found it messy and wanted payloads compared before / after.
 - **Left column:** an "API" section with `+1 −0 ~2` and the changes, breaking first. Each line opens the API view at that endpoint.
 - **PR map:** not involved. It shows files and functions.
 - **Review:** each component's prompt gets "Endpoints this change affects" (`ReviewRelatedContext.endpoints`): its API changes, then its "same contract" logic changes. The intent check gets the whole list (`describe.ts`).

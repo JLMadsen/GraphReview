@@ -23,6 +23,7 @@ import {
   type ApiContext,
   type PartialEndpoint,
 } from "./context";
+import { zodParsedIn } from "./next";
 import type { ApiHandler, ApiParam, ApiShape } from "./types";
 
 const FRAMEWORKS: Array<[RegExp, string]> = [
@@ -282,11 +283,14 @@ export function resolveNodeRouters(ctx: ApiContext): PartialEndpoint[] {
         }
       }
     }
+    const handler = handlerOf(file, handlerVal, call.line);
+    // No validator or schema: a zod schema the handler itself .parse()s is the body.
+    if (!request && method !== "GET" && method !== "DELETE") request = zodParsedIn(ctx, handler.file, handler.startLine, handler.endLine);
     routes.push({
       node: node.id,
       method,
       path: { text: joinPath(route.text, own.text), partial: route.partial || own.partial },
-      handler: handlerOf(file, handlerVal, call.line),
+      handler,
       registeredAt: { file, line: call.line },
       middleware,
       params,
