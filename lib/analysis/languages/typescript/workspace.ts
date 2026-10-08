@@ -7,10 +7,8 @@
  * internal edge, never an external dependency, even when the specific subpath
  * cannot be resolved to a file.
  */
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import type { AnalyzerContext } from "../../analyzer";
-import { dirOf } from "../../paths";
+import { dirOf, readRepoText } from "../../paths";
 import { asRecord, matchStarPattern, pickCondition, probeUnder } from "./probe";
 
 export interface WorkspacePackage {
@@ -38,7 +36,7 @@ const PKG_IMPORTS_CACHE_KEY = "typescript:package-imports";
 async function readJson(file: string, ctx: AnalyzerContext): Promise<Record<string, unknown> | undefined> {
   if (!ctx.files.has(file)) return undefined;
   try {
-    const text = await readFile(path.join(ctx.rootDir, ...file.split("/")), "utf8");
+    const text = await readRepoText(ctx, file);
     return asRecord(JSON.parse(text));
   } catch {
     return undefined; // malformed package.json is not worth failing the run over
@@ -143,7 +141,7 @@ async function collectWorkspacePatterns(ctx: AnalyzerContext): Promise<string[]>
   }
   if (ctx.files.has("pnpm-workspace.yaml")) {
     try {
-      const text = await readFile(path.join(ctx.rootDir, "pnpm-workspace.yaml"), "utf8");
+      const text = await readRepoText(ctx, "pnpm-workspace.yaml");
       patterns.push(...parsePnpmWorkspaceYaml(text));
     } catch {
       // ignore a malformed pnpm-workspace.yaml

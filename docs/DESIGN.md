@@ -83,6 +83,7 @@ The goal is an import/dependency graph across multiple languages without turning
   ```
 - **Extension point**: `lib/analysis/languages/<lang>/{grammar.wasm, queries.scm, resolve.ts}`, implementing a shared `LanguageAnalyzer` interface and registered by file extension in a central registry. Adding language *N+1* means implementing the interface and shipping its grammar — no change to the graph builder.
 - **Call-graph edges** (as opposed to file-level import edges) are deferred past v1 — reliable call/scope resolution is much harder and highly language-specific. v1 ships file-level import edges only, which already satisfies decision #2 ("edges = code dependencies").
+  **As built (2026-10-08):** names, a base/head comparison and call edges for TS/JS, Python, Java and Kotlin, and graphs read from the default branch's tip commit (git objects) instead of the working tree — see §6.10.
 - Unresolvable external packages (npm/PyPI/etc.) become optional grouped "external" nodes for context, rather than being expanded individually.
 
 ## 6. Component/node inference
@@ -282,7 +283,7 @@ Decided with the user from mockups (a "workbench" with tables, and a "signal" gr
 - **Checklist**: says "not judged yet" once the review is done (it used to say "waiting for the review to finish" forever), "judged once the review finishes" only while one runs; Judge is a ✦ icon beside the Checks heading instead of a box under the list; its icons are 24px.
 - **Smaller fixes**: the verdict breakdown never splits a number from its word; "Commits · 19 files · 6 components" on one line; zoomed-out card names hyphenate instead of breaking at an arbitrary letter; line numbers and path folders use the normal muted colour (the faded ones were under 3:1 contrast).
 
-**Notes pass (same day).** The verdict block in the left column is parked (docs/ideas.md); the map cards lost their findings bar (badge only) and their count line wraps only between whole chunks, the file count stepping aside when zoomed out; the Areas list shows glyph + count per bucket (✕ 7 ▲ 1 ✓ 3) instead of a bar; every verdict and check icon is the plain glyph (✕ ✓ ▲ –), no circle; checks show titles only, their result detail on hover.
+**Notes pass (same day).** The verdict block in the left column is parked (docs/ideas.md); the map cards lost their findings bar (badge only) and their count line wraps only between whole chunks, the file count stepping aside when zoomed out; the Areas list shows glyph + count per bucket (✕ 7 ▲ 1 ✓ 3) instead of a bar; every verdict and check icon is the plain glyph (✕ ✓ ▲ –), no circle; checks show titles only, their result detail on hover — except a failing AI check, whose rationale shows under its title.
 
 **The Repo view is gone (2026-10-06).** The Graph tab has two views, App map and PR. The Cytoscape component graph (§8's layouts, domain boxes, impact filters, review halos), its component panel, the Relabel and Merge suggestions controls that lived in its toolbar, the sample graph for unanalyzed repos (the App map's own empty state covers that) and the added-components AI call were removed, with the cytoscape packages. Their routes (`label`, `merges/**`, `components/[componentId]/files`, `diff-impact/added-components`) were deleted in a follow-up the same day; the labelling and merge job backends are kept, unused (§6.1, §6.3), already-written descriptions and accepted merges stay in effect, and analysis no longer computes merge suggestions. Sections that describe the Repo view are history. Details and how each could come back: docs/ideas.md.
 
@@ -382,6 +383,8 @@ Live-tested on MultiTool with a real model: "What does the commute feature do, a
 
 **Not built:** answers are not streamed token by token (lookups are; the answer arrives whole); no provider-native tool calling.
 
+
+**As built (2026-10-08) — the chat can add findings.** The PR chat (not the repo chat) has one write tool, `add_finding` (`{path, line, assessment, summary, rationale}`), which records a finding in the change's review with `category: "chat"` — stamped with the reviewed head like any other, shown as "From chat" in the dock, returned by MCP, and never replaced by a re-review (every review pass replaces only its own category). The prompt allows it only when the reviewer asks to add, record or flag something; the same summary on the same file isn't added twice; an open dock refetches when one is added.
 ### 6.8 Visual language and layout of the Graph tab (redesign, 2026-09-26)
 
 The Graph tab had the stock shadcn look (every region a rounded card with a 1px ring, nested three or four deep; indigo on every button, tab, ring and sparkle) and said too much at once (the same file counts in four places, disagreeing — 31 vs 37 — because one excluded unmatched files; cards with a description, layer bar, five file chips and three same-sized dots per chip). Decided with the user from mockups:
@@ -550,6 +553,127 @@ The worker uses whatever `docker` is on GraphReview's PATH, talking to the machi
 - Server pages that load data while rendering have no network or database in the sandbox. They render their own "couldn't load" or empty state, so different inputs often produce the same markup.
 - pnpm workspaces lose per-package `node_modules` symlinks; the hoisted install covers most cases.
 - Only JS/TS and Python.
+
+### 6.10 Names, base/head comparison and the call graph (built 2026-10-08)
+
+Until this, analysis knew *which files* import which, never *which names*: everything that needed names — the impact pass's "is this caller still pointing at the changed declaration", the review's related-code context, contract detection — re-read the code with regexes, and the impact pass carried its own loose import resolver. All 17 impact "defects" of the first real review were false positives of that layer (a symbol moved and re-exported, an alias, a module moved with its importers updated). The decisions were settled up front (2026-10-07); the build:
+
+#### 1. Graphs come from commits, not the working tree
+- A repo's graph is its **default branch's tip commit**, read from git's object store (`lib/analysis/source-tree.ts`: `git ls-tree -r -l` plus one long-running `git cat-file --batch`). Uncommitted edits, untracked and ignored files, and whichever branch the checkout is on never count; `lastAnalyzedSha` is exactly what was analysed. Local repos must be git repos (a non-git folder is refused when added). A local repo's default branch is what `origin/HEAD` points at, else `main`/`master`, else the checked-out branch; repos added earlier stored the checked-out branch and are re-detected once.
+- Binary files (a NUL in the first 8 KB) and files over 1.5 MB are counted, not parsed. (A folder of 18k binary video segments named `.ts` used to be parsed as TypeScript at ~100 ms each.)
+- **Parsing runs in a worker thread** (`lib/analysis/syntax/parse-pool.ts` starting `parse-worker.mjs`, plain JS shipped in the package, never bundled). A file that takes over 20 s, or crashes the WASM runtime, costs that file; the pool starts a fresh worker. Without the worker script on disk (or with `GRAPHREVIEW_PARSE_IN_PROCESS=1`) parsing runs in-process.
+- **Parse cache by git blob** (`parse_cache` table, keyed `PARSE_VERSION:analyzer:ext:blob`, entries unused for 30 days dropped at startup): a file's syntax is never parsed twice — across re-analyses, and between a PR's base and head. The last three analyses are also kept in memory (`lib/jobs/commit-analysis.ts`), so the target-graph job and a review right after share them.
+- `ANALYSIS_VERSION` (`lib/jobs/queue.ts`) is stored on the repo; a repo analysed by an older version is re-analysed on its next view, like a moved branch.
+
+#### 2. Names
+- `lib/analysis/syntax/extract.mjs` walks the tree-sitter trees of TS/JS/TSX, Python and Java (Kotlin: `languages/kotlin/symbols.ts`, lexical like the rest of its analyzer) and records per file: module-level declarations and the methods of module-level classes (name, kind, export name, line range, **signature** — a function's text up to its body, a type's whole shape, a constant's declaration), imports with the names they bind, JS/TS export clauses and re-exports, every identifier occurrence by line, `object.member` accesses, and call sites with the declaration they sit in.
+- `lib/analysis/symbols.ts` resolves them across files with the analyzers' own import resolvers: re-export chains (`export { a as b } from`, `export *`, `export * as ns`), default exports, Python package `__init__` re-exports and submodules, `from x import *`, Java/Kotlin simple names through explicit imports, then the own package, then wildcard imports, and static imports. Result: `decls` (ids `<file>#<name>` and `<file>#<Class>.<method>`), `uses` (file F refers to declaration D on these lines), `calls`, `deadImports` (an import of a name its module doesn't provide), counts of calls that name a repo function but can't be resolved, and type-only file edges. A module whose exports can't be listed statically (CommonJS, `export =`) resolves to "unknown", never to "dead".
+- Import edges now carry `weight` (lines that use the imported file's names) and `typeOnly`; module dependency weights sum the former.
+- Go and Rust have no names yet: their files keep the text-based impact and context paths.
+
+#### 3. Base vs head (`lib/jobs/target-graph.ts`, queue `target-graph`)
+Started by reading `GET /api/repos/[repoId]/target-graph` — the Graph tab does when a target loads; redone after 5 minutes — and static analysis only. It pins the target to its **merge-base** and head (`resolveCommits`, as the preview does), analyses both, takes the changed lines from a local `git diff -U0` (not the host API, which drops big patches) and stores one document per target in `target_graphs`:
+- **Structure** (`compareStructure` in `lib/analysis/compare.ts`): import cycles the change creates — over runtime imports only (`import type` and lazy `import()` can't deadlock loading), skipped when the two files already depended on each other at the base; added and removed file edges, rolled up into component dependencies; files nothing imports any more; how many files transitively depend on what changed. **Only new file-level cycles become findings** (`category: "structure"`, `concern`, with ids derived from the cycle so replies survive a recomputation — `syncFindingsForTargetCategory`); the rest is shown, not counted. No layer rules yet.
+- **Call graph** (`buildCallGraph`): functions in changed files marked `added`, `removed`, `signature` or `body`, plus their callers and callees one hop out (`unchanged`); calls marked `new`, `removed` or `existing`, and **`notUpdated`** for a call to a changed signature on a line the change didn't touch. Capped at 400 functions.
+
+#### 4. Where it shows
+- **PR map** (§6.4) gains a **Files / Functions** switch. Files: links the change adds between areas are drawn in its colour (added to the map when it didn't have them) and removed ones ghosted; the toolbar says e.g. "1 new import cycle · +3 dependencies · 74 files depend on it". Functions: each area card opens into its function rows (at most 12, then "+N more", and "N calls not resolved"); untouched callers and callees sit on neighbour cards, one per component; calls are drawn row to row (`CardFlow`'s `ports`: ELK fixed-position ports measured from the rendered rows). A widely used function would otherwise drag in a card per caller (a changed Topbar rendered by 28 pages): more than 8 untouched functions connected to one function only are folded into one card ("Callers of Topbar", "Called by NoteList"). Every row and card has an eye that hides it; untouched functions only on the map because of something hidden go with it, and the toolbar says "1 hidden (+34) · Show all". What's hidden is remembered per target in the browser. Picking a function opens `FunctionPanel` in the right column (with its own Hide): its signature before and after, its callers (updated / **not updated** / new) and its callees, each file:line opening the file at that line.
+- **Review dock**: structure findings appear without any AI review, with a **Structure** chip that shows only them; the job tells an open dock to refetch.
+- **MCP**: `get_review` returns structure findings like any other; the server's instructions explain the category.
+- **Review job**: analyses the target from names (`lib/jobs/symbol-context.ts`). The impact pass compares declarations base vs head (a removed export the old module still re-exports is no contract), finds usages through resolved imports, namespace members, calls and same-file references, reports **imports of names that no longer exist as certain findings, without a model call**, and sends only the remaining untouched usages to the model. The per-component context adds the definitions the changed lines use and the callers of what changed.
+- **Moves** (added 2026-10-08, after a reviewed PR moved `haversineKm` into a new file and dropped its `* 6371` on the way — the per-component review saw a new file in one component and a deletion in another, never the two copies together): a declaration gone from one changed file and, with the same name and kind, new in exactly one other is a move (`findMovedDeclarations`); declarations carry a fingerprint of their text (`textHash`), so a move is either unchanged (`moved` on the call graph) or changed on the way (`signature` / `body`, with `movedFrom`). A move that changed is shown to both components' reviews as a line diff of the old copy against the new ("Code this change moved — and changed on the way"), and a body-only change becomes an impact contract with the whole old and new code, so the model judges the untouched callers against it. Calls to the old place count as calls to the new one.
+
+#### Limits
+- Calls on instances (`repo.save(x)`) need types and aren't resolved — they are counted per card, never guessed. Java/Kotlin call graphs are therefore sparse; static and same-class calls work.
+- No layer rules, no working-tree review target (docs/ideas.md), no names for Vue, C#, Go or Rust yet.
+
+### 6.11 The API: an endpoint catalog and what a change does to it (built 2026-10-08)
+
+"A Swagger for the app we're looking at", plus the API diff of a PR. Decided with the user up front (2026-10-08):
+- **Where:** a third Graph view, **App map | API | PR**, read like an OpenAPI page: rows that open in place. (The first build put the details in the right column; see §4 below.)
+- **What counts:** HTTP routes, Next.js server actions (listed, labelled **internal**: they're the app's own BFF, not for third parties), tRPC procedures, GraphQL fields. Only the kind is labelled. There's no guessing at public vs private.
+- **Shapes:** read from the code's types where they exist (TS types and interfaces, zod, Pydantic, DTO classes/records, DRF serializers, Fastify JSON schema, GraphQL SDL). Untyped handlers get ✦ **Infer** on demand.
+- **OpenAPI files:** merged in (summaries, schemas). Endpoints only in the code or only in the spec are flagged as **drift**.
+- **Auth:** the middleware chain as far as it's visible. With nothing visible it shows `?`, never "none".
+- **Paths the analysis can't fully read** are shown partially and marked (`{PREFIX}/orders`, `…/orders` for an unknown mount). An endpoint is never dropped.
+- **On a PR:** the API change is **shown, never turned into findings**. "Reached" follows calls transitively (capped) and shows the path.
+- **Integrations:** the review prompts, the intent check, the PR chat and the MCP server all get the API change. No OpenAPI export, and no live "Try it out" (docs/ideas.md).
+
+#### 1. Route facts in the parse (`lib/analysis/syntax/routes.mjs`)
+The parse worker records, per file, the raw syntax endpoints are declared with. It does this alongside the symbol facts, and the results are cached by blob the same way (`SymbolFacts.routes`, `PARSE_VERSION` 3). Nothing at this step decides what is a router:
+- `calls`: `x.get("/p", …)`, `x.use("/p", r)`, `x.route("/p").put(…)`, `register`, `include_router`, `register_blueprint`, …
+- `creates`: module-level `express.Router()`, `new Hono().basePath()`, `APIRouter(prefix=…)`, …
+- `classes`: decorated or annotated classes and methods (NestJS, Spring, JAX-RS, Micronaut).
+- `decorated`: Python route functions.
+- `trpc`: router objects.
+- `resolvers`: GraphQL resolver maps.
+- `gql`: SDL templates.
+- `urlpatterns`: Django URL patterns.
+- `models`: class fields.
+- `useServer` / `actions`: server actions.
+
+Values are kept as data (`Val`: a string, a template with holes, a name, an inline function with its line range and fingerprint, a call, a list or an object). Kotlin is read lexically (`languages/kotlin/routes.ts`) into the same shape as Java.
+
+#### 2. The catalog (`lib/analysis/api/`)
+`buildApiCatalog` runs at the end of `analyzeTree`, so every analysed commit has one (`AnalysisResult.api`). It is built from resolvers over the facts plus the symbol graph's name resolution (`context.ts`):
+- `next.ts`: App Router `route.ts`, `pages/api`, server actions, `middleware.ts` matchers, `basePath`.
+- `file-routes.ts`: SvelteKit `+server.ts`, Nuxt/Nitro `server/api`, Astro.
+- `node-routers.ts`: Express, Fastify, Hono, Koa, Elysia, lambda-api and h3.
+  - Routers are followed through imports, CommonJS `require`, function parameters (plugins) and `register` / `use` / `route` mounts, with path-scoped middleware.
+  - A call only counts when its object can be tied to a framework, so `axios.get("/x")` never qualifies.
+- `decorated.ts`: NestJS (including a global prefix) and code-first GraphQL resolvers; Spring, JAX-RS and Micronaut.
+- `python.ts`: FastAPI, Starlette, Flask, Quart and Django Ninja.
+  - Parameter sources are read FastAPI-style, and `Depends` counts as auth.
+  - Django `urlpatterns` are followed through `include()`, along with DRF routers, viewsets and `@action`.
+- `rpc.ts`: tRPC routers (nested and imported) and schema-first GraphQL SDL linked to resolver maps.
+- `spec.ts`: OpenAPI 3 and Swagger 2 documents (js-yaml).
+
+Each endpoint has a stable id across commits: kind, method and path with parameter names erased (`http GET /orders/{}`).
+- When two services in a monorepo serve the same route, both are kept; the second gets a suffix.
+- Each endpoint carries its handler (a declaration, or an inline function's line range) and **reach**: the functions the handler calls through resolved calls, breadth first, at most 50, with data access marked.
+- A resolver that throws costs only its own endpoints.
+
+#### 3. Storage and the change
+- The default branch's catalog is written by the analysis job to `api_catalogs` (one row per repo, migration 3; `ANALYSIS_VERSION` 3).
+- ✦ inferences live in `kv` under `api-shape:<repo>:<handler fingerprint>`, so they survive re-analysis until the handler changes.
+- The target-graph job adds `api: compareApis(base, head, changed)` to its stored result (`lib/analysis/api/compare.ts`). Two separate lists:
+  - `changes`, **changes to the API itself**, the contract a client sees:
+    - **added** or **removed**. A removal is breaking unless it's a server action or a spec-only endpoint.
+    - **changed**, with deltas for path, method, params, request, response and auth. A pair of removed and added endpoints with the same handler counts as one re-pathed endpoint.
+    - Breaking deltas: new required params or request fields, removed or retyped response fields, new auth.
+  - `logic`, **code changed behind an unchanged contract**: the handler's own lines changed, or it calls changed code. The calls are followed by a BFS over the head's call graph (at most 8 hops and 2,000 functions per endpoint), and the call path is kept.
+    - These are not API changes and aren't shown in the UI. They go to the review, the chat and MCP, labelled as such.
+    - **Changed 2026-10-08, after the user's feedback:** the first build listed these as a "reached" status beside the API changes, with a handler-code delta, and drew both on an Endpoints mode of the PR map. "Did the endpoint change or the logic behind it?" wasn't answerable at a glance, so the UI now shows only contract changes, and the map mode is gone.
+- `changedDeclarations` was pulled out of `buildCallGraph` so this uses the uncapped set.
+
+#### 4. Where it shows
+- **API view** (`ApiView`, `ApiEndpointDetail`; `useApiCatalog`, `api-view-model.ts`):
+  - It takes the **whole column**. The review dock stays with the PR view.
+  - The toolbar is one row: the view switch, then with a diff selected **API changes N | All endpoints M**, then the kind filter and search.
+  - A row is a method pill, the path, the spec's or ✦ summary, and tags for new / removed / changed, breaking, internal and spec drift.
+  - **A row opens in place**, so nothing needs the right column. It shows:
+    - contract changes (path, method, auth) as before → after;
+    - parameters, request body and response;
+    - one footer line: handler (opens the file), auth chain, framework, spec file and drift, with ✦ Infer payloads when a payload isn't readable from types;
+    - callers of a server action, and a collapsed "Calls N functions" list.
+  - **For a changed endpoint**, parameters, request and response show as a **before / after table** aligned by name: added rows green +, removed red −, changed amber ~, unchanged dimmed.
+  - "API changes" is a flat list, breaking first, with the changed endpoints already open (up to 8). "All endpoints" groups by resource.
+  - **Redesign (2026-10-08, user feedback):** the first build's list was method · path · kind · auth · handler columns, with every detail in a right-column panel (`ApiPanel`, removed). It sat in half the column above the review dock, and changes showed as one-line deltas. The user found it messy and wanted payloads compared before / after.
+- **Left column:** an "API" section with `+1 −0 ~2` and the changes, breaking first. Each line opens the API view at that endpoint.
+- **PR map:** not involved. It shows files and functions.
+- **Review:** each component's prompt gets "Endpoints this change affects" (`ReviewRelatedContext.endpoints`): its API changes, then its "same contract" logic changes. The intent check gets the whole list (`describe.ts`).
+- **Chat** and **MCP:** a `list_endpoints` tool in both. The PR chat context carries the API change, and MCP's `get_api_changes` returns `changes` and, separately, `logicChanged`.
+- **Routes:**
+  - `GET /api/repos/[repoId]/api-catalog`
+  - `POST /api/repos/[repoId]/api-catalog/infer` with `{ endpointId }` (one inline model call; `lib/ai/api-shape.ts`, `TASK: api-shape`).
+
+#### Limits
+- **Calls on instances aren't resolved** (§6.10), so reach stops at `service.save()`. On class-based backends (Spring, NestJS services) reach is shallow.
+- **Express handlers' request bodies** are only known from validators (`zValidator`, zod `.parse`) or a schema. Otherwise use ✦ Infer.
+- **No global middleware from outside the code** (API gateways, ingress auth). That is why auth is `?` rather than "none".
+- **Not covered yet:** C#, Go and Ruby frameworks, Remix/React Router loaders, and Spring WebFlux functional routes.
+
+Covered by `npx tsx lib/analysis/api/smoke-test-api.ts`: one fixture app per framework, the spec merge and drift, and the comparison.
 
 ## 7. Data model
 

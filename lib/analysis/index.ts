@@ -5,13 +5,27 @@
  * result. It knows nothing about the database, GitHub, jobs or the AI provider.
  *
  * ```ts
- * import { analyzeRepo } from "@/lib/analysis";
- * const result = await analyzeRepo("/data/repos/abc123", { moduleDepth: 2 });
+ * import { analyzeCommit } from "@/lib/analysis";
+ * const result = await analyzeCommit("/data/repos/abc123", sha, { cache });
  * ```
  */
-export { countLines, type FileAnalysis, type FileImport } from "./ir";
 export {
+  countLines,
+  type CallFact,
+  type DeclFact,
+  type DeclKind,
+  type FileAnalysis,
+  type FileImport,
+  type ImportFact,
+  type SymbolFacts,
+} from "./ir";
+export {
+  analyzeCommit,
   analyzeRepo,
+  analyzeTree,
+  PARSE_VERSION,
+  type CachedParse,
+  type ParseCache,
   clusterByFolderDepth,
   DEFAULT_MODULE_DEPTH,
   ROOT_MODULE_NAME,
@@ -37,5 +51,24 @@ export {
   type RawImport,
 } from "./analyzer";
 export { DEFAULT_IGNORED_DIRS, walkRepo, type WalkOptions } from "./walk";
+export { diskSourceTree, gitSourceTree, isGitRepo, type SourceTree } from "./source-tree";
+export type { DeadImport, SymbolCall, SymbolDecl, SymbolGraph, SymbolUse } from "./symbols";
+export { buildApiCatalog, endpointId } from "./api/catalog";
+export { compareApis } from "./api/compare";
+export type * from "./api/types";
 export { disposeTreeSitter, initTreeSitter, withSyntaxTree } from "./tree-sitter";
 export { dirOf, extensionOf, joinPosix, repoRelative, toPosix } from "./paths";
+export {
+  buildCallGraph,
+  changedDeclarations,
+  compareStructure,
+  findMovedDeclarations,
+  parseChangedLines,
+  type CallGraph,
+  type CallGraphEdge,
+  type CallGraphFunction,
+  type ChangedLines,
+  type FunctionStatus,
+  type NewCycle,
+  type StructureChange,
+} from "./compare";

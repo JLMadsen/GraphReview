@@ -39,6 +39,8 @@ import {
 import {
   deleteFindingsForTargetExceptComponents,
   getActiveAiProvider,
+  getFileOwnerMap,
+  listComponentsByRepoId,
   getRepoById,
   listFindingsByTargetKey,
   prMapFilesKey,
@@ -58,6 +60,9 @@ import {
 import { resolveGitHubAccess } from "./github-access";
 import { openHeadSource } from "./head-source";
 import { runImpactPass } from "./impact";
+import { blockDiff, loadTargetAnalyses, movedCodeChanges, symbolRelatedFiles } from "./symbol-context";
+import { compareApis } from "@/lib/analysis/api/compare";
+import { apiChangeSummary, changesTouching, describeApiChange, describeEndpointChange, describeLogicChange, logicTouching } from "@/lib/analysis/api/describe";
 import { gatherRelatedContext } from "./review-context";
 import {
   assemblePrMap,
@@ -98,6 +103,13 @@ const MODEL_CONCURRENCY = 3;
 /** Stable pull request record id for a repo + PR number — mirrors the `<repoId>:<kind>:<key>` convention `analyze.ts` uses for components and files. */
 function pullRequestNodeId(repoId: string, prNumber: number): string {
   return `${repoId}:pr:${prNumber}`;
+}
+
+/** A path's owning component name ("" when it has none), for related-code headings. */
+async function loadOwnerNames(repoId: string): Promise<(path: string) => string> {
+  const [owners, components] = await Promise.all([getFileOwnerMap(repoId), listComponentsByRepoId(repoId)]);
+  const names = new Map(components.map((c) => [c.id, c.name]));
+  return (path) => names.get(owners.get(path) ?? "") ?? "";
 }
 
 // ---------------------------------------------------------------------------
@@ -508,6 +520,8 @@ async function runIntentPass(args: {
   intent: ReviewInput["intent"];
   files: LocalFilePatch[];
   findingLines: string[];
+  /** The change to the endpoints, one line each (DESIGN.md §6.11). */
+  apiLines?: string[];
   aiConfig: AiProviderConfig;
   tokenBudget: number;
   prId?: string;
@@ -536,6 +550,7 @@ async function runIntentPass(args: {
           patch: file.patch,
         })),
         findings: args.findingLines,
+        ...(args.apiLines ? { api: args.apiLines } : {}),
       },
       { tokenBudget: args.tokenBudget, signal: args.signal }
     );
@@ -666,6 +681,19 @@ export async function runReviewJob(
   // impact pass. `null` (logged) falls back to the default branch / skips.
   const head = await openHeadSource(repo, target, resolved.reviewed.headSha, log);
   await stopIfCancelled();
+  // The target's base and head analysed from names (TS/JS, Python, Java,
+  // Kotlin): the impact pass and the related-code context read from it.
+  const analyses = await loadTargetAnalyses(repo, target, resolved.reviewed, head, log);
+  await stopIfCancelled();
+  const ownerNames = analyses ? await loadOwnerNames(repoId) : null;
+  // Code moved to another file and changed on the way: each side's review sees the
+  // old copy against the new one, and the impact pass judges the callers against it.
+  const moved = analyses && head ? await movedCodeChanges(analyses, (path) => head.read(path)) : [];
+  if (moved.length > 0) log(`moved and changed on the way: ${moved.map((m) => `${m.name} (${m.from} → ${m.to}, ${m.changed})`).join(", ")}`);
+  // What the change does to the endpoints: each component's review sees the
+  // ones it serves or sits behind, the intent check sees all of them.
+  const apiChange = analyses ? compareApis(analyses.base, analyses.head, analyses.changed) : null;
+  if (apiChange && (apiChange.changes.length > 0 || apiChange.logic.length > 0)) log(`API: ${apiChangeSummary(apiChange)} Logic changed behind ${apiChange.logic.length}.`);
 
   // --- Map the diff onto the component graph -----------------------------
   const filesByPath = new Map(resolved.files.map((file) => [file.path, file]));
@@ -734,6 +762,13 @@ export async function runReviewJob(
     let sent = false;
 
     try {
+      const symbolFiles =
+        analyses && head && ownerNames && (effortSettings.signatures || effortSettings.relatedSource)
+          ? await symbolRelatedFiles(analyses, paths, ownerNames, (path) => head.read(path), {
+              signatures: effortSettings.signatures,
+              source: effortSettings.relatedSource,
+            })
+          : undefined;
       const related = await gatherRelatedContext({
         repo,
         componentId: context.id,
@@ -741,8 +776,23 @@ export async function runReviewJob(
         patches: files.map((file) => file.patch ?? ""),
         settings: effortSettings,
         head,
+        symbolFiles,
         log: (message) => log(`${context.name}: ${message}`),
       });
+      const componentMoves = moved
+        .filter((m) => paths.includes(m.from) || paths.includes(m.to))
+        .map((m) => ({ name: m.name, from: m.from, to: m.to, diff: blockDiff(m.before, m.after) }));
+      const pathSet = new Set(paths);
+      const componentEndpoints = apiChange
+        ? [
+            ...changesTouching(apiChange, pathSet).slice(0, 12).map(describeEndpointChange),
+            ...logicTouching(apiChange, pathSet).slice(0, 8).map(describeLogicChange),
+          ]
+        : [];
+      const relatedWithMoves =
+        componentMoves.length > 0 || componentEndpoints.length > 0
+          ? { ...(related ?? {}), ...(componentMoves.length ? { moves: componentMoves } : {}), ...(componentEndpoints.length ? { endpoints: componentEndpoints } : {}) }
+          : related;
       signal?.throwIfAborted();
       sent = true;
       const result = await reviewComponentChange(
@@ -757,7 +807,7 @@ export async function runReviewJob(
             dependents: context.dependents,
           },
           files,
-          related,
+          related: relatedWithMoves,
         },
         { tokenBudget: effortSettings.tokenBudget, signal }
       );
@@ -908,6 +958,7 @@ export async function runReviewJob(
         intent: resolved.intent,
         files: resolved.files,
         findingLines: lines,
+        ...(apiChange && (apiChange.changes.length || apiChange.logic.length) ? { apiLines: describeApiChange(apiChange) } : {}),
         aiConfig,
         tokenBudget: effortSettings.tokenBudget,
         prId: resolved.prId,
@@ -939,6 +990,8 @@ export async function runReviewJob(
     revision,
     log,
     signal,
+    analyses,
+    moved,
   });
   running.delete("__impact");
   progress.calls += impact.calls;
@@ -959,6 +1012,7 @@ export async function runReviewJob(
       intent: resolved.intent,
       files: resolved.files,
       findingLines,
+      ...(apiChange && (apiChange.changes.length || apiChange.logic.length) ? { apiLines: describeApiChange(apiChange) } : {}),
       aiConfig,
       tokenBudget: effortSettings.tokenBudget,
       prId: resolved.prId,

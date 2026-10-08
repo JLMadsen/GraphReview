@@ -17,6 +17,8 @@ loopback rule in `middleware.ts` applies to it like every other route.
 | `get_changed_components` | Which components the diff touches, per file status and +/- counts. |
 | `get_component_diff` | The patches of every changed file one component owns. |
 | `get_file_diff` | One file's patch; with `sha`, a file outside the diff whole at that commit (for impact findings). |
+| `list_endpoints` | Every endpoint of the repo's analysed commit (HTTP, server actions, tRPC, GraphQL) with handler, middleware/auth, params and request/response shapes; filter by `kind` or `query`. |
+| `get_api_changes` | What a review target does to the API: added, removed, changed (deltas marked breaking); separately, endpoints with the same contract whose code behind changed (`logicChanged`, with the call path). Starts the base/head comparison when there is none. |
 | `respond_to_finding` | Append a reply: `answered` (resolves it), `fixing` (concern is right, fix under way; stays open), `comment`. |
 
 ## Prompt

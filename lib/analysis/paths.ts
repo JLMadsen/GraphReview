@@ -3,6 +3,7 @@
  * repo-relative and POSIX-separated, regardless of host OS.
  */
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 /** Convert a host path fragment to POSIX separators. */
@@ -113,4 +114,22 @@ export function grammarCandidates(wasmFileName: string, languageDir?: string): s
     );
   }
   return candidates;
+}
+
+/**
+ * A repo file's text through the analysis context: from the analysed tree
+ * (a commit) when it has one, else from disk under `rootDir`. Throws when the
+ * file can't be read, like `readFile` — callers already treat that as
+ * "skip this config".
+ */
+export async function readRepoText(
+  ctx: { rootDir: string; readText?: (relPath: string) => Promise<string | null> },
+  relPath: string,
+): Promise<string> {
+  if (ctx.readText) {
+    const text = await ctx.readText(relPath);
+    if (text === null) throw new Error(`${relPath} could not be read`);
+    return text;
+  }
+  return readFile(path.join(ctx.rootDir, ...relPath.split("/")), "utf8");
 }

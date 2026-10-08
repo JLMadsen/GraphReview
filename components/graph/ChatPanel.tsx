@@ -32,6 +32,8 @@ import {
 } from "lucide-react";
 import { cn } from "cn";
 import type { ChatMessageDTO, ChatStepDTO } from "./chat-types";
+import { highlightLines, languageForFence } from "./highlight";
+import { startMiddleScroll } from "./middle-scroll";
 import type { UsePrChatResult } from "./usePrChat";
 
 const SUGGESTIONS = [
@@ -432,14 +434,22 @@ function renderMarkdown(source: string, inline: (text: string) => ReactNode): Re
   while (i < lines.length) {
     const line = lines[i];
     if (line.trim().startsWith("```")) {
+      const language = languageForFence(line.trim().slice(3));
       const code: string[] = [];
       i++;
       while (i < lines.length && !lines[i].trim().startsWith("```")) code.push(lines[i++]);
       i++;
+      const html = highlightLines(code, language);
+      const className = "overflow-x-auto rounded-md border border-border bg-background px-2.5 py-2 font-mono text-[11px]";
       out.push(
-        <pre key={key++} className="overflow-x-auto rounded-md border border-border bg-background px-2.5 py-2 font-mono text-[11px]">
-          {code.join("\n")}
-        </pre>
+        html ? (
+          // highlight.js output: the code, escaped, inside its token spans.
+          <pre key={key++} className={className} onMouseDown={startMiddleScroll} dangerouslySetInnerHTML={{ __html: html.join("\n") }} />
+        ) : (
+          <pre key={key++} className={className} onMouseDown={startMiddleScroll}>
+            {code.join("\n")}
+          </pre>
+        )
       );
       continue;
     }

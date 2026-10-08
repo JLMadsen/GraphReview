@@ -28,6 +28,7 @@ export type {
   ReviewOptions,
   ReviewNeighbor,
   ReviewRelatedFile,
+  ReviewMovedCode,
   ReviewRelatedContext,
 } from "./review";
 
@@ -179,6 +180,9 @@ export type {
   PreviewInputsResult,
   PreviewInputsSymbol,
 } from "./preview-inputs";
+
+export { API_SHAPE_TASK_MARKER, buildApiShapeSystemPrompt, inferApiShape, normalizeApiShape } from "./api-shape";
+export type { ApiShapeInput, ApiShapeResult } from "./api-shape";
 
 export {
   IMPACT_TASK_MARKER,

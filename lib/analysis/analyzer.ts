@@ -5,7 +5,7 @@
  * (`queries.scm` + `resolve.ts` + an analyzer definition) and registering it in
  * `registry.ts`. Nothing in `graph-builder.ts` changes.
  */
-import type { FileImport } from "./ir";
+import type { FileImport, SymbolFacts } from "./ir";
 
 /** Where a tree-sitter WASM grammar can be found, in priority order. */
 export interface GrammarSpec {
@@ -75,6 +75,12 @@ export interface AnalyzerContext {
    * `prepare` and in hand-built contexts that never ran a full analysis.
    */
   declarations?: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Reads a repo file (a config the resolver needs) from the tree being
+   * analysed — a commit, when analysing one. Absent in hand-built contexts,
+   * where resolvers fall back to reading `rootDir` on disk.
+   */
+  readText?: (relPath: string) => Promise<string | null>;
 }
 
 export interface LanguageAnalyzer {
@@ -142,6 +148,14 @@ export interface LanguageAnalyzer {
    * external package (e.g. a relative path pointing at a missing file).
    */
   externalPackageName(raw: string, ctx: AnalyzerContext): string | undefined;
+  /**
+   * Which symbol extractor of `syntax/extract.mjs` runs on this analyzer's
+   * syntax trees (names: declarations, imports, references, calls). Absent:
+   * the language has no symbol facts and stays at file-level edges.
+   */
+  readonly symbolFamily?: "js" | "python" | "java";
+  /** Grammar-free counterpart of {@link symbolFamily} (Kotlin's lexical reader). */
+  analyzeSymbols?(input: SourceInput): SymbolFacts;
   /** Optional one-time per-run setup (e.g. reading `tsconfig.json`). */
   prepare?(ctx: AnalyzerContext): void | Promise<void>;
 }

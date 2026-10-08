@@ -100,6 +100,7 @@ function readMatches(matches: QueryMatchData[]): {
 export const javaAnalyzer: LanguageAnalyzer = {
   id: LANGUAGE_ID,
   extensions: [".java"],
+  symbolFamily: "java",
 
   queryPath() {
     return path.join(dir(), "queries.scm");

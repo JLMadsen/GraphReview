@@ -34,6 +34,8 @@ import {
 import { runtimeForPath } from "@/lib/preview/runtime";
 import { cn } from "cn";
 import { DiffViewer } from "./DiffViewer";
+import { highlightLines, languageForPath } from "./highlight";
+import { startMiddleScroll } from "./middle-scroll";
 import { PreviewPanel } from "./PreviewPanel";
 import { Segmented } from "./Segmented";
 import { parseLineRange, parseUnifiedDiff } from "./diff-utils";
@@ -235,7 +237,7 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
           </DialogTitle>
         </DialogHeader>
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto" onMouseDown={startMiddleScroll}>
           {shownTab === "preview" && filePath && target && (
             <PreviewPanel repoId={repoId} target={target} filePath={filePath} initialSymbol={initialComponent} />
           )}
@@ -252,13 +254,13 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
             </p>
           )}
           {shownTab === "diff" && state.status === "loaded" && state.data.content !== undefined && (
-            <FileText content={state.data.content} highlightRange={highlightRange} />
+            <FileText content={state.data.content} filePath={filePath} highlightRange={highlightRange} />
           )}
           {shownTab === "diff" &&
             state.status === "loaded" &&
             state.data.content === undefined &&
             (state.data.patch ? (
-              <DiffViewer hunks={hunks} highlightRange={highlightRange} />
+              <DiffViewer hunks={hunks} filePath={filePath} highlightRange={highlightRange} />
             ) : (
               <p className="px-1 py-6 text-center text-xs text-muted-foreground">
                 {state.data.status === "added" || state.data.status === "removed"
@@ -298,6 +300,7 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
               </p>
               <FileText
                 content={fileState.data.content}
+                filePath={filePath}
                 highlightRange={highlightRange}
                 addedLines={fileState.data.side === "head" ? addedLines : undefined}
                 whole
@@ -319,19 +322,24 @@ const FILE_CONTEXT_LINES = 12;
  * points at — shown as a window around that line; and the File tab
  * (`whole`): every line, the lines the diff added marked in the gutter, and
  * the view scrolled to the finding's line, or else to the first change.
+ * Syntax-highlighted by the file's language, the whole file at once so a
+ * windowed view is coloured as it reads in the file.
  */
 function FileText({
   content,
+  filePath,
   highlightRange,
   addedLines,
   whole = false,
 }: {
   content: string;
+  filePath?: string;
   highlightRange: [number, number] | null;
   addedLines?: ReadonlySet<number>;
   whole?: boolean;
 }) {
-  const lines = content.replace(/\r?\n$/, "").split(/\r?\n/);
+  const lines = useMemo(() => content.replace(/\r?\n$/, "").split(/\r?\n/), [content]);
+  const html = useMemo(() => highlightLines(lines, languageForPath(filePath)), [lines, filePath]);
   const windowed = !whole && highlightRange !== null;
   const from = windowed && highlightRange ? Math.max(1, highlightRange[0] - FILE_CONTEXT_LINES) : 1;
   const to = windowed && highlightRange ? Math.min(lines.length, highlightRange[1] + FILE_CONTEXT_LINES) : lines.length;
@@ -371,7 +379,15 @@ function FileText({
                 >
                   {n}
                 </td>
-                <td className="w-full px-2 font-mono text-[12px] leading-relaxed whitespace-pre">{text || " "}</td>
+                {html?.[n - 1] ? (
+                  // highlight.js output: the line's text, escaped, inside its token spans.
+                  <td
+                    className="w-full px-2 font-mono text-[12px] leading-relaxed whitespace-pre"
+                    dangerouslySetInnerHTML={{ __html: html[n - 1] }}
+                  />
+                ) : (
+                  <td className="w-full px-2 font-mono text-[12px] leading-relaxed whitespace-pre">{text || " "}</td>
+                )}
               </tr>
             );
           })}

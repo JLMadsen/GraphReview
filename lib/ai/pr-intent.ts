@@ -40,6 +40,8 @@ export interface PrIntentInput {
   files: PrIntentFile[];
   /** One line per review finding, e.g. "src/a.ts: adds retry (feature, described, ok)". */
   findings: string[];
+  /** What the change does to the endpoints (DESIGN.md §6.11), one line each. */
+  api?: string[];
 }
 
 /**
@@ -128,6 +130,10 @@ function renderUserMessage(input: PrIntentInput, patchBudgetTokens: number): str
     lines.push(`- ${file.path} (${file.status ?? "changed"}, +${file.additions}/-${file.deletions})`);
   }
 
+  if (input.api && input.api.length > 0) {
+    lines.push("", "## What this change does to the API (static analysis)");
+    for (const line of input.api) lines.push(`- ${oneLine(line)}`);
+  }
   if (input.findings.length > 0) {
     lines.push("", "## Review findings (one line per change)");
     for (const finding of input.findings.slice(0, MAX_FINDINGS_LISTED)) lines.push(`- ${oneLine(finding)}`);

@@ -36,6 +36,7 @@ function joinModule(moduleSpec: string, name: string): string {
 export const pythonAnalyzer: LanguageAnalyzer = {
   id: LANGUAGE_ID,
   extensions: [".py", ".pyi"],
+  symbolFamily: "python",
 
   queryPath() {
     return path.join(dir(), "queries.scm");

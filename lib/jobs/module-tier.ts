@@ -67,7 +67,7 @@ function baseName(filePath: string): string {
 
 export interface ModuleTierInput {
   repoId: string;
-  edges: ReadonlyArray<{ from: string; to: string }>;
+  edges: ReadonlyArray<{ from: string; to: string; weight?: number }>;
   folderClusters: readonly ModuleCluster[];
   /** Set to refresh the merge suggestions (step 7) from these; left out, they are not touched. */
   suggestions?: { filePaths: readonly string[]; moduleDepth: number };
@@ -157,7 +157,9 @@ export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTie
   if (changedOwners.length > 0) log(`assigned ${changedOwners.length} file(s) to a new module`);
 
   // --- DEPENDS_ON (aggregated from the file edges) -----------------------
-  // weight = number of underlying file-level edges between the two
+  // weight = how much the files of one use the other: the lines they refer
+  // to its names on (lib/analysis/symbols.ts), 1 per file edge for languages
+  // without names — summed over the underlying file-level edges between the two
   // components. Intra-component edges are dropped: a component depending on
   // itself carries no information in the component graph.
   const weights = new Map<string, { from: string; to: string; weight: number }>();
@@ -167,8 +169,9 @@ export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTie
     if (!from || !to || from === to) continue;
     const key = `${from} -> ${to}`;
     const existing = weights.get(key);
-    if (existing) existing.weight += 1;
-    else weights.set(key, { from, to, weight: 1 });
+    const weight = edge.weight ?? 1;
+    if (existing) existing.weight += weight;
+    else weights.set(key, { from, to, weight });
   }
   const componentEdges = [...weights.values()];
   await replaceComponentDependencies(repoId, componentEdges);

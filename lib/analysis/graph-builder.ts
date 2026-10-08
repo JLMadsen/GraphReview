@@ -1,20 +1,29 @@
 /**
- * Repo → import graph → folder clusters (DESIGN.md §5, §6, §6.1).
+ * Repo → import graph + names → folder clusters (DESIGN.md §5, §6, §6.1).
  *
- * `analyzeRepo` is the single entry point of this package. It is deliberately
- * self-contained: a local directory path goes in, an in-memory
- * {@link AnalysisResult} comes out. Persisting that to the database, LLM-labeling the
- * clusters and the domain tier of §6.1 all happen elsewhere.
+ * `analyzeTree` is the core: a {@link SourceTree} goes in (one commit read
+ * from git, or a folder on disk), an in-memory {@link AnalysisResult} comes
+ * out. `analyzeCommit` and `analyzeRepo` are its two front doors. Persisting
+ * the result, LLM-labeling the clusters and the domain tier of §6.1 all
+ * happen elsewhere.
+ *
+ * Parsing runs in a worker thread (./syntax/parse-pool.ts). What a file's
+ * syntax says doesn't depend on any other file, so it is cached by the
+ * file's git blob id (`options.cache`): re-analysing after a pull, or
+ * analysing a PR's base and head, only parses the files that changed.
  */
-import { readFile, stat } from "node:fs/promises";
-import path from "node:path";
-import type { AnalyzerContext, LanguageAnalyzer, RawImport, SyntaxFacts } from "./analyzer";
-import { countLines, type FileAnalysis, type FileImport } from "./ir";
+import { stat } from "node:fs/promises";
+import { buildApiCatalog } from "./api/catalog";
+import type { ApiCatalog } from "./api/types";
+import type { AnalyzerContext, LanguageAnalyzer, RawImport } from "./analyzer";
+import { countLines, type FileAnalysis, type FileImport, type SymbolFacts } from "./ir";
 import { dirOf, extensionOf } from "./paths";
 import { analyzerForPath, listAnalyzers } from "./registry";
-import { runQuery } from "./tree-sitter";
+import { diskSourceTree, gitSourceTree, type SourceTree } from "./source-tree";
 import { splitLargeModules } from "./split-modules";
-import { walkRepo, type WalkOptions } from "./walk";
+import { buildSymbolGraph, type SymbolGraph } from "./symbols";
+import { parseSource } from "./syntax/parse-pool";
+import type { WalkOptions } from "./walk";
 
 /** A folder-derived cluster — the "module" tier of §6.1. */
 export interface ModuleCluster {
@@ -42,16 +51,31 @@ export interface ImportEdge {
   from: string;
   to: string;
   kind: FileImport["kind"];
+  /**
+   * How much `from` uses `to`: the lines it refers to `to`'s names on, for
+   * languages with names; 1 otherwise.
+   */
+  weight?: number;
+  /** Every import of `to` in `from` is type-only (`import type`): no runtime dependency. */
+  typeOnly?: true;
 }
 
 export interface AnalysisResult {
   files: FileAnalysis[];
-  /** Resolved file-to-file import edges only — no call-graph edges in v1 (§5). */
+  /** Resolved file-to-file import edges (calls between declarations are in `symbols`). */
   edges: ImportEdge[];
   /** Folder-based clustering at `moduleDepth` (§6, §6.1), oversized modules split (./split-modules.ts). */
   modules: ModuleCluster[];
   /** Unresolved import specifiers, deduped — the grouped "external" nodes of §5. */
   externalPackages: string[];
+  /** Declarations, uses and calls across files (./symbols.ts) — TS/JS, Python, Java, Kotlin. */
+  symbols: SymbolGraph;
+  /** Every endpoint the tree exposes (./api/, DESIGN.md §6.11). */
+  api: ApiCatalog;
+  /** Files counted but not parsed. */
+  skipped: { binary: number; large: number; failed: number };
+  /** Files whose parse came from the cache. */
+  cached: number;
 }
 
 /**
@@ -63,8 +87,28 @@ export const DEFAULT_MODULE_DEPTH = 2;
 /** Files larger than this are counted but not parsed (generated/vendored blobs). */
 const DEFAULT_MAX_FILE_BYTES = 1_500_000;
 
-/** How many files to read from disk concurrently; parsing itself is synchronous. */
+/** How many files to look up in the parse cache at once. */
 const READ_CONCURRENCY = 24;
+
+/**
+ * Bumped whenever what a parse produces changes (queries, extractors, the
+ * cached shape), so stale cache entries are never read back.
+ */
+export const PARSE_VERSION = 3;
+
+/** What a file's own syntax says — the cached unit. */
+export interface CachedParse {
+  raws: RawImport[];
+  declares?: string[];
+  symbols?: SymbolFacts;
+  loc: number;
+}
+
+/** Parse results by key; the app keeps them in SQLite (lib/db). */
+export interface ParseCache {
+  getMany(keys: readonly string[]): Promise<Map<string, CachedParse>>;
+  setMany(entries: ReadonlyArray<[string, CachedParse]>): Promise<void>;
+}
 
 export interface AnalyzeRepoOptions extends WalkOptions {
   /** Folder depth used for the module tier. Defaults to {@link DEFAULT_MODULE_DEPTH}. */
@@ -73,6 +117,8 @@ export interface AnalyzeRepoOptions extends WalkOptions {
   maxFileBytes?: number;
   /** Progress callback, useful when driving this from a background job. */
   onProgress?: (progress: { analyzed: number; total: number; file: string }) => void;
+  /** Reuse parses by blob id (only trees that know blob ids — commits — use it). */
+  cache?: ParseCache;
 }
 
 /** Name used for files that sit directly in the repo root. */
@@ -97,46 +143,55 @@ interface ParsedFile {
   raws: RawImport[];
 }
 
-/** Extract the raw imports (and declarations) of one file; resolution happens later. */
-async function parseFile(
-  analyzer: LanguageAnalyzer,
-  file: string,
-  source: string,
-): Promise<ParsedFile> {
+function cacheKey(analyzer: LanguageAnalyzer, file: string, blob: string): string {
+  return `${PARSE_VERSION}:${analyzer.id}:${extensionOf(file)}:${blob}`;
+}
+
+/** Parse one file's syntax: raw imports, JVM declarations and symbol facts. `null` when it can't be parsed. */
+async function parseFile(analyzer: LanguageAnalyzer, file: string, source: string): Promise<CachedParse | null> {
+  const ext = extensionOf(file);
+  const loc = countLines(source);
+  try {
+    if (analyzer.analyzeSource) {
+      const facts = analyzer.analyzeSource({ file, source });
+      const symbols = analyzer.analyzeSymbols?.({ file, source });
+      return { raws: facts.imports, ...(facts.declares?.length ? { declares: facts.declares } : {}), ...(symbols ? { symbols } : {}), loc };
+    }
+    if (!analyzer.grammarFor || !analyzer.queryPath) {
+      throw new Error(`analyzer "${analyzer.id}" has neither analyzeSource nor a grammar`);
+    }
+    const { matches, symbols } = await parseSource({
+      grammar: analyzer.grammarFor(ext),
+      queryPath: analyzer.queryPath(),
+      family: analyzer.symbolFamily,
+      source,
+    });
+    const facts = analyzer.analyzeMatches
+      ? analyzer.analyzeMatches(matches, { file, source })
+      : analyzer.collectImports
+        ? { imports: analyzer.collectImports(matches) }
+        : null;
+    if (!facts) throw new Error(`analyzer "${analyzer.id}" cannot collect imports`);
+    return { raws: facts.imports, ...(facts.declares?.length ? { declares: facts.declares } : {}), ...(symbols ? { symbols } : {}), loc };
+  } catch (error) {
+    // A single unparseable file must not sink the whole repo analysis; it still
+    // becomes a node in the graph, just without outgoing edges.
+    console.warn(`[analysis] failed to parse ${file}: ${(error as Error).message}`);
+    return null;
+  }
+}
+
+function toParsed(analyzer: LanguageAnalyzer, file: string, parse: CachedParse | null, loc: number): ParsedFile {
   const ext = extensionOf(file);
   const analysis: FileAnalysis = {
     file,
     language: analyzer.languageId(ext),
     imports: [],
-    loc: countLines(source),
+    loc: parse?.loc ?? loc,
   };
-
-  let facts: SyntaxFacts;
-  try {
-    if (analyzer.analyzeSource) {
-      facts = analyzer.analyzeSource({ file, source });
-    } else {
-      if (!analyzer.grammarFor || !analyzer.queryPath) {
-        throw new Error(`analyzer "${analyzer.id}" has neither analyzeSource nor a grammar`);
-      }
-      const matches = await runQuery(analyzer.grammarFor(ext), analyzer.queryPath(), source);
-      if (analyzer.analyzeMatches) {
-        facts = analyzer.analyzeMatches(matches, { file, source });
-      } else if (analyzer.collectImports) {
-        facts = { imports: analyzer.collectImports(matches) };
-      } else {
-        throw new Error(`analyzer "${analyzer.id}" cannot collect imports`);
-      }
-    }
-  } catch (error) {
-    // A single unparseable file must not sink the whole repo analysis; it still
-    // becomes a node in the graph, just without outgoing edges.
-    console.warn(`[analysis] failed to parse ${file}: ${(error as Error).message}`);
-    return { analysis, analyzer, raws: [] };
-  }
-
-  if (facts.declares && facts.declares.length > 0) analysis.declares = facts.declares;
-  return { analysis, analyzer, raws: facts.imports };
+  if (parse?.declares && parse.declares.length > 0) analysis.declares = parse.declares;
+  if (parse?.symbols) analysis.symbols = parse.symbols;
+  return { analysis, analyzer, raws: parse?.raws ?? [] };
 }
 
 /** Resolve a parsed file's raw imports into IR imports (deduped, speculative ones pruned). */
@@ -325,9 +380,10 @@ export function clusterByFolderDepth(filePaths: string[], depth: number): Module
   return modules;
 }
 
+
 /**
- * Statically analyze a checkout on disk into an import graph plus its
- * folder-based module clustering.
+ * Statically analyze a folder on disk (fixtures, scripts). The app analyses
+ * commits instead — see {@link analyzeCommit}.
  *
  * @param rootDir Absolute (or cwd-relative) path to the repository root.
  */
@@ -335,17 +391,44 @@ export async function analyzeRepo(
   rootDir: string,
   options: AnalyzeRepoOptions = {},
 ): Promise<AnalysisResult> {
-  const root = path.resolve(rootDir);
-  const rootStat = await stat(root).catch(() => undefined);
+  const rootStat = await stat(rootDir).catch(() => undefined);
   if (!rootStat?.isDirectory()) {
     throw new Error(`analyzeRepo: "${rootDir}" is not a directory`);
   }
+  const tree = await diskSourceTree(rootDir, options);
+  try {
+    return await analyzeTree(tree, options);
+  } finally {
+    tree.close();
+  }
+}
 
-  const allFiles = await walkRepo(root, options);
+/**
+ * Statically analyze one commit of the git repository at `repoDir`, read
+ * from git's object store — the checkout's working files are never looked
+ * at, so uncommitted edits, untracked and ignored files don't count.
+ */
+export async function analyzeCommit(
+  repoDir: string,
+  sha: string,
+  options: AnalyzeRepoOptions = {},
+): Promise<AnalysisResult> {
+  const tree = await gitSourceTree(repoDir, sha, options);
+  try {
+    return await analyzeTree(tree, options);
+  } finally {
+    tree.close();
+  }
+}
+
+/** The core: parse (or reuse) every file, resolve imports and names, cluster. */
+export async function analyzeTree(tree: SourceTree, options: AnalyzeRepoOptions = {}): Promise<AnalysisResult> {
+  const allFiles = tree.files;
   const ctx: AnalyzerContext = {
-    rootDir: root,
+    rootDir: tree.rootDir,
     files: new Set(allFiles),
     cache: new Map(),
+    readText: (relPath) => tree.readConfig(relPath),
   };
 
   for (const analyzer of listAnalyzers()) {
@@ -358,27 +441,36 @@ export async function analyzeRepo(
     .filter((t): t is { file: string; analyzer: LanguageAnalyzer } => t.analyzer !== undefined);
 
   const parsedFiles: ParsedFile[] = [];
+  let cached = 0;
+  let failed = 0;
   for (let i = 0; i < targets.length; i += READ_CONCURRENCY) {
     const batch = targets.slice(i, i + READ_CONCURRENCY);
-    const sources = await Promise.all(
-      batch.map(async ({ file }) => {
-        try {
-          const absolute = path.join(root, file);
-          const info = await stat(absolute);
-          if (info.size > maxFileBytes) return undefined;
-          return await readFile(absolute, "utf8");
-        } catch {
-          return undefined;
-        }
-      }),
-    );
+    const keys = batch.map(({ file, analyzer }) => {
+      const blob = tree.blobOf(file);
+      return blob ? cacheKey(analyzer, file, blob) : undefined;
+    });
+    const hits = options.cache
+      ? await options.cache.getMany(keys.filter((k): k is string => Boolean(k)))
+      : new Map<string, CachedParse>();
+    const fresh: Array<[string, CachedParse]> = [];
     for (let j = 0; j < batch.length; j++) {
-      const source = sources[j];
-      if (source === undefined) continue;
       const { file, analyzer } = batch[j];
-      parsedFiles.push(await parseFile(analyzer, file, source));
+      const key = keys[j];
+      const hit = key ? hits.get(key) : undefined;
+      if (hit) {
+        cached++;
+        parsedFiles.push(toParsed(analyzer, file, hit, hit.loc));
+      } else {
+        const source = await tree.read(file, maxFileBytes);
+        if (source === null) continue;
+        const parse = await parseFile(analyzer, file, source);
+        if (!parse) failed++;
+        else if (key) fresh.push([key, parse]);
+        parsedFiles.push(toParsed(analyzer, file, parse, countLines(source)));
+      }
       options.onProgress?.({ analyzed: parsedFiles.length, total: targets.length, file });
     }
+    if (options.cache && fresh.length > 0) await options.cache.setMany(fresh);
   }
 
   // Every file is parsed now: publish the declarations, let analyzers index them
@@ -396,6 +488,17 @@ export async function analyzeRepo(
     files.push(parsed.analysis);
   }
 
+  const symbols = buildSymbolGraph(files, ctx, analyzerForPath);
+  const declFile = new Map(symbols.decls.map((d) => [d.id, d.file]));
+  const weights = new Map<string, number>();
+  for (const use of symbols.uses) {
+    const to = declFile.get(use.target);
+    if (!to || to === use.file) continue;
+    const key = `${use.file}\u0000${to}`;
+    weights.set(key, (weights.get(key) ?? 0) + Math.max(1, use.lines.length));
+  }
+  const typeOnly = new Set(symbols.typeOnlyEdges);
+
   const analyzedFiles = new Set(files.map((f) => f.file));
   const edgeKeys = new Set<string>();
   const edges: ImportEdge[] = [];
@@ -409,16 +512,30 @@ export async function analyzeRepo(
         // analyzer handles (a .css or .json asset) stays in the IR but is not an edge.
         if (imported.resolvedPath === analysis.file) continue;
         if (!analyzedFiles.has(imported.resolvedPath)) continue;
-        const key = `${analysis.file} ${imported.resolvedPath} ${imported.kind}`;
+        const key = `${analysis.file}\u0000${imported.resolvedPath}\u0000${imported.kind}`;
         if (edgeKeys.has(key)) continue;
         edgeKeys.add(key);
-        edges.push({ from: analysis.file, to: imported.resolvedPath, kind: imported.kind });
+        const pair = `${analysis.file}\u0000${imported.resolvedPath}`;
+        edges.push({
+          from: analysis.file,
+          to: imported.resolvedPath,
+          kind: imported.kind,
+          weight: weights.get(pair) ?? 1,
+          ...(typeOnly.has(pair) ? { typeOnly: true as const } : {}),
+        });
         continue;
       }
       const external = analyzer?.externalPackageName(imported.raw, ctx);
       if (external) externals.add(external);
     }
   }
+
+  const api = await buildApiCatalog({ files, symbols, allFiles: ctx.files, readText: (relPath) => tree.readConfig(relPath) }).catch(
+    (error: unknown): ApiCatalog => {
+      console.warn(`[analysis] endpoint catalog failed: ${(error as Error).message}`);
+      return { endpoints: [], specs: [], frameworks: [], unresolvedMounts: 0 };
+    },
+  );
 
   edges.sort(
     (a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to) || a.kind.localeCompare(b.kind),
@@ -436,5 +553,9 @@ export async function analyzeRepo(
       edges,
     ),
     externalPackages: [...externals].sort(),
+    symbols,
+    api,
+    skipped: { ...tree.skipped, failed },
+    cached,
   };
 }

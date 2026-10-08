@@ -18,6 +18,7 @@ import {
   PREVIEW_QUEUE_NAME,
   PREVIEW_SCAN_QUEUE_NAME,
   REVIEW_QUEUE_NAME,
+  TARGET_GRAPH_QUEUE_NAME,
   clearAppMapCancel,
   clearLabelCancel,
   clearReviewCancel,
@@ -38,6 +39,8 @@ import {
   type PreviewScanJobData,
   type ReviewJobData,
   type ReviewJobResult,
+  type TargetGraphJobData,
+  type TargetGraphJobResult,
 } from "@/lib/jobs";
 // Imported from the modules directly rather than the barrel: these are the
 // entry points that pull in lib/analysis (tree-sitter + WASM grammars) and
@@ -50,8 +53,9 @@ import { runLabelJob } from "@/lib/jobs/label";
 import { runAppMapJob } from "@/lib/jobs/app-map-job";
 import { runPreviewJob } from "@/lib/jobs/preview";
 import { runPreviewScanJob } from "@/lib/jobs/preview-scan";
+import { runTargetGraphJob } from "@/lib/jobs/target-graph";
 import type { PreviewScanResult } from "@/lib/preview/types";
-import { getDb, purgeExpiredKv } from "@/lib/db";
+import { getDb, purgeExpiredKv, purgeParseCache } from "@/lib/db";
 
 /** One job at a time: static analysis is CPU-bound (tree-sitter parsing) and a second concurrent run would just contend for the same core. */
 const CONCURRENCY = Number(process.env.ANALYSIS_CONCURRENCY ?? 1);
@@ -167,7 +171,7 @@ export async function startWorker(): Promise<void> {
       `queue "${REVIEW_QUEUE_NAME}" (concurrency ${REVIEW_CONCURRENCY}), ` +
       `queue "${LABEL_QUEUE_NAME}" (concurrency ${LABEL_CONCURRENCY}), ` +
       `queue "${APP_MAP_QUEUE_NAME}" (concurrency ${APP_MAP_CONCURRENCY}), ` +
-      `queue "${PREVIEW_QUEUE_NAME}" (concurrency ${PREVIEW_CONCURRENCY})`
+      `queue "${PREVIEW_QUEUE_NAME}" (concurrency ${PREVIEW_CONCURRENCY}), queue "${TARGET_GRAPH_QUEUE_NAME}" (concurrency 1)`
   );
 
   // Opening the database applies any pending schema migrations.
@@ -175,6 +179,7 @@ export async function startWorker(): Promise<void> {
   // Expired cancel flags and caches are only ignored on read; drop them here.
   purgeExpiredFlags();
   purgeExpiredKv();
+  purgeParseCache();
 
   // Jobs left running by a previous run of the app (stopped or crashed
   // mid-job): analysis is retried, AI jobs are marked interrupted.
@@ -409,6 +414,26 @@ export async function startWorker(): Promise<void> {
     logError(`preview-scan worker error: ${error.message}`);
   });
 
+  // --- target-graph queue ---------------------------------------------------
+  // Base vs head of a review target (lib/jobs/target-graph.ts): static
+  // analysis only, triggered by the Graph tab loading a target. CPU-bound
+  // parsing runs in the parse worker thread, so one at a time is plenty.
+  const targetGraphWorker = new Worker<TargetGraphJobData, TargetGraphJobResult>(
+    TARGET_GRAPH_QUEUE_NAME,
+    async (job: Job<TargetGraphJobData, TargetGraphJobResult>) =>
+      runTargetGraphJob(job.data, (message) => {
+        log(`target-graph job ${job.id} · ${message}`);
+        mirrorToJobLog(job, message);
+      }),
+    { concurrency: 1 }
+  );
+  targetGraphWorker.on("failed", (job, error) => {
+    logError(`target-graph job ${job?.id ?? "?"} failed: ${error.message}`);
+  });
+  targetGraphWorker.on("error", (error) => {
+    logError(`target-graph worker error: ${error.message}`);
+  });
+
   // A repo removed while one of its jobs ran gets that job's leftovers
   // (files, findings, a fresh clone) removed too (lib/jobs/repo-removal.ts).
   const cleanUp = (job: { data?: { repoId?: string } } | undefined) => {
@@ -416,7 +441,7 @@ export async function startWorker(): Promise<void> {
       logError(`cleanup after a removed repo failed: ${(error as Error).message}`)
     );
   };
-  for (const w of [worker, reviewWorker, labelWorker, appMapWorker, previewWorker, previewScanWorker]) {
+  for (const w of [worker, reviewWorker, labelWorker, appMapWorker, previewWorker, previewScanWorker, targetGraphWorker]) {
     (w as Worker<{ repoId: string }, unknown>).on("completed", cleanUp).on("failed", cleanUp);
   }
 

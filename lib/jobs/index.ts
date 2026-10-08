@@ -245,6 +245,16 @@ export {
   type PreviewScanJobData,
 } from "./preview-queue";
 
+export {
+  ensureTargetGraph,
+  getTargetGraphJob,
+  TARGET_GRAPH_QUEUE_NAME,
+  type ComponentDependencyChange,
+  type TargetGraphData,
+  type TargetGraphJobData,
+  type TargetGraphJobResult,
+} from "./target-graph-queue";
+
 // NOTE: `./analyze` is deliberately *not* re-exported here. It pulls in
 // lib/analysis (tree-sitter + WASM grammars), which only the worker ever
 // executes — re-exporting it would drag the whole parsing engine into the
@@ -263,4 +273,6 @@ export {
 //     import { runAppMapJob } from "@/lib/jobs/app-map-job";
 // and `./preview` (lib/ai, lib/analysis, the Docker sandbox):
 //     import { runPreviewJob } from "@/lib/jobs/preview";
+// and `./target-graph` / `./commit-analysis` (lib/analysis):
+//     import { runTargetGraphJob } from "@/lib/jobs/target-graph";
 export type { JobLogger } from "./analyze";

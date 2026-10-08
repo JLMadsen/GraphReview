@@ -17,10 +17,8 @@
  * to the repo root. A child config's own `baseUrl`/`paths` entry always overrides
  * whatever an ancestor set for the same key.
  */
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import type { AnalyzerContext } from "../../analyzer";
-import { dirOf, joinPosix } from "../../paths";
+import { dirOf, joinPosix, readRepoText } from "../../paths";
 import { asRecord, probeUnder } from "./probe";
 
 export interface PathAlias {
@@ -136,7 +134,7 @@ async function readRawConfig(
   const pending = (async (): Promise<RawTsConfig | undefined> => {
     try {
       const dir = dirOf(configPath);
-      const text = await readFile(path.join(ctx.rootDir, ...configPath.split("/")), "utf8");
+      const text = await readRepoText(ctx, configPath);
       const json = asRecord(parseJsonc(text));
       if (!json) return undefined;
       const options = asRecord(json.compilerOptions);

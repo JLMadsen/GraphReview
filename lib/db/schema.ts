@@ -202,6 +202,39 @@ const MIGRATIONS: string[] = [
     FOREIGN KEY (queue, job_id) REFERENCES jobs (queue, id) ON DELETE CASCADE
   );
   `,
+  // 2 — names (lib/analysis/symbols.ts): how much a file uses what it
+  // imports, type-only imports, the parse cache keyed by git blob, and the
+  // per-target graph results (structure diff + call graph).
+  `
+  ALTER TABLE file_imports ADD COLUMN weight INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE file_imports ADD COLUMN type_only INTEGER NOT NULL DEFAULT 0;
+
+  CREATE TABLE parse_cache (
+    key     TEXT PRIMARY KEY,
+    data    TEXT NOT NULL,
+    used_at INTEGER NOT NULL
+  );
+  CREATE INDEX parse_cache_used ON parse_cache (used_at);
+
+  CREATE TABLE target_graphs (
+    repo_id     TEXT NOT NULL,
+    target_key  TEXT NOT NULL,
+    base_sha    TEXT NOT NULL,
+    head_sha    TEXT NOT NULL,
+    computed_at TEXT NOT NULL,
+    data        TEXT NOT NULL,
+    PRIMARY KEY (repo_id, target_key)
+  );
+  `,
+  // 3 — the endpoint catalog of each repo's analysed commit (lib/analysis/api/).
+  `
+  CREATE TABLE api_catalogs (
+    repo_id     TEXT PRIMARY KEY,
+    sha         TEXT NOT NULL,
+    computed_at TEXT NOT NULL,
+    data        TEXT NOT NULL
+  );
+  `,
 ];
 
 /** Brings the database up to the latest schema version. */

@@ -61,17 +61,35 @@ export interface ReviewNeighbor {
 export interface ReviewRelatedFile {
   path: string;
   componentName: string;
-  relation: "imported" | "importer";
+  /**
+   * `imported` / `importer`: one import hop from the changed files.
+   * `defines`: declares names the changed lines use (resolved through imports).
+   * `caller`: calls a function the change touched.
+   */
+  relation: "imported" | "importer" | "defines" | "caller";
   /** One-line declaration signatures, bodies stripped. */
   signatures: string[];
-  /** Full source of declarations the diff refers to by name. */
+  /** Full source of declarations the diff refers to by name (for `caller`: the calling function). */
   snippets: Array<{ name: string; code: string }>;
 }
 
 /** Extra context beyond the diff, gathered according to the review's effort level. */
+/** Code the change moved to another file and changed on the way, as a line diff of the whole declaration. */
+export interface ReviewMovedCode {
+  name: string;
+  from: string;
+  to: string;
+  /** ` ` / `-` / `+` lines: the old copy against the new one. */
+  diff: string;
+}
+
 export interface ReviewRelatedContext {
   neighbors?: ReviewNeighbor[];
   files?: ReviewRelatedFile[];
+  /** Moved and changed code touching this component (DESIGN.md §6.10). */
+  moves?: ReviewMovedCode[];
+  /** Endpoints whose handler is in this component's change or reaches it (DESIGN.md §6.11), one line each. */
+  endpoints?: string[];
 }
 
 export interface ReviewInput {

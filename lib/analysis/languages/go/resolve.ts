@@ -19,10 +19,8 @@
  * Not modelled: build tags / GOOS-GOARCH file suffixes (all files of the
  * directory are linked), `replace` directives, `go.work`, cgo.
  */
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import type { AnalyzerContext } from "../../analyzer";
-import { dirOf, joinPosix } from "../../paths";
+import { dirOf, joinPosix, readRepoText } from "../../paths";
 
 interface GoModule {
   /** Repo-relative directory holding `go.mod` (`""` for the repo root). */
@@ -101,7 +99,7 @@ export async function prepareGo(ctx: AnalyzerContext): Promise<void> {
       else state.packages.set(dir, [file]);
     } else if (file === "go.mod" || file.endsWith("/go.mod")) {
       try {
-        const parsed = parseGoMod(await readFile(path.join(ctx.rootDir, file), "utf8"));
+        const parsed = parseGoMod(await readRepoText(ctx, file));
         if (parsed.module) state.modules.push({ dir: dirOf(file), path: parsed.module });
         for (const r of parsed.requires) requires.add(r);
       } catch {

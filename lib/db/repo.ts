@@ -14,6 +14,7 @@ function toRepoRecord(props: Record<string, unknown>): RepoRecord {
     createdAt: props.createdAt as string,
     lastAnalyzedAt: (props.lastAnalyzedAt as string | undefined) ?? undefined,
     lastAnalyzedSha: (props.lastAnalyzedSha as string | undefined) ?? undefined,
+    analysisVersion: typeof props.analysisVersion === "number" ? props.analysisVersion : undefined,
     domainsStale: props.domainsStale === true ? true : undefined,
   };
 }
@@ -62,13 +63,19 @@ function patchRepo(id: string, patch: Record<string, unknown>): void {
   writeRepoDocument(applyPatch(existing, patch));
 }
 
-/** Updates only `lastAnalyzedAt`/`lastAnalyzedSha` after a (re-)analysis run. */
+/** Updates only `lastAnalyzedAt`/`lastAnalyzedSha`/`analysisVersion` after a (re-)analysis run. */
 export async function markRepoAnalyzed(
   id: string,
   lastAnalyzedSha: string,
+  analysisVersion?: number,
   lastAnalyzedAt: string = new Date().toISOString()
 ): Promise<void> {
-  patchRepo(id, { lastAnalyzedAt, lastAnalyzedSha });
+  patchRepo(id, { lastAnalyzedAt, lastAnalyzedSha, ...(analysisVersion !== undefined ? { analysisVersion } : {}) });
+}
+
+/** Updates a repo's default branch (re-detected for local repos added before graphs followed it). */
+export async function setRepoDefaultBranch(id: string, defaultBranch: string): Promise<void> {
+  patchRepo(id, { defaultBranch });
 }
 
 /** Sets or clears `Repo.domainsStale` (DESIGN.md §6.3). */
@@ -108,6 +115,9 @@ export async function deleteRepo(id: string): Promise<void> {
     run(`DELETE FROM chat_messages WHERE repo_id = ?`, id);
     run(`DELETE FROM pr_maps WHERE json_extract(data, '$.repoId') = ?`, id);
     run(`DELETE FROM app_maps WHERE repo_id = ?`, id);
+    run(`DELETE FROM target_graphs WHERE repo_id = ?`, id);
+    run(`DELETE FROM api_catalogs WHERE repo_id = ?`, id);
+    run(`DELETE FROM kv WHERE key LIKE ?`, `kv:api-shape:${id}:%`);
     run(`DELETE FROM kv WHERE key = ?`, `kv:preview:mocks:${id}`);
     // Queued work for the repo would only fail; a running job finishes and
     // its leftovers are removed by `deleteRepo` again (worker/index.ts).

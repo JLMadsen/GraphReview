@@ -13,7 +13,9 @@
 //     the change left behind (the impact check) are grouped by the
 //     declaration they use — "isPendingJobState was removed — 11 lines in 7
 //     files" is one row, not eleven — and resolve together. A row's title
-//     expands its reasoning, call sites and agent replies.
+//     expands its reasoning, call sites and agent replies. A Structure
+//     chip narrows the list to what static analysis found in the change's
+//     shape — import cycles it creates (lib/jobs/target-graph.ts), no model.
 //   - **Files**, every changed file sorted by how much it changed, with the
 //     area it belongs to and how many open findings point at it.
 //
@@ -322,7 +324,13 @@ function FindingRow({
   const fixing = !resolved && Boolean(finding.responses?.some((reply) => reply.kind === "fixing"));
   const settled = resolved || finding.assessment === "ok";
   const impact = isImpactFinding(finding);
-  const tag = impact ? null : findingTag(finding);
+  const tag = impact
+    ? null
+    : finding.category === "structure"
+      ? "Structure"
+      : finding.category === "chat"
+        ? "From chat"
+        : findingTag(finding);
   const visual = ASSESSMENT_VISUALS[finding.assessment];
   const rowRef = useRowKeyboard(keyboard, {
     toggle: () => setOpen((v) => !v),
@@ -940,12 +948,15 @@ export function ReviewPanel({
   const [diffFinding, setDiffFinding] = useState<FindingDTO | null>(null);
   const [tab, setTab] = useState<DockTab>("findings");
   const [shown, setShown] = useState<Record<FindingBucket, boolean>>(DEFAULT_SHOWN);
+  /** Only the structure findings (static analysis: import cycles the change creates). */
+  const [onlyStructure, setOnlyStructure] = useState(false);
 
   // A new target is a different review.
   const targetKey = target ? reviewTargetLabel(target) : null;
   useEffect(() => {
     setDiffFinding(null);
     setShown(DEFAULT_SHOWN);
+    setOnlyStructure(false);
   }, [targetKey]);
 
   const inScope = useMemo(() => {
@@ -956,7 +967,12 @@ export function ReviewPanel({
   }, [areas, scopeAreaId, scopeComponentId]);
 
   const notes = useMemo(() => findings.filter(isImpactNote), [findings]);
-  const scoped = useMemo(() => findings.filter((f) => isAreaFinding(f) && inScope(f)), [findings, inScope]);
+  const inArea = useMemo(() => findings.filter((f) => isAreaFinding(f) && inScope(f)), [findings, inScope]);
+  const structureCount = useMemo(() => inArea.filter((f) => f.category === "structure").length, [inArea]);
+  const scoped = useMemo(
+    () => (onlyStructure && structureCount > 0 ? inArea.filter((f) => f.category === "structure") : inArea),
+    [inArea, onlyStructure, structureCount]
+  );
   const counts = useMemo(() => {
     const c = emptyCounts();
     for (const f of scoped) c[findingBucket(f)] += 1;
@@ -1111,7 +1127,7 @@ export function ReviewPanel({
     ...(scopeArea ? [scopeArea.node.name] : []),
     ...(scopeComponentId ? [componentName(scopeComponentId) ?? scopeComponentId] : []),
   ];
-  const findingsCount = scoped.length;
+  const findingsCount = inArea.length;
 
   const tabButton = (value: DockTab, label: string, count: number) => (
     <button
@@ -1146,6 +1162,25 @@ export function ReviewPanel({
             <div className="pb-1.5">
               <BucketChips counts={counts} shown={shown} onToggle={(b) => setShown((s) => ({ ...s, [b]: !s[b] }))} />
             </div>
+          )}
+          {tab === "findings" && structureCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setOnlyStructure((v) => !v)}
+              aria-pressed={onlyStructure}
+              className={cn(
+                "mb-1.5 inline-flex h-6 items-center gap-1.5 rounded-[2px] border px-1.5 text-[11px] transition-colors",
+                onlyStructure ? "border-foreground/40 bg-secondary text-foreground" : "border-border text-muted-foreground hover:text-foreground"
+              )}
+              title={
+                onlyStructure
+                  ? "Showing only what static analysis found in the change's structure. Click to show every finding."
+                  : "Show only what static analysis found in the change's structure — import cycles it creates."
+              }
+            >
+              Structure
+              <span className="font-mono font-semibold">{structureCount}</span>
+            </button>
           )}
           {scopeParts.length > 0 && (
             <span className="mb-1.5 inline-flex h-6 items-center gap-1 rounded-[2px] bg-brand/12 pr-0.5 pl-2 text-[11px] text-foreground">

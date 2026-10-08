@@ -30,6 +30,16 @@ import type { JobLogger } from "./analyze";
 import { matchFilesToComponents } from "./diff-components";
 import type { GrepHit, HeadSource } from "./head-source";
 import { addedLineNumbers, detectChangedContracts, type ChangedContract } from "./impact-contracts";
+import {
+  movedBodyContracts,
+  newDeadImports,
+  symbolContracts,
+  symbolCoveredPaths,
+  symbolUsages,
+  type MovedCode,
+  type SymbolContract,
+  type TargetAnalyses,
+} from "./symbol-context";
 import type { LocalFilePatch } from "./local-git";
 import { extractDeclarations } from "./review-context";
 
@@ -397,6 +407,10 @@ export async function runImpactPass(args: {
   revision: Pick<TargetFindingInput, "reviewedBaseSha" | "reviewedHeadSha" | "reviewedAt">;
   log: JobLogger;
   signal?: AbortSignal;
+  /** The target analysed from names (./symbol-context.ts); `null`: everything by text. */
+  analyses?: TargetAnalyses | null;
+  /** Code the change moved and changed on the way (./symbol-context.ts): a changed body is judged against the callers too. */
+  moved?: readonly MovedCode[];
 }): Promise<ImpactPassResult> {
   const { repoId, files, head, log } = args;
   const spent: ImpactPassResult = { findings: [], contracts: 0, calls: 0, promptTokens: 0, completionTokens: 0 };
@@ -406,9 +420,36 @@ export async function runImpactPass(args: {
   }
 
   try {
+    // Files whose language has names are handled from the analysed base and
+    // head (./symbol-context.ts); the rest (Go, Rust) by text, as before.
+    const analyses = args.analyses ?? null;
+    const covered = analyses ? symbolCoveredPaths(analyses, files.map((f) => f.path)) : new Set<string>();
+
+    // --- 0. Imports of names that are gone: certain, no model needed --------
+    if (analyses) {
+      const dead = newDeadImports(analyses);
+      if (dead.length > 0) {
+        const { componentIdByPath } = await matchFilesToComponents(repoId, [...new Set(dead.map((d) => d.file))]);
+        spent.findings.push(
+          ...impactFindings(
+            dead.map((d) => ({
+              contract: { name: d.imported, filePath: d.target, kind: "callable" as const, change: "removed" as const, before: d.imported },
+              path: d.file,
+              line: d.line,
+              reason: `it imports \`${d.imported}\` from ${d.source}, which no longer provides it.`,
+            })),
+            componentIdByPath,
+            { prId: args.prId, model: "static analysis", createdAt: new Date().toISOString(), ...args.revision }
+          ).map((finding) => ({ ...finding, confidence: 0.95 }))
+        );
+        log(`impact: ${dead.length} import(s) of names that no longer exist`);
+      }
+    }
+
     // --- 1. What changed shape -------------------------------------------
+    const symbolic = analyses ? [...symbolContracts(analyses, covered), ...movedBodyContracts(args.moved ?? [])] : [];
     // Added files are read too: a removed declaration may have moved into one.
-    const candidates = files.filter((f) => f.patch);
+    const candidates = files.filter((f) => f.patch && !covered.has(f.path));
     const sources = await Promise.all(
       candidates.map(async (file) => {
         const content = await head.read(file.path);
@@ -421,13 +462,18 @@ export async function runImpactPass(args: {
         };
       })
     );
-    const contracts = detectChangedContracts(sources);
+    const textual = detectChangedContracts(sources);
+    const contracts: ChangedContract[] = [...symbolic, ...textual];
     spent.contracts = contracts.length;
     if (contracts.length === 0) {
       log("impact: no changed signatures, types, constants or removed declarations");
       return spent;
     }
-    log(`impact: ${contracts.length} changed contract(s): ${contracts.map((c) => `${c.name} (${c.change})`).join(", ")}`);
+    log(
+      `impact: ${contracts.length} changed contract(s)` +
+        (symbolic.length > 0 && textual.length > 0 ? ` (${symbolic.length} from names, ${textual.length} from text)` : "") +
+        `: ${contracts.map((c) => `${c.name} (${c.change})`).join(", ")}`
+    );
 
     // --- 2. Untouched usages -------------------------------------------------
     const addedByPath = new Map(files.map((f) => [f.path, addedLineNumbers(f.patch)]));
@@ -435,7 +481,7 @@ export async function runImpactPass(args: {
     const grepped = new Map<string, Awaited<ReturnType<HeadSource["grepWord"]>>>();
     let unchecked = 0;
     let truncatedNames = 0;
-    for (const contract of contracts) {
+    for (const contract of textual) {
       // A moved declaration is two contracts of one name: search it once.
       let result = grepped.get(contract.name);
       if (!result) {
@@ -451,7 +497,7 @@ export async function runImpactPass(args: {
     // Where each caller's import of the name leads is read from the head
     // text of every file that mentions it (and of the declaring files).
     const headContents = new Map<string, string | null>();
-    const toRead = [...new Set([...contracts.map((c) => c.filePath), ...hitPaths])];
+    const toRead = [...new Set([...textual.map((c) => c.filePath), ...hitPaths])];
     for (let i = 0; i < toRead.length; i += READ_CONCURRENCY) {
       const batch = toRead.slice(i, i + READ_CONCURRENCY);
       const texts = await Promise.all(batch.map((path) => head.read(path)));
@@ -462,7 +508,10 @@ export async function runImpactPass(args: {
     const usageIndex = new Map<string, { contract: ChangedContract; path: string; line: number }>();
     let nextId = 1;
     for (const contract of contracts) {
-      const reachable = untouchedReachableUsages(contract, hitsByContract.get(contract) ?? [], addedByPath, imports, headContents);
+      const reachable: Array<{ path: string; line: number }> =
+        analyses && symbolic.includes(contract as SymbolContract)
+          ? symbolUsages(analyses, contract as SymbolContract).sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line)
+          : untouchedReachableUsages(contract, hitsByContract.get(contract) ?? [], addedByPath, imports, headContents);
       if (reachable.length > MAX_USAGES_PER_CONTRACT) unchecked += reachable.length - MAX_USAGES_PER_CONTRACT;
 
       const usages: ImpactUsage[] = [];

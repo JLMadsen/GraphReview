@@ -194,7 +194,14 @@ export function renderRelatedSections(related: ReviewRelatedContext): string {
     if (lines.length > 0) lines.push("");
     lines.push("## Related code (context only — not part of the change)");
     for (const file of files) {
-      const relation = file.relation === "imported" ? "imported by the changed files" : "imports the changed files";
+      const relation =
+        file.relation === "imported"
+          ? "imported by the changed files"
+          : file.relation === "importer"
+            ? "imports the changed files"
+            : file.relation === "defines"
+              ? "declares names the changed code uses"
+              : "calls code this change touched";
       lines.push(`Related file: ${oneLine(file.path)} (component ${oneLine(file.componentName)}; ${relation})`);
       if (file.signatures.length > 0) {
         const body = file.signatures.map((sig) => clip(oneLine(sig), MAX_SIGNATURE_CHARS)).join("\n");
@@ -204,9 +211,34 @@ export function renderRelatedSections(related: ReviewRelatedContext): string {
       for (const snippet of file.snippets) {
         const body = snippet.code.replace(/\s+$/, "");
         const fence = "`".repeat(Math.max(3, longestBacktickRun(body) + 1));
-        lines.push(`Source of ${oneLine(snippet.name)} (referenced by the diff):\n${fence}\n${body}\n${fence}`);
+        const label = file.relation === "caller" ? `Caller ${oneLine(snippet.name)}` : `Source of ${oneLine(snippet.name)} (referenced by the diff)`;
+        lines.push(`${label}:\n${fence}\n${body}\n${fence}`);
       }
     }
+  }
+
+  const moves = related.moves ?? [];
+  if (moves.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("## Code this change moved — and changed on the way");
+    lines.push(
+      "The diffs above show these as a deletion in one file and a new file elsewhere. Here is the old copy against the new one: judge what changed in the move."
+    );
+    for (const move of moves) {
+      const body = move.diff.replace(/\s+$/, "");
+      const fence = "`".repeat(Math.max(3, longestBacktickRun(body) + 1));
+      lines.push(`Moved: ${oneLine(move.name)} from ${oneLine(move.from)} to ${oneLine(move.to)}`, `${fence}diff\n${body}\n${fence}`);
+    }
+  }
+
+  const endpoints = related.endpoints ?? [];
+  if (endpoints.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("## Endpoints this change affects (from static analysis of base and head)");
+    lines.push(
+      "API changes (added, removed, changed contract) can break clients outside this repo — a removed endpoint, a renamed path, a new required input, a removed response field: judge whether that looks intended. Lines marked \"same contract\" are not API changes: the endpoint's code changed behind an unchanged interface, so its behaviour may differ."
+    );
+    for (const line of endpoints) lines.push(`- ${oneLine(line)}`);
   }
 
   return lines.join("\n");

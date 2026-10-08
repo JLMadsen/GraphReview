@@ -54,6 +54,27 @@ const result = await analyzeRepo("/data/repos/<repoId>", { moduleDepth: 2 });
 The module is self-contained — a directory path in, an in-memory result out. It
 imports nothing from `lib/db`, `lib/github`, `lib/ai` or `lib/jobs`.
 
+## Names and commits (2026-10-08, DESIGN.md §6.10)
+
+- `source-tree.ts` — where files come from: `gitSourceTree(dir, sha)` (one
+  commit, from git objects; what the app uses) or `diskSourceTree(dir)`
+  (fixtures). Both skip binary and oversized files.
+- `syntax/` — `parse-pool.ts` parses in a worker thread
+  (`parse-worker.mjs`, plain JS loaded from disk) with an in-process
+  fallback; `extract.mjs` turns a syntax tree into symbol facts (TS/JS/TSX,
+  Python, Java).
+- `languages/kotlin/symbols.ts` — the same facts for Kotlin, lexically.
+- `symbols.ts` — resolves names across files: declarations, uses, calls,
+  dead imports, type-only edges (`AnalysisResult.symbols`).
+- `compare.ts` — a change's base vs head: `compareStructure` (new import
+  cycles, edge and dependency changes, orphans, dependents),
+  `buildCallGraph`, `parseChangedLines`.
+- `analyzeCommit(dir, sha, { cache })` is the app's entry point;
+  `analyzeRepo(dir)` analyses a folder. `options.cache` (a `ParseCache`)
+  reuses parses by blob id; bump `PARSE_VERSION` when what a parse produces
+  changes.
+- Smoke tests: `smoke-test-symbols.ts`, `smoke-test-compare.ts`.
+
 ## Layout
 
 | File | Role |

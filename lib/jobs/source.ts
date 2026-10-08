@@ -19,7 +19,7 @@ import type { SimpleGit, SimpleGitOptions } from "simple-git";
 import type { RepoProvider, RepoRecord } from "@/lib/db";
 import { gitCaBundle } from "@/lib/runtime/ca";
 import { getDataDir } from "@/lib/runtime/paths";
-import { assertSafeGitRef } from "./git-ref";
+import { assertSafeGitRef, isSafeGitRef } from "./git-ref";
 import { getStoredGitHubToken, gitHubCloneUrl, parseGitHubUrl } from "./github-access";
 import { getStoredGitLabToken, gitLabCloneUrl, parseGitLabUrl } from "./gitlab-access";
 
@@ -245,12 +245,41 @@ export async function validateLocalRepoPath(localPath: string): Promise<string> 
   if (!info?.isDirectory()) {
     throw new Error(`Local repo path "${localPath}" is not a directory.`);
   }
+  // Graphs are built from commits, so a folder without git history has nothing to analyse.
+  if (!existsSync(path.join(resolved, ".git"))) {
+    try {
+      await gitIn(resolved).raw(["rev-parse", "--git-dir"]);
+    } catch {
+      throw new Error(`"${localPath}" isn't a git repository. GraphReview analyses commits, so it needs a folder with git history (run "git init" and commit first).`);
+    }
+  }
   return resolved;
 }
 
 /** Current commit SHA of a checkout on disk. */
 export async function readHeadSha(dir: string): Promise<string> {
   return (await gitIn(dir).revparse(["HEAD"])).trim();
+}
+
+/**
+ * The commit a repo's graph is built from: the tip of its default branch —
+ * the local branch of that name, else the remote-tracking one, else (a
+ * repo without that branch) whatever is checked out. Which branch the
+ * checkout happens to be on, and uncommitted edits, never matter.
+ */
+export async function readDefaultTipSha(dir: string, defaultBranch: string): Promise<string> {
+  const git = gitIn(dir);
+  if (isSafeGitRef(defaultBranch)) {
+    for (const ref of [`refs/heads/${defaultBranch}`, `refs/remotes/origin/${defaultBranch}`]) {
+      try {
+        const sha = (await git.raw(["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`])).trim();
+        if (/^[0-9a-f]{40,64}$/.test(sha)) return sha;
+      } catch {
+        /* not there: next candidate */
+      }
+    }
+  }
+  return readHeadSha(dir);
 }
 
 /** Current branch name of a checkout on disk, or `undefined` when detached/unavailable. */
@@ -344,8 +373,9 @@ export async function prepareRepoSource(
       throw new Error(`Repo ${repo.id} is a local repo but has no localPath.`);
     }
     const dir = await validateLocalRepoPath(repo.localPath);
-    log(`using local source at ${dir}`);
-    return { dir, sha: await readHeadSha(dir), cloned: false };
+    const sha = await readDefaultTipSha(dir, repo.defaultBranch);
+    log(`using local source at ${dir}, ${repo.defaultBranch} at ${sha.slice(0, 12)}`);
+    return { dir, sha, cloned: false };
   }
 
   const remoteProvider = repo.provider as RemoteProvider;
@@ -455,7 +485,7 @@ export async function readCurrentSha(repo: RepoRecord): Promise<string | null> {
     if (repo.provider === "local") {
       if (!repo.localPath) return null;
       const dir = resolveLocalRepoPath(repo.localPath);
-      return await readHeadSha(dir);
+      return await readDefaultTipSha(dir, repo.defaultBranch);
     }
     const remoteProvider = repo.provider as RemoteProvider;
     const token = await resolveRemoteToken(remoteProvider);
@@ -466,13 +496,36 @@ export async function readCurrentSha(repo: RepoRecord): Promise<string | null> {
   }
 }
 
+/**
+ * A local checkout's default branch: what `origin/HEAD` points at, else a
+ * `main` or `master` branch, else the branch that is checked out.
+ */
+export async function readLocalDefaultBranch(dir: string): Promise<string | undefined> {
+  const git = gitIn(dir);
+  try {
+    const remoteHead = (await git.raw(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])).trim();
+    if (remoteHead.startsWith("origin/")) return remoteHead.slice("origin/".length);
+  } catch {
+    /* no remote HEAD */
+  }
+  for (const name of ["main", "master", "Master"]) {
+    try {
+      await git.raw(["rev-parse", "--verify", "--quiet", `refs/heads/${name}`]);
+      return name;
+    } catch {
+      /* next */
+    }
+  }
+  return readCurrentBranch(dir);
+}
+
 /** Best-effort default-branch detection when adding a repo, falling back to `"main"`. */
 export async function detectDefaultBranch(
   source: { provider: "local"; dir: string } | { provider: RemoteProvider; url: string }
 ): Promise<string> {
   try {
     if (source.provider === "local") {
-      return (await readCurrentBranch(source.dir)) ?? "main";
+      return (await readLocalDefaultBranch(source.dir)) ?? "main";
     }
     const token = await resolveRemoteToken(source.provider);
     const { defaultBranch } = await readRemoteHead(source.url, token, source.provider);

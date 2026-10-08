@@ -57,6 +57,7 @@ const KIND_MARKERS: ReadonlyArray<FileImport["kind"]> = ["import", "require", "c
 export const typescriptAnalyzer: LanguageAnalyzer = {
   id: LANGUAGE_ID,
   extensions: [...TS_EXTENSIONS, ...TSX_EXTENSIONS],
+  symbolFamily: "js",
 
   queryPath() {
     return path.join(dir(), "queries.scm");
