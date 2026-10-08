@@ -63,6 +63,11 @@ export interface PrMapCanvasProps {
   functionView?: FunctionView | null;
   selectedFunctionId?: string | null;
   onSelectFunction?: (id: string | null) => void;
+  /** The eyes on the function cards. */
+  onHideFunction?: (id: string) => void;
+  onHideCard?: (cardId: string) => void;
+  /** Puts everything hidden back on the map. */
+  onShowHidden?: () => void;
 }
 
 export function PrMapCanvas({
@@ -82,6 +87,9 @@ export function PrMapCanvas({
   functionView,
   selectedFunctionId = null,
   onSelectFunction,
+  onHideFunction,
+  onHideCard,
+  onShowHidden,
 }: PrMapCanvasProps) {
   const [showContext, setShowContext] = useState(true);
   const structure = targetGraph?.graph?.data;
@@ -165,7 +173,7 @@ export function PrMapCanvas({
           )}
           {map && mode === "functions" && functionView && (
             <span className="font-mono text-[11px]">
-              {functionView.functionById.size} function{functionView.functionById.size === 1 ? "" : "s"} · {functionView.edges.length} call
+              {functionView.shownCount} function{functionView.shownCount === 1 ? "" : "s"} · {functionView.edges.length} call
               {functionView.edges.length === 1 ? "" : "s"}
             </span>
           )}
@@ -174,6 +182,25 @@ export function PrMapCanvas({
           {targetGraph && <StructureNote targetGraph={targetGraph} />}
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-3">
+          {mode === "functions" && functionView && functionView.hiddenItems.length > 0 && onShowHidden && (
+            <button
+              type="button"
+              onClick={onShowHidden}
+              className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+              title={
+                `Hidden: ${functionView.hiddenItems.map((item) => (item.kind === "card" ? `${item.label} (card)` : item.label)).join(", ")}` +
+                (functionView.prunedCount > 0
+                  ? `\nAlso off the map: ${functionView.prunedCount} untouched function${functionView.prunedCount === 1 ? "" : "s"} that only called or were called by them.`
+                  : "") +
+                "\nClick to show everything again."
+              }
+            >
+              <EyeOff className="size-3.5" aria-hidden />
+              {functionView.hiddenItems.length} hidden
+              {functionView.prunedCount > 0 && <span className="font-normal">(+{functionView.prunedCount})</span>}
+              <span className="text-foreground">· Show all</span>
+            </button>
+          )}
           {mode === "files" && contextCount > 0 && (
             <button
               type="button"
@@ -216,6 +243,8 @@ export function PrMapCanvas({
           targetGraph={targetGraph}
           selectedFunctionId={selectedFunctionId}
           onSelectFunction={onSelectFunction ?? (() => undefined)}
+          onHideFunction={onHideFunction}
+          onHideCard={onHideCard}
         />
       ) : (
         <CardFlow
@@ -390,11 +419,15 @@ function FunctionCanvas({
   targetGraph,
   selectedFunctionId,
   onSelectFunction,
+  onHideFunction,
+  onHideCard,
 }: {
   view: FunctionView | null;
   targetGraph?: UseTargetGraphResult;
   selectedFunctionId: string | null;
   onSelectFunction: (id: string | null) => void;
+  onHideFunction?: (id: string) => void;
+  onHideCard?: (cardId: string) => void;
 }) {
   const cardIds = useMemo(() => view?.cards.map((c) => c.id) ?? [], [view]);
   const activeLinks = useMemo(() => (view ? activeLinksFor(view, selectedFunctionId) : undefined), [view, selectedFunctionId]);
@@ -426,11 +459,13 @@ function FunctionCanvas({
           selectedFunctionId={selectedFunctionId}
           relatedIds={related}
           onSelectFunction={(fn) => onSelectFunction(fn === selectedFunctionId ? null : fn)}
+          onHideFunction={onHideFunction}
+          onHideCard={onHideCard}
           dimmed={highlighted.size > 0 && !highlighted.has(card.id)}
         />
       );
     },
-    [view, selectedFunctionId, related, highlighted, onSelectFunction]
+    [view, selectedFunctionId, related, highlighted, onSelectFunction, onHideFunction, onHideCard]
   );
   const layoutKey = useMemo(
     () =>
@@ -476,7 +511,9 @@ function FunctionCanvas({
       )}
       {view && view.cards.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-muted-foreground">
-          No functions to show — the change touches no functions in TypeScript, JavaScript, Python, Java or Kotlin.
+          {view.hiddenItems.length > 0
+            ? "Everything is hidden — use Show all in the toolbar to bring it back."
+            : "No functions to show — the change touches no functions in TypeScript, JavaScript, Python, Java or Kotlin."}
         </div>
       )}
     </CardFlow>
@@ -490,7 +527,7 @@ const TONE_LEGEND: Array<{ key: string; label: string; style: React.CSSPropertie
 ];
 
 function FunctionLegend({ statuses, tones }: { statuses: ReadonlySet<string>; tones: ReadonlySet<string> }) {
-  const order = ["signature", "body", "added", "removed", "unchanged"] as const;
+  const order = ["signature", "body", "added", "moved", "removed", "unchanged"] as const;
   return (
     <span
       className="pointer-events-none absolute top-2 right-3 z-10 flex max-w-[70%] flex-wrap items-center justify-end gap-x-3 gap-y-1 rounded-md bg-background/70 px-2 py-1 text-[11px] text-muted-foreground backdrop-blur-sm"

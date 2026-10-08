@@ -28,6 +28,7 @@ export type {
   ReviewOptions,
   ReviewNeighbor,
   ReviewRelatedFile,
+  ReviewMovedCode,
   ReviewRelatedContext,
 } from "./review";
 

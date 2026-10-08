@@ -19,10 +19,10 @@
 // Files of other languages (Go, Rust) keep the text-based path in ./impact.ts
 // and ./review-context.ts. Worker-only (pulls in lib/analysis).
 
-import type { AnalysisResult, ChangedLines, DeadImport, SymbolDecl } from "@/lib/analysis";
+import { findMovedDeclarations, type AnalysisResult, type ChangedLines, type DeadImport, type SymbolDecl } from "@/lib/analysis";
 import type { ReviewRelatedFile } from "@/lib/ai";
 import type { RepoRecord } from "@/lib/db";
-import { mergeBaseOf } from "@/lib/preview/checkout";
+import { mergeBaseOf, readFileAt } from "@/lib/preview/checkout";
 import type { JobLogger } from "./analyze";
 import { analyzeRepoCommit } from "./commit-analysis";
 import type { HeadSource } from "./head-source";
@@ -38,6 +38,8 @@ export interface TargetAnalyses {
   baseSha: string;
   headSha: string;
   changed: Map<string, ChangedLines>;
+  /** The repository on disk (both commits are in it), for reading the base side. */
+  dir?: string;
 }
 
 function fallbackRefspecs(repo: RepoRecord, target: ReviewTarget): string[] {
@@ -69,7 +71,7 @@ export async function loadTargetAnalyses(
       changedLinesBetween(dir, baseSha, reviewed.headSha),
     ]);
     log(`names: analysed ${baseSha.slice(0, 7)} and ${reviewed.headSha.slice(0, 7)} (${base.cached + headAnalysis.cached} file(s) from the cache)`);
-    return { base, head: headAnalysis, baseSha, headSha: reviewed.headSha, changed };
+    return { base, head: headAnalysis, baseSha, headSha: reviewed.headSha, changed, dir };
   } catch (error) {
     log(`names: could not analyse the target (${(error as Error).message.split("\n")[0]}) — falling back to text search`);
     return null;
@@ -333,4 +335,120 @@ export async function symbolRelatedFiles(
     }
   }
   return [...byFile.values()].filter((f) => f.signatures.length > 0 || f.snippets.length > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Code the change moved — and changed on the way
+// ---------------------------------------------------------------------------
+
+/** Longest block (lines) shown or judged for a moved declaration. */
+const MAX_MOVED_LINES = 80;
+
+export interface MovedCode {
+  /** `name`, or `Class.method`. */
+  name: string;
+  kind: SymbolDecl["kind"];
+  from: string;
+  to: string;
+  /** What changed on the way: the signature, or only the body. */
+  changed: "signature" | "body";
+  /** The declaration's whole code at the base (old file) and at the head (new file). */
+  before: string;
+  after: string;
+  baseId: string;
+  headId: string;
+}
+
+function movedBlock(content: string | null, start: number, end: number): string | null {
+  if (content === null) return null;
+  const lines = content.split(/\r?\n/).slice(start - 1, end);
+  return lines.length > MAX_MOVED_LINES ? null : lines.join("\n");
+}
+
+/**
+ * Declarations the change moved to another file and changed on the way —
+ * the case a per-component review can't see, since the old and the new copy
+ * land in different components' diffs (one "deleted", one "added"). Moves
+ * whose code is the same are left out; so are blocks too long to show.
+ */
+export async function movedCodeChanges(
+  analyses: TargetAnalyses,
+  readHead: (path: string) => Promise<string | null>
+): Promise<MovedCode[]> {
+  if (!analyses.dir) return [];
+  const moves = findMovedDeclarations(analyses.base, analyses.head, new Set(analyses.changed.keys())).filter(
+    (m) => m.changed !== null && m.before.kind !== "class" && m.before.kind !== "interface" && m.before.kind !== "module"
+  );
+  const out: MovedCode[] = [];
+  for (const move of moves) {
+    const [baseText, headText] = await Promise.all([
+      readFileAt(analyses.dir, analyses.baseSha, move.before.file),
+      readHead(move.after.file),
+    ]);
+    const before = movedBlock(baseText, move.before.startLine, move.before.endLine);
+    const after = movedBlock(headText, move.after.startLine, move.after.endLine);
+    if (before === null || after === null) continue;
+    out.push({
+      name: move.after.qualified,
+      kind: move.after.kind,
+      from: move.before.file,
+      to: move.after.file,
+      changed: move.changed!,
+      before,
+      after,
+      baseId: move.before.id,
+      headId: move.after.id,
+    });
+  }
+  return out;
+}
+
+/**
+ * Impact contracts for moved code whose *body* changed (a changed signature
+ * is already a contract, see {@link symbolContracts}): the callers didn't
+ * change, so the model compares the whole old and new code against them —
+ * a moved function that now returns radians instead of kilometres.
+ */
+export function movedBodyContracts(moved: readonly MovedCode[]): SymbolContract[] {
+  return moved
+    .filter((m) => m.changed === "body")
+    .map((m) => ({
+      name: m.name,
+      filePath: m.to,
+      kind: CONTRACT_KINDS[m.kind] ?? "callable",
+      change: "changed" as const,
+      before: m.before,
+      after: m.after,
+      movedFrom: m.from,
+      headId: m.headId,
+      baseId: m.baseId,
+    }));
+}
+
+/** A small line diff (old → new) of a moved block, for the review prompt. */
+export function blockDiff(before: string, after: string): string {
+  const a = before.split("\n");
+  const b = after.split("\n");
+  // Longest common subsequence over lines; blocks are short (≤ MAX_MOVED_LINES).
+  const lcs: number[][] = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      lcs[i][j] = a[i].trim() === b[j].trim() ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const out: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i].trim() === b[j].trim()) {
+      out.push(` ${b[j]}`);
+      i++;
+      j++;
+    } else if (j < b.length && (i === a.length || lcs[i][j + 1] >= lcs[i + 1][j])) {
+      out.push(`+${b[j++]}`);
+    } else {
+      out.push(`-${a[i++]}`);
+    }
+  }
+  return out.join("\n");
 }

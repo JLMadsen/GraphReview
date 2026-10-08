@@ -58,6 +58,7 @@ export { dirOf, extensionOf, joinPosix, repoRelative, toPosix } from "./paths";
 export {
   buildCallGraph,
   compareStructure,
+  findMovedDeclarations,
   parseChangedLines,
   type CallGraph,
   type CallGraphEdge,

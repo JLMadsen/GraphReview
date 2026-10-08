@@ -30,7 +30,16 @@ import type { JobLogger } from "./analyze";
 import { matchFilesToComponents } from "./diff-components";
 import type { GrepHit, HeadSource } from "./head-source";
 import { addedLineNumbers, detectChangedContracts, type ChangedContract } from "./impact-contracts";
-import { newDeadImports, symbolContracts, symbolCoveredPaths, symbolUsages, type SymbolContract, type TargetAnalyses } from "./symbol-context";
+import {
+  movedBodyContracts,
+  newDeadImports,
+  symbolContracts,
+  symbolCoveredPaths,
+  symbolUsages,
+  type MovedCode,
+  type SymbolContract,
+  type TargetAnalyses,
+} from "./symbol-context";
 import type { LocalFilePatch } from "./local-git";
 import { extractDeclarations } from "./review-context";
 
@@ -400,6 +409,8 @@ export async function runImpactPass(args: {
   signal?: AbortSignal;
   /** The target analysed from names (./symbol-context.ts); `null`: everything by text. */
   analyses?: TargetAnalyses | null;
+  /** Code the change moved and changed on the way (./symbol-context.ts): a changed body is judged against the callers too. */
+  moved?: readonly MovedCode[];
 }): Promise<ImpactPassResult> {
   const { repoId, files, head, log } = args;
   const spent: ImpactPassResult = { findings: [], contracts: 0, calls: 0, promptTokens: 0, completionTokens: 0 };
@@ -436,7 +447,7 @@ export async function runImpactPass(args: {
     }
 
     // --- 1. What changed shape -------------------------------------------
-    const symbolic = analyses ? symbolContracts(analyses, covered) : [];
+    const symbolic = analyses ? [...symbolContracts(analyses, covered), ...movedBodyContracts(args.moved ?? [])] : [];
     // Added files are read too: a removed declaration may have moved into one.
     const candidates = files.filter((f) => f.patch && !covered.has(f.path));
     const sources = await Promise.all(

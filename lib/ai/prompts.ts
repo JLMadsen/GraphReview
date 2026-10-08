@@ -217,6 +217,20 @@ export function renderRelatedSections(related: ReviewRelatedContext): string {
     }
   }
 
+  const moves = related.moves ?? [];
+  if (moves.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("## Code this change moved — and changed on the way");
+    lines.push(
+      "The diffs above show these as a deletion in one file and a new file elsewhere. Here is the old copy against the new one: judge what changed in the move."
+    );
+    for (const move of moves) {
+      const body = move.diff.replace(/\s+$/, "");
+      const fence = "`".repeat(Math.max(3, longestBacktickRun(body) + 1));
+      lines.push(`Moved: ${oneLine(move.name)} from ${oneLine(move.from)} to ${oneLine(move.to)}`, `${fence}diff\n${body}\n${fence}`);
+    }
+  }
+
   return lines.join("\n");
 }
 

@@ -60,7 +60,7 @@ import {
 import { resolveGitHubAccess } from "./github-access";
 import { openHeadSource } from "./head-source";
 import { runImpactPass } from "./impact";
-import { loadTargetAnalyses, symbolRelatedFiles } from "./symbol-context";
+import { blockDiff, loadTargetAnalyses, movedCodeChanges, symbolRelatedFiles } from "./symbol-context";
 import { gatherRelatedContext } from "./review-context";
 import {
   assemblePrMap,
@@ -681,6 +681,10 @@ export async function runReviewJob(
   const analyses = await loadTargetAnalyses(repo, target, resolved.reviewed, head, log);
   await stopIfCancelled();
   const ownerNames = analyses ? await loadOwnerNames(repoId) : null;
+  // Code moved to another file and changed on the way: each side's review sees the
+  // old copy against the new one, and the impact pass judges the callers against it.
+  const moved = analyses && head ? await movedCodeChanges(analyses, (path) => head.read(path)) : [];
+  if (moved.length > 0) log(`moved and changed on the way: ${moved.map((m) => `${m.name} (${m.from} → ${m.to}, ${m.changed})`).join(", ")}`);
 
   // --- Map the diff onto the component graph -----------------------------
   const filesByPath = new Map(resolved.files.map((file) => [file.path, file]));
@@ -766,6 +770,10 @@ export async function runReviewJob(
         symbolFiles,
         log: (message) => log(`${context.name}: ${message}`),
       });
+      const componentMoves = moved
+        .filter((m) => paths.includes(m.from) || paths.includes(m.to))
+        .map((m) => ({ name: m.name, from: m.from, to: m.to, diff: blockDiff(m.before, m.after) }));
+      const relatedWithMoves = componentMoves.length > 0 ? { ...(related ?? {}), moves: componentMoves } : related;
       signal?.throwIfAborted();
       sent = true;
       const result = await reviewComponentChange(
@@ -780,7 +788,7 @@ export async function runReviewJob(
             dependents: context.dependents,
           },
           files,
-          related,
+          related: relatedWithMoves,
         },
         { tokenBudget: effortSettings.tokenBudget, signal }
       );
@@ -963,6 +971,7 @@ export async function runReviewJob(
     log,
     signal,
     analyses,
+    moved,
   });
   running.delete("__impact");
   progress.calls += impact.calls;

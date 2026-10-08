@@ -48,6 +48,8 @@ export interface DeclFact {
    * interface's whole text, a constant's declaration. Whitespace collapsed.
    */
   signature: string;
+  /** Fingerprint of the declaration's whole text (whitespace collapsed): equal text, equal hash. */
+  textHash?: string;
 }
 
 /** One name an import statement binds. `imported` is `default`, `*` (the whole module) or a name. */

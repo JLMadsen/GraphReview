@@ -10,8 +10,12 @@
 //   get_component        a component: description, files, what it depends on, what depends on it
 //   get_findings         the review's findings, optionally for one component
 //
+//   add_finding          records a finding in the change's review — only when
+//                        the reviewer asks for it ("add this to the findings")
+//
 // Nothing here writes to the repo, runs code, or reaches outside the repo's
-// own host (GitHub/GitLab/local checkout).
+// own host (GitHub/GitLab/local checkout). The one write is add_finding, into
+// GraphReview's own review (category `chat`, which no review pass replaces).
 //
 // With no target, the same turn runs the repo-wide chat (the Graph tab with
 // no diff selected): one thread per repo, a repo summary instead of a change
@@ -20,7 +24,9 @@
 //
 // Kept out of lib/jobs' barrel: it pulls in lib/ai.
 
+import { randomUUID } from "node:crypto";
 import { runPrChat, type PrChatStep, type PrChatTool, type PrChatToolOutput } from "@/lib/ai";
+import { emitFindingsChanged } from "@/lib/mcp/events";
 import {
   addChatMessage,
   getFileOwnerMap,
@@ -28,6 +34,7 @@ import {
   listComponentsByRepoId,
   listFindingsByTargetKey,
   getComponentOverview,
+  upsertFinding,
 } from "@/lib/db";
 import type { ChatMessageRecord, ComponentRecord, FindingWithComponent, RepoRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
@@ -68,6 +75,12 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
     args: '{"component":"<optional component name>"}',
     description: "the AI review's findings for this change, optionally for one component",
   },
+  {
+    name: "add_finding",
+    args: '{"path":"<file>","line":12,"assessment":"defect","summary":"<one sentence>","rationale":"<why, with the evidence>"}',
+    description:
+      "WRITES a finding into this change's review (assessment defect, concern, unknown or ok) — only when the reviewer asks you to add, record or flag something",
+  },
 ];
 
 const REPO_TOOL_NAMES = new Set(["read_file", "search_code", "get_component"]);
@@ -96,6 +109,24 @@ interface ToolContext {
   components: ComponentRecord[];
   ownerByFile: Map<string, string>;
   findings: FindingWithComponent[];
+  /** For add_finding: where findings go, and the model to credit. */
+  targetKey: string;
+  prId?: string;
+  model: string;
+}
+
+const ASSESSMENTS = new Set(["defect", "concern", "unknown", "ok"]);
+
+/** A path's owning component; a file the graph doesn't know yet takes its folder's. */
+function ownerOf(tc: ToolContext, path: string): string {
+  const own = tc.ownerByFile.get(path);
+  if (own) return own;
+  let dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+  while (dir) {
+    for (const [file, owner] of tc.ownerByFile) if (file.startsWith(`${dir}/`)) return owner;
+    dir = dir.includes("/") ? dir.slice(0, dir.lastIndexOf("/")) : "";
+  }
+  return "";
 }
 
 function str(value: unknown): string {
@@ -161,7 +192,7 @@ function fileCounts(tc: ToolContext): Map<string, number> {
 
 async function runTool(tc: ToolContext, name: string, args: Record<string, unknown>): Promise<PrChatToolOutput> {
   const ctx = tc.ctx;
-  if (!ctx && (name === "list_changed_files" || name === "get_diff" || name === "get_findings")) return NO_CHANGE;
+  if (!ctx && (name === "list_changed_files" || name === "get_diff" || name === "get_findings" || name === "add_finding")) return NO_CHANGE;
   switch (name) {
     case "list_components": {
       const counts = fileCounts(tc);
@@ -295,6 +326,50 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
       };
     }
 
+    case "add_finding": {
+      const summary = arg(args, "summary", "title", "finding");
+      if (!summary) return missing(name);
+      const rationale = arg(args, "rationale", "why", "reason", "explanation") || summary;
+      const rawAssessment = arg(args, "assessment", "severity", "verdict").toLowerCase();
+      const assessment = (ASSESSMENTS.has(rawAssessment) ? rawAssessment : "concern") as "defect" | "concern" | "unknown" | "ok";
+      const path = arg(args, ...PATH_KEYS).replace(/^\/+/, "").replace(/:\d+(-\d+)?$/, "") || undefined;
+      const line = num(args.line) ?? num(args.start) ?? num(args.lineStart);
+      const existing = tc.findings.find(
+        (f) => f.category === "chat" && f.summary.trim().toLowerCase() === summary.toLowerCase() && (f.filePath ?? "") === (path ?? "")
+      );
+      if (existing) {
+        return { text: `That finding is already in the review (id ${existing.id}).`, summary: `finding already recorded: ${summary}` };
+      }
+      const componentId = path ? ownerOf(tc, path) : "";
+      const record = await upsertFinding({
+        id: randomUUID(),
+        repoId: tc.repo.id,
+        targetKey: tc.targetKey,
+        ...(tc.prId ? { prId: tc.prId } : {}),
+        componentId,
+        category: "chat",
+        ...(path ? { filePath: path } : {}),
+        ...(line ? { lineRange: String(line) } : {}),
+        summary,
+        assessment,
+        confidence: 0.9,
+        rationale,
+        model: tc.model,
+        ...(ctx!.reviewed.baseSha ? { reviewedBaseSha: ctx!.reviewed.baseSha } : {}),
+        ...(ctx!.reviewed.headSha ? { reviewedHeadSha: ctx!.reviewed.headSha } : {}),
+        reviewedAt: new Date().toISOString(),
+      });
+      tc.findings.push({ ...record, componentName: componentName(tc, componentId) });
+      // An open review dock refetches (the same signal as an MCP reply).
+      emitFindingsChanged(tc.repo.id, tc.targetKey, record.id);
+      return {
+        text: `Added to the review as a ${assessment} (id ${record.id}). It shows in the findings list, marked "From chat".`,
+        summary: `added a ${assessment} finding: ${summary}`,
+        ...(path ? { files: [path] } : {}),
+        ...(componentId ? { componentIds: [componentId] } : {}),
+      };
+    }
+
     default:
       return { text: `Unknown tool "${name}".`, summary: `unknown tool ${name}` };
   }
@@ -386,7 +461,16 @@ export async function runChatTurn(args: {
     listChatMessages(repo.id, targetKey),
   ]);
   const headSha = ctx ? ctx.reviewed.headSha : repo.lastAnalyzedSha;
-  const tc: ToolContext = { repo, ctx, components, ownerByFile, findings };
+  const tc: ToolContext = {
+    repo,
+    ctx,
+    components,
+    ownerByFile,
+    findings,
+    targetKey,
+    ...(target?.kind === "pr" ? { prId: `${repo.id}:pr:${target.prNumber}` } : {}),
+    model: config.model,
+  };
 
   const userMessage = await addChatMessage({
     repoId: repo.id,

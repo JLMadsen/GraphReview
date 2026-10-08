@@ -168,7 +168,8 @@ export function compareStructure(
 // Call graph
 // ---------------------------------------------------------------------------
 
-export type FunctionStatus = "added" | "removed" | "signature" | "body" | "unchanged";
+/** `moved`: the same code now lives in another file (a move whose code changed is `signature` or `body`, with `movedFrom`). */
+export type FunctionStatus = "added" | "removed" | "signature" | "body" | "moved" | "unchanged";
 
 export interface CallGraphFunction {
   /** Declaration id (`<file>#<qualified>`); a removed one's is from the base. */
@@ -183,6 +184,8 @@ export interface CallGraphFunction {
   endLine: number;
   signatureBefore?: string;
   signatureAfter?: string;
+  /** The file it was moved from, when the change moved it (`id` is its new place). */
+  movedFrom?: string;
   /** Calls from it naming a repo function that static analysis couldn't tie to one (instance calls). */
   unresolvedCalls: number;
 }
@@ -208,6 +211,42 @@ export interface CallGraph {
 const CALLABLE = new Set(["function", "method", "class"]);
 const MAX_FUNCTIONS = 400;
 
+/**
+ * Declarations the change moved: gone from one changed file and, under the
+ * same name and kind, new in exactly one other. `changed` says whether the
+ * code changed on the way (`signature` before `body`), from the
+ * declarations' signatures and text fingerprints.
+ */
+export function findMovedDeclarations(
+  base: Pick<AnalysisResult, "symbols">,
+  head: Pick<AnalysisResult, "symbols">,
+  changedFiles: ReadonlySet<string>,
+): Array<{ before: SymbolDecl; after: SymbolDecl; changed: "signature" | "body" | null }> {
+  const baseIds = new Set(base.symbols.decls.map((d) => d.id));
+  const headIds = new Set(head.symbols.decls.map((d) => d.id));
+  const added = new Map<string, SymbolDecl[]>();
+  for (const decl of head.symbols.decls) {
+    if (baseIds.has(decl.id) || !changedFiles.has(decl.file)) continue;
+    const key = `${decl.kind}\u0000${decl.qualified}`;
+    (added.get(key) ?? added.set(key, []).get(key)!).push(decl);
+  }
+  const moves: Array<{ before: SymbolDecl; after: SymbolDecl; changed: "signature" | "body" | null }> = [];
+  for (const before of base.symbols.decls) {
+    if (headIds.has(before.id) || !changedFiles.has(before.file)) continue;
+    const candidates = (added.get(`${before.kind}\u0000${before.qualified}`) ?? []).filter((d) => d.file !== before.file);
+    if (candidates.length !== 1) continue;
+    const after = candidates[0];
+    const changed =
+      before.signature !== after.signature
+        ? "signature"
+        : before.textHash && after.textHash && before.textHash !== after.textHash
+          ? "body"
+          : null;
+    moves.push({ before, after, changed });
+  }
+  return moves;
+}
+
 function overlaps(start: number, end: number, lines: Set<number> | undefined): boolean {
   if (!lines || lines.size === 0) return false;
   for (const line of lines) if (line >= start && line <= end) return true;
@@ -222,13 +261,20 @@ export function buildCallGraph(
   const baseDecls = new Map(base.symbols.decls.map((d) => [d.id, d]));
   const headDecls = new Map(head.symbols.decls.map((d) => [d.id, d]));
   const statusOf = new Map<string, FunctionStatus>();
+  // Moves: the old id is the new id's past — calls to it at the base are calls to the new one.
+  const moves = findMovedDeclarations(base, head, new Set(changed.keys())).filter((m) => CALLABLE.has(m.after.kind));
+  const movedTo = new Map(moves.map((m) => [m.before.id, m.after.id]));
+  const moveOf = new Map(moves.map((m) => [m.after.id, m]));
+  const current = (id: string) => movedTo.get(id) ?? id;
 
   // Declarations in changed files, on either side.
   for (const decl of head.symbols.decls) {
     if (!CALLABLE.has(decl.kind) || !changed.has(decl.file)) continue;
     const lines = changed.get(decl.file)!;
     const old = baseDecls.get(decl.id);
-    if (!old) statusOf.set(decl.id, "added");
+    const move = moveOf.get(decl.id);
+    if (move) statusOf.set(decl.id, move.changed ?? "moved");
+    else if (!old) statusOf.set(decl.id, "added");
     else if (old.signature !== decl.signature) statusOf.set(decl.id, "signature");
     else if (overlaps(decl.startLine, decl.endLine, lines.added) || overlaps(old.startLine, old.endLine, lines.removed)) {
       // A class only counts when its own head changed; its methods carry the body changes.
@@ -236,14 +282,14 @@ export function buildCallGraph(
     }
   }
   for (const decl of base.symbols.decls) {
-    if (!CALLABLE.has(decl.kind) || !changed.has(decl.file) || headDecls.has(decl.id)) continue;
+    if (!CALLABLE.has(decl.kind) || !changed.has(decl.file) || headDecls.has(decl.id) || movedTo.has(decl.id)) continue;
     statusOf.set(decl.id, "removed");
   }
   for (const [id, status] of [...statusOf]) if (status === "unchanged") statusOf.delete(id);
 
   const changedIds = new Set(statusOf.keys());
   const callKey = (c: { from: string; to: string }) => `${c.from}\u0000${c.to}`;
-  const baseCalls = new Set(base.symbols.calls.map(callKey));
+  const baseCalls = new Set(base.symbols.calls.map((c) => callKey({ from: current(c.from), to: current(c.to) })));
   const headCalls = new Set(head.symbols.calls.map(callKey));
 
   const edges: CallGraphEdge[] = [];
@@ -261,7 +307,8 @@ export function buildCallGraph(
     included.add(call.from);
     included.add(call.to);
   }
-  for (const call of base.symbols.calls) {
+  for (const baseCall of base.symbols.calls) {
+    const call = { ...baseCall, from: current(baseCall.from), to: current(baseCall.to) };
     if (!changedIds.has(call.from) && !changedIds.has(call.to)) continue;
     const k = callKey(call);
     if (headCalls.has(k) || seenEdge.has(k)) continue;
@@ -283,7 +330,8 @@ export function buildCallGraph(
       functions.push({ id, file, name: "(top level)", qualified: "(top level)", kind: "module", status: "unchanged", startLine: 1, endLine: 1, unresolvedCalls: unresolved[id] ?? 0 });
       continue;
     }
-    const old = baseDecls.get(id);
+    const move = moveOf.get(id);
+    const old = move?.before ?? baseDecls.get(id);
     functions.push({
       id,
       file: decl.file,
@@ -293,6 +341,7 @@ export function buildCallGraph(
       status,
       startLine: decl.startLine,
       endLine: decl.endLine,
+      ...(move ? { movedFrom: move.before.file } : {}),
       ...(status === "signature" || status === "removed" ? { signatureBefore: old?.signature } : {}),
       ...(status !== "removed" ? { signatureAfter: decl.signature } : {}),
       unresolvedCalls: status === "removed" ? (base.symbols.unresolved[id] ?? 0) : (unresolved[id] ?? 0),

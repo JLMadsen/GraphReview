@@ -6,7 +6,7 @@
 // call the change didn't touch — and what it calls. Every name selects that
 // function; every file:line opens the file there.
 
-import { X } from "lucide-react";
+import { EyeOff, X } from "lucide-react";
 import { cn } from "cn";
 import { FUNCTION_STATUS } from "./FunctionCard";
 import type { FunctionView } from "./call-graph-view";
@@ -16,6 +16,8 @@ export interface FunctionPanelProps {
   fn: CallGraphFunction;
   view: FunctionView;
   onSelectFunction: (id: string) => void;
+  /** Takes it (and callers only there for it) off the map. */
+  onHide?: (id: string) => void;
   onOpenFile: (path: string, line?: number) => void;
   onClose: () => void;
 }
@@ -92,7 +94,7 @@ function CallList({
   );
 }
 
-export function FunctionPanel({ fn, view, onSelectFunction, onOpenFile, onClose }: FunctionPanelProps) {
+export function FunctionPanel({ fn, view, onSelectFunction, onHide, onOpenFile, onClose }: FunctionPanelProps) {
   const look = FUNCTION_STATUS[fn.status];
   const callers = view.edges.filter((e) => e.to === fn.id);
   const callees = view.edges.filter((e) => e.from === fn.id);
@@ -104,6 +106,16 @@ export function FunctionPanel({ fn, view, onSelectFunction, onOpenFile, onClose 
         <p className="flex-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
           Function <span className="font-normal normal-case">· {look.label}</span>
         </p>
+        {onHide && (
+          <button
+            type="button"
+            onClick={() => onHide(fn.id)}
+            className="flex items-center gap-1 rounded-sm px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            title="Take it off the map, with the untouched callers that are only there because of it"
+          >
+            <EyeOff className="size-3" aria-hidden /> Hide
+          </button>
+        )}
         <button
           type="button"
           onClick={onClose}
@@ -122,6 +134,16 @@ export function FunctionPanel({ fn, view, onSelectFunction, onOpenFile, onClose 
       >
         {fn.file}:{fn.startLine}
       </button>
+      {fn.movedFrom && (
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Moved from <span className="font-mono">{fn.movedFrom}</span>
+          {fn.status === "moved"
+            ? " — the code is the same."
+            : fn.status === "body"
+              ? " — and its body changed on the way."
+              : " — and its signature changed on the way."}
+        </p>
+      )}
 
       {(fn.signatureBefore || fn.signatureAfter) && (
         <div className="mt-3 space-y-1">

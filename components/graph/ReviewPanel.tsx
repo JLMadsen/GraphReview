@@ -324,7 +324,13 @@ function FindingRow({
   const fixing = !resolved && Boolean(finding.responses?.some((reply) => reply.kind === "fixing"));
   const settled = resolved || finding.assessment === "ok";
   const impact = isImpactFinding(finding);
-  const tag = impact ? null : finding.category === "structure" ? "Structure" : findingTag(finding);
+  const tag = impact
+    ? null
+    : finding.category === "structure"
+      ? "Structure"
+      : finding.category === "chat"
+        ? "From chat"
+        : findingTag(finding);
   const visual = ASSESSMENT_VISUALS[finding.assessment];
   const rowRef = useRowKeyboard(keyboard, {
     toggle: () => setOpen((v) => !v),

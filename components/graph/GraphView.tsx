@@ -36,7 +36,7 @@ import { cn } from "cn";
 import { FileDiffModal } from "./FileDiffModal";
 import { PrMapCanvas, type PrMapMode } from "./PrMapCanvas";
 import { FunctionPanel } from "./FunctionPanel";
-import { buildFunctionView } from "./call-graph-view";
+import { buildFunctionView, NOTHING_HIDDEN, type HiddenFunctions } from "./call-graph-view";
 import { useTargetGraph } from "./useTargetGraph";
 import { PrAreaList, PrAreaPanel } from "./PrAreaPanel";
 import { buildPrAreas } from "./pr-areas";
@@ -80,6 +80,8 @@ const VIEW_STORAGE_KEY = "graphreview.graph.view";
 const APP_LEVEL_STORAGE_KEY = "graphreview.appmap.level";
 const REVIEW_EXPANDED_STORAGE_KEY = "graphreview.review.expanded";
 const PR_MODE_STORAGE_KEY = "graphreview.prmap.mode";
+/** Functions and cards hidden on the Functions view, per repo and target. */
+const hiddenFunctionsKey = (repoId: string, target: ReviewTargetDTO) => `graphreview.prmap.hidden.${repoId}.${reviewTargetLabel(target)}`;
 
 /** Trimmed shape of `GET /api/repos/[repoId]` — see this repo's task brief. Only the fields this view needs. */
 interface RepoContext {
@@ -300,8 +302,56 @@ export function GraphView({
   const prMap = usePrMap(repoId, prRequest, review.state);
   /** The PR map's cards as areas, with their findings — one object for the canvas, the dock and the inspector. */
   const prAreas = useMemo(() => buildPrAreas(prMap.map, review.findings), [prMap.map, review.findings]);
-  const functionView = useMemo(() => buildFunctionView(prMap.map, targetGraph.graph?.data), [prMap.map, targetGraph.graph]);
-  useEffect(() => setSelectedFunction(null), [prRequest]);
+  /** What the reviewer took off the Functions view (the eyes on rows and cards) — remembered per target in this browser. */
+  const [hiddenFunctions, setHiddenFunctions] = useState<HiddenFunctions>(NOTHING_HIDDEN);
+  useEffect(() => {
+    setSelectedFunction(null);
+    let restored = NOTHING_HIDDEN;
+    if (reviewTarget) {
+      try {
+        const raw = window.localStorage.getItem(hiddenFunctionsKey(repoId, reviewTarget));
+        const parsed = raw ? (JSON.parse(raw) as { functions?: string[]; cards?: string[] }) : null;
+        if (parsed) restored = { functions: new Set(parsed.functions ?? []), cards: new Set(parsed.cards ?? []) };
+      } catch {
+        /* storage unavailable or unreadable — start with nothing hidden */
+      }
+    }
+    setHiddenFunctions(restored);
+  }, [repoId, reviewTarget]);
+  const updateHidden = useCallback(
+    (next: HiddenFunctions) => {
+      setHiddenFunctions(next);
+      if (!reviewTarget) return;
+      try {
+        const key = hiddenFunctionsKey(repoId, reviewTarget);
+        if (next.functions.size === 0 && next.cards.size === 0) window.localStorage.removeItem(key);
+        else window.localStorage.setItem(key, JSON.stringify({ functions: [...next.functions], cards: [...next.cards] }));
+      } catch {
+        /* ignored */
+      }
+    },
+    [repoId, reviewTarget]
+  );
+  const hideFunction = useCallback(
+    (id: string) => {
+      updateHidden({ functions: new Set([...hiddenFunctions.functions, id]), cards: hiddenFunctions.cards });
+      setSelectedFunction((current) => (current === id ? null : current));
+    },
+    [hiddenFunctions, updateHidden]
+  );
+  const hideFunctionCard = useCallback(
+    (cardId: string) => updateHidden({ functions: hiddenFunctions.functions, cards: new Set([...hiddenFunctions.cards, cardId]) }),
+    [hiddenFunctions, updateHidden]
+  );
+  const showHiddenFunctions = useCallback(() => updateHidden(NOTHING_HIDDEN), [updateHidden]);
+  const functionView = useMemo(
+    () => buildFunctionView(prMap.map, targetGraph.graph?.data, hiddenFunctions),
+    [prMap.map, targetGraph.graph, hiddenFunctions]
+  );
+  // A selected function the reviewer just hid (or that a hidden card took with it) is deselected.
+  useEffect(() => {
+    if (selectedFunction && functionView && !functionView.cardOf.has(selectedFunction)) setSelectedFunction(null);
+  }, [selectedFunction, functionView]);
   /** The area (PR map card) the PR view is focused on, and optionally one of its components — they scope the dock. */
   const [prArea, setPrArea] = useState<string | null>(null);
   const [prAreaComponent, setPrAreaComponent] = useState<string | null>(null);
@@ -522,6 +572,9 @@ export function GraphView({
             functionView={functionView}
             selectedFunctionId={selectedFunction}
             onSelectFunction={setSelectedFunction}
+            onHideFunction={hideFunction}
+            onHideCard={hideFunctionCard}
+            onShowHidden={showHiddenFunctions}
           />
           </div>
         )}
@@ -606,6 +659,7 @@ export function GraphView({
                   fn={selectedFn}
                   view={functionView}
                   onSelectFunction={setSelectedFunction}
+                  onHide={hideFunction}
                   onOpenFile={openFileAtLine}
                   onClose={() => setSelectedFunction(null)}
                 />

@@ -138,7 +138,8 @@ export function ChecklistPanel({ repoId, checklist }: ChecklistPanelProps) {
               const visual = STATUS_VISUALS[item.status];
               const Icon = item.kind === "ai" && item.status === "pending" && runningAi ? LoaderCircle : visual.icon;
               return (
-                // Titles say what each check is; the result's detail ("1758 lines changed") is on hover.
+                // Titles say what each check is; the result's detail ("1758 lines changed") is on hover —
+                // except a failing AI check, whose rationale is the finding itself and shows under it.
                 <li key={item.itemId} className="flex gap-1.5" title={item.detail ? `${visual.label}: ${item.detail}` : visual.label}>
                   <Icon
                     className={cn("mt-px size-3 shrink-0", visual.className, Icon === LoaderCircle && "animate-spin")}
@@ -149,6 +150,9 @@ export function ChecklistPanel({ repoId, checklist }: ChecklistPanelProps) {
                       {item.label}
                       {item.kind === "ai" && <Spark className="ml-1" title="Judged by the model" />}
                     </p>
+                    {item.kind === "ai" && item.status === "fail" && item.detail && (
+                      <p className="mt-0.5 text-muted-foreground">{item.detail}</p>
+                    )}
                     {item.links && item.links.length > 0 && (
                       <p className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5">
                         {item.links.map((link) => (

@@ -74,9 +74,20 @@ export interface ReviewRelatedFile {
 }
 
 /** Extra context beyond the diff, gathered according to the review's effort level. */
+/** Code the change moved to another file and changed on the way, as a line diff of the whole declaration. */
+export interface ReviewMovedCode {
+  name: string;
+  from: string;
+  to: string;
+  /** ` ` / `-` / `+` lines: the old copy against the new one. */
+  diff: string;
+}
+
 export interface ReviewRelatedContext {
   neighbors?: ReviewNeighbor[];
   files?: ReviewRelatedFile[];
+  /** Moved and changed code touching this component (DESIGN.md §6.10). */
+  moves?: ReviewMovedCode[];
 }
 
 export interface ReviewInput {

@@ -44,7 +44,7 @@ Typical flow:
 3. get_component_diff / get_file_diff to read the code a finding is about.
 4. respond_to_finding for each finding: "answered" when the concern does not hold (explain why — this resolves it), "fixing" when it is correct and you are fixing it, "comment" for anything else.
 
-Findings come in categories: "change" (the AI review of one component's diff), "impact" (callers the change left behind — an import of a name that no longer exists is certain, the rest are model-judged), "intent" (does the PR deliver what it says) and "structure" (an import cycle the change creates, found by static analysis — no model; fix it by breaking the loop, or answer it if the cycle is deliberate).
+Findings come in categories: "change" (the AI review of one component's diff), "impact" (callers the change left behind — an import of a name that no longer exists is certain, the rest are model-judged), "intent" (does the PR deliver what it says) "structure" (an import cycle the change creates, found by static analysis — no model; fix it by breaking the loop, or answer it if the cycle is deliberate) and "chat" (added by the reviewer through GraphReview's chat).
 
 Reviews are advisory and can be wrong — check the code before agreeing with a finding.`;
 

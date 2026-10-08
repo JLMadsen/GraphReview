@@ -163,9 +163,10 @@ export type FindingKind = "fix" | "feature" | "refactor" | "test" | "docs" | "co
 /**
  * `change` (per component), `impact` (callers the change left behind),
  * `intent` (does the PR deliver what it says), `structure` (an import cycle
- * the change creates — static analysis, no model).
+ * the change creates — static analysis, no model), `chat` (recorded by the
+ * PR chat when the reviewer asked it to; no review pass replaces it).
  */
-export type FindingCategory = "change" | "impact" | "intent" | "structure";
+export type FindingCategory = "change" | "impact" | "intent" | "structure" | "chat";
 
 export interface FindingRecord {
   id: string;

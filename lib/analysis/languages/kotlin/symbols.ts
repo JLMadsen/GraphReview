@@ -8,6 +8,7 @@
  */
 import type { CallFact, DeclFact, DeclKind, ImportFact, SymbolFacts } from "../../ir";
 import { tokenize, type Token } from "../jvm/tokenize";
+import { hashText } from "../../syntax/extract.mjs";
 
 const MODIFIERS = new Set([
   "public", "private", "protected", "internal", "open", "abstract", "final", "override", "sealed", "data",
@@ -232,6 +233,7 @@ export function kotlinSymbols(source: string): SymbolFacts {
           startLine: line(tokens[start]),
           endLine: line(tokens[endIndex]),
           signature: collapse(source.slice(tokens[start].at, sigEndAt)),
+          textHash: hashText(source.slice(tokens[start].at, tokens[endIndex].at + tokens[endIndex].v.length)),
         },
         startAt: tokens[start].at,
         endAt: tokens[endIndex].at,
