@@ -282,25 +282,34 @@ const DOWNLOADS_VOLUME = "graphreview-preview-downloads";
 
 /**
  * Settings an install container inherits from GraphReview's environment, when set there:
- * package registries (npm, yarn, corepack, pip) and proxies. Empty values are
- * dropped — an empty `NPM_CONFIG_REGISTRY` would break npm, not reset it — and
- * so are settings that name a path on this machine (cache, prefix, …).
+ * package registries (npm, yarn, corepack, pip), corepack's other settings
+ * (`COREPACK_INTEGRITY_KEYS`, …) and proxies. Empty values are dropped — an
+ * empty `NPM_CONFIG_REGISTRY` would break npm, not reset it — and so are
+ * settings that name a path on this machine (cache, prefix, …).
  *
  * Upper-case `NPM_CONFIG_*` only: npm itself injects dozens of lower-case
  * `npm_config_*` variables (cache, prefix, user config — host paths) into
  * every process it starts, GraphReview included, and those must not leak in.
  */
-const FORWARDED_ENV = /^(NPM_CONFIG_\w+|YARN_NPM_\w+|COREPACK_NPM_\w+|PIP_\w+|HTTPS?_PROXY|https?_proxy|NO_PROXY|no_proxy)$/;
-const HOST_PATH_ENV = /^(NPM_CONFIG_(CACHE|PREFIX|USERCONFIG|GLOBALCONFIG|STORE_DIR|CAFILE|TMP)|PIP_(CACHE_DIR|CONFIG_FILE|CERT|TARGET|SRC))$/;
+const FORWARDED_ENV = /^(NPM_CONFIG_\w+|YARN_NPM_\w+|COREPACK_\w+|PIP_\w+|HTTPS?_PROXY|https?_proxy|NO_PROXY|no_proxy)$/;
+const HOST_PATH_ENV = /^(NPM_CONFIG_(CACHE|PREFIX|USERCONFIG|GLOBALCONFIG|STORE_DIR|CAFILE|TMP)|PIP_(CACHE_DIR|CONFIG_FILE|CERT|TARGET|SRC)|COREPACK_HOME)$/;
 
 function forwardedEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (FORWARDED_ENV.test(key) && !HOST_PATH_ENV.test(key) && value?.trim()) env[key] = value.trim();
+    // Not `value?.trim()`: `COREPACK_INTEGRITY_KEYS=""` is a documented "skip the check".
+    if (FORWARDED_ENV.test(key) && !HOST_PATH_ENV.test(key) && value !== undefined) {
+      if (value.trim() || key === "COREPACK_INTEGRITY_KEYS") env[key] = value.trim();
+    }
   }
   // corepack fetches pnpm/yarn themselves from a registry of its own setting.
   const registry = env.NPM_CONFIG_REGISTRY;
   if (registry && !env.COREPACK_NPM_REGISTRY) env.COREPACK_NPM_REGISTRY = registry;
+  // corepack checks the registry's package signatures against npm's own keys,
+  // which a mirror that re-signs its metadata can never pass ("No compatible
+  // signature found in package metadata"). Off for a mirror unless set explicitly.
+  const mirror = env.COREPACK_NPM_REGISTRY && !/^https?:\/\/registry\.npmjs\.org\/?$/i.test(env.COREPACK_NPM_REGISTRY);
+  if (mirror && !("COREPACK_INTEGRITY_KEYS" in env)) env.COREPACK_INTEGRITY_KEYS = "0";
   return env;
 }
 
@@ -356,6 +365,17 @@ async function runOnline(options: {
   });
 }
 
+/**
+ * The start and end of a failed install's output on one line. The first lines
+ * usually name the cause (corepack's signature check, a 401 from the mirror);
+ * the last ones are often only the package manager's generic exit message.
+ */
+function installOutputExcerpt(output: string, maxChars = 800): string {
+  const lines = output.trim().split("\n").map((line) => line.trim()).filter(Boolean);
+  const parts = lines.length <= 7 ? lines : [...lines.slice(0, 4), "…", ...lines.slice(-3)];
+  return parts.join(" | ").slice(0, maxChars);
+}
+
 /** One log line on what the install containers pick up from this machine (first install of a run only). */
 let hostConfigLogged = 0;
 async function logHostConfig(log: Logger): Promise<void> {
@@ -406,7 +426,7 @@ async function ensureHarnessVolume(image: string, log: Logger): Promise<void> {
     before: seed ? (id) => copyIn(id, seed, "/harness") : undefined,
   });
   if (result.code !== 0) {
-    throw new Error(`Installing the preview harness failed: ${result.stderr.trim().slice(-600)}`);
+    throw new Error(`Installing the preview harness failed: ${installOutputExcerpt(result.stderr || result.stdout)}`);
   }
   harnessReady = true;
 }
@@ -525,8 +545,9 @@ async function installInto(options: {
       before: (id) => copyIn(id, treeDir, "/src"),
     });
     if (result.code !== 0 || result.timedOut) {
-      const reason = result.timedOut ? "timed out" : result.stderr.trim().split("\n").slice(-3).join(" ").slice(0, 300);
-      log(`dependency install failed: ${reason}`);
+      const output = installOutputExcerpt(result.stderr || result.stdout);
+      const reason = result.timedOut ? "timed out" : output.slice(0, 300);
+      log(`dependency install failed: ${result.timedOut ? `timed out${output ? ` — ${output}` : ""}` : output}`);
       await removeVolume(volume);
       return { status: `failed: ${reason || "unknown error"}` };
     }

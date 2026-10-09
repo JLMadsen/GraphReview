@@ -385,6 +385,8 @@ Live-tested on MultiTool with a real model: "What does the commute feature do, a
 
 
 **As built (2026-10-08) — the chat can add findings.** The PR chat (not the repo chat) has one write tool, `add_finding` (`{path, line, assessment, summary, rationale}`), which records a finding in the change's review with `category: "chat"` — stamped with the reviewed head like any other, shown as "From chat" in the dock, returned by MCP, and never replaced by a re-review (every review pass replaces only its own category). The prompt allows it only when the reviewer asks to add, record or flag something; the same summary on the same file isn't added twice; an open dock refetches when one is added.
+
+**As built (2026-10-09) — the chat suggests findings unasked.** A second tool, `suggest_finding` (same arguments), needs no request: when the model finds a likely defect or concern the review doesn't cover while answering, it offers it. The offer is stored on the answer message (`suggestions`, with everything the finding needs: file, line, component, reviewed base/head), never in the review — the chat shows it as a card with **Add to review** / **Dismiss**, and only Add (`PATCH /api/repos/[repoId]/chat`) records it as a `chat` finding. At most 3 per answer; one already in the review or already offered in the same answer is refused; a dismissed card can still be added; adding twice records it once.
 ### 6.8 Visual language and layout of the Graph tab (redesign, 2026-09-26)
 
 The Graph tab had the stock shadcn look (every region a rounded card with a 1px ring, nested three or four deep; indigo on every button, tab, ring and sparkle) and said too much at once (the same file counts in four places, disagreeing — 31 vs 37 — because one excluded unmatched files; cards with a description, layer bar, five file chips and three same-sized dots per chip). Decided with the user from mockups:
@@ -497,6 +499,14 @@ The goal is that ordinary React and Next.js repos preview without anyone adaptin
   - Every other `…Provider` the repo exports is indexed and added on demand when a render throws "must be used within XProvider". react-query's provider is added for "No QueryClient set".
   - A compound part (`SheetContent`) is wrapped in its parent from the same file.
   - All providers are bundled in the same split build, so they share context instances with the component.
+  - Provider discovery also finds `export { XProvider }` and `export default XProvider`, and reads "wrapped in a <XProvider>" / "within the X" phrasings.
+  - **Library providers** are added when an error points at them: Redux (the repo's own exported store when one is found, else a fake store), Apollo (a client with no server), next-intl / react-intl (no messages; keys shown as text), react-hook-form (an empty `useForm()`), and styled-components / emotion (a stand-in theme, when the crash comes from inside the library's style rule).
+- **Stand-in values (added 2026-10-09)** — for components that read a context nobody provided, or need someone signed in (`preview-fakes.mjs`, copied beside the harness):
+  - React's `createContext`/`useContext`/`use` are wrapped before the repo's code loads. A context the repo's own code creates with a `null`/`undefined` default is remembered; if a render fails after reading one with no provider above it, the render is retried with a **fake value**: any property gives a plausible leaf by its name (`name` → "Preview User", `email` → preview@example.com, `isAuthenticated` → true, `isLoading` → false, `login`/`setX` → no-op functions, plurals → empty lists, unknown → another fake). Library contexts are never faked. A provider that works is always preferred: the fake is only the retry after the provider path fails.
+  - On that retry the repo's providers also get fake values for props the app would have passed them (`<TeamProvider team={…}>`).
+  - **Auth libraries** are replaced at bundle time with a signed-in stand-in, client and server: next-auth (`useSession`, `getServerSession`, v5 `NextAuth(config).auth`), Clerk (`@clerk/nextjs`, `/server`, `@clerk/clerk-react`) and Auth0 (`@auth0/nextjs-auth0`, `@auth0/auth0-react`). Signed in only — no signed-out variant.
+  - Everything fake is plainly fake, and the case log / result notes say what stood in ("stand-in values … for AuthContext", "signed in as Preview User (next-auth)").
+  - Covered by `lib/preview/smoke-test-preview-fakes.ts`. Checked end to end on a fixture app (unguarded auth context, provider needing a prop, `useSession`, `useFormContext`, a themed styled component, `getServerSession`): 3/8 rendered before (the server one as signed out), 8/8 after; a working repo provider still wins.
 - **Rendering:** client components render with `react-dom/client` inside happy-dom, so effects run, and portals (dialogs, popovers) and CSS-in-JS styles are captured. Async server components and Next server files use `react-dom/server`, and Next server files don't get a DOM, so server-only guards behave. Each renderer is the other's fallback, but **a fallback that renders nothing doesn't count**: the original error is reported instead.
 - **Props:** callback props given as `{}` become no-ops (the model is also asked to write `{"$fn":true}`). Component props (`icon`, `as`, `…Icon`) become the named lucide icon or a placeholder glyph.
 - **Server data: record → mock → replay.** Most pages are empty without their data: a session check that never resolves renders `null` around the whole app. So the first render **records** every server action called (through the client-boundary stubs) and every `fetch`. Then `generatePreviewMocks` (`lib/ai/preview-mocks.ts`) writes realistic responses. It's given each action's source, the repo type files the action and the component import, and the callers (providers first, via `lib/preview/related.ts`). The render is replayed with those responses.
@@ -540,7 +550,7 @@ The worker uses whatever `docker` is on GraphReview's PATH, talking to the machi
 - **Which Node.** `node:<major>-bookworm-slim`, with the major read from the repo at both commits (`lib/preview/node-version.ts`: `.nvmrc` / `.node-version` / `volta.node` / `engines.node`, nearest to the previewed file) — the newer of the two, so both sides run on the same runtime; 22 when the repo doesn't say. A fixed `node:20` broke previews of code needing newer built-ins (`node:sqlite`). The dependency cache key includes the image.
 - **Certificates.** Install containers (the harness's and the repo's) get a full bundle when there are any extra CAs — Node's public root certificates plus the OS store's extras (`tls.getCACertificates("system")`, Node 22.15+), `NODE_EXTRA_CA_CERTS` and CA files named in the npm/pip config, written to the data folder — copied in and pointed to by `NODE_EXTRA_CA_CERTS`, `PIP_CERT`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and `GIT_SSL_CAINFO`. (The public roots matter: those variables *replace* each tool's own bundle, and on the host `NODE_EXTRA_CA_CERTS` usually holds only the internal CAs.)
 - **The user's own package-manager config** (`lib/preview/host-config.ts`). Install containers get a `$HOME` with copies of the user-level `.npmrc`, `.yarnrc`, `.yarnrc.yml` and pip config — registries, scopes, auth tokens — with settings that name host paths dropped, CA-file settings pointed at the container bundle, and `${VAR}` references satisfied by forwarding those variables. This is what makes a private registry work with no GraphReview-specific setup.
-- **Registries from the environment.** Install containers also inherit `NPM_CONFIG_*`, `YARN_NPM_*`, `COREPACK_NPM_*`, `PIP_*` and the proxy variables (minus host-path ones), when they are set. `COREPACK_NPM_REGISTRY` defaults to the npm registry. Lower-case `npm_config_*` is deliberately *not* forwarded: npm injects dozens of those into every process it starts (cache, prefix, user config, all host paths).
+- **Registries from the environment.** Install containers also inherit `NPM_CONFIG_*`, `YARN_NPM_*`, `COREPACK_*`, `PIP_*` and the proxy variables (minus host-path ones such as `COREPACK_HOME`), when they are set. `COREPACK_NPM_REGISTRY` defaults to the npm registry. With a registry other than registry.npmjs.org, `COREPACK_INTEGRITY_KEYS` defaults to `0`: corepack checks package signatures against npm's own keys, which a mirror that re-signs its metadata never passes ("No compatible signature found in package metadata"); setting the variable (in `config.env`) overrides that. A failed install logs the first and last lines of its output — the cause is usually at the top. Lower-case `npm_config_*` is deliberately *not* forwarded: npm injects dozens of those into every process it starts (cache, prefix, user config, all host paths).
 - **Shared download cache.** One volume, `graphreview-preview-downloads`, holds npm/pnpm/yarn/pip download caches and corepack's package managers, with npm's `prefer-offline` on, so a reinstall (new lockfile, another Node version) mostly avoids the network.
 - **Image fallback.** `resolveImage` uses the wanted image if present or pullable; otherwise the closest version of the same image already local (nearest newer, else newest older, same variant preferred) stands in, and the result's `runtimeNote` says so.
 - A repo's own `.npmrc` / `pip.conf` works too.
@@ -674,6 +684,74 @@ Each endpoint has a stable id across commits: kind, method and path with paramet
 - **Not covered yet:** C#, Go and Ruby frameworks, Remix/React Router loaders, and Spring WebFlux functional routes.
 
 Covered by `npx tsx lib/analysis/api/smoke-test-api.ts`: one fixture app per framework, the spec merge and drift, and the comparison.
+
+### 6.12 Infrastructure as code: an infra catalog and what a change does to it (decided 2026-10-08, not built)
+
+The API catalog's counterpart for the code that deploys the app: what infrastructure a repo declares, how it links to the app's own components, and what a PR does to it, read like a `terraform plan`. Decided with the user up front (2026-10-08):
+- **Tools in v1:** Terraform / OpenTofu, Nomad jobspecs, Kubernetes manifests, Kustomize and Helm charts. Dockerfiles are read **only to link** images to code (they aren't listed in the view). Docker Compose, Packer, CloudFormation, Pulumi/CDK and Ansible are out of v1.
+- **Where:** a fourth Graph view, **App map | API | Infra | PR**: a list whose rows open in place, like the API view. On a PR it opens on a plan-style list of the infra changes.
+- **Findings:** only a few **certain** ones (§5 below). Everything else is shown, not counted. No policy scanner (public buckets, `0.0.0.0/0`, IAM wildcards); that's tfsec/checkov territory, and the AI review gets the infra context.
+- **Links to code:** deploys (image → component), env vars set against env vars read, routes onto the API catalog, and ports.
+- **Static only, always:** no `terraform init`/`plan`, no providers, no state, no module downloads, no `helm template`. That works air-gapped and needs no cloud credentials.
+
+#### 1. Reading the files (parse worker, cached by blob; `PARSE_VERSION` 4)
+- **HCL** (`lib/analysis/syntax/hcl.mjs`). `@vscode/tree-sitter-wasm` ships no HCL grammar, so this is a hand-written lexical reader, as for Kotlin (§5). HCL's grammar is small: blocks with labels, attributes, expressions, heredocs and `${}` / `%{}` templates. Expressions are kept as text plus the **traversals** they contain (`aws_x.y.attr`, `var.n`, `local.n`, `module.m.out`, `data.t.n.attr`, `each.*`, `count.index`). Files: `*.tf`, `*.tf.json`, `*.tfvars`, `*.tfvars.json`, `.terraform.lock.hcl`, `*.nomad`, `*.nomad.hcl` and Nomad JSON jobs.
+- **YAML** (js-yaml, multi-document): Kubernetes manifests (any YAML with `apiVersion` + `kind`), `kustomization.yaml`, Helm's `Chart.yaml` and `values*.yaml`. Helm `templates/` aren't YAML until rendered, so they're read by line: the `kind:` of each document, the `.Values.*` paths used and `include`/`template` calls. They are marked **templated**.
+- **Dockerfile** (`Dockerfile`, `*.Dockerfile`, `Containerfile`): line reader for stages, `FROM`, `COPY`/`ADD` sources, `ENV`, `ARG`, `EXPOSE`, `CMD`/`ENTRYPOINT`.
+- **Code facts** (new in the existing extract, TS/JS, Python, Java/Kotlin, Go): env var reads (`process.env.X`, `process.env["X"]`, `import.meta.env.X`, `os.environ[...]`/`.get`/`getenv`, `System.getenv`, `os.Getenv`), Spring `${X}` placeholders, and listen ports where they're literal (`listen(3000)`, `PORT ?? 3000`, `uvicorn.run(port=)`, `server.port`).
+
+#### 2. The catalog (`lib/analysis/infra/`)
+`buildInfraCatalog` runs at the end of `analyzeTree`, beside `buildApiCatalog` (`AnalysisResult.infra`). Resolvers over the facts (a resolver that throws costs only its own resources):
+- `terraform.ts`. A **stack** is a folder of `.tf` files that no other folder calls as a module.
+  - Local module `source`s are followed with their inputs. Registry and git modules are **external** nodes carrying their version constraint. `.terraform.lock.hcl` gives provider versions.
+  - Resource addresses are `module.<m>.<type>.<name>`. `count`/`for_each` show as **×N** (or ×? when not a literal), and conditionals as **conditional**. Nothing is evaluated.
+  - Variables and their defaults; values per environment come from `*.tfvars` (an environment = a tfvars file). Locals, outputs, data sources, providers and the backend.
+  - `moved`, `removed` and `import` blocks; lifecycle `prevent_destroy`, `create_before_destroy` and `ignore_changes`.
+  - Edges: references, `depends_on` and module wiring.
+- `nomad.ts`: job → group → task, with type, datacenters, `count`, driver and image/artifact, resources, network ports (static/dynamic, `to`), `service` blocks (provider, port, tags, checks), `env`, `template` (destination, `env = true`, and the Vault/Consul/Nomad-variable paths it reads), `vault` policies, volumes, constraints, and `update`/`migrate`. Levant/nomad-pack `[[ ]]` is marked **templated**. HCL2 `variable`s are read as in Terraform.
+- `kubernetes.ts`: workloads (Deployment, StatefulSet, DaemonSet, Job, CronJob) with containers, images, env (literal, `valueFrom` secret/configMap ref, `envFrom`), ports, resources, probes and replicas; Service; Ingress / Gateway API `HTTPRoute`; ConfigMap; Secret (key names only, never values); PVC; HPA.
+  - Kustomize: resources, bases, overlays as environments, images, patches and `namePrefix`. Patches are applied where they're strategic-merge on a known field; otherwise they're marked **patched**.
+  - Helm: one stack per chart (its dependencies, values files as environments) and the templated resources from `templates/`.
+- `docker.ts`: Dockerfiles with their build context and the folders they `COPY`.
+- **Resource ids** are stable across commits: `tool:stack:address` (`terraform:infra/prod:module.db.aws_db_instance.main`, `nomad:jobs/api.nomad:api/web/server`, `k8s:deploy/base:Deployment/api`).
+- **Stateful** kinds are flagged from a short built-in list (databases, buckets, disks/volumes, queues, KMS keys, DNS zones; StatefulSet, PVC; Nomad host/CSI volumes). It's extensible and never a guess from names.
+
+#### 3. Links to code (`link.ts`)
+Each link carries how it was made, and an unresolved link says so instead of being dropped:
+- **Deploys:** a task/container image → a Dockerfile (an image name built in the repo's CI files or `docker build -t`, a matching repo/folder name, or a Nomad `artifact`/`build` path) → its build context and `COPY` sources → the components those files belong to. The App map gets "ships as Nomad job `api` · k8s Deployment `api`" in a component's explainer.
+- **Env vars:** names set per workload (job/task `env`, `template` with `env = true` where the keys are literal, k8s `env`/`envFrom` with known ConfigMap keys, Dockerfile `ENV`, `.env.example`) against names read by the components that workload deploys. Gaps are shown both ways: **read but not set** and **set but not read**. `envFrom` a Secret or a templated source counts as "maybe set", so it is never reported as missing.
+- **Routes:** Traefik tags (Nomad/Consul), Ingress and HTTPRoute host + path → endpoints of the API catalog under that prefix. Middleware/auth annotations on the route (Traefik `forwardauth`/`basicauth`, ingress auth annotations) fill the endpoint's auth where the code showed `?` (§6.11's gateway limit).
+- **Ports:** container/task port mapping and service target port against the app's literal listen port. A mismatch is shown, not counted.
+
+#### 4. Storage and the change
+- The default branch's catalog goes in an `infra_catalogs` table (one row per repo, a new migration; `ANALYSIS_VERSION` 4).
+- The target-graph job adds `infra: compareInfra(base, head, changed)` (`infra/compare.ts`), as plan-style entries per resource: **create**, **destroy**, **update** (a before/after attribute table: + green, − red, ~ amber), **moved** (a `moved` block, or Kubernetes/Nomad names that are unchanged at a new path), and module/provider **version** changes. "Replace vs update in place" needs provider schemas, so it isn't predicted, only flagged for attributes on a short built-in force-new list. Link deltas (an env var newly unset, a route moved to other endpoints) go beside them.
+
+#### 5. Findings (`category: "infra"`, ids derived from the resource, like structure findings)
+Only certain ones, each without a model call:
+- **A Terraform resource renamed without a `moved` block**: an address gone from the base and a new one of the same type in the same stack, with matching attributes, and no `moved` between them. Terraform would destroy it and create it again. (`concern`)
+- **A stateful resource destroyed**, or `prevent_destroy` removed from one. (`concern`)
+- **An env var a deployed component reads that its workload no longer sets**: the change removed the setting, or added the read, and no "maybe set" source covers it. (`concern`; only when the deploy link is resolved)
+
+#### 6. Where it shows
+- **Infra view** (`InfraView`): the toolbar has the view switch, then with a diff selected **Infra changes N | All resources M**, then tool and environment filters and search.
+  - "All resources" groups by stack → module/job/chart. A row is the tool icon, kind, address, and tags (×N, conditional, templated, stateful, external).
+  - A row opens in place: its attributes (values per environment when they differ), what it references and what references it, its code links (deploys, env, routes, ports) and the file:line.
+  - "Infra changes" is a flat list ordered destroy → moved → update → create, findings first, with the changed rows open (up to 8).
+- **Left column:** an "Infra" section with `+1 −0 ~2` and the changes. Each line opens the view at that resource.
+- **App map explainer:** "Deployed as" and the env vars the component reads but nothing sets.
+- **Review:** each component's prompt gets the infra changes of the workloads that deploy it, plus env/route/port link deltas. Infra files themselves form their own component(s) (their folder), so a PR touching only `infra/` is still reviewed, with the plan-style change as its context. The intent check gets the whole list.
+- **Chat and MCP:** `list_infra` and `get_infra_changes`.
+- **Routes:** `GET /api/repos/[repoId]/infra-catalog`.
+
+#### Limits
+- Nothing is evaluated: `for_each` maps, `dynamic` blocks, functions, conditionals and Helm templates show as written. Kustomize patches beyond strategic-merge on known fields aren't applied.
+- Remote modules and charts aren't fetched (air-gapped). Their insides are unknown, and so are links through them.
+- No state: drift between code and the real infrastructure is invisible, and so are resources made outside the repo.
+- No provider schemas, so there's no exact replace-vs-update and no attribute validation.
+- Env var names built at runtime (`process.env[name]`) and image names from CI variables stay unresolved.
+
+To be covered by `lib/analysis/infra/smoke-test-infra.ts`: one fixture per tool (a Terraform root with a local and a registry module, tfvars environments and a `moved` block; a Nomad job with Traefik tags and a Vault template; a Kustomize base/overlay; a Helm chart), the links against a small app, and the comparison with each finding.
 
 ## 7. Data model
 

@@ -12,6 +12,27 @@ export interface ChatStepRecord {
   summary: string;
 }
 
+/**
+ * A finding the model noticed on its own and offered instead of recording
+ * (`suggest_finding`). It only enters the review when the reviewer adds it;
+ * everything the finding needs is kept here, so adding it needs no model call.
+ */
+export interface ChatSuggestionRecord {
+  id: string;
+  assessment: "defect" | "concern" | "unknown" | "ok";
+  summary: string;
+  rationale: string;
+  filePath?: string;
+  line?: number;
+  componentId: string;
+  prId?: string;
+  reviewedBaseSha?: string;
+  reviewedHeadSha?: string;
+  status: "pending" | "added" | "dismissed";
+  /** Set once added: the finding it became. */
+  findingId?: string;
+}
+
 export interface ChatMessageRecord {
   id: string;
   repoId: string;
@@ -30,6 +51,8 @@ export interface ChatMessageRecord {
   model?: string;
   /** The turn failed; `content` is the error. Left out of the history sent to the model. */
   error?: boolean;
+  /** Assistant messages: findings the model offered, for the reviewer to add or dismiss. */
+  suggestions?: ChatSuggestionRecord[];
   createdAt: string;
 }
 
@@ -53,6 +76,7 @@ function toMessage(props: Record<string, unknown>): ChatMessageRecord {
     headSha: (props.headSha as string | null) ?? undefined,
     model: (props.model as string | null) ?? undefined,
     error: props.error === true ? true : undefined,
+    suggestions: Array.isArray(props.suggestions) && props.suggestions.length > 0 ? (props.suggestions as ChatSuggestionRecord[]) : undefined,
     createdAt: props.createdAt as string,
   };
 }
@@ -89,6 +113,7 @@ export async function addChatMessage(
       headSha: input.headSha,
       model: input.model,
       error: input.error,
+      suggestions: input.suggestions?.length ? input.suggestions : undefined,
       createdAt: new Date().toISOString(),
       seq,
     };
@@ -102,6 +127,32 @@ export async function addChatMessage(
       pack(props)
     );
     return toMessage(JSON.parse(pack(props)));
+  });
+}
+
+export async function getChatMessage(repoId: string, id: string): Promise<ChatMessageRecord | undefined> {
+  const row = get<{ data: string }>(`SELECT data FROM chat_messages WHERE repo_id = ? AND id = ?`, repoId, id);
+  return row ? toMessage(unpack(row.data)) : undefined;
+}
+
+/** Changes one suggestion on a stored message; returns the updated message, or undefined when either is gone. */
+export async function updateChatSuggestion(
+  repoId: string,
+  messageId: string,
+  suggestionId: string,
+  patch: Partial<Pick<ChatSuggestionRecord, "status" | "findingId">>
+): Promise<ChatMessageRecord | undefined> {
+  return transaction(() => {
+    const row = get<{ data: string }>(`SELECT data FROM chat_messages WHERE repo_id = ? AND id = ?`, repoId, messageId);
+    if (!row) return undefined;
+    const props = unpack(row.data);
+    const suggestions = Array.isArray(props.suggestions) ? (props.suggestions as ChatSuggestionRecord[]) : [];
+    const index = suggestions.findIndex((s) => s.id === suggestionId);
+    if (index < 0) return undefined;
+    suggestions[index] = { ...suggestions[index], ...patch };
+    const next = { ...props, suggestions };
+    run(`UPDATE chat_messages SET data = ? WHERE repo_id = ? AND id = ?`, pack(next), repoId, messageId);
+    return toMessage(next);
   });
 }
 

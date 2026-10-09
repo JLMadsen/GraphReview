@@ -8,7 +8,7 @@
 // model is still working.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ChatMessageDTO, ChatStepDTO, ChatStreamEventDTO, ChatThreadDTO } from "./chat-types";
+import type { ChatMessageDTO, ChatStepDTO, ChatStreamEventDTO, ChatSuggestionActionDTO, ChatThreadDTO } from "./chat-types";
 import { reviewTargetKeyOf, reviewTargetQuery, type ReviewTargetDTO } from "./types";
 
 export interface PendingTurn {
@@ -26,6 +26,8 @@ export interface UsePrChatResult {
   send(question: string, focusComponentId?: string): Promise<void>;
   stop(): void;
   clear(): Promise<void>;
+  /** Adds a suggested finding to the review, or dismisses it. */
+  answerSuggestion(messageId: string, suggestionId: string, action: ChatSuggestionActionDTO["action"]): Promise<void>;
 }
 
 /** The query string naming a thread: the review target's, or the repo-wide one. */
@@ -135,6 +137,26 @@ export function usePrChat(repoId: string, target: ReviewTargetDTO | null): UsePr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base, targetKey]);
 
+  const answerSuggestion = useCallback(
+    async (messageId: string, suggestionId: string, action: ChatSuggestionActionDTO["action"]) => {
+      try {
+        const body: ChatSuggestionActionDTO = { messageId, suggestionId, action };
+        const res = await fetch(base, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const json = (await res.json().catch(() => null)) as { message?: ChatMessageDTO; error?: string } | null;
+        if (!res.ok || !json?.message) throw new Error(json?.error ?? `Could not update the suggestion (${res.status}).`);
+        const updated = json.message;
+        setThread((t) => (t ? { ...t, messages: t.messages.map((m) => (m.id === updated.id ? updated : m)) } : t));
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    },
+    [base]
+  );
+
   return {
     messages: thread?.messages ?? [],
     headSha: thread?.headSha,
@@ -145,5 +167,6 @@ export function usePrChat(repoId: string, target: ReviewTargetDTO | null): UsePr
     send,
     stop,
     clear,
+    answerSuggestion,
   };
 }

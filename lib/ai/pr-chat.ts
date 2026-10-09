@@ -131,6 +131,14 @@ export function buildPrChatSystemPrompt(input: Pick<PrChatInput, "context" | "to
           "  tell the reviewer what you added.",
         ]
       : []),
+    ...(input.tools.some((t) => t.name === "suggest_finding")
+      ? [
+          "- suggest_finding needs no request: when, while answering, you find a likely defect or concern in the change",
+          "  that the review's findings don't already cover, offer it with suggest_finding before you answer. The",
+          "  reviewer decides whether it goes in. Only for problems you checked in the code, with the file, the line",
+          "  and the evidence; never for style, guesses or things the question has nothing to do with. At most 3.",
+        ]
+      : []),
     "",
     repo ? "## The repo" : "## The change",
     input.context,

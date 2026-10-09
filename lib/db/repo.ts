@@ -3,14 +3,36 @@
 import { all, applyPatch, get, pack, run, transaction, unpack } from "./client";
 import type { RepoRecord } from "./types";
 
+/** The public hosts a repo URL is stored with when no `*_WEB_URL` was set at the time it was added. */
+const DEFAULT_WEB_HOSTS: Partial<Record<RepoRecord["provider"], { host: string; env: string }>> = {
+  github: { host: "https://github.com", env: "GITHUB_WEB_URL" },
+  gitlab: { host: "https://gitlab.com", env: "GITLAB_WEB_URL" },
+};
+
+/**
+ * The stored URL, moved onto the configured web host when it still points
+ * at the public default — a repo added before `GITHUB_WEB_URL` /
+ * `GITLAB_WEB_URL` was set otherwise keeps linking to github.com. A URL on
+ * any other host was added deliberately and is left alone.
+ */
+export function repoUrlOnConfiguredHost(provider: RepoRecord["provider"], url: string | undefined): string | undefined {
+  const fallback = DEFAULT_WEB_HOSTS[provider];
+  const configured = fallback && process.env[fallback.env]?.trim().replace(/\/+$/, "");
+  if (!url || !fallback || !configured || configured.toLowerCase() === fallback.host) return url;
+  const match = /^https?:\/\/(?:www\.)?([^/]+)(\/.*)?$/i.exec(url.trim());
+  if (!match || `https://${match[1].toLowerCase()}` !== fallback.host) return url;
+  return `${configured}${match[2] ?? ""}`;
+}
+
 function toRepoRecord(props: Record<string, unknown>): RepoRecord {
+  const provider = props.provider as RepoRecord["provider"];
   return {
     id: props.id as string,
     name: props.name as string,
-    url: (props.url as string | undefined) ?? undefined,
+    url: repoUrlOnConfiguredHost(provider, (props.url as string | undefined) ?? undefined),
     localPath: (props.localPath as string | undefined) ?? undefined,
     defaultBranch: props.defaultBranch as string,
-    provider: props.provider as RepoRecord["provider"],
+    provider,
     createdAt: props.createdAt as string,
     lastAnalyzedAt: (props.lastAnalyzedAt as string | undefined) ?? undefined,
     lastAnalyzedSha: (props.lastAnalyzedSha as string | undefined) ?? undefined,

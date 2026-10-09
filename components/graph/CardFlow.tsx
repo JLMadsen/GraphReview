@@ -265,6 +265,10 @@ export interface CardFlowProps {
   highlighted: Set<string>;
   /** An edge drawn as selected (`linkId`). */
   selectedLink?: string | null;
+  /** An edge drawn lit and labelled while something outside the canvas points at it (`linkId`). */
+  hoveredLink?: string | null;
+  /** A lit edge's label; defaults to `label ×weight`. */
+  formatLabel?: (link: CardFlowLink) => string;
   /** Anything that changes a card's size or the edge set. */
   layoutKey: string;
   onCardClick: (id: string) => void;
@@ -302,6 +306,8 @@ function CardFlowInner({
   links,
   highlighted,
   selectedLink,
+  hoveredLink,
+  formatLabel,
   layoutKey,
   onCardClick,
   onPaneClick,
@@ -479,21 +485,27 @@ function CardFlowInner({
     () =>
       links.map((link) => {
         const id = linkId(link);
+        const hovered = id === hoveredLink;
         const active = activeLinks
-          ? activeLinks.has(id)
-          : id === selectedLink || highlighted.has(link.source) || highlighted.has(link.target);
-        const dimmed = (activeLinks ? activeLinks.size > 0 : highlighted.size > 0 || Boolean(selectedLink)) && !active;
+          ? activeLinks.has(id) || hovered
+          : hoveredLink
+            ? hovered
+            : id === selectedLink || highlighted.has(link.source) || highlighted.has(link.target);
+        const dimmed =
+          (activeLinks ? activeLinks.size > 0 || Boolean(hoveredLink) : highlighted.size > 0 || Boolean(selectedLink) || Boolean(hoveredLink)) &&
+          !active;
         const color = link.tone ? TONE_COLORS[link.tone] : active ? EDGE_ACTIVE_COLOR : EDGE_COLOR;
         const labelled = active || links.length <= alwaysLabelEdges;
+        const labelText = formatLabel ? formatLabel(link) : link.weight > 1 ? `${link.label} ×${link.weight}` : link.label;
         return {
           id,
           type: "routed",
           data: { points: routes.get(id) },
           // Lit edges draw over the rest where lanes cross.
-          zIndex: active ? 1 : 0,
+          zIndex: hovered ? 2 : active ? 1 : 0,
           source: link.source,
           target: link.target,
-          label: labelled ? (link.weight > 1 ? `${link.label} ×${link.weight}` : link.label) : undefined,
+          label: labelled ? labelText : undefined,
           selectable: false,
           focusable: false,
           interactionWidth: onLinkClick ? 14 : 0,
@@ -502,7 +514,7 @@ function CardFlowInner({
             stroke: color,
             cursor: onLinkClick ? "pointer" : undefined,
             // Heavier for edges that stand for many imports.
-            strokeWidth: (active ? 0.6 : 0) + (id === selectedLink ? 0.8 : 0) + 1.2 + Math.min(1.6, Math.log2(link.weight) * 0.5),
+            strokeWidth: (active ? 0.6 : 0) + (id === selectedLink || hovered ? 0.8 : 0) + 1.2 + Math.min(1.6, Math.log2(link.weight) * 0.5),
             strokeDasharray: link.tone === "removed" ? "3 4" : link.tone === "broken" ? "6 3" : link.dashed ? "5 4" : undefined,
             opacity: dimmed ? 0.2 : link.tone === "removed" ? 0.7 : 1,
           },
@@ -512,7 +524,7 @@ function CardFlowInner({
           labelBgBorderRadius: 2,
         };
       }),
-    [links, routes, highlighted, selectedLink, alwaysLabelEdges, onLinkClick, activeLinks]
+    [links, routes, highlighted, selectedLink, hoveredLink, formatLabel, alwaysLabelEdges, onLinkClick, activeLinks]
   );
 
   const linkById = useMemo(() => new Map(links.map((l) => [linkId(l), l])), [links]);

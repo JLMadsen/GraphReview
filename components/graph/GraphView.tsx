@@ -400,6 +400,8 @@ export function GraphView({
   const handleAppRunCompleted = useCallback(() => setAppRunNonce((n) => n + 1), []);
   const appJob = useAppMapJob(repoId, appMounted, handleAppRunCompleted);
   const [appSelection, setAppSelection] = useState<AppMapSelection | null>(null);
+  // A connection row hovered in the app-map panel; its line is lit on the map.
+  const [appHoveredLink, setAppHoveredLink] = useState<string | null>(null);
   const setAppLevel = useCallback((level: AppMapLevel) => {
     setAppLevelState(level);
     setAppSelection(null);
@@ -590,6 +592,7 @@ export function GraphView({
               changedFiles={changedFiles}
               findings={review.findings}
               focusModuleId={prAreaComponent}
+              hoveredLink={appHoveredLink}
             />
           </div>
         )}
@@ -709,6 +712,7 @@ export function GraphView({
                     onSelect={setAppSelection}
                     onSelectModule={showInAppMap}
                     onSelectFile={openFileView}
+                    onHoverEdge={setAppHoveredLink}
                   />
                 </div>
               )}

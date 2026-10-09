@@ -8,6 +8,18 @@ export interface ChatStepDTO {
   summary: string;
 }
 
+/** A finding the chat offered on its own; the reviewer adds or dismisses it. */
+export interface ChatSuggestionDTO {
+  id: string;
+  assessment: "defect" | "concern" | "unknown" | "ok";
+  summary: string;
+  rationale: string;
+  filePath?: string;
+  line?: number;
+  status: "pending" | "added" | "dismissed";
+  findingId?: string;
+}
+
 export interface ChatMessageDTO {
   id: string;
   role: "user" | "assistant";
@@ -19,6 +31,7 @@ export interface ChatMessageDTO {
   headSha?: string;
   model?: string;
   error?: boolean;
+  suggestions?: ChatSuggestionDTO[];
   createdAt: string;
 }
 
@@ -28,6 +41,13 @@ export interface ChatThreadDTO {
   /** The target's current head commit, to mark messages about an older one. */
   headSha?: string;
   aiConfigured: boolean;
+}
+
+/** `PATCH /api/repos/[repoId]/chat` — the reviewer's answer to a suggested finding. */
+export interface ChatSuggestionActionDTO {
+  messageId: string;
+  suggestionId: string;
+  action: "add" | "dismiss";
 }
 
 /** One line of the `POST /api/repos/[repoId]/chat` NDJSON stream. */

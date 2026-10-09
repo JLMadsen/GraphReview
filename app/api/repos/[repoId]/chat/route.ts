@@ -5,6 +5,8 @@
 //   POST   /api/repos/[repoId]/chat  {target, message, focusComponentId?}
 //                                  | {scope:"repo", message, focusComponentId?}
 //          streams NDJSON: {type:"user"} → {type:"step"}* → {type:"answer"} (or {type:"error"})
+//   PATCH  /api/repos/[repoId]/chat  {messageId, suggestionId, action:"add"|"dismiss"}
+//          the reviewer's answer to a finding the chat suggested; returns the updated message
 //   DELETE /api/repos/[repoId]/chat?…target | ?scope=repo                           clears the thread
 //
 // POST streams so the chat column can show each lookup ("read
@@ -16,8 +18,8 @@ import { z } from "zod";
 import { reviewTargetKey, type ReviewTarget } from "@/lib/jobs";
 import { loadAiConfigOrNull } from "@/lib/jobs/merge-naming";
 import { loadPrContext } from "@/lib/jobs/pr-context";
-import { REPO_CHAT_THREAD_KEY, runChatTurn } from "@/lib/jobs/pr-chat";
-import { clearChatMessages, listChatMessages } from "@/lib/db";
+import { REPO_CHAT_THREAD_KEY, addSuggestedFinding, runChatTurn } from "@/lib/jobs/pr-chat";
+import { clearChatMessages, getChatMessage, listChatMessages, updateChatSuggestion } from "@/lib/db";
 import {
   apiError,
   errorMessage,
@@ -110,6 +112,34 @@ export async function POST(
   return new Response(stream, {
     headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-cache" },
   });
+}
+
+const suggestionSchema = z.object({
+  messageId: z.string().min(1),
+  suggestionId: z.string().min(1),
+  action: z.enum(["add", "dismiss"]),
+});
+
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ repoId: string }> }
+): Promise<NextResponse> {
+  const { repoId } = await params;
+  const parsed = suggestionSchema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) return apiError('Expected {messageId, suggestionId, action: "add" | "dismiss"}.', 400);
+  const { messageId, suggestionId, action } = parsed.data;
+  try {
+    const message = await getChatMessage(repoId, messageId);
+    if (!message?.suggestions?.some((x) => x.id === suggestionId)) return apiError("That suggestion is gone.", 404);
+    const updated =
+      action === "add"
+        ? (await addSuggestedFinding(message, suggestionId))?.message
+        : await updateChatSuggestion(repoId, messageId, suggestionId, { status: "dismissed" });
+    if (!updated) return apiError("That suggestion is gone.", 404);
+    return NextResponse.json({ message: updated });
+  } catch (error) {
+    return apiError(`Could not ${action} the suggestion: ${errorMessage(error)}`, 503);
+  }
 }
 
 export async function DELETE(

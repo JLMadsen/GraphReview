@@ -21,17 +21,21 @@
 
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  Check,
   ChevronDown,
   ChevronRight,
   CircleStop,
+  Lightbulb,
   LoaderCircle,
+  Plus,
   SendHorizontal,
   Trash2,
   TriangleAlert,
   X,
 } from "lucide-react";
 import { cn } from "cn";
-import type { ChatMessageDTO, ChatStepDTO } from "./chat-types";
+import type { ChatMessageDTO, ChatStepDTO, ChatSuggestionActionDTO, ChatSuggestionDTO } from "./chat-types";
+import { AssessmentGlyph } from "./PrMapNode";
 import { highlightLines, languageForFence } from "./highlight";
 import { startMiddleScroll } from "./middle-scroll";
 import type { UsePrChatResult } from "./usePrChat";
@@ -208,6 +212,8 @@ export function ChatPanel({
                     componentName={componentName}
                     onSelectComponent={onSelectComponent}
                     renderInline={inlineRenderer}
+                    onAnswerSuggestion={(id, action) => chat.answerSuggestion(message.id, id, action)}
+                    onOpenFile={onOpenFile}
                   />
                 </Fragment>
               );
@@ -333,11 +339,15 @@ function Message({
   componentName,
   onSelectComponent,
   renderInline: inline,
+  onAnswerSuggestion,
+  onOpenFile,
 }: {
   message: ChatMessageDTO;
   componentName: (id: string) => string | undefined;
   onSelectComponent: (id: string) => void;
   renderInline: (text: string) => ReactNode;
+  onAnswerSuggestion: (suggestionId: string, action: ChatSuggestionActionDTO["action"]) => Promise<void>;
+  onOpenFile?: (path: string) => void;
 }) {
   if (message.role === "user") return <UserBubble text={message.content} />;
   if (message.error) {
@@ -349,6 +359,14 @@ function Message({
   return (
     <div className="space-y-1.5">
       <div className="space-y-1.5 text-xs leading-relaxed text-foreground/90">{renderMarkdown(message.content, inline)}</div>
+      {message.suggestions?.map((suggestion) => (
+        <SuggestionCard
+          key={suggestion.id}
+          suggestion={suggestion}
+          onAnswer={(action) => onAnswerSuggestion(suggestion.id, action)}
+          onOpenFile={onOpenFile}
+        />
+      ))}
       {(message.steps.length > 0 || chips.length > 0) && (
         <div className="text-[11px] text-muted-foreground">
           <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
@@ -369,6 +387,99 @@ function Message({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * A finding the chat noticed without being asked. Nothing reaches the review
+ * until Add; once answered the card stays, saying what was decided.
+ */
+function SuggestionCard({
+  suggestion,
+  onAnswer,
+  onOpenFile,
+}: {
+  suggestion: ChatSuggestionDTO;
+  onAnswer: (action: ChatSuggestionActionDTO["action"]) => Promise<void>;
+  onOpenFile?: (path: string) => void;
+}) {
+  const [working, setWorking] = useState<ChatSuggestionActionDTO["action"] | null>(null);
+  const [open, setOpen] = useState(false);
+  const answer = (action: ChatSuggestionActionDTO["action"]) => {
+    setWorking(action);
+    void onAnswer(action).finally(() => setWorking(null));
+  };
+  const where = suggestion.filePath ? `${suggestion.filePath}${suggestion.line ? `:${suggestion.line}` : ""}` : null;
+  const dismissed = suggestion.status === "dismissed";
+  return (
+    <div className={cn("rounded-md border border-dashed border-border px-2.5 py-2", dismissed && "opacity-60")}>
+      <p className="flex items-center gap-1.5 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+        <Lightbulb className="size-3" aria-hidden />
+        Suggested finding
+        <span className="ml-auto flex items-center gap-1 normal-case tracking-normal">
+          <AssessmentGlyph intent={suggestion.assessment} />
+          {suggestion.assessment}
+        </span>
+      </p>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="mt-1 block w-full text-left text-xs leading-snug font-medium hover:underline"
+        title={open ? "Hide the reasoning" : "Show the reasoning"}
+      >
+        {suggestion.summary}
+      </button>
+      {where && (
+        <button
+          type="button"
+          disabled={!onOpenFile}
+          onClick={() => onOpenFile?.(suggestion.filePath!)}
+          className="mt-0.5 block max-w-full truncate font-mono text-[11px] text-muted-foreground enabled:hover:text-foreground enabled:hover:underline"
+        >
+          {where}
+        </button>
+      )}
+      {open && <p className="mt-1 text-[11px] leading-snug whitespace-pre-line text-muted-foreground">{suggestion.rationale}</p>}
+      <div className="mt-1.5 flex items-center gap-1.5 text-[11px]">
+        {suggestion.status === "pending" ? (
+          <>
+            <button
+              type="button"
+              onClick={() => answer("add")}
+              disabled={working !== null}
+              className="flex items-center gap-1 rounded-sm bg-primary px-2 py-0.5 font-medium text-primary-foreground disabled:opacity-50"
+            >
+              {working === "add" ? <LoaderCircle className="size-3 animate-spin" /> : <Plus className="size-3" />}
+              Add to review
+            </button>
+            <button
+              type="button"
+              onClick={() => answer("dismiss")}
+              disabled={working !== null}
+              className="rounded-sm px-2 py-0.5 text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-50"
+            >
+              Dismiss
+            </button>
+          </>
+        ) : suggestion.status === "added" ? (
+          <span className="flex items-center gap-1 text-success">
+            <Check className="size-3" /> Added to the review
+          </span>
+        ) : (
+          <>
+            <span className="text-muted-foreground">Dismissed</span>
+            <button
+              type="button"
+              onClick={() => answer("add")}
+              disabled={working !== null}
+              className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+            >
+              add anyway
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 }

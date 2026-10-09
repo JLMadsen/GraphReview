@@ -14,8 +14,8 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { encrypt } from "@/lib/crypto";
-import { createAiProvider, listFindingsByTargetKey, replaceFindingsForTargetComponent, upsertRepo } from "@/lib/db";
-import { runChatTurn } from "./pr-chat";
+import { createAiProvider, getChatMessage, listFindingsByTargetKey, replaceFindingsForTargetComponent, upsertRepo } from "@/lib/db";
+import { addSuggestedFinding, runChatTurn } from "./pr-chat";
 
 let failures = 0;
 
@@ -112,6 +112,47 @@ async function main(): Promise<void> {
     });
     const again = (await listFindingsByTargetKey("chat-repo", targetKey)).filter((f) => f.category === "chat");
     check("the same finding isn't added twice", again.length === 1, String(again.length));
+
+    // Unasked, the model offers a finding: stored on the answer, not in the review.
+    const offer = {
+      path: "lib/geo.ts",
+      line: 1,
+      assessment: "concern",
+      summary: "km() has no test for the radius",
+      rationale: "Nothing would have caught the dropped 6371.",
+    };
+    scripted.push(
+      reply({ tool: "suggest_finding", args: offer }),
+      reply({ tool: "suggest_finding", args: offer }),
+      reply({ tool: "suggest_finding", args: { path: "lib/geo.ts", summary: "km() no longer multiplies by the Earth's radius" } }),
+      reply({ answer: "It converts radians to km. I also noticed it has no test." })
+    );
+    const promptsBefore = prompts.length;
+    const explained = await runChatTurn({
+      repo: { id: "chat-repo", name: "chat-repo", provider: "local", localPath: repoDir, defaultBranch: "main", createdAt: "" },
+      target,
+      question: "what does km do?",
+      onEvent: () => undefined,
+    });
+    check("the prompt allows suggesting unasked", prompts[promptsBefore]?.includes("suggest_finding needs no request") === true);
+    check("the answer carries one suggestion", explained.suggestions?.length === 1, JSON.stringify(explained.suggestions));
+    const suggestion = explained.suggestions?.[0];
+    check(
+      "the suggestion keeps the file, line and head",
+      suggestion?.filePath === "lib/geo.ts" && suggestion.line === 1 && suggestion.status === "pending" && Boolean(suggestion.reviewedHeadSha)
+    );
+    const unchanged = (await listFindingsByTargetKey("chat-repo", targetKey)).filter((f) => f.category === "chat");
+    check("suggesting doesn't touch the review", unchanged.length === 1, String(unchanged.length));
+    const stored = await getChatMessage("chat-repo", explained.id);
+    check("the suggestion survives a reload", stored?.suggestions?.[0]?.id === suggestion?.id);
+
+    const added2 = stored && suggestion ? await addSuggestedFinding(stored, suggestion.id) : undefined;
+    const withSuggestion = (await listFindingsByTargetKey("chat-repo", targetKey)).filter((f) => f.category === "chat");
+    check("Add puts it in the review", withSuggestion.some((f) => f.id === added2?.findingId && f.summary === offer.summary));
+    check("the suggestion is marked added", added2?.message.suggestions?.[0]?.status === "added");
+    const addedAgain = added2 ? await addSuggestedFinding(added2.message, suggestion!.id) : undefined;
+    const afterTwice = (await listFindingsByTargetKey("chat-repo", targetKey)).filter((f) => f.category === "chat");
+    check("adding twice adds once", addedAgain?.findingId === added2?.findingId && afterTwice.length === 2, String(afterTwice.length));
   } finally {
     server.closeAllConnections();
     server.close();

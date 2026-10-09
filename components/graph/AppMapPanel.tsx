@@ -12,6 +12,7 @@
 // with a verdict glyph and a git-style M.
 
 import { ArrowRight, X } from "lucide-react";
+import { useEffect } from "react";
 import { LayerBar } from "./AppMapCard";
 import { AssessmentGlyph } from "./PrMapNode";
 import { Spark } from "./Spark";
@@ -36,6 +37,8 @@ export interface AppMapPanelProps {
   onSelect: (selection: AppMapSelection | null) => void;
   onSelectModule: (moduleId: string) => void;
   onSelectFile: (path: string) => void;
+  /** A connection row is pointed at (`source->target`), or no longer is — the map lights that line. */
+  onHoverEdge?: (linkId: string | null) => void;
 }
 
 const LEVEL_NOUN: Record<AppMapLevel, string> = {
@@ -59,15 +62,24 @@ function ConnectionRow({
   direction,
   onOpen,
   onOpenEdge,
+  onHover,
 }: {
   edge: AppMapEdgeDTO;
   other: AppMapNodeDTO | undefined;
   direction: "out" | "in";
   onOpen: () => void;
   onOpenEdge: () => void;
+  onHover?: (linkId: string | null) => void;
 }) {
+  // A row that goes away under the pointer (another card was opened) never
+  // sees mouseleave; let go of its line then.
+  useEffect(() => () => onHover?.(null), [onHover]);
   return (
-    <li className="py-1">
+    <li
+      className="-mx-1 rounded-sm px-1 py-1 hover:bg-secondary/60"
+      onMouseEnter={() => onHover?.(`${edge.source}->${edge.target}`)}
+      onMouseLeave={() => onHover?.(null)}
+    >
       <div className="flex items-center gap-1.5 text-[11px]">
         <button
           type="button"
@@ -102,6 +114,7 @@ export function AppMapPanel({
   onSelect,
   onSelectModule,
   onSelectFile,
+  onHoverEdge,
 }: AppMapPanelProps) {
   const byId = new Map(map.nodes.map((n) => [n.id, n]));
 
@@ -244,6 +257,7 @@ export function AppMapPanel({
                 direction="out"
                 onOpen={() => onSelect({ kind: "card", id: e.target })}
                 onOpenEdge={() => onSelect({ kind: "edge", source: e.source, target: e.target })}
+                onHover={onHoverEdge}
               />
             ))}
           </ul>
@@ -260,6 +274,7 @@ export function AppMapPanel({
                 direction="in"
                 onOpen={() => onSelect({ kind: "card", id: e.source })}
                 onOpenEdge={() => onSelect({ kind: "edge", source: e.source, target: e.target })}
+                onHover={onHoverEdge}
               />
             ))}
           </ul>

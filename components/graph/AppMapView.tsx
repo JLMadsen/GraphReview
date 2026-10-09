@@ -57,6 +57,8 @@ export interface AppMapViewProps {
   findings?: FindingDTO[];
   /** The component selected elsewhere; the cards holding it are ringed. */
   focusModuleId?: string | null;
+  /** A connection pointed at in the side panel (`source->target`), drawn lit. */
+  hoveredLink?: string | null;
   /** Drawn first in the toolbar — GraphView's view switch. */
   leading?: React.ReactNode;
   className?: string;
@@ -74,6 +76,7 @@ export function AppMapView({
   changedFiles,
   findings,
   focusModuleId,
+  hoveredLink,
   leading,
   className,
 }: AppMapViewProps) {
@@ -162,15 +165,21 @@ export function AppMapView({
     return matches ?? focused;
   }, [selection, matches, focused]);
   const selectedLink = selection?.kind === "edge" ? linkId(selection) : null;
-  const links = useMemo(() => {
-    if (strongLinks.length === allLinks.length) return strongLinks;
+  // The selected card's weaker connections join the strong ones, dashed, so
+  // it's clear they were left out of the busy map rather than made by the click.
+  const { links, extraCount } = useMemo(() => {
+    if (strongLinks.length === allLinks.length) return { links: strongLinks, extraCount: 0 };
     const shown = new Set(strongLinks.map(linkId));
     const focus = selection?.kind === "card" ? selection.id : null;
-    const extra = allLinks.filter(
-      (l) => !shown.has(linkId(l)) && (l.source === focus || l.target === focus || linkId(l) === selectedLink)
-    );
-    return extra.length > 0 ? [...strongLinks, ...extra] : strongLinks;
-  }, [strongLinks, allLinks, selection, selectedLink]);
+    const extra = allLinks
+      .filter(
+        (l) =>
+          !shown.has(linkId(l)) &&
+          (l.source === focus || l.target === focus || linkId(l) === selectedLink || linkId(l) === hoveredLink)
+      )
+      .map((l) => ({ ...l, dashed: true }));
+    return { links: extra.length > 0 ? [...strongLinks, ...extra] : strongLinks, extraCount: extra.length };
+  }, [strongLinks, allLinks, selection, selectedLink, hoveredLink]);
 
   const renderCard = useCallback(
     (id: string) => {
@@ -314,6 +323,8 @@ export function AppMapView({
         links={links}
         highlighted={highlighted}
         selectedLink={selectedLink}
+        hoveredLink={hoveredLink}
+        formatLabel={connectionLabel}
         layoutKey={layoutKey}
         alwaysLabelEdges={level === "modules" ? 0 : 16}
         elkOptions={ELK_OPTIONS}
@@ -334,6 +345,12 @@ export function AppMapView({
                 Building the app map…
               </>
             )}
+          </div>
+        )}
+        {extraCount > 0 && selection?.kind === "card" && (
+          <div className="pointer-events-none absolute bottom-2 left-2 rounded-sm border border-border bg-card/90 px-2 py-1 text-[11px] text-muted-foreground">
+            <span className="mr-1 inline-block w-4 border-t border-dashed border-muted-foreground align-middle" aria-hidden />
+            +{extraCount} weaker connection{extraCount === 1 ? "" : "s"} of this card, hidden on the full map
           </div>
         )}
         {map && map.nodes.length === 0 && (
@@ -374,6 +391,11 @@ export function AppMapView({
       </div>
     </div>
   );
+}
+
+/** A lit connection's label: its verb and how many file-level imports it stands for. */
+function connectionLabel(link: CardFlowLink): string {
+  return `${link.label} · ${link.weight} import${link.weight === 1 ? "" : "s"}`;
 }
 
 /** What SourceNote says, as plain text — for the info icon's tooltip on narrower screens. */

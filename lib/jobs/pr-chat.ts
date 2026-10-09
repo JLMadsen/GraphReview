@@ -12,6 +12,9 @@
 //
 //   add_finding          records a finding in the change's review — only when
 //                        the reviewer asks for it ("add this to the findings")
+//   suggest_finding      offers a finding the model noticed on its own; it is
+//                        stored on the answer, and only the reviewer's Add
+//                        (addSuggestedFinding) puts it in the review
 //
 // Nothing here writes to the repo, runs code, or reaches outside the repo's
 // own host (GitHub/GitLab/local checkout). The one write is add_finding, into
@@ -35,13 +38,14 @@ import {
   listFindingsByTargetKey,
   getComponentOverview,
   readTargetGraph,
+  updateChatSuggestion,
   upsertFinding,
 } from "@/lib/db";
 import type { ApiChange } from "@/lib/analysis/api/types";
 import { describeApiChange, endpointLabel } from "@/lib/analysis/api/describe";
 import { readServedApiCatalog } from "./api-catalog";
 import type { TargetGraphData } from "./target-graph-queue";
-import type { ChatMessageRecord, ComponentRecord, FindingWithComponent, RepoRecord } from "@/lib/db";
+import type { ChatMessageRecord, ChatSuggestionRecord, ComponentRecord, FindingRecord, FindingWithComponent, RepoRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import { loadAiConfigOrNull } from "./merge-naming";
 import { loadPrContext, readFileAtCommit, searchCode } from "./pr-context";
@@ -91,7 +95,16 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
     description:
       "WRITES a finding into this change's review (assessment defect, concern, unknown or ok) — only when the reviewer asks you to add, record or flag something",
   },
+  {
+    name: "suggest_finding",
+    args: '{"path":"<file>","line":12,"assessment":"concern","summary":"<one sentence>","rationale":"<why, with the evidence>"}',
+    description:
+      "offers the reviewer a problem you noticed that the review doesn't have yet; they choose whether to add it — use without being asked",
+  },
 ];
+
+/** Most suggestions one answer may carry — beyond that they stop being worth reading. */
+export const MAX_SUGGESTIONS_PER_ANSWER = 3;
 
 const REPO_TOOL_NAMES = new Set(["read_file", "search_code", "get_component", "list_endpoints"]);
 
@@ -125,6 +138,8 @@ interface ToolContext {
   model: string;
   /** What the change does to the endpoints, when the base/head comparison has run (DESIGN.md §6.11). */
   api?: ApiChange;
+  /** suggest_finding's offers in this turn, stored on the answer. */
+  suggestions: ChatSuggestionRecord[];
 }
 
 const ASSESSMENTS = new Set(["defect", "concern", "unknown", "ok"]);
@@ -169,6 +184,84 @@ function num(value: unknown): number | undefined {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
 }
 
+/** Tools that need a change to talk about; the repo-wide chat answers them with NO_CHANGE. */
+const CHANGE_TOOL_NAMES = new Set(["list_changed_files", "get_diff", "get_findings", "add_finding", "suggest_finding"]);
+
+/** A chat finding as the model gave it, before it is recorded or offered. */
+type FindingDraft = Omit<ChatSuggestionRecord, "id" | "status" | "findingId">;
+
+/** add_finding's / suggest_finding's arguments, read leniently; null without a summary. Needs a change (tc.ctx). */
+function findingDraft(tc: ToolContext, args: Record<string, unknown>): FindingDraft | null {
+  const summary = arg(args, "summary", "title", "finding");
+  if (!summary) return null;
+  const rationale = arg(args, "rationale", "why", "reason", "explanation") || summary;
+  const rawAssessment = arg(args, "assessment", "severity", "verdict").toLowerCase();
+  const assessment = (ASSESSMENTS.has(rawAssessment) ? rawAssessment : "concern") as FindingDraft["assessment"];
+  const filePath = arg(args, ...PATH_KEYS).replace(/^\/+/, "").replace(/:\d+(-\d+)?$/, "") || undefined;
+  const line = num(args.line) ?? num(args.start) ?? num(args.lineStart);
+  const reviewed = tc.ctx!.reviewed;
+  return {
+    assessment,
+    summary,
+    rationale,
+    ...(filePath ? { filePath } : {}),
+    ...(line ? { line } : {}),
+    componentId: filePath ? ownerOf(tc, filePath) : "",
+    ...(tc.prId ? { prId: tc.prId } : {}),
+    ...(reviewed.baseSha ? { reviewedBaseSha: reviewed.baseSha } : {}),
+    ...(reviewed.headSha ? { reviewedHeadSha: reviewed.headSha } : {}),
+  };
+}
+
+/** A chat finding already in the review with this summary on this file. */
+function sameFinding(tc: ToolContext, summary: string, filePath: string | undefined): FindingWithComponent | undefined {
+  return tc.findings.find(
+    (f) => f.category === "chat" && f.summary.trim().toLowerCase() === summary.trim().toLowerCase() && (f.filePath ?? "") === (filePath ?? "")
+  );
+}
+
+/** Writes a chat finding (category `chat`, which no review pass replaces) and tells an open review dock to refetch. */
+async function recordChatFinding(repoId: string, targetKey: string, draft: FindingDraft, model: string): Promise<FindingRecord> {
+  const record = await upsertFinding({
+    id: randomUUID(),
+    repoId,
+    targetKey,
+    ...(draft.prId ? { prId: draft.prId } : {}),
+    componentId: draft.componentId,
+    category: "chat",
+    ...(draft.filePath ? { filePath: draft.filePath } : {}),
+    ...(draft.line ? { lineRange: String(draft.line) } : {}),
+    summary: draft.summary,
+    assessment: draft.assessment,
+    confidence: 0.9,
+    rationale: draft.rationale,
+    model,
+    ...(draft.reviewedBaseSha ? { reviewedBaseSha: draft.reviewedBaseSha } : {}),
+    ...(draft.reviewedHeadSha ? { reviewedHeadSha: draft.reviewedHeadSha } : {}),
+    reviewedAt: new Date().toISOString(),
+  });
+  // An open review dock refetches (the same signal as an MCP reply).
+  emitFindingsChanged(repoId, targetKey, record.id);
+  return record;
+}
+
+/**
+ * The reviewer's Add on a suggested finding: records it in the review the
+ * message belongs to and marks the suggestion added. Adding twice returns the
+ * finding from the first time.
+ */
+export async function addSuggestedFinding(
+  message: ChatMessageRecord,
+  suggestionId: string
+): Promise<{ message: ChatMessageRecord; findingId: string } | undefined> {
+  const suggestion = message.suggestions?.find((x) => x.id === suggestionId);
+  if (!suggestion) return undefined;
+  if (suggestion.status === "added" && suggestion.findingId) return { message, findingId: suggestion.findingId };
+  const record = await recordChatFinding(message.repoId, message.targetKey, suggestion, message.model ?? "chat");
+  const updated = await updateChatSuggestion(message.repoId, message.id, suggestionId, { status: "added", findingId: record.id });
+  return updated ? { message: updated, findingId: record.id } : undefined;
+}
+
 /** `"defect, impact"`, `"ok, fix, unmentioned"` — the verdict first, then what kind of finding it is. */
 function findingLabels(f: FindingWithComponent): string {
   return [f.assessment, f.category !== "change" ? f.category : "", f.kind, f.scope].filter(Boolean).join(", ");
@@ -204,7 +297,7 @@ function fileCounts(tc: ToolContext): Map<string, number> {
 
 async function runTool(tc: ToolContext, name: string, args: Record<string, unknown>): Promise<PrChatToolOutput> {
   const ctx = tc.ctx;
-  if (!ctx && (name === "list_changed_files" || name === "get_diff" || name === "get_findings" || name === "add_finding")) return NO_CHANGE;
+  if (!ctx && CHANGE_TOOL_NAMES.has(name)) return NO_CHANGE;
   switch (name) {
     case "list_endpoints": {
       const served = readServedApiCatalog(tc.repo.id);
@@ -362,46 +455,47 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
     }
 
     case "add_finding": {
-      const summary = arg(args, "summary", "title", "finding");
-      if (!summary) return missing(name);
-      const rationale = arg(args, "rationale", "why", "reason", "explanation") || summary;
-      const rawAssessment = arg(args, "assessment", "severity", "verdict").toLowerCase();
-      const assessment = (ASSESSMENTS.has(rawAssessment) ? rawAssessment : "concern") as "defect" | "concern" | "unknown" | "ok";
-      const path = arg(args, ...PATH_KEYS).replace(/^\/+/, "").replace(/:\d+(-\d+)?$/, "") || undefined;
-      const line = num(args.line) ?? num(args.start) ?? num(args.lineStart);
-      const existing = tc.findings.find(
-        (f) => f.category === "chat" && f.summary.trim().toLowerCase() === summary.toLowerCase() && (f.filePath ?? "") === (path ?? "")
-      );
+      const draft = findingDraft(tc, args);
+      if (!draft) return missing(name);
+      const existing = sameFinding(tc, draft.summary, draft.filePath);
       if (existing) {
-        return { text: `That finding is already in the review (id ${existing.id}).`, summary: `finding already recorded: ${summary}` };
+        return { text: `That finding is already in the review (id ${existing.id}).`, summary: `finding already recorded: ${draft.summary}` };
       }
-      const componentId = path ? ownerOf(tc, path) : "";
-      const record = await upsertFinding({
-        id: randomUUID(),
-        repoId: tc.repo.id,
-        targetKey: tc.targetKey,
-        ...(tc.prId ? { prId: tc.prId } : {}),
-        componentId,
-        category: "chat",
-        ...(path ? { filePath: path } : {}),
-        ...(line ? { lineRange: String(line) } : {}),
-        summary,
-        assessment,
-        confidence: 0.9,
-        rationale,
-        model: tc.model,
-        ...(ctx!.reviewed.baseSha ? { reviewedBaseSha: ctx!.reviewed.baseSha } : {}),
-        ...(ctx!.reviewed.headSha ? { reviewedHeadSha: ctx!.reviewed.headSha } : {}),
-        reviewedAt: new Date().toISOString(),
-      });
-      tc.findings.push({ ...record, componentName: componentName(tc, componentId) });
-      // An open review dock refetches (the same signal as an MCP reply).
-      emitFindingsChanged(tc.repo.id, tc.targetKey, record.id);
+      const record = await recordChatFinding(tc.repo.id, tc.targetKey, draft, tc.model);
+      tc.findings.push({ ...record, componentName: componentName(tc, draft.componentId) });
       return {
-        text: `Added to the review as a ${assessment} (id ${record.id}). It shows in the findings list, marked "From chat".`,
-        summary: `added a ${assessment} finding: ${summary}`,
-        ...(path ? { files: [path] } : {}),
-        ...(componentId ? { componentIds: [componentId] } : {}),
+        text: `Added to the review as a ${draft.assessment} (id ${record.id}). It shows in the findings list, marked "From chat".`,
+        summary: `added a ${draft.assessment} finding: ${draft.summary}`,
+        ...(draft.filePath ? { files: [draft.filePath] } : {}),
+        ...(draft.componentId ? { componentIds: [draft.componentId] } : {}),
+      };
+    }
+
+    case "suggest_finding": {
+      const draft = findingDraft(tc, args);
+      if (!draft) return missing(name);
+      const existing = sameFinding(tc, draft.summary, draft.filePath);
+      if (existing) {
+        return { text: `The review already has that (id ${existing.id}) — no need to suggest it.`, summary: `already in the review: ${draft.summary}` };
+      }
+      const key = (x: { summary: string; filePath?: string }) => `${x.filePath ?? ""}\n${x.summary.trim().toLowerCase()}`;
+      if (tc.suggestions.some((x) => key(x) === key(draft))) {
+        return { text: "You already suggested that in this answer.", summary: `suggested again: ${draft.summary}` };
+      }
+      if (tc.suggestions.length >= MAX_SUGGESTIONS_PER_ANSWER) {
+        return {
+          text: `That's ${MAX_SUGGESTIONS_PER_ANSWER} suggestions already — keep to those and give your answer.`,
+          summary: "too many suggestions",
+        };
+      }
+      tc.suggestions.push({ id: randomUUID(), ...draft, status: "pending" });
+      return {
+        text:
+          "Shown to the reviewer under your answer as a suggested finding, with Add and Dismiss. Mention it in one line in " +
+          "your answer; don't repeat the whole rationale.",
+        summary: `suggested a ${draft.assessment}: ${draft.summary}`,
+        ...(draft.filePath ? { files: [draft.filePath] } : {}),
+        ...(draft.componentId ? { componentIds: [draft.componentId] } : {}),
       };
     }
 
@@ -514,6 +608,7 @@ export async function runChatTurn(args: {
     ...(target?.kind === "pr" ? { prId: `${repo.id}:pr:${target.prNumber}` } : {}),
     model: config.model,
     ...(target ? { api: readTargetGraph<TargetGraphData>(repo.id, targetKey)?.data.api } : {}),
+    suggestions: [],
   };
 
   const userMessage = await addChatMessage({
@@ -559,6 +654,7 @@ export async function runChatTurn(args: {
       files: result.files,
       headSha,
       model: config.model,
+      suggestions: tc.suggestions,
     });
     await onEvent({ type: "answer", message: answer });
     return answer;

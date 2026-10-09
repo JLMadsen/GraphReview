@@ -237,6 +237,8 @@ async function runSide(options: {
       await mkdir(jobDir, { recursive: true });
       const script = harnessScript(runtime);
       await copyFile(script, path.join(jobDir, path.basename(script)));
+      // The Node harness loads its stand-in values from a file beside it.
+      if (runtime === "node") await copyFile(path.join(path.dirname(script), "preview-fakes.mjs"), path.join(jobDir, "preview-fakes.mjs"));
       prepared = { treeDir, jobDir, projectRoot, prepared: installed };
     }
     const spec = {
