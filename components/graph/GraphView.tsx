@@ -5,7 +5,7 @@
 // an unreadable database degrades gracefully in the browser instead of
 // failing the page render.
 //
-// Four views share the canvas slot (DESIGN.md §6.4, §6.5, §6.11, §6.12):
+// Six views share the canvas slot (DESIGN.md §6.4, §6.5, §6.11–§6.14):
 //   - **App map** (`AppMapView`) — the whole codebase as cards, at an
 //     architecture, feature or module level of detail, carrying the diff's
 //     changes and the review's verdicts. The default with no diff selected.
@@ -20,8 +20,12 @@
 //     the tables (its explainer in the right column) or a list whose rows
 //     open in place; with a diff selected, its schema change. Also the whole
 //     column.
+//   - **Files** (`FilesView`) — the repo as files, like a code host shows
+//     it: a folder tree, folder listings with their README, files with line
+//     numbers; with a diff selected, the files it touches marked. Also the
+//     whole column.
 //   - **PR** (`PrMapCanvas`) — only what the diff touches, as area cards.
-// The full-column views (API, Infra, Data) are `LIST_VIEWS`; a new
+// The full-column views (API, Infra, Data, Files) are `LIST_VIEWS`; a new
 // catalog's view is one more entry there and in `VIEW_OPTIONS`.
 // Both stay mounted once opened, stacked in one grid cell with the inactive
 // one transparent and `inert`, so each keeps its layout and zoom. (Not
@@ -84,6 +88,8 @@ import { DbTableDetail } from "./DbTableDetail";
 import { SchemaChangesSection } from "./SchemaChangesSection";
 import { useDbSchema } from "./useDbSchema";
 import { buildDbRows, endpointTouches, tableLabel, tablesByFile } from "./db-view-model";
+import { FilesView } from "./FilesView";
+import { useRepoTree } from "./useRepoTree";
 import {
   DEFAULT_REVIEW_EFFORT,
   reviewTargetLabel,
@@ -96,16 +102,18 @@ import type {
   ReviewTargetDTO,
 } from "./types";
 
-type GraphViewMode = "app" | "api" | "infra" | "data" | "pr";
+type GraphViewMode = "app" | "api" | "infra" | "data" | "files" | "pr";
 /** Views that are a list taking the whole column (no review dock under them). */
-const LIST_VIEWS: ReadonlySet<GraphViewMode> = new Set(["api", "infra", "data"]);
-const isGraphViewMode = (v: unknown): v is GraphViewMode => v === "app" || v === "api" || v === "infra" || v === "data" || v === "pr";
+const LIST_VIEWS: ReadonlySet<GraphViewMode> = new Set(["api", "infra", "data", "files"]);
+const isGraphViewMode = (v: unknown): v is GraphViewMode =>
+  v === "app" || v === "api" || v === "infra" || v === "data" || v === "files" || v === "pr";
 /** The view switch, in order. PR only shows with a diff selected. */
 const VIEW_OPTIONS: ReadonlyArray<{ value: GraphViewMode; label: string; title: string }> = [
   { value: "app", label: "App map", title: "The whole app as cards — by architecture, feature or module, with explanations" },
   { value: "api", label: "API", title: "Every endpoint the app exposes — with a diff selected, its changes to the API" },
   { value: "infra", label: "Infra", title: "The infrastructure as code — Terraform, Nomad, Kubernetes, Helm, Dockerfiles — with a diff selected, its plan" },
   { value: "data", label: "Data", title: "The database schema — tables from the migrations, schema files and ORM models, as an ER canvas or a list — with a diff selected, its schema change" },
+  { value: "files", label: "Files", title: "The repo as files — folders, READMEs and code — with a diff selected, the files it touches marked" },
   { value: "pr", label: "PR", title: "Only what this diff touches" },
 ];
 
@@ -578,6 +586,15 @@ export function GraphView({
   const selectedDbRow = dataSelected ? dbRows.find((r) => r.table.id === dataSelected) : undefined;
   const showDataPanel = view === "data" && dataMode === "canvas" && selectedDbRow !== undefined;
 
+  // --- Files ------------------------------------------------------------------
+  const [filesMounted, setFilesMounted] = useState(false);
+  useEffect(() => {
+    if (view === "files") setFilesMounted(true);
+  }, [view]);
+  const repoTree = useRepoTree(repoId, filesMounted, graphNonce);
+  /** A changed file's diff, in the shared file viewer. */
+  const openFileDiff = useCallback((path: string) => setOpenFile({ path, tab: "diff" }), []);
+
   /** "GET /orders/{id}" for an endpoint id, from the catalog when it is loaded. */
   const endpointLabel = useCallback(
     (id: string) => {
@@ -773,6 +790,22 @@ export function GraphView({
               focus={dataFocus}
               onOpenFile={openFileAtLine}
               onOpenEndpoint={openEndpoint}
+            />
+          </div>
+        )}
+        {filesMounted && (
+          <div className={viewLayerClass(view === "files")} inert={view !== "files"}>
+            <FilesView
+              className="flex h-full flex-col"
+              leading={viewSwitch}
+              repoId={repoId}
+              repoName={repo?.name}
+              tree={repoTree.tree}
+              loading={repoTree.loading}
+              error={repoTree.error}
+              changedFiles={changedFiles}
+              onOpenDiff={openFileDiff}
+              active={view === "files"}
             />
           </div>
         )}

@@ -3,11 +3,12 @@
 // The Graph tab's Data view (DESIGN.md §6.13 §7): the tables the analysed
 // commit's migrations, schema files and ORM models declare.
 //
-//   Canvas  an ER diagram on the shared `CardFlow`: compact table cards
-//           (name, column count, changed columns) joined by their foreign
-//           keys — dashed when only an ORM relation declares one. "All
-//           tables" puts cards in boxes by owning component (else Postgres
-//           schema, else a shared name prefix); "Changed only" shows the
+//   Canvas  an ER diagram on the shared `CardFlow`: table cards listing
+//           their columns (keys, type, nullability, +/−/~ on a diff), joined
+//           column to column by their foreign keys — dashed when only an ORM
+//           relation declares one. "All tables" puts cards in boxes by owning
+//           component (else Postgres schema) when there are two or more such
+//           boxes; name-prefix groups stay in the list. "Changed only" shows the
 //           changed tables with their direct FK neighbours faded. Changed
 //           cards get an amber edge, new ones green, removed ones red and
 //           struck. A selected table opens its explainer in the right column.
@@ -17,7 +18,7 @@
 // All tables M", then Canvas | List, the database picker and search.
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, LoaderCircle, Search, TriangleAlert, X } from "lucide-react";
+import { ChevronRight, KeyRound, LoaderCircle, Search, TriangleAlert, X } from "lucide-react";
 import { cn } from "cn";
 import { CardFlow, DEFAULT_ELK_OPTIONS, type CardFlowLink } from "./CardFlow";
 import { Segmented } from "./Segmented";
@@ -31,12 +32,12 @@ export type DataMode = "canvas" | "list";
 
 /** Cards on one canvas at most — beyond it the list (or a search) reads better. */
 const MAX_CANVAS = 250;
-const CARD_WIDTH = 216;
-/** Changed columns a card names. */
-const CARD_COLUMNS = 4;
+const CARD_WIDTH = 236;
+/** Columns a card lists before "+N more" (keys and changed columns first). */
+const CARD_COLUMNS = 14;
 /** In "Changed only" the list opens the changed rows — up to this many. */
 const AUTO_OPEN = 8;
-const ELK_OPTIONS = { ...DEFAULT_ELK_OPTIONS, "elk.layered.spacing.nodeNodeBetweenLayers": "80", "elk.spacing.nodeNode": "28" };
+const ELK_OPTIONS = { ...DEFAULT_ELK_OPTIONS, "elk.layered.spacing.nodeNodeBetweenLayers": "90", "elk.spacing.nodeNode": "28", "elk.aspectRatio": "2.2" };
 
 export interface DataViewProps {
   schema: DbSchemaResponseDTO | null;
@@ -60,51 +61,104 @@ export interface DataViewProps {
   className?: string;
 }
 
+type CardColumn = { name: string; type: string; nullable: boolean; pk: boolean; fk: boolean; mark?: "added" | "removed" | "changed" | "renamed"; from?: string };
+
+/**
+ * The columns a card lists, in table order: every column when they fit,
+ * else the keys and changed ones first (still in table order) and a "+N more"
+ * line. Columns the change dropped are listed struck at the end.
+ */
+function cardColumns(row: DbRow): { shown: CardColumn[]; more: number } {
+  const t = row.table;
+  const c = row.change;
+  const deltas = c && c.status !== "added" && c.status !== "removed" ? c.columns : [];
+  const markOf = new Map(deltas.filter((d) => d.status !== "removed").map((d) => [d.name, d]));
+  const fkCols = new Set(t.fks.flatMap((f) => f.columns));
+  const all: CardColumn[] = t.columns.map((col) => {
+    const d = markOf.get(col.name);
+    return {
+      name: col.name,
+      type: col.type,
+      nullable: col.nullable,
+      pk: Boolean(col.primary) || t.pk.includes(col.name),
+      fk: fkCols.has(col.name),
+      ...(d ? { mark: d.status, ...(d.status === "renamed" ? { from: d.from } : {}) } : {}),
+    };
+  });
+  const dropped: CardColumn[] = deltas
+    .filter((d) => d.status === "removed")
+    .map((d) => ({ name: d.name, type: d.before?.type ?? "", nullable: d.before?.nullable ?? true, pk: false, fk: false, mark: "removed" }));
+  if (all.length <= CARD_COLUMNS) return { shown: [...all, ...dropped], more: 0 };
+  const keep = new Set(all.filter((x) => x.pk || x.fk || x.mark).slice(0, CARD_COLUMNS).map((x) => x.name));
+  for (const x of all) if (keep.size < CARD_COLUMNS) keep.add(x.name);
+  return { shown: [...all.filter((x) => keep.has(x.name)), ...dropped], more: all.length - keep.size };
+}
+
+const MARKS = { added: ["+", "text-success"], removed: ["−", "text-destructive"], changed: ["~", "text-warning"], renamed: ["~", "text-warning"] } as const;
+
 function TableCard({ row, selected, faded }: { row: DbRow; selected: boolean; faded: boolean }) {
   const t = row.table;
   const c = row.change;
   const status = c?.status;
-  const changedCols = (c?.columns ?? []).filter(() => status !== "added" && status !== "removed");
   const concern = ASSESSMENT_VISUALS.concern;
+  const { shown, more } = cardColumns(row);
   return (
     <div
       style={{ width: CARD_WIDTH }}
       className={cn(
-        "relative rounded-lg border bg-card px-2.5 py-1.5 text-left transition-[opacity,border-color]",
+        "relative overflow-hidden rounded-md border bg-card text-left transition-[opacity,border-color]",
         status === "added"
-          ? "border-success/70 bg-[color-mix(in_oklab,var(--success)_6%,var(--card))]"
+          ? "border-success/70"
           : status === "removed"
-            ? "border-destructive/70 bg-[color-mix(in_oklab,var(--destructive)_6%,var(--card))]"
+            ? "border-destructive/70"
             : status
-              ? "border-warning/60 bg-[color-mix(in_oklab,var(--warning)_7%,var(--card))]"
-              : "border-foreground/14",
+              ? "border-warning/70"
+              : "border-foreground/20",
         selected && "border-brand ring-1 ring-brand",
         faded && "opacity-40",
       )}
     >
-      <div className="flex items-baseline gap-2">
+      <div
+        className={cn(
+          "flex items-baseline gap-2 border-b border-foreground/10 px-2.5 py-1",
+          status === "added"
+            ? "bg-[color-mix(in_oklab,var(--success)_12%,var(--card))]"
+            : status === "removed"
+              ? "bg-[color-mix(in_oklab,var(--destructive)_12%,var(--card))]"
+              : status
+                ? "bg-[color-mix(in_oklab,var(--warning)_12%,var(--card))]"
+                : "bg-secondary/60",
+        )}
+      >
         <p className={cn("amc-name min-w-0 flex-1 font-mono text-[12px] font-medium [overflow-wrap:anywhere]", status === "removed" && "line-through")} title={tableLabel(t)}>
           {tableLabel(t)}
         </p>
         {row.findings.length > 0 && <TriangleAlert className="size-3 shrink-0 self-center" style={{ color: concern.text }} aria-label={`${row.findings.length} finding(s)`} />}
-        <span className="amc-count shrink-0 font-mono text-[11px] text-muted-foreground" title={`${t.columns.length} column(s)`}>
-          {t.columns.length}
-        </span>
+        {status && status !== "changed" && <span className={cn("shrink-0 text-[10px]", STATUS_STYLES[status]?.className)}>{STATUS_STYLES[status]?.word}</span>}
       </div>
-      {status === "renamed" && <p className="amc-desc truncate font-mono text-[10px] text-muted-foreground">was {c?.renamedFrom}</p>}
-      {changedCols.length > 0 && (
-        <ul className="amc-desc mt-0.5 space-y-px font-mono text-[10px]">
-          {changedCols.slice(0, CARD_COLUMNS).map((d) => (
-            <li key={`${d.status}:${d.name}`} className="flex min-w-0 gap-1">
-              <span className={cn("w-2 shrink-0", d.status === "added" ? "text-success" : d.status === "removed" ? "text-destructive" : "text-warning")}>
-                {d.status === "added" ? "+" : d.status === "removed" ? "−" : "~"}
+      {status === "renamed" && <p className="truncate px-2.5 pt-0.5 font-mono text-[10px] text-muted-foreground">was {c?.renamedFrom}</p>}
+      <ul className="py-0.5 font-mono text-[10.5px] leading-[17px]">
+        {shown.map((col) => {
+          const mark = col.mark ? MARKS[col.mark] : null;
+          return (
+            <li key={`${col.mark ?? ""}:${col.name}`} data-port={col.mark === "removed" ? undefined : col.name} className={cn("flex min-w-0 items-center gap-1 px-2.5", col.mark === "removed" && "opacity-70")}>
+              <span className={cn("w-2 shrink-0 text-center", mark?.[1])}>{mark?.[0] ?? ""}</span>
+              <span className="w-3.5 shrink-0 text-[9px] text-muted-foreground" title={col.pk ? "Primary key" : col.fk ? "Foreign key" : undefined}>
+                {col.pk ? <KeyRound className="size-2.5 text-warning" aria-label="Primary key" /> : col.fk ? "fk" : ""}
               </span>
-              <span className={cn("min-w-0 truncate", d.status === "removed" && "line-through")}>{d.status === "renamed" ? `${d.from} → ${d.name}` : d.name}</span>
+              <span className={cn("min-w-0 flex-1 truncate", col.pk && "font-medium", col.mark === "removed" && "line-through")} title={col.from ? `${col.from} → ${col.name}` : col.name}>
+                {col.name}
+              </span>
+              <span className="max-w-[45%] shrink-0 truncate text-muted-foreground" title={col.type}>
+                {col.type}
+                {col.nullable && !col.pk ? "?" : ""}
+              </span>
             </li>
-          ))}
-          {changedCols.length > CARD_COLUMNS && <li className="pl-3 text-muted-foreground">+{changedCols.length - CARD_COLUMNS} more</li>}
-        </ul>
-      )}
+          );
+        })}
+        {more > 0 && <li className="px-2.5 pl-[2.1rem] text-muted-foreground">+{more} more</li>}
+        {shown.length === 0 && <li className="px-2.5 text-muted-foreground">no columns read</li>}
+      </ul>
     </div>
   );
 }
@@ -236,17 +290,32 @@ export function DataView({
       for (const f of r.table.fks) {
         if (!rowById.has(f.refTable) || f.refTable === r.table.id) continue;
         const isNew = r.change?.status !== "added" && added.has(f.columns.join(","));
-        out.push({ id: `${r.table.id}->${f.refTable}:${f.columns.join(",")}`, source: r.table.id, target: f.refTable, label: f.columns.join(", "), weight: 1, ...(f.inferred ? { dashed: true } : {}), ...(isNew ? { tone: "new" as const } : {}) });
+        out.push({
+          id: `${r.table.id}->${f.refTable}:${f.columns.join(",")}`,
+          source: r.table.id,
+          target: f.refTable,
+          label: `${f.columns.join(", ")} → ${f.refColumns.join(", ")}`,
+          weight: 1,
+          sourcePort: f.columns[0],
+          ...(f.refColumns[0] ? { targetPort: f.refColumns[0] } : {}),
+          ...(f.inferred ? { dashed: true } : {}),
+          ...(isNew ? { tone: "new" as const } : {}),
+        });
       }
       for (const f of r.change?.status === "changed" || r.change?.status === "renamed" ? r.change.fks.removed : []) {
-        if (rowById.has(f.refTable)) out.push({ id: `${r.table.id}-x>${f.refTable}:${f.columns.join(",")}`, source: r.table.id, target: f.refTable, label: f.columns.join(", "), weight: 1, tone: "removed" });
+        if (rowById.has(f.refTable)) out.push({ id: `${r.table.id}-x>${f.refTable}:${f.columns.join(",")}`, source: r.table.id, target: f.refTable, label: `${f.columns.join(", ")} → ${f.refColumns.join(", ")}`, weight: 1, tone: "removed" });
       }
     }
     return out;
   }, [canvasRows, rowById]);
+  // Boxes only for owning components / Postgres schemas, and only when there
+  // are two or more: a box per name prefix (or one box around everything)
+  // says little, and boxes switch ELK to hierarchical layout, which stops it
+  // packing unconnected tables side by side.
   const groups = useMemo(() => {
     if (showChanges) return undefined;
-    return [...groupTables(canvasRows.map((r) => r.table))].map(([id, g]) => ({ id, label: g.label, cardIds: g.ids }));
+    const boxes = [...groupTables(canvasRows.map((r) => r.table))].filter(([id]) => !id.startsWith("p:"));
+    return boxes.length >= 2 ? boxes.map(([id, g]) => ({ id, label: g.label, cardIds: g.ids })) : undefined;
   }, [canvasRows, showChanges]);
   const renderCard = useCallback(
     (id: string) => {
@@ -256,7 +325,7 @@ export function DataView({
     [rowById, selectedId, context],
   );
   const highlighted = useMemo(() => new Set(selectedId && rowById.has(selectedId) ? [selectedId] : []), [selectedId, rowById]);
-  const layoutKey = `${activeDb?.id}|${showChanges}|${canvasRows.map((r) => `${r.table.id}:${r.change?.status ?? ""}:${r.change?.columns.length ?? 0}`).join(",")}|${links.length}`;
+  const layoutKey = `${activeDb?.id}|${showChanges}|${canvasRows.map((r) => `${r.table.id}:${r.table.columns.length}:${r.change?.status ?? ""}:${r.change?.columns.length ?? 0}`).join(",")}|${links.length}`;
 
   // --- List: All tables grouped like the canvas boxes; Changed only flat ----------
   const sections = useMemo(() => {
@@ -404,7 +473,8 @@ export function DataView({
           <p className="text-foreground">No database schema found.</p>
           <p className="mt-2 leading-relaxed">
             Looked for migrations (Prisma, Drizzle, TypeORM, Django, Alembic, golang-migrate, dbmate, goose, Supabase, Flyway, numbered <span className="font-mono">.sql</span> folders),
-            <span className="font-mono"> schema.prisma</span>, Drizzle tables, <span className="font-mono">schema.sql</span> and ORM models (TypeORM, Django, SQLAlchemy, SQLModel). Rails, Sequelize, Knex
+            <span className="font-mono"> schema.prisma</span>, Drizzle tables, <span className="font-mono">schema.sql</span>, ORM models (TypeORM, Django, SQLAlchemy, SQLModel) and
+            CREATE / ALTER statements in code strings. Rails, Sequelize, Knex
             migrations, Mongoose and JPA aren&apos;t read yet.
           </p>
         </div>
@@ -426,7 +496,8 @@ export function DataView({
           layoutKey={layoutKey}
           onCardClick={(id) => onSelect(selectedId === id ? null : id)}
           onPaneClick={() => onSelect(null)}
-          alwaysLabelEdges={16}
+          alwaysLabelEdges={0}
+          ports
           elkOptions={ELK_OPTIONS}
           groups={groups}
         >

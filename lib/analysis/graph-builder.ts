@@ -105,7 +105,7 @@ const READ_CONCURRENCY = 24;
  * Bumped whenever what a parse produces changes (queries, extractors, the
  * cached shape), so stale cache entries are never read back.
  */
-export const PARSE_VERSION = 5;
+export const PARSE_VERSION = 7;
 
 /** What a file's own syntax says — the cached unit. */
 export interface CachedParse {

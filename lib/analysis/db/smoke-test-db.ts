@@ -100,6 +100,39 @@ const BASE: Record<string, string> = {
   "appdb/src/db/items.ts": lines("export function getItem(db: any, id: string) {", '  return db.prepare("SELECT id, name, price FROM items WHERE id = ?").get(id);', "}"),
   "appdb/src/db/smoke-test-items.ts": lines("export function setup(db: any) {", '  db.exec("CREATE TABLE scratch (id INTEGER PRIMARY KEY)");', "}"),
   "gosvc/store.go": lines("package main", "", "var schema = []string{", "	`CREATE TABLE gadgets (id INTEGER PRIMARY KEY)`,", "	`ALTER TABLE gadgets ADD COLUMN name TEXT`,", "}"),
+  // A startup runner of tagged templates (Neon / @vercel/postgres / postgres.js), one createX() per table, idempotent ALTERs after.
+  "neon/migrations/migrate.ts": lines(
+    'import { sql } from "@/actions/db/db_actions";',
+    "export async function migrate() {",
+    "  await createMembers();",
+    "  await createMemos();",
+    "}",
+    "async function createMembers() {",
+    "  await sql`",
+    "    CREATE TABLE IF NOT EXISTS members (",
+    "      id SERIAL PRIMARY KEY,",
+    "      username TEXT NOT NULL UNIQUE",
+    "    )",
+    "  `;",
+    "  await sql`INSERT INTO members (username) VALUES (${'admin'}) ON CONFLICT DO NOTHING`;",
+    "  await sql`ALTER TABLE members ADD COLUMN IF NOT EXISTS invite_token TEXT`;",
+    "}",
+    "async function createMemos() {",
+    "  await sql`CREATE TABLE IF NOT EXISTS memos (id SERIAL PRIMARY KEY, member_id INTEGER NOT NULL REFERENCES members(id), body TEXT)`;",
+    "  await sql`CREATE INDEX IF NOT EXISTS memos_member_idx ON memos (member_id)`;",
+    "}",
+  ),
+  "neon/actions/db/db_actions.ts": lines('import { neon } from "@neondatabase/serverless";', "export const sql = neon(process.env.DATABASE_URL!);"),
+  "neon/actions/memos.ts": lines('import { sql } from "./db/db_actions";', "export async function memosOf(id: number) {", "  return sql`SELECT id, body FROM memos WHERE member_id = ${id}`;", "}"),
+  // Drizzle's and Kysely's sql tag running DDL, and Python cursor.execute — one CREATE TABLE IF NOT EXISTS per file.
+  "kyapp/src/setup.ts": lines(
+    'import { sql } from "drizzle-orm";',
+    "export async function setup(db: any) {",
+    "  await db.execute(sql`CREATE TABLE IF NOT EXISTS widgets (id serial PRIMARY KEY, label text NOT NULL)`);",
+    "  await sql`ALTER TABLE widgets ADD COLUMN IF NOT EXISTS color text`.execute(db);",
+    "}",
+  ),
+  "pyapp/store.py": lines("import sqlite3", "def ensure(cur):", '    cur.execute("""CREATE TABLE IF NOT EXISTS gizmos (id INTEGER PRIMARY KEY, name TEXT)""")'),
 
   // --- Prisma: schema + migrations, an endpoint through a Prisma delegate, SQL text naming an unknown table ---
   "package.json": JSON.stringify({ name: "fixture", dependencies: { next: "15.0.0" } }),
@@ -421,6 +454,17 @@ async function main(): Promise<void> {
     check("a smoke test's DDL isn't the app's database", !db.databases.some((d) => d.tables.some((t) => t.name === "scratch")));
     check("the query file's SQL links to the in-code table", hasUseOf(appItems?.id, "appdb/src/db/items.ts", "sql"));
     check("the migrations file itself isn't a use", !db.uses.some((u) => u.file === "appdb/src/db/schema.ts"));
+    // Startup runners with tagged templates, Drizzle/Kysely sql, Python cursor.execute (all loose DDL, one database).
+    const loose = db.databases.find((d) => d.tables.some((t) => t.name === "members"));
+    const members = loose?.tables.find((t) => t.name === "members");
+    const memos = loose?.tables.find((t) => t.name === "memos");
+    check("tagged sql`CREATE TABLE …` (Neon): the table, its later ALTER replayed", members?.columns.map((c) => c.name).join(",") === "id,username,invite_token", JSON.stringify(loose?.tables.map((t) => [t.name, t.columns.map((c) => c.name)])));
+    check("tagged sql: FK and index across createX() functions", memos?.fks[0]?.refTable === members?.id && memos?.indexes.some((i) => i.name === "memos_member_idx") === true, JSON.stringify(memos));
+    check("the runner's INSERT with a hole isn't DDL", !loose?.opaque.some((o) => /insert/i.test(o.text)), JSON.stringify(loose?.opaque));
+    check("a query file's tagged SELECT links to the in-code table", hasUseOf(memos?.id, "neon/actions/memos.ts", "sql"));
+    check("Drizzle db.execute(sql`…`) and Kysely sql`…`.execute(db)", loose?.tables.find((t) => t.name === "widgets")?.columns.map((c) => c.name).join(",") === "id,label,color");
+    check("Python cursor.execute DDL", Boolean(loose?.tables.find((t) => t.name === "gizmos")));
+    check("one CREATE per file with no file changing another's table: no order problem", loose?.orderProblems.length === 0, JSON.stringify(loose?.orderProblems));
     const goInCode = db.databases.find((d) => d.id === "sql-in-code:gosvc/store.go");
     check("a Go slice of DDL literals (lexical): migrations in element order", goInCode?.migrations.length === 2 && goInCode.tables.find((t) => t.name === "gadgets")?.columns.length === 2, JSON.stringify(goInCode?.migrations.map((m) => m.name)));
 

@@ -10,7 +10,9 @@
  *   - other DDL literals of a file are a schema-file-like source, replayed
  *     in line order;
  *   - DDL spread over several files outside any array has no order between
- *     the files: each file is replayed on its own and the problem is shown.
+ *     the files: each file is replayed on its own. That only matters when a
+ *     file alters a table another file creates, and only then is the problem
+ *     shown — a `CREATE TABLE IF NOT EXISTS` per action file is fine.
  * A statement with a template hole (`${…}`) is kept opaque, never guessed.
  * Test and fixture files never count (their DDL builds throwaway databases),
  * and neither do files another tool already reads as migrations.
@@ -64,6 +66,9 @@ export interface SqlInCodeOutput {
 export function resolveSqlInCode(code: ReadonlyArray<{ file: string; facts: DbCodeFacts }>, exclude: ReadonlySet<string>): SqlInCodeOutput {
   const migrations: MigrationSet[] = [];
   const decls: DeclSet[] = [];
+  /** Per file with loose DDL: the tables it creates, and the ones it changes without creating them. */
+  const creates = new Map<string, Set<string>>();
+  const touches = new Map<string, Set<string>>();
   for (const { file, facts } of code) {
     if (!facts.ddl?.length || exclude.has(file) || TEST_PATH.test(file)) continue;
     const groups = new Map<string, NonNullable<DbCodeFacts["ddl"]>>();
@@ -90,7 +95,17 @@ export function resolveSqlInCode(code: ReadonlyArray<{ file: string; facts: DbCo
     const loose = facts.ddl.filter((d) => !inArray.has(d)).sort((a, b) => a.line - b.line);
     if (loose.length === 0) continue;
     const state = new SchemaState("schema", false);
-    for (const d of loose) for (const op of ddlOps(d.text, d.line)) state.apply(op, { id: file, name: baseOf(file), file });
+    const made = new Set<string>();
+    const changed = new Set<string>();
+    for (const d of loose) {
+      for (const op of ddlOps(d.text, d.line)) {
+        if (op.op === "createTable") made.add(op.table.toLowerCase());
+        else if ("table" in op && typeof op.table === "string" && op.op !== "dropTable") changed.add(op.table.toLowerCase());
+        state.apply(op, { id: file, name: baseOf(file), file });
+      }
+    }
+    creates.set(file, made);
+    touches.set(file, new Set([...changed].filter((t) => !made.has(t))));
     const tables: TableDecl[] = [...state.tables.values()].map((t) => ({
       name: t.schema ? `${t.schema}.${t.name}` : t.name,
       columns: t.columns,
@@ -114,10 +129,20 @@ export function resolveSqlInCode(code: ReadonlyArray<{ file: string; facts: DbCo
     });
   }
   // Loose DDL in several files (no migration array of their own): no order between the files.
-  const standalone = decls.filter((d) => !migrations.some((m) => m.root === d.root || m.root.startsWith(`${d.root}#`)));
+  // Only a problem when a file changes a table another file creates.
+  // Every file with loose DDL outside a migration array — one that only ALTERs has no tables of its own.
+  const roots = new Set([...creates.keys()].filter((file) => !migrations.some((m) => m.root === file || m.root.startsWith(`${file}#`))));
+  const crossing: string[] = [];
+  for (const [file, tables] of touches) {
+    if (!roots.has(file)) continue;
+    for (const t of tables) {
+      const owner = [...creates].find(([other, made]) => other !== file && roots.has(other) && made.has(t));
+      if (owner) crossing.push(`${file} changes ${t} from ${owner[0]}`);
+    }
+  }
   const problem =
-    standalone.length > 1
-      ? `DDL in ${standalone.length} files outside any array (${standalone.map((d) => d.root).slice(0, 4).join(", ")}${standalone.length > 4 ? ", …" : ""}): each file is replayed in line order, but the order between the files is unknown — a statement on a table another file defines is kept as not modelled.`
+    roots.size > 1 && crossing.length > 0
+      ? `DDL in ${roots.size} files outside any array, with no order between them, and ${crossing.slice(0, 3).join("; ")}${crossing.length > 3 ? `; +${crossing.length - 3} more` : ""}: those statements are kept as not modelled.`
       : undefined;
   return { migrations, decls, ...(problem ? { problem } : {}) };
 }

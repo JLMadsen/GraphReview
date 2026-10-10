@@ -325,18 +325,24 @@ const FILE_CONTEXT_LINES = 12;
  * Syntax-highlighted by the file's language, the whole file at once so a
  * windowed view is coloured as it reads in the file.
  */
-function FileText({
+export function FileText({
   content,
   filePath,
   highlightRange,
   addedLines,
   whole = false,
+  onLineClick,
+  scrollToRange = true,
 }: {
   content: string;
   filePath?: string;
   highlightRange: [number, number] | null;
   addedLines?: ReadonlySet<number>;
   whole?: boolean;
+  /** Line numbers become buttons (the Files view's line link). */
+  onLineClick?: (line: number) => void;
+  /** `false`: a range picked by clicking a line number doesn't scroll the view. */
+  scrollToRange?: boolean;
 }) {
   const lines = useMemo(() => content.replace(/\r?\n$/, "").split(/\r?\n/), [content]);
   const html = useMemo(() => highlightLines(lines, languageForPath(filePath)), [lines, filePath]);
@@ -345,7 +351,7 @@ function FileText({
   const to = windowed && highlightRange ? Math.min(lines.length, highlightRange[1] + FILE_CONTEXT_LINES) : lines.length;
   let firstAdded: number | null = null;
   if (addedLines) for (const n of addedLines) if (firstAdded === null || n < firstAdded) firstAdded = n;
-  const scrollLine = whole ? (highlightRange?.[0] ?? firstAdded) : null;
+  const scrollLine = whole ? ((scrollToRange ? highlightRange?.[0] : undefined) ?? firstAdded) : null;
   const scrollRef = useRef<HTMLTableRowElement>(null);
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ block: "center" });
@@ -374,8 +380,10 @@ function FileText({
                 <td
                   className={cn(
                     "w-10 shrink-0 border-r border-border/40 px-1.5 text-right font-mono text-[10px] text-muted-foreground select-none",
-                    added && "border-l-[3px] border-l-success text-success/80"
+                    added && "border-l-[3px] border-l-success text-success/80",
+                    onLineClick && "cursor-pointer hover:text-foreground"
                   )}
+                  onClick={onLineClick ? () => onLineClick(n) : undefined}
                 >
                   {n}
                 </td>

@@ -97,8 +97,8 @@ function gitEnv(): NodeJS.ProcessEnv {
   return { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" };
 }
 
-/** Runs git to completion and returns stdout as a Buffer. */
-function gitOutput(cwd: string, args: string[]): Promise<Buffer> {
+/** Runs git to completion and returns stdout as a Buffer. Also reads image blobs for the Files view (lib/jobs/repo-tree.ts). */
+export function gitOutput(cwd: string, args: string[]): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const child = spawn("git", [...GIT_ARGS, ...args], { cwd, env: gitEnv(), windowsHide: true });
     const out: Buffer[] = [];
