@@ -28,8 +28,13 @@ import {
 } from "@/lib/ai/app-map";
 import type { AiProviderConfig } from "@/lib/ai";
 import {
+  applySplit,
   buildAppMap,
   classifyLayer,
+  groupsForLevel,
+  layerResolver,
+  mergeBack,
+  splitByFolders,
   compactPlacements,
   heuristicFeatureGroups,
   matchMember,
@@ -220,6 +225,43 @@ function partA(): void {
   check("stored feature: leftovers placed by heuristic", featAi.unplaced === FILES.length - 3);
 }
 
+function partC(): void {
+  console.log("C. split up / merge back");
+  const stored: StoredAppMap = {
+    level: "features",
+    groups: [
+      { key: "core", name: "Core", description: "Everything", explanation: "All of it.", members: ["app/", "components/", "lib/"] },
+      { key: "worker", name: "Worker", members: ["worker/"] },
+    ],
+    edges: [{ from: "worker", to: "core", label: "runs", explanation: "The worker runs the jobs." }],
+    model: "m",
+    createdAt: "t",
+  };
+  const card = groupsForLevel(INPUT, "features", stored, layerResolver(null)).groups.find((g) => g.key === "core")!;
+  const parts = splitByFolders(INPUT, card.files, card.name);
+  check("split by module: big modules kept, small ones in Other", parts.map((p) => `${p.name}:${p.files.length}`).join() === "jobs:4,graph:3,Other Core:7", JSON.stringify(parts.map((p) => [p.name, p.files.length])));
+  const split = applySplit(INPUT, stored, card, parts);
+  check("split: the card is gone, its parts take its place", split.groups.map((g) => g.key).join() === "core--jobs,core--graph,core--other-core,worker", split.groups.map((g) => g.key).join());
+  check("split: parts compact to folders they own", split.groups.find((g) => g.key === "core--jobs")?.members.join() === "lib/jobs/", JSON.stringify(split.groups.find((g) => g.key === "core--jobs")?.members));
+  check("split: the card's connection notes are set aside", split.edges.length === 0);
+  const after: StoredAppMap = { ...stored, groups: split.groups, edges: split.edges };
+  const map = buildAppMap(INPUT, "features", after, null);
+  check("split: every file still on a stored card", map.unplaced === 0, String(map.unplaced));
+  check("split: parts know where they came from", map.nodes.filter((n) => n.splitFrom === "Core").length === 3);
+  check("split: other cards untouched", map.nodes.find((n) => n.id === "feat:worker")?.files.join() === "worker/index.ts");
+  const merged = mergeBack(after, "core--graph");
+  check("merge back: one card again, as it was", merged.groups.map((g) => g.key).join() === "core,worker" && merged.groups[0].explanation === "All of it." && merged.groups[0].members.join() === "app/,components/,lib/");
+  check("merge back: connection notes restored", merged.edges.length === 1 && merged.edges[0].label === "runs");
+  check("merge back: only split cards", (() => {
+    try {
+      mergeBack(stored, "worker");
+      return false;
+    } catch {
+      return true;
+    }
+  })());
+}
+
 async function partB(): Promise<void> {
   console.log("B. AI calls against the mock server");
   const folders: AppMapAiFolder[] = [
@@ -325,6 +367,7 @@ async function partB(): Promise<void> {
 
 async function main(): Promise<void> {
   partA();
+  partC();
   await partB();
   console.log(failures === 0 ? "\nAll checks passed." : `\n${failures} check(s) FAILED.`);
   if (failures > 0) process.exitCode = 1;

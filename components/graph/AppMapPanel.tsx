@@ -15,7 +15,7 @@
 // whose image ships the card's code — and the env vars its code reads that
 // nothing sets.
 
-import { ArrowRight, X } from "lucide-react";
+import { ArrowRight, LoaderCircle, Merge, Scissors, X } from "lucide-react";
 import { useEffect, useMemo } from "react";
 import { ToolIcon } from "./InfraView";
 import { deployedAs, resourceLabel } from "./infra-view-model";
@@ -23,8 +23,10 @@ import type { InfraCatalog } from "./infra-types";
 import { LayerBar } from "./AppMapCard";
 import { AssessmentGlyph } from "./PrMapNode";
 import { Spark } from "./Spark";
+import type { UseAppMapCardActionsResult } from "./useAppMap";
 import {
   APP_LAYERS,
+  MIN_SPLIT_FILES,
   layerTint,
   type AppMapEdgeDTO,
   type AppMapLevel,
@@ -49,6 +51,10 @@ export interface AppMapPanelProps {
   /** The infra catalog, for "Deployed as" and env vars nothing sets. */
   infra?: InfraCatalog | null;
   onOpenInfra?: (resourceId: string) => void;
+  /** "Split up" / "Merge back" for features cards. */
+  cardActions?: UseAppMapCardActionsResult;
+  /** An AI provider is set up: the model chooses a split's parts (else module and folder do). */
+  aiConfigured?: boolean;
 }
 
 const LEVEL_NOUN: Record<AppMapLevel, string> = {
@@ -127,6 +133,8 @@ export function AppMapPanel({
   onHoverEdge,
   infra,
   onOpenInfra,
+  cardActions,
+  aiConfigured,
 }: AppMapPanelProps) {
   const byId = new Map(map.nodes.map((n) => [n.id, n]));
   const card = selection.kind === "card" ? byId.get(selection.id) : undefined;
@@ -224,6 +232,35 @@ export function AppMapPanel({
         <CloseButton onClick={() => onSelect(null)} />
       </div>
       {node.description && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{node.description}</p>}
+      {map.level === "features" && cardActions && (node.files.length >= MIN_SPLIT_FILES || node.splitFrom) && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          {node.files.length >= MIN_SPLIT_FILES && (
+            <CardAction
+              onClick={() => cardActions.split(node.id)}
+              disabled={cardActions.busyCard !== null}
+              busy={cardActions.busyCard === node.id}
+              icon={<Scissors className="size-3" aria-hidden />}
+              title={
+                aiConfigured
+                  ? "Have the model cut this feature into smaller ones (one call, then it describes the new cards)"
+                  : "Cut this feature into smaller ones by module and folder (set up an AI provider to let the model choose)"
+              }
+            >
+              Split up
+            </CardAction>
+          )}
+          {node.splitFrom && (
+            <CardAction
+              onClick={() => cardActions.merge(node.id)}
+              disabled={cardActions.busyCard !== null}
+              icon={<Merge className="size-3" aria-hidden />}
+              title={`Put "${node.splitFrom}" back together — every card split out of it becomes one again, described as it was`}
+            >
+              Merge back into {node.splitFrom}
+            </CardAction>
+          )}
+        </div>
+      )}
 
       {node.explanation ? (
         <Section title={<>How it works <Spark className="ml-0.5" /></>}>
@@ -369,6 +406,35 @@ export function AppMapPanel({
         </Section>
       )}
     </div>
+  );
+}
+
+function CardAction({
+  onClick,
+  disabled,
+  busy,
+  icon,
+  title,
+  children,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  busy?: boolean;
+  icon: React.ReactNode;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className="flex min-w-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:border-foreground/40 hover:text-foreground disabled:opacity-50"
+    >
+      {busy ? <LoaderCircle className="size-3 animate-spin" aria-hidden /> : icon}
+      <span className="truncate">{children}</span>
+    </button>
   );
 }
 

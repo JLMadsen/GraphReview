@@ -17,6 +17,7 @@ import { resolveDjango } from "./sources/django";
 import { resolveDrizzle } from "./sources/drizzle";
 import { resolvePrisma } from "./sources/prisma";
 import { resolveSqlFiles } from "./sources/sql-files";
+import { resolveSqlInCode } from "./sources/sql-in-code";
 import { alembicMigrations, sqlalchemyModels } from "./sources/sqlalchemy";
 import { typeormEntities, typeormMigrations } from "./sources/typeorm";
 import { guessDialect } from "./sql";
@@ -67,6 +68,7 @@ const FAMILIES: Record<DbTool, string[]> = {
   supabase: ["sql"],
   flyway: ["sql"],
   sql: ["sql", "typeorm", "sqlalchemy", "prisma", "drizzle", "django"],
+  "sql-in-code": ["sql"],
 };
 
 /** Bookkeeping tables of the migration tools themselves — never "a table no model maps". */
@@ -77,6 +79,8 @@ interface DbBuild {
   name: string;
   set?: MigrationSet;
   decls: DeclSet[];
+  /** Order problems of a database without a migration set of its own. */
+  problems?: string[];
 }
 
 const RANK: Record<DbSourceKind, number> = { migration: 0, schema: 1, model: 2 };
@@ -103,10 +107,15 @@ function fromDecl(t: TableDecl, kind: DbSourceKind): TableState {
 
 const lc = (s: string) => s.toLowerCase();
 
-function buildDatabase(build: DbBuild, hints: readonly DbDialect[]): Database {
+/**
+ * `hints` are the dialects the repo's code names (driver imports, URLs,
+ * settings). With one database they say its dialect; with several they
+ * can't say which is which, so they come after a guess from the SQL itself.
+ */
+function buildDatabase(build: DbBuild, hints: readonly DbDialect[], onlyDatabase: boolean): Database {
   const sources: DbSourceRef[] = [];
   const tools = new Set<DbTool>();
-  const problems = [...(build.set?.problems ?? [])];
+  const problems = [...(build.set?.problems ?? []), ...(build.problems ?? [])];
   // 1. Migrations, replayed.
   const state = new SchemaState("migration", true);
   const migrations = build.set?.migrations ?? [];
@@ -227,7 +236,7 @@ function buildDatabase(build: DbBuild, hints: readonly DbDialect[]): Database {
   dialect ??= build.decls.filter((d) => d.tool !== "sql").map((d) => d.dialect).find(Boolean);
   let dialectGuessed = false;
   const sqlFileDialect = build.decls.filter((d) => d.tool === "sql").map((d) => d.dialect).find(Boolean);
-  if (!dialect && hints.length === 1) dialect = hints[0];
+  if (!dialect && onlyDatabase && hints.length === 1) dialect = hints[0];
   if (!dialect && (build.set?.dialect || sqlFileDialect)) {
     dialect = build.set?.dialect ?? sqlFileDialect;
     dialectGuessed = true;
@@ -239,6 +248,10 @@ function buildDatabase(build: DbBuild, hints: readonly DbDialect[]): Database {
       dialect = g;
       dialectGuessed = true;
     }
+  }
+  if (!dialect && hints.length === 1) {
+    dialect = hints[0];
+    dialectGuessed = true;
   }
   return {
     id: build.id,
@@ -283,7 +296,7 @@ function sqlSchemaDecl(file: string, ops: DbOp[], dialect?: DbDialect): DeclSet 
 
 export function buildDbSchema(input: BuildDbSchemaInput): DbSchema {
   const code = input.code.map(({ file, facts }) => ({ file, facts }));
-  if (input.dbFiles.length === 0 && !code.some(({ facts }) => facts.entities || facts.migrations || facts.tables || facts.classes || facts.assigns)) {
+  if (input.dbFiles.length === 0 && !code.some(({ facts }) => facts.entities || facts.migrations || facts.tables || facts.classes || facts.assigns || facts.ddl)) {
     return { ...EMPTY_DB_SCHEMA, ...linkTables([], input) };
   }
   const prisma = run("Prisma", () => resolvePrisma(input.dbFiles), { migrations: [], decls: [], claimed: new Set<string>() });
@@ -296,7 +309,11 @@ export function buildDbSchema(input: BuildDbSchemaInput): DbSchema {
   const saDecls = run("SQLAlchemy", () => sqlalchemyModels(code), []);
   const alembic = run("Alembic", () => alembicMigrations(code), []);
 
-  const sets: MigrationSet[] = [...prisma.migrations, ...drizzle.migrations, ...typeormSets, ...django.migrations, ...alembic, ...sql.migrations];
+  const toolSets: MigrationSet[] = [...prisma.migrations, ...drizzle.migrations, ...typeormSets, ...django.migrations, ...alembic, ...sql.migrations];
+  // DDL in the app's own literals — not in files another tool reads as migrations (a TypeORM
+  // migration's queryRunner.query, Alembic's op.execute, Django's RunSQL).
+  const inCode = run("SQL in code", () => resolveSqlInCode(code, new Set(toolSets.flatMap((st) => st.migrations.map((m) => m.file)))), { migrations: [], decls: [] });
+  const sets: MigrationSet[] = [...toolSets, ...inCode.migrations];
   const decls: DeclSet[] = [
     ...prisma.decls,
     ...drizzle.decls,
@@ -313,6 +330,22 @@ export function buildDbSchema(input: BuildDbSchemaInput): DbSchema {
     set: s,
     decls: [],
   }));
+  // A file's loose DDL joins its own migration array's database; loose DDL of files without one is one database.
+  let looseInCode: DbBuild | undefined;
+  for (const d of inCode.decls) {
+    if (d.tables.length === 0 && d.enums.length === 0) continue;
+    const own = builds.find((b) => b.set?.tool === "sql-in-code" && (b.set.root === d.root || b.set.root.startsWith(`${d.root}#`)));
+    if (own) {
+      own.decls.push(d);
+      continue;
+    }
+    if (!looseInCode) {
+      looseInCode = { id: `sql-in-code:${d.root}`, name: d.root, decls: [], ...(inCode.problem ? { problems: [inCode.problem] } : {}) };
+      builds.push(looseInCode);
+    }
+    looseInCode.decls.push(d);
+  }
+  if (looseInCode && looseInCode.decls.length > 1) looseInCode.name = `SQL in code (${looseInCode.decls.length} files)`;
   for (const d of decls) {
     const families = FAMILIES[d.tool];
     let best: DbBuild | undefined;
@@ -351,7 +384,7 @@ export function buildDbSchema(input: BuildDbSchemaInput): DbSchema {
   }
   const hints = [...new Set(code.flatMap(({ facts }) => facts.hints ?? []))];
   const databases = builds
-    .map((b) => run(`database ${b.id}`, () => buildDatabase(b, hints), null))
+    .map((b) => run(`database ${b.id}`, () => buildDatabase(b, hints, builds.length === 1), null))
     .filter((d): d is Database => d !== null && (d.tables.length > 0 || d.migrations.length > 0 || d.orderProblems.length > 0));
   databases.sort((a, b) => b.tables.length - a.tables.length || a.id.localeCompare(b.id));
   const files = new Set([...input.dbFiles.filter((f) => f.facts.kind !== "none").map((f) => f.file), ...databases.flatMap((d) => [...d.migrations.map((m) => m.file), ...d.tables.flatMap((t) => t.models.map((m) => m.file))])]).size;

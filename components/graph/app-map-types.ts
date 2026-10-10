@@ -96,6 +96,25 @@ export interface AppMapNodeDTO {
   fileLayers?: Record<string, AppLayerId>;
   /** Modules contributing files, most files first. */
   modules: AppMapModuleDTO[];
+  /** Features split out of a bigger card: that card's name — "Merge back" restores it. */
+  splitFrom?: string;
+}
+
+/** Features cards with fewer files than this aren't worth splitting. */
+export const MIN_SPLIT_FILES = 8;
+
+/**
+ * A features card that reads as a catch-all: at least 30 files and at least
+ * an eighth of the repo. Such a card offers "Split up" on the card itself;
+ * any card from {@link MIN_SPLIT_FILES} files offers it in the explainer.
+ */
+export function isOversizedCard(node: Pick<AppMapNodeDTO, "files">, totalFiles: number): boolean {
+  return node.files.length >= 30 && node.files.length >= totalFiles / 8;
+}
+
+/** `feat:<key>` → `<key>`: the stored group key behind a features card. */
+export function featureKeyOf(cardId: string): string | undefined {
+  return cardId.startsWith("feat:") ? cardId.slice(5) : undefined;
 }
 
 export interface AppMapEdgeDTO {
@@ -138,9 +157,11 @@ export type AppMapPhaseDTO = "grouping" | "placing" | "explaining" | "saving";
 /**
  * `full` groups (features, architecture) and explains every card; `place`
  * (features only) keeps the stored grouping, has the model place just the
- * files none of its members cover, and re-explains the cards that grew.
+ * files none of its members cover, and re-explains the cards that grew;
+ * `split` (features only) has the model cut one card (`card`, its key) into
+ * smaller features and explains just those.
  */
-export type AppMapRunMode = "full" | "place";
+export type AppMapRunMode = "full" | "place" | "split";
 
 export interface AppMapProgressDTO {
   level: AppMapLevel;
@@ -159,6 +180,8 @@ export interface AppMapJobStatusDTO {
   /** The level the current (or last) run is/was for. */
   level?: AppMapLevel;
   mode?: AppMapRunMode;
+  /** `split` runs: the key of the card being split. */
+  card?: string;
   progress?: AppMapProgressDTO;
   error?: string;
   finishedAt?: string;

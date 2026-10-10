@@ -95,6 +95,55 @@ export function wrapperOf(signature: string | undefined): string | undefined {
   return m && !/^(async|function)$/.test(m[1]) ? m[1] : undefined;
 }
 
+/** The text inside the parentheses that open at `open`, or up to the end when the signature was cut short. */
+function parenthesised(text: string, open: number): string {
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")" && --depth === 0) return text.slice(open + 1, i);
+  }
+  return text.slice(open + 1);
+}
+
+/**
+ * What an exported route handler really is. `export const POST =
+ * withAudit("x", withAuth("map", postHandler))` is the wrappers `withAudit →
+ * withAuth` around `postHandler`; `export const GET = handle` is whatever
+ * `handle` is. The target is the declaration whose lines hold the handler's
+ * code: the wrapped function when it's named, else the last declaration
+ * followed (its inline function).
+ */
+export function unwrapExport(ctx: ApiContext, file: string, name: string, depth = 0): { wrappers: string[]; target: { file: string; name: string } } {
+  const here = { wrappers: [] as string[], target: { file, name } };
+  const decl = ctx.declById.get(`${file}#${name}`);
+  if (!decl || decl.kind === "function" || depth > 4) return here;
+  const rhs = /^[^=]*?=\s*([\s\S]+)$/.exec(decl.signature)?.[1];
+  if (!rhs) return here;
+  const fromExpr = (expr: string): { wrappers: string[]; target?: { file: string; name: string } } => {
+    const e = expr.trim().replace(/^await\s+/, "").replace(/;$/, "");
+    if (/^[\w$]+$/.test(e)) {
+      const hit = ctx.lookup(file, e);
+      if (!hit?.decl || (hit.decl.kind !== "function" && hit.decl.kind !== "const" && hit.decl.kind !== "variable")) return { wrappers: [] };
+      return unwrapExport(ctx, hit.file, hit.name, depth + 1);
+    }
+    const call = /^([\w$.]+)\s*(?:<[^(]*>)?\s*\(/.exec(e);
+    if (!call || /^(async|function)$/.test(call[1])) return { wrappers: [] };
+    const args = splitTop(parenthesised(e, call[0].length - 1), ",");
+    // The wrapped handler is usually the last argument; strings and options come first.
+    for (let i = args.length - 1; i >= 0; i--) {
+      const arg = args[i];
+      if (/^(async\b|function\b|\(|[\w$]+\s*=>)/.test(arg)) return { wrappers: [call[1]] };
+      if (/^[\w$]+$/.test(arg) || /^[\w$.]+\s*(?:<[^(]*>)?\s*\(/.test(arg)) {
+        const inner = fromExpr(arg);
+        if (inner.target || inner.wrappers.length > 0) return { wrappers: [call[1], ...inner.wrappers], target: inner.target };
+      }
+    }
+    return { wrappers: [call[1]] };
+  };
+  const found = fromExpr(rhs);
+  return { wrappers: found.wrappers, target: found.target ?? here.target };
+}
+
 /** A zod schema the handler `.parse`s or `.safeParse`s — the request body, most of the time. */
 export function zodParsedIn(ctx: ApiContext, file: string, start: number, end: number): ApiShape | undefined {
   const entry = ctx.files.get(file);
@@ -160,21 +209,27 @@ export async function resolveNext(ctx: ApiContext): Promise<PartialEndpoint[]> {
         if (local) handlers.push({ method: "ANY", qualified: local });
       }
       for (const h of handlers) {
-        const target = entry.facts.decls.some((d) => d.name === h.qualified) ? { file, name: h.qualified } : ctx.lookup(file, h.qualified);
+        const exported = entry.facts.decls.some((d) => d.name === h.qualified) ? { file, name: h.qualified } : ctx.lookup(file, h.qualified);
+        // `export const GET = withAuth(getHandler)`: the code is getHandler's, the wrappers are auth.
+        const unwrapped = exported ? unwrapExport(ctx, exported.file, exported.name) : undefined;
+        const target = unwrapped?.target ?? exported;
         const handler = (target && declHandler(ctx, target.file, target.name)) ?? { file, startLine: 1, endLine: 1, name: h.qualified };
         const decl = handler.declId ? ctx.declById.get(handler.declId) : undefined;
         const request = zodParsedIn(ctx, handler.file, handler.startLine, handler.endLine);
         const response = decl ? shapeOf(ctx, handler.file, returnTypeOf(decl.signature)) : undefined;
+        const wrappers = unwrapped?.wrappers.length ? unwrapped.wrappers : wrapperOf(decl?.signature) ? [wrapperOf(decl?.signature)!] : [];
+        const exportDecl = exported && (exported.file !== handler.file || exported.name !== handler.name) ? ctx.declById.get(`${exported.file}#${exported.name}`) : undefined;
         out.push({
           kind: "http",
           method: h.method,
           path,
           framework: "Next.js",
           handler,
+          ...(exportDecl ? { registeredAt: { file: exportDecl.file, line: exportDecl.startLine, ...(exportDecl.endLine > exportDecl.startLine ? { endLine: exportDecl.endLine } : {}) } } : {}),
           params,
           ...(request ? { request } : {}),
           ...(response && response.fields ? { response } : {}),
-          auth: [...auth, ...(wrapperOf(decl?.signature) ? [wrapperOf(decl?.signature)!] : [])],
+          auth: [...auth, ...wrappers],
         });
       }
       continue;

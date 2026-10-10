@@ -124,6 +124,11 @@ export function DbTableDetail({ row, db, tablesById, change, onFocusTable, onOpe
       )}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <SourceBadge source={t.source} />
+        {db?.tools.includes("sql-in-code") && !/\.sql$/i.test(t.definedAt.file) && (
+          <span className="text-muted-foreground" title="DDL in the app's own string literals">
+            {t.source === "migration" ? "migration (in code)" : "DDL in code"}
+          </span>
+        )}
         <button type="button" onClick={() => onOpenFile(t.definedAt.file, t.definedAt.line)} className="min-w-0 truncate font-mono hover:underline" title="Open the file">
           {t.definedAt.file}:{t.definedAt.line}
         </button>

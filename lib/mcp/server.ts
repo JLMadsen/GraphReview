@@ -67,7 +67,7 @@ Infrastructure: list_infra lists what the repo's infrastructure as code declares
 Database schema: list_tables lists the tables the repo's migrations (Prisma, Drizzle, TypeORM, Django, Alembic, plain SQL folders), schema files and ORM models declare — each column labelled with its source — with keys, FKs, the models that map them, the endpoints that read or write them (a link found only in SQL text is marked) and drift between models and migrations. get_schema_changes says what a review target does to it: tables and columns added, dropped, retyped or renamed, indexes, FKs, enums, the migrations it adds, drift it introduces, and the certain "schema" findings — from the migrations the change adds only: a dropped table or column, a NOT NULL column without a default on an existing table, a narrowed type, a column or table rename, and on Postgres CREATE INDEX without CONCURRENTLY on an existing table or an FK no index covers. Drift is never a finding.`;
 
 const shapeText = (s: ApiShape | undefined) =>
-  s ? `${s.type ?? "object"}${s.fields?.length ? ` { ${s.fields.map((f) => `${f.name}${f.required ? "" : "?"}: ${f.type}`).join("; ")} }` : ""}${s.source === "ai" ? " (inferred by a model)" : ""}` : undefined;
+  s ? `${s.type ?? "object"}${s.fields?.length ? ` { ${s.fields.map((f) => `${f.name}${f.required ? "" : "?"}: ${f.type}`).join("; ")} }` : ""}${s.source === "ai" ? " (inferred by a model)" : s.source === "code" ? " (read from the handler code)" : ""}` : undefined;
 
 /** An endpoint as an agent sees it: no reach tree, shapes as one line each. */
 function toAgentInfra(r: InfraResource, catalog: InfraCatalog) {
@@ -90,6 +90,7 @@ function toAgentEndpoint(e: Endpoint) {
     ...(e.partial ? { partial: true } : {}),
     framework: e.framework,
     ...(e.internal ? { internal: true } : {}),
+    ...(e.proxy ? { proxy: e.proxy.upstream ? `forwards to ${e.proxy.upstream}` : "forwards to a URL taken from the request" } : {}),
     ...(e.handler ? { handler: `${e.handler.file}:${e.handler.startLine} ${e.handler.name}` } : {}),
     auth: e.auth.length ? e.auth : "unknown — none found statically",
     ...(e.params.length ? { params: e.params.map((p) => `${p.name}${p.required === false ? "?" : ""} (${p.in}${p.type ? `, ${p.type}` : ""})`) } : {}),

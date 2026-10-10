@@ -270,6 +270,7 @@ export function compareSchemas(base: DbSchema | undefined, head: DbSchema | unde
   const tables: DbTableChange[] = [];
   const enums: DbEnumChange[] = [];
   const newMigrations: DbMigration[] = [];
+  const edited: NonNullable<DbChange["edited"]> = [];
   const drift: DbDriftDelta[] = [];
   const findings: DbFinding[] = [];
   const baseDbs = new Map((base?.databases ?? []).map((d) => [d.id, d]));
@@ -283,6 +284,13 @@ export function compareSchemas(base: DbSchema | undefined, head: DbSchema | unde
     const baseMigrationIds = new Set(before.migrations.map((m) => m.id));
     const added = after.migrations.filter((m) => !baseMigrationIds.has(m.id));
     newMigrations.push(...added);
+    // A migration the base already had whose statements changed (lines aside): shown, never turned into findings.
+    const opsOf = (m: DbMigration) => JSON.stringify(m.ops, (key, value) => (key === "line" ? undefined : value));
+    const baseMigrationsById = new Map(before.migrations.map((m) => [m.id, m]));
+    for (const m of after.migrations) {
+      const prev = baseMigrationsById.get(m.id);
+      if (prev && opsOf(prev) !== opsOf(m)) edited.push({ id: m.id, name: m.name, file: m.file, line: m.line });
+    }
     const renames = explicitRenames(after, added);
     const baseById = new Map(before.tables.map((t) => [t.id, t]));
     const headById = new Map(after.tables.map((t) => [t.id, t]));
@@ -348,6 +356,7 @@ export function compareSchemas(base: DbSchema | undefined, head: DbSchema | unde
     tables,
     enums,
     migrations: newMigrations,
+    ...(edited.length ? { edited } : {}),
     drift,
     findings,
     counts: {
@@ -365,5 +374,5 @@ export function compareSchemas(base: DbSchema | undefined, head: DbSchema | unde
 
 /** Whether the change touched the schema at all (the left column's Schema section shows only then). */
 export function schemaChanged(change: DbChange | undefined): boolean {
-  return Boolean(change && (change.tables.length > 0 || change.enums.length > 0 || change.migrations.length > 0 || change.findings.length > 0 || change.drift.length > 0));
+  return Boolean(change && (change.tables.length > 0 || change.enums.length > 0 || change.migrations.length > 0 || change.findings.length > 0 || change.drift.length > 0 || (change.edited?.length ?? 0) > 0));
 }

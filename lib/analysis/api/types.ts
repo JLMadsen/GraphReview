@@ -36,8 +36,27 @@ export interface ApiField {
 export interface ApiShape {
   type?: string;
   fields?: ApiField[];
-  /** Where it came from: the code's types, the OpenAPI spec, or a model's guess (✦). */
-  source: "static" | "spec" | "ai";
+  /**
+   * Where it came from: the code's types, the handler's code itself (what it
+   * reads off the request, the object literals it answers with — ./handler-code.ts),
+   * the OpenAPI spec, or a model's guess (✦).
+   */
+  source: "static" | "code" | "spec" | "ai";
+  /** Not a JSON object — a stream, a file, an image, form data with no named parts: there are no fields to read. */
+  opaque?: true;
+}
+
+/** A shape a model could still add to: no fields, or fields read from the code whose types it couldn't tell. */
+export function shapeIncomplete(shape: ApiShape | undefined): boolean {
+  if (!shape) return true;
+  if (shape.opaque) return false;
+  if (!shape.fields?.length) return true;
+  return shape.source === "code" && shape.fields.some((f) => f.type === "unknown");
+}
+
+/** Whether an endpoint takes a body at all, as far as its method says. */
+export function takesBody(e: Pick<Endpoint, "kind" | "method">): boolean {
+  return e.kind !== "http" || /^(POST|PUT|PATCH|ANY)$/.test(e.method);
 }
 
 /** The code that answers the endpoint. */
@@ -86,8 +105,13 @@ export interface Endpoint {
   group: string;
   /** Absent only for an endpoint the OpenAPI spec lists that no code was found for. */
   handler?: ApiHandler;
-  /** Where the route is registered, when that's not the handler itself (`router.get(…)` naming a function). */
-  registeredAt?: { file: string; line: number };
+  /**
+   * Where the route is registered, when that's not the handler itself
+   * (`router.get(…)` naming a function, `export const POST = withAuth(postHandler)`).
+   * `endLine` when it spans lines; the calls made there (the wrappers) count
+   * towards the reach.
+   */
+  registeredAt?: { file: string; line: number; endLine?: number };
   params: ApiParam[];
   request?: ApiShape;
   response?: ApiShape;
@@ -99,6 +123,12 @@ export interface Endpoint {
   auth: string[];
   /** Server actions: made for the app's own pages, not third parties. */
   internal?: true;
+  /**
+   * The handler forwards the request to another server and passes the answer
+   * back (./handler-code.ts). `upstream` is the host when the code names it;
+   * absent, the target comes from the request itself.
+   */
+  proxy?: { upstream?: string };
   /** What the OpenAPI spec says about it, when one describes it. */
   spec?: { file: string; summary?: string; description?: string; operationId?: string; tags?: string[] };
   /** The code and the spec disagree: only one of them has it. */

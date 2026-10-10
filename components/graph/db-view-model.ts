@@ -92,7 +92,7 @@ export function tablesByFile(schema: DbSchema | null): Map<string, Set<string>> 
 
 /** Whether the diff changed the schema — the left column's section (and its kin) show only then. */
 export const schemaChanged = (change: DbChange | undefined): change is DbChange =>
-  Boolean(change && (change.tables.length > 0 || change.enums.length > 0 || change.migrations.length > 0 || change.findings.length > 0));
+  Boolean(change && (change.tables.length > 0 || change.enums.length > 0 || change.migrations.length > 0 || change.findings.length > 0 || (change.edited?.length ?? 0) > 0));
 
 /** Per endpoint id, the tables it reaches — for the API explainer's "touches". */
 export function endpointTouches(schema: DbSchema | null): Map<string, Array<{ id: string; name: string; sqlOnly: boolean; access?: string }>> {

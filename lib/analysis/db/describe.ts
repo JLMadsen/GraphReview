@@ -77,7 +77,8 @@ export function describeSchemaChange(change: DbChange, max = 25): string[] {
   for (const c of change.tables.slice(0, max)) lines.push(describeTableChange(c));
   if (change.tables.length > max) lines.push(`(${change.tables.length - max} more table changes)`);
   for (const e of change.enums) lines.push(`enum ${e.name} ${e.status}${e.added.length ? `: + ${e.added.join(", ")}` : ""}${e.removed.length ? ` − ${e.removed.join(", ")}` : ""}`);
-  if (change.migrations.length) lines.push(`New migrations: ${change.migrations.map((m) => m.file).slice(0, 12).join(", ")}${change.migrations.length > 12 ? ", …" : ""}`);
+  if (change.migrations.length) lines.push(`New migrations: ${change.migrations.map((m) => m.name.includes(m.file) ? m.name : m.file).slice(0, 12).join(", ")}${change.migrations.length > 12 ? ", …" : ""}`);
+  for (const m of change.edited ?? []) lines.push(`Edited migration ${m.name} (${m.file}:${m.line}) — it existed before this change; a database that already ran it never sees the edit.`);
   for (const d of change.drift.slice(0, 10)) lines.push(`drift on ${d.tableName}: ${d.drift.text}`);
   return lines;
 }

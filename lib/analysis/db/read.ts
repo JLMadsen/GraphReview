@@ -181,17 +181,39 @@ const LEXICAL_LANGUAGES = new Set(["go", "java", "kotlin", "rust"]);
 /** Leading SQL comments (sqlc's `-- name: X :one`) don't stop a literal reading as SQL. */
 const LEADING_COMMENTS = /^(\s*(--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/))+/;
 
-/** String literals that start like SQL, in Go / Java / Kotlin / Rust source. `undefined` when there are none (or for other languages). */
+/** DDL at a literal's start, naming its object — a schema defined in code (same rule as ../syntax/db.mjs). */
+export const DDL_LITERAL = /^\s*(create\s+(or\s+replace\s+)?((temp|temporary|unlogged|virtual)\s+)?(table|(unique\s+)?index|type|(materialized\s+)?view)|alter\s+(table|type)|drop\s+(table|index|type|view))\s+(if\s+(not\s+)?exists\s+)?(concurrently\s+)?["`[\w]/i;
+
+/**
+ * String literals that start like SQL, in Go / Java / Kotlin / Rust source,
+ * and literals holding DDL (kept apart: a definition, not a use). A DDL
+ * literal's group is the bracket it sits in, so the elements of one slice /
+ * list / array literal are ordered migrations. `undefined` when there are
+ * none (or for other languages).
+ */
 export function scanSqlLiterals(language: string, source: string): DbCodeFacts | undefined {
   if (!LEXICAL_LANGUAGES.has(language)) return undefined;
-  if (!/\b(select|insert|update|delete|with)\b/i.test(source)) return undefined;
+  if (!/\b(select|insert|update|delete|with|create|alter|drop)\b/i.test(source)) return undefined;
   const uses: NonNullable<DbCodeFacts["uses"]> = [];
+  const ddl: NonNullable<DbCodeFacts["ddl"]> = [];
+  /** Open brackets (their offsets) around the current position, and the DDL literals counted per bracket. */
+  const brackets: number[] = [];
+  const perBracket = new Map<number, number>();
   const writes = new Set<number>();
   let line = 1;
   let i = 0;
   const n = source.length;
   const add = (text: string, at: number) => {
-    if (uses.length >= 600 || !SQLISH.test(text.replace(LEADING_COMMENTS, ""))) return;
+    const bare = text.replace(LEADING_COMMENTS, "");
+    if (DDL_LITERAL.test(bare)) {
+      if (ddl.length >= 400) return;
+      const open = brackets[brackets.length - 1];
+      const index = (perBracket.get(open ?? -1) ?? 0) + 1;
+      perBracket.set(open ?? -1, index);
+      ddl.push({ text: text.slice(0, 20000), line: at, ...(open !== undefined ? { group: `b${open}`, index } : {}) });
+      return;
+    }
+    if (uses.length >= 600 || !SQLISH.test(bare)) return;
     uses.push({ k: "sql", text: text.slice(0, 4000), line: at, lit: 1 });
     if (/^\s*(insert|update|delete)\b/i.test(text)) writes.add(at);
   };
@@ -260,6 +282,8 @@ export function scanSqlLiterals(language: string, source: string): DbCodeFacts |
       i = j + 1;
       continue;
     }
+    if (c === "(" || c === "[" || c === "{") brackets.push(i);
+    else if (c === ")" || c === "]" || c === "}") brackets.pop();
     if (c === "'" && language !== "rust") {
       // A char literal — skip it so a quote inside doesn't open a string.
       const m = /^'(\\.|[^'\\])'/.exec(source.slice(i, i + 4));
@@ -268,6 +292,15 @@ export function scanSqlLiterals(language: string, source: string): DbCodeFacts |
     }
     i++;
   }
-  if (uses.length === 0) return undefined;
-  return { uses, ...(writes.size ? { writes: [...writes] } : {}) };
+  // A group of one isn't an array of migrations.
+  const sizes = new Map<string, number>();
+  for (const d of ddl) if (d.group) sizes.set(d.group, (sizes.get(d.group) ?? 0) + 1);
+  for (const d of ddl) {
+    if (d.group && (sizes.get(d.group) ?? 0) < 2) {
+      delete d.group;
+      delete d.index;
+    }
+  }
+  if (uses.length === 0 && ddl.length === 0) return undefined;
+  return { ...(uses.length ? { uses } : {}), ...(ddl.length ? { ddl } : {}), ...(writes.size ? { writes: [...writes] } : {}) };
 }

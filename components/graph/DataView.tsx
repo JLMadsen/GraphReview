@@ -372,7 +372,7 @@ export function DataView({
           {activeDb.sources.map((s) => (
             <span key={`${s.kind}:${s.path}`} className="flex items-center gap-1">
               <SourceBadge source={s.kind} />
-              <span className="font-mono">{s.tool}</span> {s.path}
+              <span className="font-mono">{s.tool === "sql-in-code" ? (s.kind === "migration" ? "migrations in code" : "DDL in code") : s.tool}</span> {s.path}
             </span>
           ))}
           {activeDb.migrations.length > 0 && <span>{activeDb.migrations.length} migrations</span>}

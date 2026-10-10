@@ -13,7 +13,11 @@
 //
 // A `place` run (features only) skips grouping: it starts from the stored
 // grouping, places the files it doesn't cover — added since, or missed — and
-// re-explains only the cards that grew, keeping everything else.
+// re-explains only the cards that grew, keeping everything else. A `split`
+// run (features only, "Split up") has the model cut one card's files into
+// smaller features (by module and folder when its answer is unusable),
+// replaces the card with them and explains just those; each part remembers
+// the card, so "Merge back" (lib/jobs/app-map.ts `mergeBack`) restores it.
 //
 // Cards and edges are assembled by lib/jobs/app-map.ts exactly as the read
 // path does, so the explain calls see the same connections the canvas will
@@ -27,22 +31,28 @@ import {
   groupAppFeatures,
   placeAppFiles,
   placeAppLayers,
+  splitAppFeature,
   type AppExplainCard,
+  type AppFeatureGroup,
   type AppMapAiFolder,
   type TokenUsage,
 } from "@/lib/ai";
 import { getAppMapRecords, getRepoById, saveAppMapRecord } from "@/lib/db";
-import { APP_LAYERS, type AppMapLevel, type AppMapNodeDTO } from "@/components/graph/app-map-types";
+import { APP_LAYERS, MIN_SPLIT_FILES, type AppMapLevel, type AppMapNodeDTO } from "@/components/graph/app-map-types";
 import type { JobLogger } from "./analyze";
 import {
+  applySplit,
   assembleAppMap,
   cardId,
   classifyLayer,
   compactPlacements,
+  featureSlug,
   groupsForLevel,
   heuristicFeatureGroups,
   layerResolver,
   loadAppMapInput,
+  matchMember,
+  splitByFolders,
   toStoredAppMaps,
   uncoveredFiles,
   type StoredAppMap,
@@ -71,14 +81,37 @@ const MAX_PLACE_ROUNDS = 2;
 /** Paths quoted in a log line. */
 const LOG_SAMPLE = 8;
 
-function slug(name: string): string {
-  return (
-    name
-      .toLowerCase()
-      .normalize("NFKD")
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "feature"
-  );
+const slug = featureSlug;
+
+/**
+ * A split answer's parts as file lists: each of the card's files goes to the
+ * part whose member matches it longest; one no member covers goes to the part
+ * holding most of its folder, else the biggest part.
+ */
+function filesOfParts(files: readonly string[], features: AppFeatureGroup[]): Array<{ name: string; description?: string; files: string[] }> {
+  const groups = features.map((f, i) => ({ key: String(i), members: f.members }));
+  const byPart = features.map(() => [] as string[]);
+  const loose: string[] = [];
+  for (const f of files) {
+    const key = matchMember(f, groups);
+    if (key === undefined) loose.push(f);
+    else byPart[Number(key)].push(f);
+  }
+  for (const f of loose) {
+    const dir = path.posix.dirname(f);
+    let best = -1;
+    let most = 0;
+    byPart.forEach((part, i) => {
+      const n = part.filter((x) => path.posix.dirname(x) === dir).length;
+      if (n > most) {
+        most = n;
+        best = i;
+      }
+    });
+    if (best < 0) best = byPart.reduce((b, part, i) => (part.length > byPart[b].length ? i : b), 0);
+    byPart[best].push(f);
+  }
+  return features.map((f, i) => ({ name: f.name, description: f.description, files: byPart[i] })).filter((p) => p.files.length > 0);
 }
 
 function sample(items: readonly string[]): string {
@@ -114,8 +147,11 @@ export async function runAppMapJob(
       throw new UnrecoverableError("There is no features grouping to place files into yet — group the features first.");
     }
   }
+  if (mode === "split" && (level !== "features" || !data.card)) {
+    throw new UnrecoverableError("Only a features card can be split.");
+  }
   log(
-    `repo ${repo.name} · level ${level}${mode === "place" ? " · placing leftover files" : ""} · ${input.files.length} file(s) · model ${config.model}`
+    `repo ${repo.name} · level ${level}${mode === "place" ? " · placing leftover files" : mode === "split" ? ` · splitting ${data.card}` : ""} · ${input.files.length} file(s) · model ${config.model}`
   );
 
   const progress: AppMapProgress = {
@@ -167,20 +203,15 @@ export async function runAppMapJob(
   }
   let parseFailed = false;
 
-  // --- Grouping --------------------------------------------------------------
-  let groups: StoredAppMapGroup[] = [];
-  /** The model's feature grouping was unusable, so the heuristic's — which covers every file — stands in. */
-  let heuristicFallback = false;
-  if (mode === "place") {
-    groups = previous!.groups.map((g) => ({ ...g, members: [...g.members] }));
-  } else {
+  /** The files as the model reads them: by folder, each with its module and declarations. */
+  const foldersFor = (files: readonly string[]): AppMapAiFolder[] => {
     const byDir = new Map<string, string[]>();
-    for (const file of input.files) {
+    for (const file of files) {
       const d = path.posix.dirname(file);
       const key = d === "." ? "" : d;
       byDir.set(key, [...(byDir.get(key) ?? []), file]);
     }
-    const folders: AppMapAiFolder[] = [...byDir]
+    return [...byDir]
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([folder, files]) => {
         const owners = new Map<string, number>();
@@ -200,6 +231,57 @@ export async function runAppMapJob(
           })),
         };
       });
+  };
+
+  // --- Grouping --------------------------------------------------------------
+  let groups: StoredAppMapGroup[] = [];
+  /** The model's feature grouping was unusable, so the heuristic's — which covers every file — stands in. */
+  let heuristicFallback = false;
+  /** `split`: the parts that replaced the card, and the stored connection notes that survive it. */
+  const splitKeys = new Set<string>();
+  let splitEdges: StoredAppMapEdge[] = [];
+  if (mode === "place") {
+    groups = previous!.groups.map((g) => ({ ...g, members: [...g.members] }));
+  } else if (mode === "split") {
+    const current = groupsForLevel(input, "features", previous, layerResolver(stored.get("architecture") ?? null)).groups;
+    const card = current.find((g) => g.key === data.card);
+    if (!card) throw new UnrecoverableError("That card is no longer on the map — reload the map and try again.");
+    if (card.files.length < MIN_SPLIT_FILES) throw new UnrecoverableError(`"${card.name}" has only ${card.files.length} file(s) — too few to split.`);
+    log(`splitting "${card.name}" (${card.files.length} file(s))`);
+    let parts: Array<{ name: string; description?: string; files: string[] }> = [];
+    try {
+      const result = await splitAppFeature(
+        config,
+        {
+          repoName: repo.name,
+          feature: { name: card.name, description: card.description },
+          otherFeatures: current.filter((g) => g.key !== card.key).map((g) => g.name),
+          folders: foldersFor(card.files),
+        },
+        { signal, tokenBudget: APP_MAP_TOKEN_BUDGET }
+      );
+      count(result.usage);
+      if (result.parseFailed) parseFailed = true;
+      else parts = filesOfParts(card.files, result.features);
+    } catch (error) {
+      stopIfCancelled();
+      parseFailed = true;
+      log(`split call failed (continuing): ${(error as Error).message}`);
+    }
+    stopIfCancelled();
+    if (parts.length < 2) {
+      parts = splitByFolders(input, card.files, card.name);
+      log(`the model's split was unusable — split by ${parts.length ? "module and folder" : "nothing"} instead`);
+      if (parts.length < 2) throw new UnrecoverableError(`"${card.name}" couldn't be split — its files sit in one folder of one module.`);
+    }
+    const split = applySplit(input, previous, card, parts);
+    groups = split.groups;
+    splitEdges = split.edges;
+    for (const key of split.newKeys) splitKeys.add(key);
+    log(`split into ${split.newKeys.length}: ${parts.map((p) => `${p.name} (${p.files.length})`).join(", ")}`);
+    await publish();
+  } else {
+    const folders = foldersFor(input.files);
     const readme = await readReadmeSnippet(repo, log);
     const tree = { repoName: repo.name, readme, folders };
 
@@ -255,7 +337,8 @@ export async function runAppMapJob(
   const grown = new Set<string>();
   let placed = 0;
   let unplaced = 0;
-  if (level === "features" && !heuristicFallback) {
+  // A split leaves every other file where it was: nothing new to place.
+  if (level === "features" && !heuristicFallback && mode !== "split") {
     let leftovers = uncoveredFiles(input.files, groups);
     if (leftovers.length > 0) {
       log(`${leftovers.length} file(s) in no feature — asking the model to place them: ${sample(leftovers)}`);
@@ -349,7 +432,7 @@ export async function runAppMapJob(
   const toExplain = map.nodes.filter((node) => {
     if (level === "modules") return true;
     const key = keyOfNode.get(node.id);
-    return key !== undefined && savedKeys.has(key) && (mode === "full" || grown.has(key));
+    return key !== undefined && savedKeys.has(key) && (mode === "full" || grown.has(key) || splitKeys.has(key));
   });
 
   // --- Explaining -------------------------------------------------------------
@@ -447,7 +530,11 @@ export async function runAppMapJob(
   // A `place` run replaces the connection notes of the cards it re-explained and keeps the rest.
   const reexplained = new Set(groups.filter((g) => explanations.has(g.name.toLowerCase())).map((g) => g.key));
   const finalEdges =
-    mode === "place" ? [...(previous?.edges ?? []).filter((e) => !reexplained.has(e.from)), ...edgeNotes] : edgeNotes;
+    mode === "place"
+      ? [...(previous?.edges ?? []).filter((e) => !reexplained.has(e.from)), ...edgeNotes]
+      : mode === "split"
+        ? [...splitEdges.filter((e) => !reexplained.has(e.from)), ...edgeNotes]
+        : edgeNotes;
 
   await saveAppMapRecord({
     repoId,

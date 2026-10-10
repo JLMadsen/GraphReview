@@ -22,6 +22,8 @@ export interface AppMapJobData {
   level: AppMapLevel;
   /** Absent on jobs queued before modes existed — `full`. */
   mode?: AppMapRunMode;
+  /** `split`: the key of the features card to split. */
+  card?: string;
 }
 
 export interface AppMapProgress {
@@ -125,7 +127,8 @@ export async function clearAppMapCancel(repoId: string): Promise<void> {
 export async function enqueueAppMap(
   repoId: string,
   level: AppMapLevel,
-  mode: AppMapRunMode = "full"
+  mode: AppMapRunMode = "full",
+  card?: string
 ): Promise<{ enqueued: boolean; jobId: string; previousState: JobState | "unknown" }> {
   const queue = getAppMapQueue();
   const jobId = appMapJobId(repoId);
@@ -133,7 +136,7 @@ export async function enqueueAppMap(
   if (isPendingJobState(previousState)) return { enqueued: false, jobId, previousState };
   if (previousState !== "unknown") await queue.remove(jobId).catch(() => undefined);
   await clearAppMapCancel(repoId);
-  await queue.add(APP_MAP_JOB_NAME, { repoId, level, mode }, { jobId });
+  await queue.add(APP_MAP_JOB_NAME, { repoId, level, mode, ...(card ? { card } : {}) }, { jobId });
   return { enqueued: true, jobId, previousState };
 }
 

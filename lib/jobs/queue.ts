@@ -18,11 +18,12 @@ export const ANALYSIS_QUEUE_NAME = "analysis";
  * every repo's graph should have (2: graphs from the default branch's commit,
  * with names and use-weighted edges; 3: route facts and the endpoint
  * catalog; 4: infra files, env/port code facts and the infra catalog;
- * 5: schema files, table facts and the schema catalog);
+ * 5: schema files, table facts and the schema catalog; 6: payloads,
+ * params and proxies read from handler code, wrapped Next.js handlers unwrapped);
  * a repo analysed by an older version is
  * re-analysed on its next view, like one whose branch moved.
  */
-export const ANALYSIS_VERSION = 5;
+export const ANALYSIS_VERSION = 6;
 
 /** Job name inside the analysis queue. One job type for now (v1 has no AI jobs yet). */
 export const ANALYSIS_JOB_NAME = "analyze-repo";

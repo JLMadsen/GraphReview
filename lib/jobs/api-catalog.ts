@@ -3,7 +3,7 @@
 // untyped handlers (✦) filled in where the code said nothing — and the
 // inference itself, run on demand for one endpoint.
 
-import type { ApiCatalog, Endpoint } from "@/lib/analysis/api/types";
+import { shapeIncomplete, type ApiCatalog, type Endpoint } from "@/lib/analysis/api/types";
 import { inferApiShape } from "@/lib/ai/api-shape";
 import { readApiCatalog, readInferredApiShape, writeInferredApiShape, type InferredApiShape, type RepoRecord } from "@/lib/db";
 import { loadAiConfigOrNull } from "./merge-naming";
@@ -17,8 +17,9 @@ export function withInferred(e: Endpoint, inferred: InferredApiShape | undefined
   return {
     ...e,
     params,
-    ...(!e.request?.fields && inferred.request ? { request: { ...inferred.request, source: "ai" as const } } : {}),
-    ...(!e.response?.fields && inferred.response ? { response: { ...inferred.response, source: "ai" as const } } : {}),
+    // Over what the code showed only where it couldn't tell (no fields, or fields of unknown type).
+    ...(shapeIncomplete(e.request) && inferred.request ? { request: { ...inferred.request, source: "ai" as const } } : {}),
+    ...(shapeIncomplete(e.response) && inferred.response ? { response: { ...inferred.response, source: "ai" as const } } : {}),
     ...(inferred.summary && !e.spec?.summary ? { summary: inferred.summary } : {}),
     inferred: true,
   };

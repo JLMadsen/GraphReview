@@ -170,6 +170,7 @@ export {
 } from "./pr-map";
 
 export {
+  applySplit,
   assembleAppMap,
   buildAppMap,
   classifyLayer,
@@ -179,6 +180,8 @@ export {
   layerResolver,
   loadAppMapInput,
   matchMember,
+  mergeBack,
+  splitByFolders,
   toStoredAppMaps,
   uncoveredFiles,
   type AppMapGroup,

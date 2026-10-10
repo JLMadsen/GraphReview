@@ -140,6 +140,7 @@ export {
   APP_LAYERS_TASK_MARKER,
   APP_MAP_TOKEN_BUDGET,
   APP_PLACE_TASK_MARKER,
+  APP_SPLIT_TASK_MARKER,
   explainAppCards,
   groupAppFeatures,
   knownMembersOf,
@@ -150,6 +151,7 @@ export {
   placeAppFiles,
   placeAppLayers,
   resolveMember,
+  splitAppFeature,
 } from "./app-map";
 export type {
   AppCardExplanation,

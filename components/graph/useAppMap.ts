@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  featureKeyOf,
   isAppMapJobPending,
   type AppMapJobStatusDTO,
   type AppMapLevel,
@@ -74,8 +75,11 @@ export interface UseAppMapJobResult {
   /** Inline message: a POST refusal, a failed run, a fetch error. */
   notice: string | null;
   running: boolean;
-  /** `place` (features only) keeps the stored grouping and just places the files it doesn't cover. */
-  generate: (level: AppMapLevel, mode?: AppMapRunMode) => void;
+  /**
+   * `place` (features only) keeps the stored grouping and just places the files it doesn't cover;
+   * `split` (features only) cuts the card `card` (its key) into smaller features.
+   */
+  generate: (level: AppMapLevel, mode?: AppMapRunMode, card?: string) => void;
   cancel: () => void;
 }
 
@@ -84,7 +88,7 @@ export function useAppMapJob(repoId: string, enabled: boolean, onCompleted: () =
   const [notice, setNotice] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [nonce, setNonce] = useState(0);
-  const pendingPost = useRef<{ level: AppMapLevel; mode: AppMapRunMode } | null>(null);
+  const pendingPost = useRef<{ level: AppMapLevel; mode: AppMapRunMode; card?: string } | null>(null);
   const wasPending = useRef(false);
   const onCompletedRef = useRef(onCompleted);
   onCompletedRef.current = onCompleted;
@@ -156,8 +160,8 @@ export function useAppMapJob(repoId: string, enabled: boolean, onCompleted: () =
     };
   }, [repoId, enabled, nonce]);
 
-  const generate = useCallback((level: AppMapLevel, mode: AppMapRunMode = "full") => {
-    pendingPost.current = { level, mode };
+  const generate = useCallback((level: AppMapLevel, mode: AppMapRunMode = "full", card?: string) => {
+    pendingPost.current = { level, mode, ...(card ? { card } : {}) };
     setNonce((n) => n + 1);
   }, []);
 
@@ -169,4 +173,58 @@ export function useAppMapJob(repoId: string, enabled: boolean, onCompleted: () =
 
   const running = starting || (status ? isAppMapJobPending(status.state) : false);
   return { status, notice, running, generate, cancel };
+}
+
+export interface UseAppMapCardActionsResult {
+  /** "Split up": the model chooses the parts when an AI provider is set up, else module and folder do. */
+  split: (cardId: string) => void;
+  /** "Merge back": a split card's parts become the card they came from again. */
+  merge: (cardId: string) => void;
+  /** The card being split or merged right now (a model split runs as the app-map job). */
+  busyCard: string | null;
+  notice: string | null;
+}
+
+/** Split / merge one features card. `onChanged` re-reads the map after a change made without the job. */
+export function useAppMapCardActions(repoId: string, job: UseAppMapJobResult, onChanged: () => void): UseAppMapCardActionsResult {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const post = useCallback(
+    async (cardId: string, action: "split" | "merge") => {
+      const card = featureKeyOf(cardId);
+      if (!card) return;
+      setBusy(cardId);
+      setNotice(null);
+      try {
+        const res = await fetch(`/api/repos/${encodeURIComponent(repoId)}/app-map/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, card }),
+        });
+        const json = (await res.json().catch(() => null)) as { error?: string } | null;
+        if (!res.ok) setNotice(json?.error ?? `Could not ${action} the card (${res.status}).`);
+        else onChanged();
+      } catch (err) {
+        setNotice(err instanceof Error ? err.message : `Could not ${action} the card.`);
+      } finally {
+        setBusy(null);
+      }
+    },
+    [repoId, onChanged]
+  );
+
+  const split = useCallback(
+    (cardId: string) => {
+      const card = featureKeyOf(cardId);
+      if (!card) return;
+      if (job.status?.aiConfigured) job.generate("features", "split", card);
+      else void post(cardId, "split");
+    },
+    [job, post]
+  );
+  const merge = useCallback((cardId: string) => void post(cardId, "merge"), [post]);
+
+  const jobCard = job.running && job.status?.mode === "split" && job.status.card ? `feat:${job.status.card}` : null;
+  return { split, merge, busyCard: busy ?? jobCard, notice };
 }

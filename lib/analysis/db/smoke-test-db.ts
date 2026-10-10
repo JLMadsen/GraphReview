@@ -5,7 +5,8 @@
  * Django app with migrations, SQLAlchemy models with an Alembic chain, a
  * golang-migrate folder — merging and drift, the endpoint links (model,
  * query builder, SQL text — a literal naming an unknown table is dropped),
- * a head whose migrations produce each finding, and the review context.
+ * DDL in code (a `MIGRATIONS` array of template literals, a Go slice), a head
+ * whose migrations produce each finding, and the review context.
  *
  *   npx tsx lib/analysis/db/smoke-test-db.ts
  */
@@ -68,7 +69,38 @@ const PRISMA_SCHEMA = (extra: string[] = [], head = false) =>
     "}",
   );
 
+/** This repo's own pattern: an array of template literals run in order by `db.exec(MIGRATIONS[v])`. */
+const IN_CODE_SCHEMA = (head = false) =>
+  lines(
+    'import { DatabaseSync } from "node:sqlite";',
+    "const T = 'x';",
+    "const MIGRATIONS: string[] = [",
+    "  `",
+    "  -- the first version",
+    "  CREATE TABLE items (",
+    "    id   TEXT PRIMARY KEY,",
+    "    name TEXT NOT NULL,",
+    "    legacy TEXT",
+    "  );",
+    "  CREATE INDEX items_name ON items (name);",
+    "  `,",
+    head ? "  `ALTER TABLE items ADD COLUMN price INTEGER NOT NULL DEFAULT 0;`," : "  `ALTER TABLE items ADD COLUMN price INTEGER;`,",
+    "  `CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT); INSERT INTO ${T} VALUES (1);`,",
+    ...(head ? ["  `ALTER TABLE items DROP COLUMN legacy;`,"] : []),
+    "];",
+    "export function migrate(db: DatabaseSync, v: number) {",
+    "  db.exec(MIGRATIONS[v]);",
+    "  db.exec(`PRAGMA user_version = ${v + 1}`);",
+    "}",
+  );
+
 const BASE: Record<string, string> = {
+  // --- SQL in code: a migrations array, a query file using it, a smoke test's throwaway DDL, a Go slice ---
+  "appdb/src/db/schema.ts": IN_CODE_SCHEMA(),
+  "appdb/src/db/items.ts": lines("export function getItem(db: any, id: string) {", '  return db.prepare("SELECT id, name, price FROM items WHERE id = ?").get(id);', "}"),
+  "appdb/src/db/smoke-test-items.ts": lines("export function setup(db: any) {", '  db.exec("CREATE TABLE scratch (id INTEGER PRIMARY KEY)");', "}"),
+  "gosvc/store.go": lines("package main", "", "var schema = []string{", "	`CREATE TABLE gadgets (id INTEGER PRIMARY KEY)`,", "	`ALTER TABLE gadgets ADD COLUMN name TEXT`,", "}"),
+
   // --- Prisma: schema + migrations, an endpoint through a Prisma delegate, SQL text naming an unknown table ---
   "package.json": JSON.stringify({ name: "fixture", dependencies: { next: "15.0.0" } }),
   "prisma/schema.prisma": PRISMA_SCHEMA(),
@@ -300,6 +332,7 @@ function headTree(): Record<string, string> {
       'CREATE TABLE "Refund" ("id" SERIAL NOT NULL, "order_id" INTEGER NOT NULL, CONSTRAINT "Refund_pkey" PRIMARY KEY ("id"));',
       'ALTER TABLE "Refund" ADD CONSTRAINT "Refund_order_id_fkey" FOREIGN KEY ("order_id") REFERENCES "orders"("id") ON DELETE RESTRICT ON UPDATE CASCADE;',
     ),
+    "appdb/src/db/schema.ts": IN_CODE_SCHEMA(true),
     "gosvc/migrations/000003_rename.up.sql": "ALTER TABLE accounts RENAME TO members;\nDROP TABLE legacy;\n",
   };
 }
@@ -376,6 +409,21 @@ async function main(): Promise<void> {
     check("golang-migrate: .up.sql ordered by version, .down.sql ignored", gom?.migrations.map((m) => m.name).join(",") === "000001_create_users,000002_add_age" && gom.tables.find((t) => t.name === "accounts")?.columns.some((c) => c.name === "age") === true, JSON.stringify(gom?.migrations.map((m) => m.name)));
     check("golang-migrate: dialect guessed from the SQL", gom?.dialect === "postgresql" && gom.dialectGuessed === true);
 
+    // SQL in code
+    console.log("\nSQL in code");
+    const hasUseOf = (table: string | undefined, file: string, via: string) => db.uses.some((u) => u.table === table && u.file === file && u.via === via);
+    const inCode = dbOf(db, "sql-in-code:appdb/src/db/schema.ts");
+    const appItems = inCode?.tables.find((t) => t.name === "items");
+    check("a migrations array: one migration per element, in order", inCode?.migrations.map((m) => m.name).join(",") === "appdb/src/db/schema.ts #1,appdb/src/db/schema.ts #2,appdb/src/db/schema.ts #3" && inCode?.tools.includes("sql-in-code") === true, JSON.stringify(db.databases.map((d) => [d.id, d.migrations.map((m) => m.name)])));
+    check("its tables, the later ALTER replayed", appItems?.source === "migration" && appItems.columns.map((c) => c.name).join(",") === "id,name,legacy,price" && appItems.indexes.length === 1 && appItems.history.length === 3, JSON.stringify(appItems));
+    check("dialect from the driver import (node:sqlite), not guessed", inCode?.dialect === "sqlite" && !inCode?.dialectGuessed, String(inCode?.dialect));
+    check("a statement with a template hole stays opaque", inCode?.opaque.some((o) => o.text.includes("${T}")) === true && Boolean(inCode?.tables.find((t) => t.name === "notes")), JSON.stringify(inCode?.opaque));
+    check("a smoke test's DDL isn't the app's database", !db.databases.some((d) => d.tables.some((t) => t.name === "scratch")));
+    check("the query file's SQL links to the in-code table", hasUseOf(appItems?.id, "appdb/src/db/items.ts", "sql"));
+    check("the migrations file itself isn't a use", !db.uses.some((u) => u.file === "appdb/src/db/schema.ts"));
+    const goInCode = db.databases.find((d) => d.id === "sql-in-code:gosvc/store.go");
+    check("a Go slice of DDL literals (lexical): migrations in element order", goInCode?.migrations.length === 2 && goInCode.tables.find((t) => t.name === "gadgets")?.columns.length === 2, JSON.stringify(goInCode?.migrations.map((m) => m.name)));
+
     // Links
     console.log("\nLinks");
     const hasUse = (table: string | undefined, file: string, via: string) => db.uses.some((u) => u.table === table && u.file === file && u.via === via);
@@ -409,16 +457,19 @@ async function main(): Promise<void> {
     check("index-not-concurrent (Postgres, existing table)", Boolean(rule("index-not-concurrent")));
     check("fk-no-index (Postgres)", Boolean(rule("fk-no-index", "order_id")));
     check("only the PR's migrations count: the base FK without an index isn't reported", !change.findings.some((f) => f.rule === "fk-no-index" && f.column === "customer_id"));
-    check("destructive count", change.counts.destructive === 2, JSON.stringify(change.counts));
+    check("destructive count", change.counts.destructive === 3, JSON.stringify(change.counts));
     const ordersChange = change.tables.find((t) => t.id === orders?.id);
     check("table change: columns added / removed", ordersChange?.columns.some((c) => c.name === "channel" && c.status === "added") === true && ordersChange?.columns.some((c) => c.name === "total" && c.status === "removed") === true);
     check("table change: column renamed by the migration", change.tables.some((t) => t.columns.some((c) => c.status === "renamed" && c.from === "name" && c.name === "full_name")));
     check("table renamed (golang-migrate)", change.tables.some((t) => t.status === "renamed" && t.renamedFrom === "accounts" && t.table.name === "members"));
     check("table added", change.tables.some((t) => t.status === "added" && t.table.name === "Refund"));
     check("enum value added", change.enums.some((e) => e.name === "Status" && e.added.includes("REFUNDED")));
-    check("new migrations listed", change.counts.migrations === 2, JSON.stringify(change.migrations.map((m) => m.id)));
+    check("new migrations listed", change.counts.migrations === 3, JSON.stringify(change.migrations.map((m) => m.id)));
     check("drift introduced: schema field with no migration", change.drift.some((d) => d.drift.column === "coupon"), JSON.stringify(change.drift));
     check("described for prompts", describeSchemaChange(change).length > 8);
+    const appended = change.findings.find((f) => f.rule === "drop-column" && f.column === "legacy");
+    check("an appended array element is a migration the PR adds: its hazards are findings", appended?.migration === "appdb/src/db/schema.ts#4" && change.migrations.some((m) => m.id === "appdb/src/db/schema.ts#4"), JSON.stringify(change.findings.map((f) => [f.rule, f.migration])));
+    check("an edited element is shown as an edited migration, not a new one", change.edited?.some((m) => m.id === "appdb/src/db/schema.ts#2") === true && !change.migrations.some((m) => m.id === "appdb/src/db/schema.ts#2"), JSON.stringify(change.edited));
 
     // Review context
     console.log("\nReview context");

@@ -22,7 +22,7 @@ import { Segmented } from "./Segmented";
 import { VIEW_TOOLBAR } from "./view-chrome";
 import { ApiEndpointDetail } from "./ApiEndpointDetail";
 import { CHANGE_STYLES, KIND_LABELS, methodTone, pathParts, type ApiRow } from "./api-view-model";
-import type { ApiCatalogResponseDTO, ApiChange, EndpointKind } from "./api-types";
+import { openProxy, type ApiCatalogResponseDTO, type ApiChange, type EndpointKind } from "./api-types";
 import type { UseApiCatalogResult } from "./useApiCatalog";
 
 type KindFilter = "all" | EndpointKind;
@@ -364,6 +364,14 @@ function EndpointRow({ row, open, onToggle }: { row: ApiRow; open: boolean; onTo
         {e.internal && (
           <Tag className="border-border text-muted-foreground" title="A server action: made for the app's own pages, not for third parties">
             internal
+          </Tag>
+        )}
+        {e.proxy && (
+          <Tag
+            className={cn("border-dashed", openProxy(e) ? "border-warning/60 text-warning" : "border-info/50 text-info")}
+            title={`A proxy: forwards the request to ${e.proxy.upstream ?? "a URL taken from the request"} and passes the answer back${openProxy(e) ? " — with no auth found in front of it" : ""}`}
+          >
+            proxy
           </Tag>
         )}
         {e.drift && (

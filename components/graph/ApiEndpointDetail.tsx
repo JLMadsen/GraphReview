@@ -11,7 +11,7 @@ import { useState } from "react";
 import { ChevronRight, Database, LoaderCircle } from "lucide-react";
 import { cn } from "cn";
 import { Spark } from "./Spark";
-import { splitDeclId, type ApiField, type ApiParam, type ApiShape, type EndpointChange, type EndpointDelta, type ReachStep, type ServedEndpoint } from "./api-types";
+import { openProxy, shapeIncomplete, splitDeclId, takesBody, type ApiField, type ApiParam, type ApiShape, type EndpointChange, type EndpointDelta, type ReachStep, type ServedEndpoint } from "./api-types";
 
 export interface ApiEndpointDetailProps {
   endpoint: ServedEndpoint;
@@ -28,7 +28,7 @@ export interface ApiEndpointDetailProps {
   onOpenFile: (path: string, line?: number) => void;
 }
 
-const SOURCE_LABEL: Record<ApiShape["source"], string> = { static: "from types", spec: "from the OpenAPI spec", ai: "inferred" };
+const SOURCE_LABEL: Record<ApiShape["source"], string> = { static: "from types", code: "from the code", spec: "from the OpenAPI spec", ai: "inferred" };
 
 function Label({ children, aside }: { children: React.ReactNode; aside?: React.ReactNode }) {
   return (
@@ -254,7 +254,9 @@ export function ApiEndpointDetail({ endpoint: e, change, aiConfigured, inferring
   const requestChanged = Boolean(change?.deltas.some((d) => d.aspect === "request"));
   const responseChanged = Boolean(change?.deltas.some((d) => d.aspect === "response"));
   const paramsChanged = Boolean(change?.deltas.some((d) => d.aspect === "params"));
-  const canInfer = Boolean(e.handler?.hash) && (!e.request?.fields?.length || !e.response?.fields?.length) && e.drift !== "spec-only" && !removed;
+  // A body only where the method takes one; a proxy's request and answer are whatever the caller and the upstream send.
+  const canInfer =
+    Boolean(e.handler?.hash) && !e.proxy && ((takesBody(e) && shapeIncomplete(e.request)) || shapeIncomplete(e.response)) && e.drift !== "spec-only" && !removed;
   const description = e.spec?.description ?? e.spec?.summary ?? e.summary;
 
   const payload = (title: string, now: ApiShape | undefined, then: ApiShape | undefined, changed: boolean) => {
@@ -279,6 +281,12 @@ export function ApiEndpointDetail({ endpoint: e, change, aiConfigured, inferring
         </p>
       )}
       {e.internal && <p className="text-[11px] text-muted-foreground">A Next.js server action — reachable as a POST, but made for this app&apos;s own pages, not a public API.</p>}
+      {e.proxy && (
+        <p className={cn("text-[11px]", openProxy(e, gatewayAuth) ? "text-warning" : "text-muted-foreground")}>
+          A proxy — forwards the request to {e.proxy.upstream ? <span className="font-mono">{e.proxy.upstream}</span> : "a URL taken from the request"} and passes the answer back.
+          {openProxy(e, gatewayAuth) && " No auth was found in front of it, so anyone who can reach it can make the server fetch any address."}
+        </p>
+      )}
       {e.partial && <p className="text-[11px] text-warning">Part of this path couldn&apos;t be read statically (a variable, or a mount the analysis couldn&apos;t follow).</p>}
       {removed && <p className="text-[11px] text-destructive">{e.kind === "action" ? "This diff removes the server action." : "This diff removes the endpoint — clients still calling it will fail."}</p>}
 
@@ -355,8 +363,8 @@ export function ApiEndpointDetail({ endpoint: e, change, aiConfigured, inferring
             className="ml-auto flex items-center gap-1 text-muted-foreground hover:text-foreground disabled:opacity-50"
             title={
               aiConfigured
-                ? "Part of the payload isn't readable from types — read the handler with the model and fill it in"
-                : "Part of the payload isn't readable from types. Set up an AI provider in Settings to infer it."
+                ? "Part of the payload isn't readable from the code — read the handler with the model and fill it in"
+                : "Part of the payload isn't readable from the code. Set up an AI provider in Settings to infer it."
             }
           >
             {inferring ? <LoaderCircle className="size-3 animate-spin" aria-hidden /> : <Spark />}

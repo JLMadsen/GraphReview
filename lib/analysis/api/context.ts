@@ -243,13 +243,45 @@ const ZOD_TYPES: Record<string, string> = {
   enum: "enum", literal: "literal", union: "union", any: "any", unknown: "unknown", record: "record", nativeEnum: "enum",
 };
 
+/**
+ * Fields written one per line with no `;` arrive with the newlines collapsed
+ * (`name: string address: string`): split before each top-level `name:` that
+ * follows a complete type.
+ */
+function splitRunTogether(part: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let start = 0;
+  for (let i = 0; i < part.length; i++) {
+    const c = part[i];
+    if (quote) {
+      if (c === quote && part[i - 1] !== "\\") quote = null;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === "`") quote = c;
+    else if ("([{<".includes(c)) depth++;
+    else if (")]}>".includes(c) && !(c === ">" && part[i - 1] === "=")) depth--;
+    else if (depth === 0 && /\s/.test(c) && i > start) {
+      const before = part.slice(start, i).trimEnd();
+      if (!before.includes(":") || /[:|&,=]$/.test(before)) continue;
+      if (/^\s+(?:readonly\s+)?["']?[\w$-]+["']?\??\s*:(?!:)/.test(part.slice(i))) {
+        out.push(before);
+        start = i + 1;
+      }
+    }
+  }
+  out.push(part.slice(start));
+  return out.map((s) => s.trim()).filter(Boolean);
+}
+
 /** Fields of a TS type literal / interface body or a `z.object({…})`. */
 export function parseTsFields(text: string): ApiField[] | undefined {
   const zod = /\bz\.object\(\s*\{/.test(text);
   const body = zod ? braced(text.slice(text.search(/\bz\.object\(/))) : braced(text);
   if (body === undefined) return undefined;
   const fields: ApiField[] = [];
-  for (const part of splitTop(body, zod ? "," : ";,")) {
+  for (const part of (zod ? splitTop(body, ",") : splitTop(body, ";,").flatMap(splitRunTogether))) {
     const m = /^(?:readonly\s+)?["']?([\w$-]+)["']?(\?)?\s*:\s*([\s\S]+)$/.exec(part);
     if (!m) continue;
     let type = m[3].trim();

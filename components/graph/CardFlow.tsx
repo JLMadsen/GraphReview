@@ -14,7 +14,9 @@
 // each in its own lane and attached at its own point along the card's side —
 // then React Flow draws the cards there and the edges along ELK's routes
 // (`RoutedEdge`). Left to React Flow, every edge would be a bezier from the
-// single midpoint of each card's side, and a busy map turns into a knot. Cards are not
+// single midpoint of each card's side, and a busy map turns into a knot.
+// Links added without a new layout (a selected card's weaker links) are
+// routed around the placed cards by ./orthogonal-route.ts. Cards are not
 // draggable: the layout is the point, and a dragged card would be thrown
 // away by the next refresh anyway. The caller passes `layoutKey` — anything
 // that changes a card's size or the edge set — and only a new key re-runs
@@ -40,6 +42,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { cn } from "cn";
+import { routeLinks } from "./orthogonal-route";
 
 /** Below this zoom a card's small text is unreadable, so cards switch to their far-zoom look. */
 const FAR_ZOOM = 0.72;
@@ -554,6 +557,14 @@ function CardFlowInner({
     [positions, boxes, cardIds, renderCard]
   );
 
+  // Links that weren't part of the last layout (a selected card's weaker
+  // links) have no ELK route; route them around the cards where they are.
+  const extraRoutes = useMemo(() => {
+    if (!positions) return new Map<string, Point[]>();
+    const missing = links.map((l) => ({ id: linkId(l), source: l.source, target: l.target })).filter((l) => !routes.has(l.id));
+    return missing.length > 0 ? routeLinks(missing, positions) : new Map<string, Point[]>();
+  }, [links, routes, positions]);
+
   const edges = useMemo<Edge<RoutedEdgeData>[]>(
     () =>
       links.map((link) => {
@@ -573,7 +584,7 @@ function CardFlowInner({
         return {
           id,
           type: "routed",
-          data: { points: routes.get(id) },
+          data: { points: routes.get(id) ?? extraRoutes.get(id) },
           // Lit edges draw over the rest where lanes cross.
           zIndex: hovered ? 2 : active ? 1 : 0,
           source: link.source,
@@ -597,7 +608,7 @@ function CardFlowInner({
           labelBgBorderRadius: 2,
         };
       }),
-    [links, routes, highlighted, selectedLink, hoveredLink, formatLabel, alwaysLabelEdges, onLinkClick, activeLinks]
+    [links, routes, extraRoutes, highlighted, selectedLink, hoveredLink, formatLabel, alwaysLabelEdges, onLinkClick, activeLinks]
   );
 
   const linkById = useMemo(() => new Map(links.map((l) => [linkId(l), l])), [links]);

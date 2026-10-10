@@ -2,7 +2,8 @@
  * The endpoint catalog of one analysed tree (DESIGN.md §6.11): every
  * framework resolver's endpoints, merged with the repo's OpenAPI documents
  * (descriptions and schemas in, drift out), each with the functions its
- * handler reaches.
+ * handler reaches, and what each JS/TS handler's code reads and answers
+ * where its types don't say (./handler-code.ts).
  *
  * Static analysis only — no model. A resolver that throws costs its own
  * endpoints, never the analysis.
@@ -12,12 +13,13 @@ import type { SymbolGraph } from "../symbols";
 import { buildContext, groupOfPath, indexCalls, pathKey, pathParams, reachOf, type ApiContext, type PartialEndpoint } from "./context";
 import { resolveDecorated } from "./decorated";
 import { resolveFileRoutes } from "./file-routes";
+import { readHandlerCode } from "./handler-code";
 import { resolveNext } from "./next";
 import { resolveNodeRouters } from "./node-routers";
 import { resolvePython } from "./python";
 import { resolveGraphql, resolveTrpc } from "./rpc";
 import { readSpecs, specKeys, type SpecOperation } from "./spec";
-import type { ApiCatalog, Endpoint } from "./types";
+import { MAX_REACH_STEPS, type ApiCatalog, type Endpoint } from "./types";
 
 export interface BuildApiCatalogInput {
   files: readonly FileAnalysis[];
@@ -181,12 +183,30 @@ export async function buildApiCatalog(input: BuildApiCatalogInput): Promise<ApiC
     }
   }
 
+  // What the handlers' own code says, where types and specs didn't.
+  await run("handler code", () => readHandlerCode(ctx, endpoints), undefined);
+
   const calls = indexCalls(input.symbols);
   for (const e of endpoints) {
     if (!e.handler) continue;
     const { steps, truncated } = reachOf(ctx, calls, e.handler);
     e.reach = steps;
     if (truncated) e.reachTruncated = true;
+    // The wrappers around a handler (`withAuth(postHandler)`) run on every request too.
+    if (e.registeredAt) {
+      const at = e.registeredAt;
+      const outer = reachOf(ctx, calls, { file: at.file, startLine: at.line, endLine: at.endLine ?? at.line, name: "" });
+      const seen = new Set(e.reach.map((s) => s.id));
+      for (const step of outer.steps) {
+        if (seen.has(step.id) || step.id === e.handler.declId) continue;
+        if (e.reach.length >= MAX_REACH_STEPS) {
+          e.reachTruncated = true;
+          break;
+        }
+        e.reach.push(step);
+      }
+      if (outer.truncated) e.reachTruncated = true;
+    }
   }
 
   endpoints.sort(

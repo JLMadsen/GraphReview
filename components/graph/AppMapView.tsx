@@ -23,12 +23,13 @@ import type { PrCardMarker } from "./PrMapNode";
 import { effectiveAssessment, worstAssessment } from "./review-visuals";
 import type { FindingDTO, Assessment } from "./types";
 import type { AppMapSelection } from "./AppMapPanel";
-import type { UseAppMapJobResult } from "./useAppMap";
+import type { UseAppMapCardActionsResult, UseAppMapJobResult } from "./useAppMap";
 import {
   APP_LAYERS,
   APP_LAYER_ORDER,
   APP_MAP_LEVELS,
   isAppMapJobPending,
+  isOversizedCard,
   layerTint,
   type AppMapLevel,
   type AppMapResponseDTO,
@@ -50,6 +51,8 @@ export interface AppMapViewProps {
   level: AppMapLevel;
   onLevelChange: (level: AppMapLevel) => void;
   job: UseAppMapJobResult;
+  /** "Split up" on oversized features cards. */
+  cardActions?: UseAppMapCardActionsResult;
   selection: AppMapSelection | null;
   onSelect: (selection: AppMapSelection | null) => void;
   changedFiles?: ReadonlySet<string>;
@@ -71,6 +74,7 @@ export function AppMapView({
   level,
   onLevelChange,
   job,
+  cardActions,
   selection,
   onSelect,
   changedFiles,
@@ -181,6 +185,12 @@ export function AppMapView({
     return { links: extra.length > 0 ? [...strongLinks, ...extra] : strongLinks, extraCount: extra.length };
   }, [strongLinks, allLinks, selection, selectedLink, hoveredLink]);
 
+  // Features cards big enough to read as a catch-all get "Split up" on the card itself.
+  const splittable = useMemo(
+    () => new Set(level === "features" && map && cardActions ? nodes.filter((n) => isOversizedCard(n, map.totalFiles)).map((n) => n.id) : []),
+    [level, map, nodes, cardActions]
+  );
+
   const renderCard = useCallback(
     (id: string) => {
       const node = nodes.find((n) => n.id === id);
@@ -195,10 +205,13 @@ export function AppMapView({
           changedFiles={changedFiles}
           marker={cardMarkers.get(id)}
           highlightChanges={highlight}
+          {...(splittable.has(id) && cardActions
+            ? { onSplit: () => cardActions.split(id), splitting: cardActions.busyCard === id }
+            : {})}
         />
       );
     },
-    [nodes, level, selection, focused, matches, changedFiles, cardMarkers, highlight]
+    [nodes, level, selection, focused, matches, changedFiles, cardMarkers, highlight, splittable, cardActions]
   );
 
   const layoutKey = useMemo(
@@ -207,10 +220,10 @@ export function AppMapView({
         level,
         nodes.map((n) => [n.id, n.name, n.description, n.files.length, n.modules.length]),
         strongLinks.map((e) => [e.source, e.target]),
-        // The status row (changed count, verdict) adds a line to a card.
-        nodes.map((n) => Boolean(changedFiles && n.files.some((f) => changedFiles.has(f))) || cardMarkers.has(n.id)),
+        // The status row (changed count, verdict, Split up) adds a line to a card.
+        nodes.map((n) => Boolean(changedFiles && n.files.some((f) => changedFiles.has(f))) || cardMarkers.has(n.id) || splittable.has(n.id)),
       ]),
-    [level, nodes, strongLinks, changedFiles, cardMarkers]
+    [level, nodes, strongLinks, changedFiles, cardMarkers, splittable]
   );
 
   const presentLayers = useMemo(() => {
@@ -295,11 +308,12 @@ export function AppMapView({
         </div>
       </div>
 
-      {(job.notice || newFiles > 0) && (
+      {(job.notice || cardActions?.notice || newFiles > 0) && (
         <div className="flex items-start gap-1.5 border-b border-border bg-warning/5 px-4 py-1.5 text-[11px] text-warning">
           <TriangleAlert className="mt-px size-3.5 shrink-0" aria-hidden />
           <span className="min-w-0 flex-1">
             {job.notice ??
+              cardActions?.notice ??
               `${newFiles} file${newFiles === 1 ? " isn't" : "s aren't"} in the model's grouping yet — ${newFiles === 1 ? "it's" : "they're"} on heuristic cards for now.`}
           </span>
           {newFiles > 0 && level === "features" && job.status?.aiConfigured && !job.running && (

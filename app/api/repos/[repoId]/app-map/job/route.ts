@@ -1,7 +1,8 @@
 // The app map's AI run (DESIGN.md §6.5).
 //
-//   POST   /api/repos/[repoId]/app-map/job  { level, mode? }  enqueue (on demand only);
-//          mode "place" (features only) places the files the stored grouping doesn't cover
+//   POST   /api/repos/[repoId]/app-map/job  { level, mode?, card? }  enqueue (on demand only);
+//          mode "place" (features only) places the files the stored grouping doesn't cover;
+//          mode "split" (features only) cuts the card `card` (its key) into smaller features
 //   GET    /api/repos/[repoId]/app-map/job             state + progress + which levels have a run
 //   DELETE /api/repos/[repoId]/app-map/job             cancel
 //
@@ -31,7 +32,8 @@ export const dynamic = "force-dynamic";
 
 const bodySchema = z.object({
   level: z.enum(["architecture", "features", "modules"]),
-  mode: z.enum(["full", "place"]).optional(),
+  mode: z.enum(["full", "place", "split"]).optional(),
+  card: z.string().min(1).max(200).optional(),
 });
 
 function errorResponse(error: string, status: number, code?: string): NextResponse {
@@ -47,9 +49,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ rep
   const { repoId } = await params;
   const parsed = bodySchema.safeParse(await request.json().catch(() => undefined));
   if (!parsed.success) {
-    return errorResponse("Body must be { level: architecture | features | modules, mode?: full | place }.", 400);
+    return errorResponse("Body must be { level: architecture | features | modules, mode?: full | place | split, card? }.", 400);
   }
-  const { level, mode = "full" } = parsed.data;
+  const { level, mode = "full", card } = parsed.data;
 
   try {
     if (!(await getRepoById(repoId))) return errorResponse("Repo not found.", 404);
@@ -67,7 +69,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ rep
         return errorResponse("There is no features grouping to place files into yet — group the features first.", 400);
       }
     }
-    const result = await enqueueAppMap(repoId, level, mode);
+    if (mode === "split" && (level !== "features" || !card)) return errorResponse("Only a features card can be split — pass its key as card.", 400);
+    const result = await enqueueAppMap(repoId, level, mode, mode === "split" ? card : undefined);
     return NextResponse.json({ jobId: result.jobId, enqueued: result.enqueued });
   } catch (err) {
     console.error(`POST /api/repos/${repoId}/app-map/job failed:`, err);
@@ -124,6 +127,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ repo
     let state: AppMapJobStateDTO = "none";
     let level: AppMapLevel | undefined;
     let mode: AppMapRunMode | undefined;
+    let card: string | undefined;
     let progress: AppMapProgress | undefined;
     let error: string | undefined;
     let finishedAt: string | undefined;
@@ -132,6 +136,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ repo
       state = toState(await job.getState());
       level = job.data.level;
       mode = job.data.mode ?? "full";
+      card = job.data.card;
       progress = toProgress(job.progress);
       if (state === "failed" && job.failedReason === APP_MAP_CANCELLED_REASON) state = "cancelled";
       else if (state === "failed") error = job.failedReason || "The app map run failed.";
@@ -145,6 +150,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ repo
       state,
       ...(level ? { level } : {}),
       ...(mode ? { mode } : {}),
+      ...(card ? { card } : {}),
       ...(progress ? { progress } : {}),
       ...(error ? { error } : {}),
       ...(finishedAt ? { finishedAt } : {}),

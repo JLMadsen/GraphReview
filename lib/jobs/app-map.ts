@@ -58,6 +58,24 @@ export interface AppMapGroup {
   /** Architecture cards: the layer itself. */
   layer?: AppLayerId;
   files: string[];
+  /** The name of the card this one was split out of. */
+  splitFrom?: string;
+}
+
+/**
+ * The card a split replaced, kept on each of its parts so "Merge back"
+ * restores it exactly: its text, its members and the connection notes it had.
+ */
+export interface AppMapSplitOrigin {
+  key: string;
+  name: string;
+  description?: string;
+  explanation?: string;
+  keyFiles?: AppMapKeyFileDTO[];
+  members: string[];
+  edges: StoredAppMapEdge[];
+  /** It was itself split out of another card. */
+  splitFrom?: AppMapSplitOrigin;
 }
 
 /** An AI card as the app-map job stores it (lib/db/app-map.ts). */
@@ -71,6 +89,8 @@ export interface StoredAppMapGroup {
   layer?: AppLayerId;
   /** File paths, or folder prefixes ending in `/`. The longest match across all groups wins. Empty on the modules level (membership is the module's). */
   members: string[];
+  /** Features split out of a bigger card ("Split up"): that card. */
+  splitFrom?: AppMapSplitOrigin;
 }
 
 export interface StoredAppMapEdge {
@@ -557,6 +577,7 @@ export function groupsForLevel(
       explanation: g.explanation,
       keyFiles: g.keyFiles,
       files: placed.get(g.key)!,
+      ...(g.splitFrom ? { splitFrom: g.splitFrom.name } : {}),
     }));
   if (leftovers.length > 0) {
     const fallback = heuristicFeatureGroups({ ...input, files: leftovers });
@@ -570,6 +591,160 @@ export function groupsForLevel(
     }
   }
   return { groups, unplaced: leftovers.length };
+}
+
+// ---------------------------------------------------------------------------
+// Splitting a card ("Split up") and merging it back
+// ---------------------------------------------------------------------------
+
+/** A group key from a feature name: `App Foundation & Infra` → `app-foundation-infra`. */
+export function featureSlug(name: string): string {
+  return (
+    name
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "feature"
+  );
+}
+
+const MAX_SPLIT_PARTS = 8;
+/** A part smaller than this joins the "Other" part (unless that would leave fewer than two). */
+const MIN_SPLIT_PART = 3;
+
+const titleCase = (text: string) =>
+  words(text)
+    .map((w) => w[0].toUpperCase() + w.slice(1))
+    .join(" ") || text;
+
+/**
+ * Parts for a card without a model: by owning module when the card spans
+ * several, else by the folder under the files' common folder. Small parts go
+ * to "Other …". Fewer than two parts means it can't be split this way (`[]`).
+ */
+export function splitByFolders(input: AppMapInput, files: readonly string[], cardName: string): Array<{ name: string; files: string[] }> {
+  const bucket = (keyOf: (f: string) => string, nameOf: (key: string) => string) => {
+    const byKey = new Map<string, string[]>();
+    for (const f of files) byKey.set(keyOf(f), [...(byKey.get(keyOf(f)) ?? []), f]);
+    return [...byKey].map(([key, fs]) => ({ name: nameOf(key), files: fs })).sort((a, b) => b.files.length - a.files.length);
+  };
+  let parts = bucket(
+    (f) => input.ownerByPath.get(f) ?? "",
+    (id) => input.components.get(id)?.name ?? "Loose files"
+  );
+  // One module (or nearly) holds the card: split by folder instead.
+  if (parts.length < 2 || parts[0].files.length > files.length * 0.7) {
+    const dirs = files.map(dirSegments);
+    let common = 0;
+    while (dirs.every((d) => d.length > common && d[common] === dirs[0][common])) common++;
+    const top = dirs[0].slice(0, common).pop();
+    parts = bucket(
+      (f) => dirSegments(f)[common] ?? "",
+      (seg) => (seg ? titleCase(seg) : top ? `${titleCase(top)} (top level)` : "Root files")
+    );
+  }
+  const keep: typeof parts = [];
+  const other: string[] = [];
+  for (const part of parts) {
+    if (keep.length < MAX_SPLIT_PARTS - 1 && part.files.length >= MIN_SPLIT_PART) keep.push(part);
+    else other.push(...part.files);
+  }
+  if (other.length > 0) {
+    if (keep.length === 1 && parts.length > 1) return parts.slice(0, MAX_SPLIT_PARTS);
+    keep.push({ name: `Other ${cardName}`.slice(0, 40), files: other });
+  }
+  return keep.length >= 2 ? keep : [];
+}
+
+/** Whether `group` was split, at any depth, out of the card `key`. */
+function descendsFrom(group: StoredAppMapGroup, key: string): boolean {
+  for (let o = group.splitFrom; o; o = o.splitFrom) if (o.key === key) return true;
+  return false;
+}
+
+/**
+ * The stored grouping with `card` replaced by `parts`. Each part's members
+ * are its files compacted to folders where a folder holds only that part's
+ * files (`compactPlacements`), so nothing outside the card moves. With no
+ * stored run the heuristic grouping is stored first, so the split has
+ * something to live in.
+ */
+export function applySplit(
+  input: AppMapInput,
+  stored: StoredAppMap | null,
+  card: AppMapGroup,
+  parts: ReadonlyArray<{ name: string; description?: string; files: string[] }>
+): { groups: StoredAppMapGroup[]; edges: StoredAppMapEdge[]; newKeys: string[] } {
+  const base: StoredAppMapGroup[] =
+    stored && stored.groups.length > 0
+      ? stored.groups.map((g) => ({ ...g, members: [...g.members] }))
+      : heuristicFeatureGroups(input).map((g) => ({ key: g.key, name: g.name, description: g.description, members: [...g.files] }));
+  const edges = stored?.edges ?? [];
+  const at = base.findIndex((g) => g.key === card.key);
+  const existing = at >= 0 ? base[at] : undefined;
+  const origin: AppMapSplitOrigin = {
+    key: card.key,
+    name: existing?.name ?? card.name,
+    description: existing?.description ?? card.description,
+    explanation: existing?.explanation ?? card.explanation,
+    keyFiles: existing?.keyFiles ?? card.keyFiles,
+    members: existing?.members ?? [...card.files],
+    edges: edges.filter((e) => e.from === card.key || e.to === card.key),
+    ...(existing?.splitFrom ? { splitFrom: existing.splitFrom } : {}),
+  };
+  const used = new Set(base.map((g) => g.key));
+  const placements = new Map<string, string>();
+  const made: StoredAppMapGroup[] = [];
+  const names = new Set<string>();
+  for (const part of parts) {
+    if (part.files.length === 0) continue;
+    let name = part.name;
+    for (let n = 2; names.has(name.toLowerCase()); n++) name = `${part.name} ${n}`;
+    names.add(name.toLowerCase());
+    let key = `${card.key}--${featureSlug(name)}`;
+    for (let n = 2; used.has(key); n++) key = `${card.key}--${featureSlug(name)}-${n}`;
+    used.add(key);
+    for (const f of part.files) if (!placements.has(f)) placements.set(f, key);
+    made.push({ key, name, ...(part.description ? { description: part.description } : {}), members: [], splitFrom: origin });
+  }
+  const compacted = compactPlacements(input.files, placements);
+  for (const group of made) group.members = compacted.get(group.key) ?? [];
+  const parted = made.filter((g) => g.members.length > 0);
+  const groups = [...base];
+  if (at >= 0) groups.splice(at, 1, ...parted);
+  else groups.push(...parted);
+  return {
+    groups,
+    edges: edges.filter((e) => e.from !== card.key && e.to !== card.key),
+    newKeys: parted.map((g) => g.key),
+  };
+}
+
+/**
+ * The stored grouping with the split card `key` belongs to merged back into
+ * the card it came from — every part, and parts of parts — with that card's
+ * text, members and connection notes as they were.
+ */
+export function mergeBack(stored: StoredAppMap, key: string): { groups: StoredAppMapGroup[]; edges: StoredAppMapEdge[]; restored: string } {
+  const origin = stored.groups.find((g) => g.key === key)?.splitFrom;
+  if (!origin) throw new Error("That card wasn't split out of another one.");
+  const parts = new Set(stored.groups.filter((g) => descendsFrom(g, origin.key)).map((g) => g.key));
+  const restored: StoredAppMapGroup = {
+    key: origin.key,
+    name: origin.name,
+    description: origin.description,
+    explanation: origin.explanation,
+    keyFiles: origin.keyFiles,
+    members: origin.members,
+    ...(origin.splitFrom ? { splitFrom: origin.splitFrom } : {}),
+  };
+  const groups: StoredAppMapGroup[] = [];
+  for (const g of stored.groups) {
+    if (!parts.has(g.key)) groups.push(g);
+    else if (!groups.includes(restored)) groups.push(restored);
+  }
+  const edges = [...stored.edges.filter((e) => !parts.has(e.from) && !parts.has(e.to)), ...origin.edges];
+  return { groups, edges, restored: origin.name };
 }
 
 // ---------------------------------------------------------------------------
@@ -657,6 +832,7 @@ export function assembleAppMap(
           name: input.components.get(moduleId)?.name ?? moduleId,
           files: count,
         })),
+      ...(group.splitFrom ? { splitFrom: group.splitFrom } : {}),
     });
   }
 
@@ -742,6 +918,32 @@ function isRecordLike(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function toStoredEdges(value: unknown): StoredAppMapEdge[] {
+  return Array.isArray(value)
+    ? value.filter(
+        (e): e is StoredAppMapEdge =>
+          isRecordLike(e) && typeof e.from === "string" && typeof e.to === "string" && typeof e.label === "string"
+      )
+    : [];
+}
+
+function toSplitOrigin(value: unknown, depth = 0): AppMapSplitOrigin | undefined {
+  if (!isRecordLike(value) || typeof value.key !== "string" || typeof value.name !== "string" || depth > 8) return undefined;
+  const parent = toSplitOrigin(value.splitFrom, depth + 1);
+  return {
+    key: value.key,
+    name: value.name,
+    description: typeof value.description === "string" ? value.description : undefined,
+    explanation: typeof value.explanation === "string" ? value.explanation : undefined,
+    keyFiles: Array.isArray(value.keyFiles)
+      ? value.keyFiles.filter((k): k is AppMapKeyFileDTO => isRecordLike(k) && typeof k.path === "string" && typeof k.role === "string")
+      : undefined,
+    members: Array.isArray(value.members) ? value.members.filter((m): m is string => typeof m === "string") : [],
+    edges: toStoredEdges(value.edges),
+    ...(parent ? { splitFrom: parent } : {}),
+  };
+}
+
 /** Validates the JSON blobs lib/db/app-map.ts hands back; anything malformed is dropped, never thrown. */
 export function toStoredAppMaps(
   records: ReadonlyArray<{ level: string; groups: unknown[]; edges: unknown[]; model: string; createdAt: string }>
@@ -764,12 +966,10 @@ export function toStoredAppMaps(
           : undefined,
         layer: typeof g.layer === "string" && g.layer in APP_LAYERS ? (g.layer as AppLayerId) : undefined,
         members: Array.isArray(g.members) ? g.members.filter((m): m is string => typeof m === "string") : [],
+        ...(toSplitOrigin(g.splitFrom) ? { splitFrom: toSplitOrigin(g.splitFrom) } : {}),
       });
     }
-    const edges: StoredAppMapEdge[] = record.edges.filter(
-      (e): e is StoredAppMapEdge =>
-        isRecordLike(e) && typeof e.from === "string" && typeof e.to === "string" && typeof e.label === "string"
-    );
+    const edges = toStoredEdges(record.edges);
     out.set(record.level, { level: record.level, groups, edges, model: record.model, createdAt: record.createdAt });
   }
   return out;

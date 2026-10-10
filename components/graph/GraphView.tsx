@@ -57,7 +57,7 @@ import { usePrMap } from "./usePrMap";
 import type { PrMapRequestDTO } from "./pr-map-types";
 import { AppMapView } from "./AppMapView";
 import { AppMapPanel, type AppMapSelection } from "./AppMapPanel";
-import { useAppMap, useAppMapJob } from "./useAppMap";
+import { useAppMap, useAppMapCardActions, useAppMapJob } from "./useAppMap";
 import { isAppMapLevel, type AppMapLevel } from "./app-map-types";
 import { PanelResizeHandle, usePanelWidth } from "./PanelResizeHandle";
 import { ChatPanel } from "./ChatPanel";
@@ -429,6 +429,7 @@ export function GraphView({
   const appMap = useAppMap(repoId, appLevel, appMounted, `${graphNonce}:${appRunNonce}`);
   const handleAppRunCompleted = useCallback(() => setAppRunNonce((n) => n + 1), []);
   const appJob = useAppMapJob(repoId, appMounted, handleAppRunCompleted);
+  const appCardActions = useAppMapCardActions(repoId, appJob, handleAppRunCompleted);
   const [appSelection, setAppSelection] = useState<AppMapSelection | null>(null);
   // A connection row hovered in the app-map panel; its line is lit on the map.
   const [appHoveredLink, setAppHoveredLink] = useState<string | null>(null);
@@ -695,6 +696,7 @@ export function GraphView({
               className="flex h-full flex-col"
               leading={viewSwitch}
               map={appMap.map}
+              cardActions={appCardActions}
               loading={appMap.loading}
               error={appMap.error}
               level={appLevel}
@@ -875,6 +877,8 @@ export function GraphView({
                     onHoverEdge={setAppHoveredLink}
                     infra={infraCatalog.catalog}
                     onOpenInfra={openInfraResource}
+                    cardActions={appCardActions}
+                    aiConfigured={Boolean(appJob.status?.aiConfigured)}
                   />
                 </div>
               )}

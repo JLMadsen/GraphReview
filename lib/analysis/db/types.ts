@@ -26,7 +26,9 @@ export type DbTool =
   | "goose"
   | "supabase"
   | "flyway"
-  | "sql";
+  | "sql"
+  /** DDL in the app's own string / template literals (a `MIGRATIONS` array run with `db.exec`). */
+  | "sql-in-code";
 
 export interface DbSourceRef {
   tool: DbTool;
@@ -299,6 +301,12 @@ export interface DbCodeFacts {
   }>;
   assigns?: Array<{ name: string; line: number; value: DV }>;
   upgrade?: Array<{ m: string; args: DV[]; kw?: Record<string, DV>; line: number; batch?: { table: string; schema?: string } }>;
+  /**
+   * Literals holding DDL — a schema defined in code. `group` / `index` (1-based)
+   * when the literal is an element of an array / list literal (lexically: of
+   * one bracket). Template holes are kept as `${…}`.
+   */
+  ddl?: Array<{ text: string; line: number; group?: string; index?: number }>;
   uses?: Array<{ k: "delegate" | "builder" | "sql"; name?: string; text?: string; line: number; w?: 1; lit?: 1 }>;
   writes?: number[];
   hints?: DbDialect[];
@@ -388,6 +396,12 @@ export interface DbChange {
   enums: DbEnumChange[];
   /** The migrations the PR adds, in replay order. */
   migrations: DbMigration[];
+  /**
+   * Migrations the base already had whose statements the PR changes. A
+   * database that already ran one never sees the edit — shown as a note,
+   * never replayed as a change of its own or turned into findings.
+   */
+  edited?: Array<{ id: string; name: string; file: string; line: number }>;
   drift: DbDriftDelta[];
   findings: DbFinding[];
   counts: { added: number; removed: number; renamed: number; changed: number; migrations: number; findings: number; destructive: number };

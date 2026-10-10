@@ -61,6 +61,70 @@ const FIXTURES: Record<string, string> = {
   "web/app/(shop)/checkout/page.tsx": "import { placeOrder } from './actions';\nexport default function Page() { return <form action={() => placeOrder({ sku: 'a', qty: 1 })} />; }\n",
   "web/pages/api/legacy.ts": "export default function handler(req: any, res: any) { res.json({}); }\n",
   "web/lib/db/orders.ts": "export async function insertOrder(o: unknown) { return o; }\n",
+  // Payloads and proxies read from the handler's code (handler-code.ts).
+  "web/lib/route-helpers.ts": [
+    "export function withSession(h: any) { return h; }",
+    "export function withAuth(page: string, h: any) { return h; }",
+    "export function withAudit(label: string, h: any) { return h; }",
+  ].join("\n"),
+  "web/app/api/proxy/route.ts": [
+    "import { NextRequest, NextResponse } from 'next/server';",
+    "import { withSession } from '../../../lib/route-helpers';",
+    "const handle = withSession(async (req: NextRequest) => {",
+    "  const target = req.nextUrl.searchParams.get('url'); // the address to forward to",
+    "  if (!target) return NextResponse.json({ error: 'Missing url' }, { status: 400 });",
+    "  const headers: Record<string, string> = {};",
+    "  req.headers.forEach((v, k) => { headers[k] = v; });",
+    "  const upstream = await fetch(target, { method: req.method, headers, body: await req.arrayBuffer() });",
+    "  return new NextResponse(upstream.body, { status: upstream.status });",
+    "});",
+    "export const GET = handle;",
+    "export const POST = handle;",
+  ].join("\n"),
+  "web/app/api/commute/route.ts": [
+    "import { NextRequest, NextResponse } from 'next/server';",
+    "import { withAuth, withAudit } from '../../../lib/route-helpers';",
+    "type Destination = { id: number; lat: number };",
+    "async function postHandler(req: NextRequest) {",
+    "  const { from, destinations, mode } = (await req.json()) as {",
+    "    from: { lat: number; lng: number }",
+    "    destinations: Destination[]",
+    "    mode?: string",
+    "  };",
+    "  const res = await fetch('https://api.example.org/v2/matrix', { method: 'POST', body: JSON.stringify({ from }) });",
+    "  if (!res.ok) return NextResponse.json({ error: await res.text() }, { status: res.status });",
+    "  const results = destinations.map((d) => ({ id: d.id }));",
+    "  return NextResponse.json({ results, count: results.length, mode });",
+    "}",
+    "export const POST = withAudit('api:commute', withAuth('map', postHandler));",
+  ].join("\n"),
+  "web/app/api/search/route.ts": [
+    "import { NextRequest, NextResponse } from 'next/server';",
+    "import { cookies } from 'next/headers';",
+    "export async function GET(request: NextRequest) {",
+    "  const { searchParams } = new URL(request.url);",
+    "  const q = searchParams.get('q') ?? '';",
+    "  const tags = searchParams.getAll('tag');",
+    "  const trace = request.headers.get('X-Trace-Id');",
+    "  const session = (await cookies()).get('session');",
+    "  const items: string[] = [q, ...tags];",
+    "  if (items.length === 0) return NextResponse.json({ items: [], total: 0 });",
+    "  return NextResponse.json({ items, total: items.length, trace, cached: false });",
+    "}",
+    "export async function POST(request: NextRequest) {",
+    "  const body = await request.json();",
+    "  return NextResponse.json({ saved: body.name, at: new Date().toISOString() });",
+    "}",
+    "export async function PUT(request: NextRequest) {",
+    "  const form = await request.formData();",
+    "  const file = form.get('file');",
+    "  return NextResponse.json({ ok: true, size: (file as File).size });",
+    "}",
+  ].join("\n"),
+  "web/app/(shop)/checkout/save.ts": [
+    "'use server';",
+    "export async function saveCart(id: string) { return { saved: true, id, count: 3 }; }",
+  ].join("\n"),
   "web/lib/client.ts": "import axios from 'axios';\nexport const load = () => axios.get('/api/orders', { params: {} });\n",
 
   // --- Express (ESM, mounted across files) ----------------------------------
@@ -304,6 +368,30 @@ async function main(): Promise<void> {
     check("server action callers", action?.callers?.some((c) => c.endsWith("page.tsx")) === true);
     check("unexported function in a use-server file is not an action", !api.endpoints.some((e) => e.path === "notExported"));
     check("axios.get is not an endpoint", !api.endpoints.some((e) => e.handler?.file === "web/lib/client.ts"));
+
+    console.log("handler code");
+    const fields = (s?: { fields?: Array<{ name: string; type: string; required: boolean }> }) => s?.fields?.map((f) => `${f.name}${f.required ? "" : "?"}:${f.type}`).join(",");
+    const proxy = find(api, "GET", "/api/proxy");
+    check("alias export follows to the wrapped handler", proxy?.handler?.name === "handle" && proxy.auth.includes("withSession"), JSON.stringify({ handler: proxy?.handler, auth: proxy?.auth }));
+    check("forwarding handler is a proxy, target from the request", proxy?.proxy !== undefined && proxy.proxy.upstream === undefined, JSON.stringify(proxy?.proxy));
+    check("proxy's answer is the upstream's", proxy?.response?.opaque === true && !find(api, "POST", "/api/proxy")?.request);
+    check("proxy's query param", proxy?.params.some((p) => p.name === "url" && p.in === "query") === true);
+    const commute = find(api, "POST", "/api/commute");
+    check("wrapper chain: every wrapper is auth, the code is the wrapped function", commute?.auth.join() === "middleware.ts,withAudit,withAuth" && commute.handler?.name === "postHandler", JSON.stringify({ auth: commute?.auth, handler: commute?.handler?.name }));
+    check("an API it calls doesn't make it a proxy", commute?.proxy === undefined);
+    check("request from a multi-line `as { … }` cast", fields(commute?.request) === "from:{ lat: number; lng: number },destinations:Destination[],mode?:string" && commute?.request?.source === "code", JSON.stringify(commute?.request));
+    check("response from the success literal, error answer skipped", fields(commute?.response) === "results:array,count:number,mode:unknown", JSON.stringify(commute?.response));
+    const search = find(api, "GET", "/api/search");
+    const paramText = search?.params.map((p) => `${p.name}:${p.in}:${p.type}`).sort().join(",");
+    check("query, header and cookie params", paramText === "q:query:string,session:cookie:string,tag:query:string[],x-trace-id:header:string", paramText);
+    check("answers merged, required only where every answer has it", fields(search?.response) === "items:string[],total:number,trace?:unknown,cached?:boolean", JSON.stringify(search?.response));
+    check("GET has no request body", search?.request === undefined);
+    check("body fields read off a variable", fields(find(api, "POST", "/api/search")?.request) === "name:unknown", JSON.stringify(find(api, "POST", "/api/search")?.request));
+    check("response literal types", fields(find(api, "POST", "/api/search")?.response) === "saved:unknown,at:string", JSON.stringify(find(api, "POST", "/api/search")?.response));
+    const form = find(api, "PUT", "/api/search")?.request;
+    check("form data parts", form?.type === "FormData" && fields(form) === "file:FormDataEntryValue", JSON.stringify(form));
+    const saveCart = api.endpoints.find((e) => e.kind === "action" && e.path === "saveCart");
+    check("server action's returned object", fields(saveCart?.response) === "saved:boolean,id:string,count:number", JSON.stringify(saveCart?.response));
 
     console.log("express");
     const getUser = find(api, "GET", "/api/users/{id}");

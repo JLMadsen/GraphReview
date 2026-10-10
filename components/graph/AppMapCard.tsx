@@ -14,7 +14,11 @@
 // reads — see `.amc-*` in app/globals.css.
 // Rendered twice per layout (offscreen to measure, then as the node), so it
 // takes plain props and knows nothing about React Flow.
+//
+// A features card that reads as a catch-all (`isOversizedCard`) carries a
+// "Split up" button, so the fix is where the problem is seen.
 
+import { LoaderCircle, Scissors } from "lucide-react";
 import { cn } from "cn";
 import { layerTint, type AppMapLevel, type AppMapNodeDTO } from "./app-map-types";
 import { CardMarkerBadge, type PrCardMarker } from "./PrMapNode";
@@ -36,6 +40,10 @@ export interface AppMapCardProps {
   marker?: PrCardMarker;
   /** Make the diff stand out: changed cards amber, the rest faded. Off shows every card normally (the "N changed" words stay). */
   highlightChanges?: boolean;
+  /** Shown on an oversized features card: cut it into smaller features. */
+  onSplit?: () => void;
+  /** The split is running. */
+  splitting?: boolean;
 }
 
 export function AppMapCard({
@@ -47,6 +55,8 @@ export function AppMapCard({
   changedFiles,
   marker,
   highlightChanges = true,
+  onSplit,
+  splitting,
 }: AppMapCardProps) {
   const hasDiff = Boolean(changedFiles && changedFiles.size > 0);
   const changed = hasDiff ? node.files.filter((f) => changedFiles!.has(f)).length : 0;
@@ -93,7 +103,7 @@ export function AppMapCard({
         <p className="amc-desc mt-0.5 text-[11px] leading-snug text-muted-foreground">{node.description}</p>
       )}
 
-      {(changed > 0 || marker) && (
+      {(changed > 0 || marker || onSplit) && (
         <div className="amc-status mt-1.5 flex items-center gap-2.5 text-[11px]">
           {changed > 0 && (
             <span
@@ -104,6 +114,21 @@ export function AppMapCard({
             </span>
           )}
           {marker && <CardMarkerBadge marker={marker} />}
+          {onSplit && (
+            <button
+              type="button"
+              disabled={splitting}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSplit();
+              }}
+              className="ml-auto flex items-center gap-1 rounded-sm border border-dashed border-foreground/25 px-1.5 leading-4 text-muted-foreground hover:border-foreground/50 hover:text-foreground disabled:opacity-60"
+              title={`${node.files.length} files is a lot for one feature — split it into smaller ones`}
+            >
+              {splitting ? <LoaderCircle className="size-3 animate-spin" aria-hidden /> : <Scissors className="size-3" aria-hidden />}
+              Split up
+            </button>
+          )}
         </div>
       )}
     </div>

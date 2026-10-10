@@ -41,6 +41,24 @@ export interface ApiInferResponseDTO {
   endpoint: ServedEndpoint;
 }
 
+/** A shape a model could still add to (mirrors shapeIncomplete in lib/analysis/api/types.ts). */
+export function shapeIncomplete(shape: ApiShape | undefined): boolean {
+  if (!shape) return true;
+  if (shape.opaque) return false;
+  if (!shape.fields?.length) return true;
+  return shape.source === "code" && shape.fields.some((f) => f.type === "unknown");
+}
+
+/** Whether an endpoint takes a body at all, as far as its method says (mirrors takesBody). */
+export function takesBody(e: Pick<Endpoint, "kind" | "method">): boolean {
+  return e.kind !== "http" || /^(POST|PUT|PATCH|ANY)$/.test(e.method);
+}
+
+/** A proxy with no auth in front of it that forwards to a URL the caller picks — anyone can make the server fetch anything. */
+export function openProxy(e: Pick<Endpoint, "proxy" | "auth">, gatewayAuth?: string[]): boolean {
+  return Boolean(e.proxy && !e.proxy.upstream && e.auth.length === 0 && !gatewayAuth?.length);
+}
+
 /** `lib/x.ts#Repo.save` → file and name (mirrors lib/analysis/api/types.ts, which the client can't import values from). */
 export function splitDeclId(id: string): { file: string; name: string } {
   const at = id.lastIndexOf("#");

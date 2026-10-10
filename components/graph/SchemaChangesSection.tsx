@@ -73,6 +73,19 @@ export function SchemaChangesSection({ change, onOpen }: { change: DbChange | un
             </li>
           );
         })}
+        {(change.edited ?? []).map((m) => (
+          <li key={m.id}>
+            <button
+              type="button"
+              onClick={() => onOpen(change.tables.find((t) => t.migrations.includes(m.id))?.id ?? "")}
+              className="flex w-full min-w-0 items-baseline gap-1.5 py-0.5 text-left"
+              title={`${m.file}:${m.line} — this migration existed before the change; a database that already ran it never sees the edit`}
+            >
+              <span className="w-12 shrink-0 font-mono text-[10px] text-warning">edited</span>
+              <span className="min-w-0 truncate font-mono">{m.name}</span>
+            </button>
+          </li>
+        ))}
         {change.tables.length === 0 && change.migrations.length > 0 && (
           <li className="text-muted-foreground">{change.migrations.length} new migration(s), no table change read from them</li>
         )}
