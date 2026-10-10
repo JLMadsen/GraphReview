@@ -23,3 +23,5 @@ export * from "./kv";
 export * from "./parse-cache";
 export * from "./target-graph";
 export * from "./api-catalog";
+export * from "./infra-catalog";
+export * from "./db-schema";

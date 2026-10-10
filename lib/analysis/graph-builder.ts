@@ -15,6 +15,13 @@
 import { stat } from "node:fs/promises";
 import { buildApiCatalog } from "./api/catalog";
 import type { ApiCatalog } from "./api/types";
+import { buildInfraCatalog } from "./infra/catalog";
+import { scanCodeFacts, type CodeFacts } from "./infra/code-facts";
+import { GRAPH_FILE_KINDS, infraCacheTag, infraReaderFor, readInfraFile, type InfraFileFacts, type InfraReader } from "./infra/read";
+import { EMPTY_INFRA_CATALOG, type InfraCatalog } from "./infra/types";
+import { buildDbSchema } from "./db/catalog";
+import { dbReaderFor, readDbFile, scanSqlLiterals, type DbFileFacts, type DbReader } from "./db/read";
+import { EMPTY_DB_SCHEMA, type DbCodeFacts, type DbSchema } from "./db/types";
 import type { AnalyzerContext, LanguageAnalyzer, RawImport } from "./analyzer";
 import { countLines, type FileAnalysis, type FileImport, type SymbolFacts } from "./ir";
 import { dirOf, extensionOf } from "./paths";
@@ -72,6 +79,10 @@ export interface AnalysisResult {
   symbols: SymbolGraph;
   /** Every endpoint the tree exposes (./api/, DESIGN.md §6.11). */
   api: ApiCatalog;
+  /** The infrastructure the tree declares and its links to the code (./infra/, DESIGN.md §6.12). */
+  infra: InfraCatalog;
+  /** Tables the tree's migrations, schema files and models declare, and the code's links to them (./db/, DESIGN.md §6.13). */
+  db: DbSchema;
   /** Files counted but not parsed. */
   skipped: { binary: number; large: number; failed: number };
   /** Files whose parse came from the cache. */
@@ -94,13 +105,21 @@ const READ_CONCURRENCY = 24;
  * Bumped whenever what a parse produces changes (queries, extractors, the
  * cached shape), so stale cache entries are never read back.
  */
-export const PARSE_VERSION = 3;
+export const PARSE_VERSION = 5;
 
 /** What a file's own syntax says — the cached unit. */
 export interface CachedParse {
   raws: RawImport[];
   declares?: string[];
   symbols?: SymbolFacts;
+  /** Env reads and literal listen ports (./infra/code-facts.ts). */
+  code?: CodeFacts;
+  /** What an infra file says (./infra/read.ts) — infra files only. */
+  infra?: InfraFileFacts;
+  /** What a schema file says (./db/read.ts) — `.sql`, `.prisma`, Drizzle journals. */
+  db?: DbFileFacts;
+  /** SQL literals of a Go / Java / Kotlin / Rust file (./db/read.ts). */
+  dbCode?: DbCodeFacts;
   loc: number;
 }
 
@@ -152,10 +171,13 @@ async function parseFile(analyzer: LanguageAnalyzer, file: string, source: strin
   const ext = extensionOf(file);
   const loc = countLines(source);
   try {
+    const code = scanCodeFacts(analyzer.languageId(ext), source);
+    const sql = scanSqlLiterals(analyzer.languageId(ext), source);
+    const withCode = { ...(code ? { code } : {}), ...(sql ? { dbCode: sql } : {}) };
     if (analyzer.analyzeSource) {
       const facts = analyzer.analyzeSource({ file, source });
       const symbols = analyzer.analyzeSymbols?.({ file, source });
-      return { raws: facts.imports, ...(facts.declares?.length ? { declares: facts.declares } : {}), ...(symbols ? { symbols } : {}), loc };
+      return { raws: facts.imports, ...(facts.declares?.length ? { declares: facts.declares } : {}), ...(symbols ? { symbols } : {}), ...withCode, loc };
     }
     if (!analyzer.grammarFor || !analyzer.queryPath) {
       throw new Error(`analyzer "${analyzer.id}" has neither analyzeSource nor a grammar`);
@@ -172,7 +194,7 @@ async function parseFile(analyzer: LanguageAnalyzer, file: string, source: strin
         ? { imports: analyzer.collectImports(matches) }
         : null;
     if (!facts) throw new Error(`analyzer "${analyzer.id}" cannot collect imports`);
-    return { raws: facts.imports, ...(facts.declares?.length ? { declares: facts.declares } : {}), ...(symbols ? { symbols } : {}), loc };
+    return { raws: facts.imports, ...(facts.declares?.length ? { declares: facts.declares } : {}), ...(symbols ? { symbols } : {}), ...withCode, loc };
   } catch (error) {
     // A single unparseable file must not sink the whole repo analysis; it still
     // becomes a node in the graph, just without outgoing edges.
@@ -191,6 +213,8 @@ function toParsed(analyzer: LanguageAnalyzer, file: string, parse: CachedParse |
   };
   if (parse?.declares && parse.declares.length > 0) analysis.declares = parse.declares;
   if (parse?.symbols) analysis.symbols = parse.symbols;
+  if (parse?.code) analysis.code = parse.code;
+  if (parse?.dbCode) analysis.db = parse.dbCode;
   return { analysis, analyzer, raws: parse?.raws ?? [] };
 }
 
@@ -473,6 +497,82 @@ export async function analyzeTree(tree: SourceTree, options: AnalyzeRepoOptions 
     if (options.cache && fresh.length > 0) await options.cache.setMany(fresh);
   }
 
+  // Infra files (DESIGN.md §6.12 §1): Terraform, Nomad, Kubernetes, Helm,
+  // Dockerfiles, and what links them to code (.env.example, build scripts,
+  // Spring config). Read by lexical readers in-process — like Kotlin — and
+  // cached by blob like a parse; the cache key carries what besides the
+  // content the facts depend on (a YAML file's name and siblings).
+  const has = (p: string) => ctx.files.has(p);
+  const infraTargets = allFiles
+    .filter((file) => !analyzerForPath(file))
+    .map((file) => ({ file, reader: infraReaderFor(file, has) }))
+    .filter((t): t is { file: string; reader: InfraReader } => t.reader !== undefined);
+  const infraFiles: Array<{ file: string; facts: InfraFileFacts; loc: number }> = [];
+  for (let i = 0; i < infraTargets.length; i += READ_CONCURRENCY) {
+    const batch = infraTargets.slice(i, i + READ_CONCURRENCY);
+    const keys = batch.map(({ file, reader }) => {
+      const blob = tree.blobOf(file);
+      return blob ? `${PARSE_VERSION}:infra-${infraCacheTag(reader, file, has)}:${blob}` : undefined;
+    });
+    const hits = options.cache
+      ? await options.cache.getMany(keys.filter((k): k is string => Boolean(k)))
+      : new Map<string, CachedParse>();
+    const fresh: Array<[string, CachedParse]> = [];
+    for (let j = 0; j < batch.length; j++) {
+      const { file, reader } = batch[j];
+      const key = keys[j];
+      const hit = key ? hits.get(key) : undefined;
+      if (hit?.infra) {
+        cached++;
+        infraFiles.push({ file, facts: hit.infra, loc: hit.loc });
+        continue;
+      }
+      const source = await tree.read(file, reader === "yaml" ? Math.min(maxFileBytes, 1_000_000) : maxFileBytes);
+      if (source === null) continue;
+      const facts = readInfraFile(reader, file, source, has);
+      const loc = countLines(source);
+      if (key) fresh.push([key, { raws: [], loc, infra: facts }]);
+      infraFiles.push({ file, facts, loc });
+    }
+    if (options.cache && fresh.length > 0) await options.cache.setMany(fresh);
+  }
+
+  // Schema files (DESIGN.md §6.13 §2): `.sql`, `.prisma`, Drizzle journals,
+  // Prisma lock files — read in-process like infra files and cached by blob.
+  const dbTargets = allFiles
+    .filter((file) => !analyzerForPath(file))
+    .map((file) => ({ file, reader: dbReaderFor(file) }))
+    .filter((t): t is { file: string; reader: DbReader } => t.reader !== undefined);
+  const dbFiles: Array<{ file: string; facts: DbFileFacts; loc: number }> = [];
+  for (let i = 0; i < dbTargets.length; i += READ_CONCURRENCY) {
+    const batch = dbTargets.slice(i, i + READ_CONCURRENCY);
+    const keys = batch.map(({ file, reader }) => {
+      const blob = tree.blobOf(file);
+      return blob ? `${PARSE_VERSION}:db-${reader}:${blob}` : undefined;
+    });
+    const hits = options.cache
+      ? await options.cache.getMany(keys.filter((k): k is string => Boolean(k)))
+      : new Map<string, CachedParse>();
+    const fresh: Array<[string, CachedParse]> = [];
+    for (let j = 0; j < batch.length; j++) {
+      const { file, reader } = batch[j];
+      const key = keys[j];
+      const hit = key ? hits.get(key) : undefined;
+      if (hit?.db) {
+        cached++;
+        dbFiles.push({ file, facts: hit.db, loc: hit.loc });
+        continue;
+      }
+      const source = await tree.read(file, maxFileBytes);
+      if (source === null) continue;
+      const facts = readDbFile(reader, file, source);
+      const loc = countLines(source);
+      if (key) fresh.push([key, { raws: [], loc, db: facts }]);
+      dbFiles.push({ file, facts, loc });
+    }
+    if (options.cache && fresh.length > 0) await options.cache.setMany(fresh);
+  }
+
   // Every file is parsed now: publish the declarations, let analyzers index them
   // (JVM: fully-qualified name -> file), then resolve all imports against that.
   const declarations = new Map<string, readonly string[]>();
@@ -537,6 +637,54 @@ export async function analyzeTree(tree: SourceTree, options: AnalyzeRepoOptions 
     },
   );
 
+  const infra = (() => {
+    try {
+      return buildInfraCatalog({
+        infraFiles,
+        code: [
+          ...files.filter((f) => f.code).map((f) => ({ file: f.file, facts: f.code! })),
+          ...infraFiles.flatMap((f) => (f.facts.kind === "spring" ? [{ file: f.file, facts: f.facts.code }] : [])),
+        ],
+        api,
+        allFiles: ctx.files,
+      });
+    } catch (error) {
+      console.warn(`[analysis] infra catalog failed: ${(error as Error).message}`);
+      return { ...EMPTY_INFRA_CATALOG };
+    }
+  })();
+  const db = (() => {
+    try {
+      return buildDbSchema({
+        dbFiles,
+        code: files.flatMap((f) => {
+          const facts = f.symbols?.db ?? f.db;
+          return facts ? [{ file: f.file, facts, ...(f.symbols ? { symbols: f.symbols } : {}) }] : [];
+        }),
+        symbols,
+        api,
+      });
+    } catch (error) {
+      console.warn(`[analysis] schema catalog failed: ${(error as Error).message}`);
+      return { ...EMPTY_DB_SCHEMA };
+    }
+  })();
+  // Schema files a database is built from (migrations, `.prisma`, schema.sql)
+  // are graph files too, like infra files: a change to a migration alone
+  // still has a component to review (DESIGN.md §6.13 §6).
+  const schemaFiles = new Set(db.databases.flatMap((d) => [...d.migrations.map((m) => m.file), ...d.tables.map((t) => t.definedAt.file), ...d.tables.flatMap((t) => t.models.map((m) => m.file))]));
+  for (const f of dbFiles) {
+    if (!schemaFiles.has(f.file) || (f.facts.kind !== "sql" && f.facts.kind !== "prisma")) continue;
+    files.push({ file: f.file, language: f.facts.kind, imports: [], loc: f.loc });
+  }
+  // Infra files are part of the graph: they cluster into their folder's
+  // module like code does, so a change to infra alone still has components
+  // to review (DESIGN.md §6.12 §6). They import nothing.
+  for (const f of infraFiles) {
+    const language = GRAPH_FILE_KINDS[f.facts.kind];
+    if (language) files.push({ file: f.file, language, imports: [], loc: f.loc });
+  }
+
   edges.sort(
     (a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to) || a.kind.localeCompare(b.kind),
   );
@@ -555,6 +703,8 @@ export async function analyzeTree(tree: SourceTree, options: AnalyzeRepoOptions 
     externalPackages: [...externals].sort(),
     symbols,
     api,
+    infra,
+    db,
     skipped: { ...tree.skipped, failed },
     cached,
   };

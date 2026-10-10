@@ -37,12 +37,18 @@ import {
   listComponentsByRepoId,
   listFindingsByTargetKey,
   getComponentOverview,
+  readInfraCatalog,
+  readDbSchema,
   readTargetGraph,
   updateChatSuggestion,
   upsertFinding,
 } from "@/lib/db";
 import type { ApiChange } from "@/lib/analysis/api/types";
 import { describeApiChange, endpointLabel } from "@/lib/analysis/api/describe";
+import type { InfraChange } from "@/lib/analysis/infra/types";
+import type { DbChange } from "@/lib/analysis/db/types";
+import { describeDbFinding, describeSchemaChange, describeTable, filterTables } from "@/lib/analysis/db/describe";
+import { describeInfraChange, describeInfraFinding, describeInfraResource, filterInfra } from "@/lib/analysis/infra/describe";
 import { readServedApiCatalog } from "./api-catalog";
 import type { TargetGraphData } from "./target-graph-queue";
 import type { ChatMessageRecord, ChatSuggestionRecord, ComponentRecord, FindingRecord, FindingWithComponent, RepoRecord } from "@/lib/db";
@@ -85,6 +91,28 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
     description: "the app's API: endpoints (HTTP routes, server actions, tRPC, GraphQL) with handler, middleware/auth and request/response shapes",
   },
   {
+    name: "list_infra",
+    args: '{"query":"<optional text in the address, kind, file or tool>"}',
+    description:
+      "the repo's infrastructure as code (Terraform/OpenTofu, Nomad, Kubernetes, Helm, Dockerfiles): resources with versions, which workload ships which code, env vars read but not set, routes",
+  },
+  {
+    name: "get_infra_changes",
+    args: "{}",
+    description: "what this change does to the infrastructure, plan-style (create/destroy/update/moved/version), its link deltas and the certain infra findings",
+  },
+  {
+    name: "list_tables",
+    args: '{"query":"<optional text in the table, column, model or file>"}',
+    description:
+      "the database schema the repo's migrations, schema files and ORM models declare: tables with columns, keys, FKs, the models that map them, the endpoints that read or write them, and drift between models and migrations",
+  },
+  {
+    name: "get_schema_changes",
+    args: "{}",
+    description: "what this change does to the database schema: tables and columns added, dropped, retyped or renamed, indexes, FKs, enums, the migrations it adds, drift it introduces and the certain schema findings",
+  },
+  {
     name: "get_findings",
     args: '{"component":"<optional component name>"}',
     description: "the AI review's findings for this change, optionally for one component",
@@ -106,7 +134,7 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
 /** Most suggestions one answer may carry — beyond that they stop being worth reading. */
 export const MAX_SUGGESTIONS_PER_ANSWER = 3;
 
-const REPO_TOOL_NAMES = new Set(["read_file", "search_code", "get_component", "list_endpoints"]);
+const REPO_TOOL_NAMES = new Set(["read_file", "search_code", "get_component", "list_endpoints", "list_infra", "list_tables"]);
 
 export const REPO_CHAT_TOOLS: PrChatTool[] = [
   {
@@ -138,6 +166,10 @@ interface ToolContext {
   model: string;
   /** What the change does to the endpoints, when the base/head comparison has run (DESIGN.md §6.11). */
   api?: ApiChange;
+  /** What the change does to the infrastructure, likewise (DESIGN.md §6.12). */
+  infra?: InfraChange;
+  /** What the change does to the database schema, likewise (DESIGN.md §6.13). */
+  db?: DbChange;
   /** suggest_finding's offers in this turn, stored on the answer. */
   suggestions: ChatSuggestionRecord[];
 }
@@ -185,7 +217,7 @@ function num(value: unknown): number | undefined {
 }
 
 /** Tools that need a change to talk about; the repo-wide chat answers them with NO_CHANGE. */
-const CHANGE_TOOL_NAMES = new Set(["list_changed_files", "get_diff", "get_findings", "add_finding", "suggest_finding"]);
+const CHANGE_TOOL_NAMES = new Set(["list_changed_files", "get_diff", "get_findings", "add_finding", "suggest_finding", "get_infra_changes", "get_schema_changes"]);
 
 /** A chat finding as the model gave it, before it is recorded or offered. */
 type FindingDraft = Omit<ChatSuggestionRecord, "id" | "status" | "findingId">;
@@ -320,6 +352,48 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
         summary: `listed ${Math.min(list.length, 60)} endpoint(s)`,
         files: [...new Set(list.slice(0, 8).map((e) => e.handler?.file).filter((f): f is string => Boolean(f)))],
       };
+    }
+
+    case "list_infra": {
+      const stored = readInfraCatalog(tc.repo.id);
+      if (!stored) return { text: "The infra catalog isn't built yet — the repo needs a re-analysis.", summary: "no infra catalog yet" };
+      const list = filterInfra(stored.catalog, typeof args.query === "string" ? args.query : undefined);
+      const lines = list.slice(0, 60).map((r) => `- ${describeInfraResource(r, stored.catalog)}`);
+      if (list.length > 60) lines.push(`… ${list.length - 60} more — narrow it with a query`);
+      return {
+        text: lines.join("\n") || (stored.catalog.resources.length ? "(no resources match)" : "(no infrastructure as code found in this repo)"),
+        summary: `listed ${Math.min(list.length, 60)} infra resource(s)`,
+        files: [...new Set(list.slice(0, 8).map((r) => r.file))],
+      };
+    }
+
+    case "get_infra_changes": {
+      if (!tc.infra) return { text: "The base/head comparison hasn't run yet (or doesn't cover infrastructure) — try again shortly.", summary: "no infra comparison yet" };
+      const lines = describeInfraChange(tc.infra, 40);
+      if (tc.infra.findings.length) lines.push("Certain findings (already in the review as `infra`):", ...tc.infra.findings.map((f) => `- ${describeInfraFinding(f)}`));
+      return { text: lines.join("\n"), summary: `read the infra change (${tc.infra.changes.length} resource change(s))`, files: [...new Set(tc.infra.changes.slice(0, 8).map((c) => c.resource.file))] };
+    }
+
+    case "list_tables": {
+      const stored = readDbSchema(tc.repo.id);
+      if (!stored) return { text: "The schema catalog isn't built yet — the repo needs a re-analysis.", summary: "no schema catalog yet" };
+      const list = filterTables(stored.schema, typeof args.query === "string" ? args.query : undefined);
+      const lines = list.slice(0, 40).map(({ table, db }) => `- ${describeTable(table, db)}`);
+      if (list.length > 40) lines.push(`… ${list.length - 40} more — narrow it with a query`);
+      const problems = stored.schema.databases.flatMap((d) => d.orderProblems.map((p) => `- ${d.name}: ${p}`));
+      if (problems.length) lines.push("Migration order problems:", ...problems);
+      return {
+        text: lines.join("\n") || (stored.schema.databases.length ? "(no tables match)" : "(no migrations, schema files or ORM models found in this repo)"),
+        summary: `listed ${Math.min(list.length, 40)} table(s)`,
+        files: [...new Set(list.slice(0, 8).map(({ table }) => table.definedAt.file))],
+      };
+    }
+
+    case "get_schema_changes": {
+      if (!tc.db) return { text: "The base/head comparison hasn't run yet (or doesn't cover the schema) — try again shortly.", summary: "no schema comparison yet" };
+      const lines = describeSchemaChange(tc.db, 40);
+      if (tc.db.findings.length) lines.push("Certain findings (already in the review as `schema`):", ...tc.db.findings.map((f) => `- ${describeDbFinding(f)}`));
+      return { text: lines.join("\n"), summary: `read the schema change (${tc.db.tables.length} table change(s))`, files: [...new Set(tc.db.migrations.slice(0, 8).map((m) => m.file))] };
     }
 
     case "list_components": {
@@ -526,6 +600,15 @@ function renderRepoContext(tc: ToolContext): string {
   if (served && served.catalog.endpoints.length > 0) {
     lines.push("", `API: ${served.catalog.endpoints.length} endpoint(s) (${served.catalog.frameworks.join(", ")}) — use list_endpoints.`);
   }
+  const infra = readInfraCatalog(repo.id);
+  if (infra && infra.catalog.resources.length > 0) {
+    lines.push(`Infrastructure: ${infra.catalog.resources.length} resource(s) in ${infra.catalog.stacks.length} stack(s) (${infra.catalog.tools.join(", ")}) — use list_infra.`);
+  }
+  const db = readDbSchema(repo.id);
+  const tableCount = db?.schema.databases.reduce((n, d) => n + d.tables.length, 0) ?? 0;
+  if (db && tableCount > 0) {
+    lines.push(`Database: ${tableCount} table(s) in ${db.schema.databases.length} database(s) (${[...new Set(db.schema.databases.flatMap((d) => d.tools))].join(", ")}) — use list_tables.`);
+  }
   return lines.join("\n");
 }
 
@@ -561,6 +644,14 @@ function renderContext(tc: ToolContext): string {
   if (tc.api) {
     lines.push("", "What the change does to the API (static analysis of base and head; list_endpoints for the whole API):");
     for (const line of describeApiChange(tc.api, 15)) lines.push(`- ${line}`);
+  }
+  if (tc.infra && (tc.infra.changes.length > 0 || tc.infra.links.length > 0)) {
+    lines.push("", "What the change does to the infrastructure (static analysis, plan-style; get_infra_changes for all of it, list_infra for the whole inventory):");
+    for (const line of describeInfraChange(tc.infra, 15)) lines.push(`- ${line}`);
+  }
+  if (tc.db && (tc.db.tables.length > 0 || tc.db.migrations.length > 0 || tc.db.enums.length > 0)) {
+    lines.push("", "What the change does to the database schema (static analysis; get_schema_changes for all of it, list_tables for the whole schema):");
+    for (const line of describeSchemaChange(tc.db, 15)) lines.push(`- ${line}`);
   }
   return lines.join("\n");
 }
@@ -607,7 +698,10 @@ export async function runChatTurn(args: {
     targetKey,
     ...(target?.kind === "pr" ? { prId: `${repo.id}:pr:${target.prNumber}` } : {}),
     model: config.model,
-    ...(target ? { api: readTargetGraph<TargetGraphData>(repo.id, targetKey)?.data.api } : {}),
+    ...(target ? (() => {
+      const stored = readTargetGraph<TargetGraphData>(repo.id, targetKey)?.data;
+      return { api: stored?.api, infra: stored?.infra, db: stored?.db };
+    })() : {}),
     suggestions: [],
   };
 

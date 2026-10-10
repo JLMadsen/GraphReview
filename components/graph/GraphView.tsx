@@ -5,7 +5,7 @@
 // an unreadable database degrades gracefully in the browser instead of
 // failing the page render.
 //
-// Three views share the canvas slot (DESIGN.md §6.4, §6.5, §6.11):
+// Four views share the canvas slot (DESIGN.md §6.4, §6.5, §6.11, §6.12):
 //   - **App map** (`AppMapView`) — the whole codebase as cards, at an
 //     architecture, feature or module level of detail, carrying the diff's
 //     changes and the review's verdicts. The default with no diff selected.
@@ -13,7 +13,16 @@
 //     page, each opening in place; with a diff selected, its API changes
 //     with before / after payloads. It takes the whole column (the review
 //     dock stays with the PR view).
+//   - **Infra** (`InfraView`) — the infrastructure as code (Terraform, Nomad,
+//     Kubernetes, Helm, Dockerfiles), a list like the API view; with a diff
+//     selected, its plan-style infra changes. Also the whole column.
+//   - **Data** (`DataView`) — the database schema (§6.13): an ER canvas of
+//     the tables (its explainer in the right column) or a list whose rows
+//     open in place; with a diff selected, its schema change. Also the whole
+//     column.
 //   - **PR** (`PrMapCanvas`) — only what the diff touches, as area cards.
+// The full-column views (API, Infra, Data) are `LIST_VIEWS`; a new
+// catalog's view is one more entry there and in `VIEW_OPTIONS`.
 // Both stay mounted once opened, stacked in one grid cell with the inactive
 // one transparent and `inert`, so each keeps its layout and zoom. (Not
 // `visibility: hidden`: React Flow sets `visibility: visible` inline on its
@@ -66,6 +75,15 @@ import { ApiView } from "./ApiView";
 import { ApiChangesSection } from "./ApiChangesSection";
 import { useApiCatalog } from "./useApiCatalog";
 import { buildApiRows } from "./api-view-model";
+import { InfraView } from "./InfraView";
+import { InfraChangesSection } from "./InfraChangesSection";
+import { useInfraCatalog } from "./useInfraCatalog";
+import { buildInfraRows, gatewayAuth } from "./infra-view-model";
+import { DataView, type DataMode } from "./DataView";
+import { DbTableDetail } from "./DbTableDetail";
+import { SchemaChangesSection } from "./SchemaChangesSection";
+import { useDbSchema } from "./useDbSchema";
+import { buildDbRows, endpointTouches, tableLabel, tablesByFile } from "./db-view-model";
 import {
   DEFAULT_REVIEW_EFFORT,
   reviewTargetLabel,
@@ -78,7 +96,18 @@ import type {
   ReviewTargetDTO,
 } from "./types";
 
-type GraphViewMode = "app" | "api" | "pr";
+type GraphViewMode = "app" | "api" | "infra" | "data" | "pr";
+/** Views that are a list taking the whole column (no review dock under them). */
+const LIST_VIEWS: ReadonlySet<GraphViewMode> = new Set(["api", "infra", "data"]);
+const isGraphViewMode = (v: unknown): v is GraphViewMode => v === "app" || v === "api" || v === "infra" || v === "data" || v === "pr";
+/** The view switch, in order. PR only shows with a diff selected. */
+const VIEW_OPTIONS: ReadonlyArray<{ value: GraphViewMode; label: string; title: string }> = [
+  { value: "app", label: "App map", title: "The whole app as cards — by architecture, feature or module, with explanations" },
+  { value: "api", label: "API", title: "Every endpoint the app exposes — with a diff selected, its changes to the API" },
+  { value: "infra", label: "Infra", title: "The infrastructure as code — Terraform, Nomad, Kubernetes, Helm, Dockerfiles — with a diff selected, its plan" },
+  { value: "data", label: "Data", title: "The database schema — tables from the migrations, schema files and ORM models, as an ER canvas or a list — with a diff selected, its schema change" },
+  { value: "pr", label: "PR", title: "Only what this diff touches" },
+];
 
 /** The views share one grid cell; the inactive one stays laid out but can't be seen, clicked or focused. */
 function viewLayerClass(active: boolean): string {
@@ -88,6 +117,7 @@ const VIEW_STORAGE_KEY = "graphreview.graph.view";
 const APP_LEVEL_STORAGE_KEY = "graphreview.appmap.level";
 const REVIEW_EXPANDED_STORAGE_KEY = "graphreview.review.expanded";
 const PR_MODE_STORAGE_KEY = "graphreview.prmap.mode";
+const DATA_MODE_STORAGE_KEY = "graphreview.data.mode";
 /** Functions and cards hidden on the Functions view, per repo and target. */
 const hiddenFunctionsKey = (repoId: string, target: ReviewTargetDTO) => `graphreview.prmap.hidden.${repoId}.${reviewTargetLabel(target)}`;
 
@@ -161,7 +191,7 @@ export function GraphView({
     try {
       const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
       // A stored "repo" (the removed Repo view) falls back to the default.
-      if (stored === "pr" || stored === "app" || stored === "api") setPreferredViewState(stored);
+      if (isGraphViewMode(stored)) setPreferredViewState(stored);
       const level = window.localStorage.getItem(APP_LEVEL_STORAGE_KEY);
       if (isAppMapLevel(level)) setAppLevelState(level);
       if (window.localStorage.getItem(REVIEW_EXPANDED_STORAGE_KEY) === "1") setReviewExpandedState(true);
@@ -463,8 +493,101 @@ export function GraphView({
     },
     [setPreferredView]
   );
-  /** The API view takes the whole column: no review dock under it, nothing folded. */
-  const apiFull = view === "api";
+  // --- Infra (DESIGN.md §6.12) ----------------------------------------------
+  const [infraMounted, setInfraMounted] = useState(false);
+  useEffect(() => {
+    if (view === "infra") setInfraMounted(true);
+  }, [view]);
+  // Also read for the App map's explainer ("Deployed as") and the API view's gateway auth.
+  const infraCatalog = useInfraCatalog(repoId, infraMounted || appMounted || apiMounted, graphNonce);
+  const infraChange = reviewTarget ? targetGraph.graph?.data?.infra : undefined;
+  const infraRows = useMemo(() => buildInfraRows(infraCatalog.catalog, infraChange), [infraCatalog.catalog, infraChange]);
+  const endpointGatewayAuth = useMemo(() => gatewayAuth(infraCatalog.catalog), [infraCatalog.catalog]);
+  const [infraFocus, setInfraFocus] = useState<{ id: string } | null>(null);
+  const [infraChangedOnly, setInfraChangedOnly] = useState(true);
+  useEffect(() => setInfraFocus(null), [repoId]);
+  useEffect(() => setInfraChangedOnly(true), [reviewTarget]);
+  /** Every resource link (the left column's Infra section) opens the Infra view at it. */
+  const openInfraResource = useCallback(
+    (resourceId: string) => {
+      setInfraMounted(true);
+      setInfraFocus({ id: resourceId });
+      setPreferredView("infra");
+    },
+    [setPreferredView]
+  );
+  // --- Data (DESIGN.md §6.13) -----------------------------------------------
+  const [dataMounted, setDataMounted] = useState(false);
+  useEffect(() => {
+    if (view === "data") setDataMounted(true);
+  }, [view]);
+  // Also read for the API explainer's "touches" and the PR map's ⛁ badges.
+  const dbSchema = useDbSchema(repoId, dataMounted || apiMounted || Boolean(prRequest), graphNonce);
+  const dbChange = reviewTarget ? targetGraph.graph?.data?.db : undefined;
+  const dbRows = useMemo(() => buildDbRows(dbSchema.schema, dbChange), [dbSchema.schema, dbChange]);
+  const dbTablesById = useMemo(() => new Map(dbRows.map((r) => [r.table.id, r.table])), [dbRows]);
+  const endpointTables = useMemo(() => endpointTouches(dbSchema.schema), [dbSchema.schema]);
+  const fileTableNames = useMemo(() => {
+    const names = new Map((dbSchema.schema?.databases ?? []).flatMap((d) => d.tables.map((t) => [t.id, tableLabel(t)] as const)));
+    const out = new Map<string, string[]>();
+    for (const [file, ids] of tablesByFile(dbSchema.schema)) out.set(file, [...ids].map((id) => names.get(id) ?? id));
+    // Migrations only the diff adds aren't in the analysed catalog: the change says what they touch.
+    for (const c of dbChange?.tables ?? []) {
+      for (const m of c.migrations) {
+        const file = m.split("#")[0];
+        const list = out.get(file) ?? [];
+        if (!list.includes(tableLabel(c.table))) out.set(file, [...list, tableLabel(c.table)]);
+      }
+    }
+    return out;
+  }, [dbSchema.schema, dbChange]);
+  const [dataFocus, setDataFocus] = useState<{ id: string } | null>(null);
+  const [dataChangedOnly, setDataChangedOnly] = useState(true);
+  const [dataSelected, setDataSelected] = useState<string | null>(null);
+  const [dataMode, setDataModeState] = useState<DataMode>("canvas");
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(DATA_MODE_STORAGE_KEY) === "list") setDataModeState("list");
+    } catch {
+      /* storage unavailable — canvas */
+    }
+  }, []);
+  const setDataMode = useCallback((mode: DataMode) => {
+    setDataModeState(mode);
+    try {
+      window.localStorage.setItem(DATA_MODE_STORAGE_KEY, mode);
+    } catch {
+      /* ignored */
+    }
+  }, []);
+  useEffect(() => {
+    setDataFocus(null);
+    setDataSelected(null);
+  }, [repoId]);
+  useEffect(() => setDataChangedOnly(true), [reviewTarget]);
+  /** Every table link (the left column's Schema section, an endpoint's "touches") opens the Data view at it. */
+  const openTable = useCallback(
+    (tableId: string) => {
+      setDataMounted(true);
+      setDataFocus({ id: tableId });
+      setPreferredView("data");
+    },
+    [setPreferredView]
+  );
+  const selectedDbRow = dataSelected ? dbRows.find((r) => r.table.id === dataSelected) : undefined;
+  const showDataPanel = view === "data" && dataMode === "canvas" && selectedDbRow !== undefined;
+
+  /** "GET /orders/{id}" for an endpoint id, from the catalog when it is loaded. */
+  const endpointLabel = useCallback(
+    (id: string) => {
+      const e = apiCatalog.catalog?.endpoints.find((x) => x.id === id);
+      return e ? `${e.method} ${e.path}` : id.replace(/^http /, "");
+    },
+    [apiCatalog.catalog]
+  );
+
+  /** The list views take the whole column: no review dock under them, nothing folded. */
+  const apiFull = LIST_VIEWS.has(view);
 
   useEffect(() => {
     setOpenFile(null);
@@ -493,7 +616,7 @@ export function GraphView({
   const selectedPrArea = prArea ? prAreas.areas.get(prArea) : undefined;
   const selectedFn =
     view === "pr" && prMode === "functions" && selectedFunction ? functionView?.functionById.get(selectedFunction) : undefined;
-  const hasInspector = showAppPanel || showPrPanel;
+  const hasInspector = showAppPanel || showPrPanel || showDataPanel;
   const chatFocus =
     showPrPanel && prAreaComponent
       ? { id: prAreaComponent, name: componentNameById(prAreaComponent) ?? prAreaComponent }
@@ -504,20 +627,7 @@ export function GraphView({
   // PR is only there while a diff is selected.
   const viewSwitch = (
     <>
-    <Segmented
-      label="Graph view"
-      value={view}
-      onChange={setPreferredView}
-      options={[
-        {
-          value: "app" as const,
-          label: "App map",
-          title: "The whole app as cards — by architecture, feature or module, with explanations",
-        },
-        { value: "api" as const, label: "API", title: "Every endpoint the app exposes — with a diff selected, its changes to the API" },
-        ...(prRequest ? [{ value: "pr" as const, label: "PR", title: "Only what this diff touches" }] : []),
-      ]}
-    />
+    <Segmented label="Graph view" value={view} onChange={setPreferredView} options={VIEW_OPTIONS.filter((o) => o.value !== "pr" || prRequest)} />
     {/* Sets the view switch apart from the view's own controls after it. */}
     <span className="h-5 w-px shrink-0 bg-border" aria-hidden />
     </>
@@ -544,7 +654,10 @@ export function GraphView({
             lineStats={lineStats}
           >
             {reviewTarget && <ChecklistPanel repoId={repoId} checklist={checklist} />}
-            {reviewTarget && <ApiChangesSection change={apiChange} pending={targetGraph.pending} onOpen={openEndpoint} />}
+            {/* What the diff does to each catalog — each section shows only when the diff changed it. */}
+            {reviewTarget && <ApiChangesSection change={apiChange} onOpen={openEndpoint} />}
+            {reviewTarget && <InfraChangesSection change={infraChange} onOpen={openInfraResource} />}
+            {reviewTarget && <SchemaChangesSection change={dbChange} onOpen={openTable} />}
             {reviewTarget && (
               <LooksDifferentPanel
                 scan={previewScan}
@@ -611,7 +724,53 @@ export function GraphView({
               onChangedOnlyChange={setApiChangedOnly}
               focus={apiFocus}
               infer={apiCatalog}
+              gatewayAuth={endpointGatewayAuth}
+              touches={endpointTables}
+              onOpenTable={openTable}
               onOpenFile={openFileAtLine}
+            />
+          </div>
+        )}
+        {infraMounted && (
+          <div className={viewLayerClass(view === "infra")} inert={view !== "infra"}>
+            <InfraView
+              className="flex h-full flex-col"
+              leading={viewSwitch}
+              catalog={infraCatalog.catalog}
+              rows={infraRows}
+              loading={infraCatalog.loading}
+              error={infraCatalog.error}
+              change={infraChange}
+              changePending={Boolean(reviewTarget) && targetGraph.pending}
+              changedOnly={infraChangedOnly}
+              onChangedOnlyChange={setInfraChangedOnly}
+              focus={infraFocus}
+              endpointLabel={endpointLabel}
+              onOpenEndpoint={openEndpoint}
+              onOpenFile={openFileAtLine}
+            />
+          </div>
+        )}
+        {dataMounted && (
+          <div className={viewLayerClass(view === "data")} inert={view !== "data"}>
+            <DataView
+              className="flex h-full flex-col"
+              leading={viewSwitch}
+              schema={dbSchema.schema}
+              rows={dbRows}
+              loading={dbSchema.loading}
+              error={dbSchema.error}
+              change={dbChange}
+              changePending={Boolean(reviewTarget) && targetGraph.pending}
+              changedOnly={dataChangedOnly}
+              onChangedOnlyChange={setDataChangedOnly}
+              mode={dataMode}
+              onModeChange={setDataMode}
+              selectedId={dataSelected}
+              onSelect={setDataSelected}
+              focus={dataFocus}
+              onOpenFile={openFileAtLine}
+              onOpenEndpoint={openEndpoint}
             />
           </div>
         )}
@@ -637,6 +796,7 @@ export function GraphView({
             onHideFunction={hideFunction}
             onHideCard={hideFunctionCard}
             onShowHidden={showHiddenFunctions}
+            tablesByFile={fileTableNames}
           />
           </div>
         )}
@@ -713,6 +873,23 @@ export function GraphView({
                     onSelectModule={showInAppMap}
                     onSelectFile={openFileView}
                     onHoverEdge={setAppHoveredLink}
+                    infra={infraCatalog.catalog}
+                    onOpenInfra={openInfraResource}
+                  />
+                </div>
+              )}
+              {showDataPanel && selectedDbRow && (
+                <div className="px-3 py-3">
+                  <DbTableDetail
+                    key={selectedDbRow.table.id}
+                    row={selectedDbRow}
+                    db={dbSchema.schema?.databases.find((d) => d.id === selectedDbRow.table.database)}
+                    tablesById={dbTablesById}
+                    change={dbChange}
+                    onFocusTable={(id) => setDataFocus({ id })}
+                    onOpenFile={openFileAtLine}
+                    onOpenEndpoint={openEndpoint}
+                    onClose={() => setDataSelected(null)}
                   />
                 </div>
               )}

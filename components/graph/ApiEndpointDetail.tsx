@@ -20,6 +20,11 @@ export interface ApiEndpointDetailProps {
   inferring: boolean;
   inferError?: string;
   onInfer: () => void;
+  /** Auth in front of the route that only the infrastructure shows (Traefik middleware, ingress annotation). */
+  gatewayAuth?: string[];
+  /** Tables the endpoint reaches (DESIGN.md §6.13 §4) — any of the three ways; a link found only in SQL text is marked. */
+  touches?: Array<{ id: string; name: string; sqlOnly: boolean; access?: string }>;
+  onOpenTable?: (tableId: string) => void;
   onOpenFile: (path: string, line?: number) => void;
 }
 
@@ -48,7 +53,7 @@ function SourceNote({ shape }: { shape?: ApiShape }) {
 // Payloads
 // ---------------------------------------------------------------------------
 
-type FieldRow = { name: string; before?: string; after?: string; state: "same" | "added" | "removed" | "changed" };
+export type FieldRow = { name: string; before?: string; after?: string; state: "same" | "added" | "removed" | "changed" };
 
 const fieldType = (f?: ApiField) => (f ? `${f.type}${f.required ? "" : " · optional"}` : undefined);
 const paramType = (p?: ApiParam) => (p ? `${p.in}${p.type ? ` · ${p.type}` : ""}${p.required === false ? " · optional" : ""}` : undefined);
@@ -124,7 +129,7 @@ function PayloadDiff({ before, after }: { before?: ApiShape; after?: ApiShape })
 }
 
 /** The before / after table, shared by payloads and parameters. */
-function DiffTable({ rows, first, beforeNote, afterNote }: { rows: FieldRow[]; first: string; beforeNote?: string; afterNote?: string }) {
+export function DiffTable({ rows, first, beforeNote, afterNote }: { rows: FieldRow[]; first: string; beforeNote?: string; afterNote?: string }) {
   return (
     <div className="overflow-hidden rounded-md border border-border">
       <table className="w-full table-fixed font-mono text-[11px]">
@@ -243,7 +248,7 @@ function ReachList({ steps, truncated, onOpenFile }: { steps: ReachStep[]; trunc
   );
 }
 
-export function ApiEndpointDetail({ endpoint: e, change, aiConfigured, inferring, inferError, onInfer, onOpenFile }: ApiEndpointDetailProps) {
+export function ApiEndpointDetail({ endpoint: e, change, aiConfigured, inferring, inferError, onInfer, gatewayAuth, touches, onOpenTable, onOpenFile }: ApiEndpointDetailProps) {
   const before = change?.status === "changed" ? change.before : undefined;
   const removed = change?.status === "removed";
   const requestChanged = Boolean(change?.deltas.some((d) => d.aspect === "request"));
@@ -311,8 +316,30 @@ export function ApiEndpointDetail({ endpoint: e, change, aiConfigured, inferring
         )}
         <span className="min-w-0 font-mono" title="Middleware, guards and dependencies in front of the handler, as far as static analysis sees them">
           <span className="text-muted-foreground">auth </span>
-          {e.auth.length ? e.auth.join(" → ") : <span className="text-muted-foreground">? none found statically</span>}
+          {e.auth.length ? e.auth.join(" → ") : gatewayAuth?.length ? null : <span className="text-muted-foreground">? none found statically</span>}
         </span>
+        {gatewayAuth?.length ? (
+          <span className="min-w-0 font-mono" title="Auth in front of the route, from the infrastructure (gateway / ingress) — not visible in the code">
+            <span className="text-muted-foreground">{e.auth.length ? "gateway " : ""}</span>
+            {gatewayAuth.join(", ")}
+            <span className="text-muted-foreground"> (infra)</span>
+          </span>
+        ) : null}
+        {touches?.length ? (
+          <span className="min-w-0 font-mono" title="Tables this endpoint's handler, or a function it calls, uses — through a model, a query builder or SQL text">
+            <span className="text-muted-foreground">touches </span>
+            {touches.slice(0, 8).map((t, i) => (
+              <span key={t.id}>
+                {i > 0 && <span className="text-muted-foreground">, </span>}
+                <button type="button" onClick={() => onOpenTable?.(t.id)} className="hover:underline" title={`${t.access ?? "uses"}${t.sqlOnly ? " — found only in SQL text" : ""}`}>
+                  {t.name}
+                </button>
+                {t.sqlOnly && <span className="text-muted-foreground"> (SQL text)</span>}
+              </span>
+            ))}
+            {touches.length > 8 && <span className="text-muted-foreground"> +{touches.length - 8}</span>}
+          </span>
+        ) : null}
         <span className="text-muted-foreground">{e.framework}</span>
         {e.spec && (
           <button type="button" onClick={() => onOpenFile(e.spec!.file)} className="font-mono text-muted-foreground hover:text-foreground hover:underline">

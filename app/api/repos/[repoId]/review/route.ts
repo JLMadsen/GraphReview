@@ -40,6 +40,7 @@ import {
   type FindingKind,
   type FindingResponse,
   type FindingScope,
+  STATIC_FINDING_CATEGORIES,
 } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -301,7 +302,9 @@ export async function GET(
     // Once the job is gone, "there are findings" is the truthful answer, so
     // don't regress an old review to `none` — which the UI reads as "never
     // reviewed" and would auto-run again.
-    if (state === "none" && findingRecords.length > 0) state = "completed";
+    // Static-analysis findings (cycles, infra) are written by the comparison
+    // job on their own and don't make an unreviewed target "reviewed".
+    if (state === "none" && findingRecords.some((f) => !STATIC_FINDING_CATEGORIES.has(f.category))) state = "completed";
 
     // Stale-review detection. Never while a run is queued/running (the UI
     // polls every ~1.2s then, and the answer would be about to change anyway)

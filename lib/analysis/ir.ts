@@ -3,6 +3,8 @@
  * The graph builder only ever sees this shape, never
  * language-specific syntax trees.
  */
+import type { CodeFacts } from "./infra/code-facts";
+import type { DbCodeFacts } from "./db/types";
 
 /** A single import/require/dynamic-import site found in a file. */
 export interface FileImport {
@@ -113,6 +115,8 @@ export interface SymbolFacts {
   all?: string[];
   /** Raw route declarations (./syntax/routes.mjs), resolved into endpoints by ./api/. */
   routes?: RouteFacts;
+  /** Raw schema and table-use syntax (./syntax/db.mjs), resolved into the schema catalog by ./db/. */
+  db?: DbCodeFacts;
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +286,10 @@ export interface FileAnalysis {
   loc: number;
   /** Names: declarations, named imports/exports, references, calls — for the languages that have them. */
   symbols?: SymbolFacts;
+  /** Env vars read and literal listen ports (./infra/code-facts.ts) — TS/JS, Python, Java/Kotlin, Go. */
+  code?: CodeFacts;
+  /** SQL literals found lexically (./db/read.ts) — Go, Java, Kotlin, Rust; TS/JS and Python carry theirs in `symbols.db`. */
+  db?: DbCodeFacts;
 }
 
 /** Count lines the way {@link FileAnalysis.loc} is defined. */

@@ -19,6 +19,10 @@ loopback rule in `middleware.ts` applies to it like every other route.
 | `get_file_diff` | One file's patch; with `sha`, a file outside the diff whole at that commit (for impact findings). |
 | `list_endpoints` | Every endpoint of the repo's analysed commit (HTTP, server actions, tRPC, GraphQL) with handler, middleware/auth, params and request/response shapes; filter by `kind` or `query`. |
 | `get_api_changes` | What a review target does to the API: added, removed, changed (deltas marked breaking); separately, endpoints with the same contract whose code behind changed (`logicChanged`, with the call path). Starts the base/head comparison when there is none. |
+| `list_infra` | The infrastructure as code of the repo's analysed commit (Terraform/OpenTofu, Nomad, Kubernetes, Helm, Dockerfiles): stacks and resources with tags and versions, which workload ships which code, env vars read but not set, routes; filter by `tool` or `query`. |
+| `get_infra_changes` | What a review target does to the infrastructure, plan-style (create / destroy / update / moved / version, attribute deltas), link deltas and the certain `infra` findings. Starts the base/head comparison when there is none. |
+| `list_tables` | The database schema of the repo's analysed commit: tables from migrations (replayed), schema files and ORM models, each column with its source, keys, FKs, mapped models, endpoints that read or write them (SQL-text links marked), drift, migration order problems; filter by `query`. |
+| `get_schema_changes` | What a review target does to the schema: tables and columns added / dropped / retyped / renamed, indexes, FKs, enums, the migrations it adds, drift it introduces and the certain `schema` findings. Starts the base/head comparison when there is none. |
 | `respond_to_finding` | Append a reply: `answered` (resolves it), `fixing` (concern is right, fix under way; stays open), `comment`. |
 
 ## Prompt

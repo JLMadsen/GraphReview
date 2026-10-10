@@ -139,6 +139,8 @@ export async function deleteRepo(id: string): Promise<void> {
     run(`DELETE FROM app_maps WHERE repo_id = ?`, id);
     run(`DELETE FROM target_graphs WHERE repo_id = ?`, id);
     run(`DELETE FROM api_catalogs WHERE repo_id = ?`, id);
+    run(`DELETE FROM infra_catalogs WHERE repo_id = ?`, id);
+    run(`DELETE FROM db_schemas WHERE repo_id = ?`, id);
     run(`DELETE FROM kv WHERE key LIKE ?`, `kv:api-shape:${id}:%`);
     run(`DELETE FROM kv WHERE key = ?`, `kv:preview:mocks:${id}`);
     // Queued work for the repo would only fail; a running job finishes and

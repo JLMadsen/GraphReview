@@ -150,9 +150,11 @@ export interface PrMapCardProps {
   selected?: boolean;
   /** Another card is selected: this one steps back. */
   dimmed?: boolean;
+  /** Tables its files touch (DESIGN.md §6.13 §7) — the ⛁N badge. */
+  tables?: readonly string[];
 }
 
-export function PrMapCard({ node, area, selected, dimmed }: PrMapCardProps) {
+export function PrMapCard({ node, area, selected, dimmed, tables }: PrMapCardProps) {
   const context = node.role === "context";
   const tag = ROLE_TAGS[node.role];
   const files = node.files.length;
@@ -197,6 +199,9 @@ export function PrMapCard({ node, area, selected, dimmed }: PrMapCardProps) {
             <span className="amc-count">
               {files} file{files === 1 ? "" : "s"}
             </span>
+            {tables && tables.length > 0 && (
+              <span title={`Touches ${tables.length} table${tables.length === 1 ? "" : "s"}: ${tables.slice(0, 12).join(", ")}${tables.length > 12 ? ", …" : ""}`}>⛁{tables.length}</span>
+            )}
             {area && (area.additions > 0 || area.deletions > 0) && (
               <span>
                 {area.additions > 0 && <span className="text-success">+{NUMBER.format(area.additions)}</span>}

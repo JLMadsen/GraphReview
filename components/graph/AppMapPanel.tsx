@@ -10,9 +10,16 @@
 // The cards themselves are compact (name, description, counts), so this is
 // also where a card's files live — review-flagged and changed ones first,
 // with a verdict glyph and a git-style M.
+//
+// From the infra catalog (DESIGN.md §6.12): "Deployed as" — the workloads
+// whose image ships the card's code — and the env vars its code reads that
+// nothing sets.
 
 import { ArrowRight, X } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
+import { ToolIcon } from "./InfraView";
+import { deployedAs, resourceLabel } from "./infra-view-model";
+import type { InfraCatalog } from "./infra-types";
 import { LayerBar } from "./AppMapCard";
 import { AssessmentGlyph } from "./PrMapNode";
 import { Spark } from "./Spark";
@@ -39,6 +46,9 @@ export interface AppMapPanelProps {
   onSelectFile: (path: string) => void;
   /** A connection row is pointed at (`source->target`), or no longer is — the map lights that line. */
   onHoverEdge?: (linkId: string | null) => void;
+  /** The infra catalog, for "Deployed as" and env vars nothing sets. */
+  infra?: InfraCatalog | null;
+  onOpenInfra?: (resourceId: string) => void;
 }
 
 const LEVEL_NOUN: Record<AppMapLevel, string> = {
@@ -115,8 +125,19 @@ export function AppMapPanel({
   onSelectModule,
   onSelectFile,
   onHoverEdge,
+  infra,
+  onOpenInfra,
 }: AppMapPanelProps) {
   const byId = new Map(map.nodes.map((n) => [n.id, n]));
+  const card = selection.kind === "card" ? byId.get(selection.id) : undefined;
+  const deployed = useMemo(() => (card ? deployedAs(infra ?? null, card.files) : []), [card, infra]);
+  const unsetEnv = useMemo(() => {
+    if (!card || !infra) return [];
+    const files = new Set(card.files);
+    const byName = new Map<string, { file: string; line: number }>();
+    for (const u of infra.envUnset) if (files.has(u.file) && !byName.has(u.name)) byName.set(u.name, u);
+    return [...byName].sort(([a], [b]) => a.localeCompare(b));
+  }, [card, infra]);
 
   if (selection.kind === "edge") {
     const edge = map.edges.find((e) => e.source === selection.source && e.target === selection.target);
@@ -213,6 +234,40 @@ export function AppMapPanel({
           Not described yet — “Describe” on the map toolbar writes what this {LEVEL_NOUN[map.level].toLowerCase()} does, how it
           works and why it connects where it does.
         </p>
+      )}
+
+      {deployed.length > 0 && (
+        <Section title="Deployed as">
+          <ul className="space-y-0.5">
+            {deployed.map((d) => (
+              <li key={d.resource.id}>
+                <button
+                  type="button"
+                  onClick={() => onOpenInfra?.(d.resource.id)}
+                  className="flex w-full min-w-0 items-baseline gap-1.5 rounded-sm px-1 py-0.5 text-left text-[11px] hover:bg-secondary"
+                  title={`${resourceLabel(d.resource)} in ${d.resource.stack}\n${d.via} — open in the Infra view`}
+                >
+                  <ToolIcon tool={d.resource.tool} className="size-3 translate-y-0.5" />
+                  <span className="min-w-0 truncate font-mono">{d.resource.address}</span>
+                  <span className="ml-auto shrink-0 truncate font-mono text-muted-foreground">{d.resource.stack.replace(/^[a-z0-9]+:/, "")}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+      {unsetEnv.length > 0 && (
+        <Section title={`Reads env vars nothing sets (${unsetEnv.length})`}>
+          <ul className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[11px]">
+            {unsetEnv.map(([name, at]) => (
+              <li key={name}>
+                <button type="button" onClick={() => onSelectFile(at.file)} className="hover:underline" title={`${at.file}:${at.line} — no workload that deploys this code, Dockerfile or .env.example sets it`}>
+                  {name}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Section>
       )}
 
       <Section title={`Files (${node.files.length})`}>

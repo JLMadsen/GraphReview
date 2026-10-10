@@ -17,7 +17,10 @@ import {
   listFindingsByRepoId,
   listFindingsByTargetKey,
   listRepos,
+  readInfraCatalog,
+  readDbSchema,
   readTargetGraph,
+  STATIC_FINDING_CATEGORIES,
   type FindingAssessment,
   type FindingRecord,
   type FindingWithComponent,
@@ -40,6 +43,9 @@ import { readFileAtCommit } from "@/lib/jobs/pr-context";
 import { readServedApiCatalog } from "@/lib/jobs/api-catalog";
 import { apiChangeSummary } from "@/lib/analysis/api/describe";
 import type { ApiShape, Endpoint } from "@/lib/analysis/api/types";
+import { describeInfraResource, filterInfra, infraChangeSummary, infraResourceLabel } from "@/lib/analysis/infra/describe";
+import type { InfraCatalog, InfraResource } from "@/lib/analysis/infra/types";
+import { dbTableLabel, describeDbFinding, describeTableChange, filterTables, schemaChangeSummary } from "@/lib/analysis/db/describe";
 import { emitFindingsChanged } from "./events";
 
 const INSTRUCTIONS = `GraphReview reviews pull requests and branch comparisons against a component graph of the codebase. Each review is a list of findings, grouped by component; each finding has an assessment (defect > concern > unknown > ok).
@@ -50,16 +56,31 @@ Typical flow:
 3. get_component_diff / get_file_diff to read the code a finding is about.
 4. respond_to_finding for each finding: "answered" when the concern does not hold (explain why — this resolves it), "fixing" when it is correct and you are fixing it, "comment" for anything else.
 
-Findings come in categories: "change" (the AI review of one component's diff), "impact" (callers the change left behind — an import of a name that no longer exists is certain, the rest are model-judged), "intent" (does the PR deliver what it says) "structure" (an import cycle the change creates, found by static analysis — no model; fix it by breaking the loop, or answer it if the cycle is deliberate) and "chat" (added by the reviewer through GraphReview's chat).
+Findings come in categories: "change" (the AI review of one component's diff), "impact" (callers the change left behind — an import of a name that no longer exists is certain, the rest are model-judged), "intent" (does the PR deliver what it says) "structure" (an import cycle the change creates, found by static analysis — no model; fix it by breaking the loop, or answer it if the cycle is deliberate), "infra" (certain infrastructure problems found by static analysis — no model: a Terraform resource renamed without a moved block, a stateful resource destroyed or prevent_destroy removed, an env var the deployed code reads that its workload no longer sets), "schema" (hazards in the migrations the change adds, found by static analysis — no model; see Database schema below) and "chat" (added by the reviewer through GraphReview's chat).
 
 Reviews are advisory and can be wrong — check the code before agreeing with a finding.
 
-The API: list_endpoints lists every endpoint the repo's analysed commit exposes (HTTP routes, Next.js server actions — internal, made for the app's own pages —, tRPC procedures, GraphQL fields), with the handler, middleware/auth and request/response shapes static analysis could read. get_api_changes says what a review target does to them: endpoints added, removed or changed (path, method, params, shapes, auth — marked breaking when a client can fail), and separately (logicChanged) endpoints whose contract stayed the same but whose handler code, or code it calls, changed. Static analysis only, never findings.`;
+The API: list_endpoints lists every endpoint the repo's analysed commit exposes (HTTP routes, Next.js server actions — internal, made for the app's own pages —, tRPC procedures, GraphQL fields), with the handler, middleware/auth and request/response shapes static analysis could read. get_api_changes says what a review target does to them: endpoints added, removed or changed (path, method, params, shapes, auth — marked breaking when a client can fail), and separately (logicChanged) endpoints whose contract stayed the same but whose handler code, or code it calls, changed. Static analysis only, never findings.
+
+Infrastructure: list_infra lists what the repo's infrastructure as code declares (Terraform/OpenTofu, Nomad, Kubernetes manifests and Kustomize, Helm charts, Dockerfiles) — read statically, nothing evaluated — with which workload ships which code, env vars read but not set, routes and ports. get_infra_changes says what a review target does to it, plan-style: create / destroy / update / moved / version per resource, link deltas, and the certain "infra" findings.
+
+Database schema: list_tables lists the tables the repo's migrations (Prisma, Drizzle, TypeORM, Django, Alembic, plain SQL folders), schema files and ORM models declare — each column labelled with its source — with keys, FKs, the models that map them, the endpoints that read or write them (a link found only in SQL text is marked) and drift between models and migrations. get_schema_changes says what a review target does to it: tables and columns added, dropped, retyped or renamed, indexes, FKs, enums, the migrations it adds, drift it introduces, and the certain "schema" findings — from the migrations the change adds only: a dropped table or column, a NOT NULL column without a default on an existing table, a narrowed type, a column or table rename, and on Postgres CREATE INDEX without CONCURRENTLY on an existing table or an FK no index covers. Drift is never a finding.`;
 
 const shapeText = (s: ApiShape | undefined) =>
   s ? `${s.type ?? "object"}${s.fields?.length ? ` { ${s.fields.map((f) => `${f.name}${f.required ? "" : "?"}: ${f.type}`).join("; ")} }` : ""}${s.source === "ai" ? " (inferred by a model)" : ""}` : undefined;
 
 /** An endpoint as an agent sees it: no reach tree, shapes as one line each. */
+function toAgentInfra(r: InfraResource, catalog: InfraCatalog) {
+  return {
+    id: r.id,
+    resource: infraResourceLabel(r),
+    stack: r.stack,
+    summary: describeInfraResource(r, catalog),
+    ...(r.attributes.length ? { attributes: Object.fromEntries(r.attributes.slice(0, 30).map((a) => [a.name, a.value])) } : {}),
+    ...(r.envValues ? { valuesPerEnvironment: r.envValues } : {}),
+  };
+}
+
 function toAgentEndpoint(e: Endpoint) {
   return {
     id: e.id,
@@ -310,7 +331,7 @@ export function createGraphReviewMcpServer(): McpServer {
         const target = parseTarget(rawTarget);
         const targetKey = reviewTargetKey(target);
         const findings = await listFindingsByTargetKey(repoId, targetKey);
-        const state = await reviewState(repoId, targetKey, findings.length > 0);
+        const state = await reviewState(repoId, targetKey, findings.some((f) => !STATIC_FINDING_CATEGORIES.has(f.category)));
         const reviewed = state === "completed" ? latestReviewedRevision(findings) : undefined;
         const freshness = reviewed ? await checkReviewFreshness(repo, target, targetKey, reviewed) : undefined;
 
@@ -525,6 +546,159 @@ export function createGraphReviewMcpServer(): McpServer {
             ...(l.handlerChanged ? { handlerChanged: true } : {}),
             ...(l.reaches.length ? { callsChangedCode: l.reaches.map((r) => `${r.path.map((p) => p.name).join(" → ")} (${r.status}, ${r.file})`) } : {}),
           })),
+          ...(state !== "completed" ? { note: "A newer comparison is running; this is the last stored one." } : {}),
+        };
+      })
+  );
+
+  server.registerTool(
+    "list_infra",
+    {
+      title: "List infrastructure",
+      description:
+        "What the repo's analysed commit declares as infrastructure as code — Terraform/OpenTofu, Nomad, Kubernetes (manifests, Kustomize), Helm, Dockerfiles — read statically: stacks, resources with their tags (stateful, external, templated, …) and versions, which workload ships which code, env vars read but not set, routes and ports. Filter by tool or a text query (address, kind, file).",
+      inputSchema: {
+        repoId: z.string(),
+        tool: z.enum(["terraform", "nomad", "kubernetes", "helm", "docker"]).optional(),
+        query: z.string().max(200).optional(),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    ({ repoId, tool, query }) =>
+      json(async () => {
+        await loadRepo(repoId);
+        const stored = readInfraCatalog(repoId);
+        if (!stored) throw new ToolError("This repo hasn't been analysed by a version that reads infrastructure yet — open it in GraphReview to re-analyse.");
+        const list = filterInfra(stored.catalog, query, tool);
+        return {
+          analysedCommit: stored.sha,
+          tools: stored.catalog.tools,
+          stacks: stored.catalog.stacks.map((s) => ({ id: s.id, kind: s.kind, path: s.path, ...(s.environments.length ? { environments: s.environments } : {}), ...(s.backend ? { backend: s.backend } : {}) })),
+          total: list.length,
+          resources: list.slice(0, 300).map((r) => toAgentInfra(r, stored.catalog)),
+          ...(list.length > 300 ? { truncated: "Showing 300 — narrow it with tool or query." } : {}),
+        };
+      })
+  );
+
+  server.registerTool(
+    "get_infra_changes",
+    {
+      title: "Get infrastructure changes",
+      description:
+        "What a review target does to the infrastructure, read like a terraform plan: create / destroy / update (attribute by attribute) / moved / version per resource, link deltas (env vars newly unset, routes, ports, deploys), and the certain infra findings. Static — nothing is evaluated, replace vs update isn't predicted. Computed by comparing the target's base and head; started on first call.",
+      inputSchema: { repoId: z.string(), target: targetSchema },
+      annotations: { readOnlyHint: true },
+    },
+    ({ repoId, target }) =>
+      json(async () => {
+        const repo = await loadRepo(repoId);
+        const parsed = parseTarget(target);
+        if (repo.provider === "local" && parsed.kind === "pr") throw new ToolError("This repo has no git-host link, so it has no PRs — use a refs target.");
+        const stored = readTargetGraph<TargetGraphData>(repoId, reviewTargetKey(parsed));
+        const job = await ensureTargetGraph(repoId, parsed);
+        const state = await job.getState();
+        if (!stored?.data.infra) {
+          if (state === "failed") throw new ToolError(`The comparison failed: ${job.failedReason ?? "unknown error"}`);
+          return { state: "computing", message: "Comparing base and head — call again in a few seconds." };
+        }
+        const infra = stored.data.infra;
+        return {
+          baseSha: stored.baseSha,
+          headSha: stored.headSha,
+          summary: infraChangeSummary(infra),
+          changes: infra.changes.map((c) => ({
+            action: c.action,
+            resource: infraResourceLabel(c.resource),
+            at: `${c.resource.file}:${c.resource.line}`,
+            ...(c.movedFrom ? { movedFrom: c.movedFrom, movedVia: c.movedVia } : {}),
+            ...(c.version ? { version: c.version } : {}),
+            ...(c.deltas.length ? { deltas: c.deltas } : {}),
+            ...(c.replace ? { mayForceReplacement: true } : {}),
+            ...(c.findings?.length ? { findings: c.findings.length } : {}),
+          })),
+          links: infra.links.map((l) => `${l.kind}: ${l.text}`),
+          findings: infra.findings.map((f) => ({ rule: f.rule, summary: f.summary, file: f.file, ...(f.line ? { line: f.line } : {}) })),
+          ...(state !== "completed" ? { note: "A newer comparison is running; this is the last stored one." } : {}),
+        };
+      })
+  );
+
+  server.registerTool(
+    "list_tables",
+    {
+      title: "List tables",
+      description:
+        "The database schema the repo's analysed commit declares — migrations replayed in order (Prisma, Drizzle, TypeORM, Django, Alembic, golang-migrate, dbmate, goose, Supabase, Flyway, plain SQL folders), schema files (schema.prisma, Drizzle tables, schema.sql) and ORM models (TypeORM, Django, SQLAlchemy, SQLModel). Each table with its columns (and the source of each), keys, indexes, FKs, the models that map it, the endpoints that read or write it, and drift between models and migrations. Filter by a text query (table, column, model, file).",
+      inputSchema: { repoId: z.string(), query: z.string().max(200).optional() },
+      annotations: { readOnlyHint: true },
+    },
+    ({ repoId, query }) =>
+      json(async () => {
+        await loadRepo(repoId);
+        const stored = readDbSchema(repoId);
+        if (!stored) throw new ToolError("This repo hasn't been analysed by a version that reads database schemas yet — open it in GraphReview to re-analyse.");
+        const list = filterTables(stored.schema, query);
+        return {
+          analysedCommit: stored.sha,
+          databases: stored.schema.databases.map((d) => ({
+            id: d.id,
+            name: d.name,
+            ...(d.dialect ? { dialect: d.dialectGuessed ? `${d.dialect} (guessed)` : d.dialect } : {}),
+            tools: d.tools,
+            tables: d.tables.length,
+            migrations: d.migrations.length,
+            ...(d.orderProblems.length ? { orderProblems: d.orderProblems } : {}),
+          })),
+          total: list.length,
+          tables: list.slice(0, 200).map(({ table: t }) => ({
+            id: t.id,
+            table: dbTableLabel(t),
+            source: t.source,
+            definedAt: `${t.definedAt.file}:${t.definedAt.line}`,
+            columns: t.columns.map((c) => `${c.name} ${c.type}${c.primary ? " PK" : ""}${c.nullable ? "" : " NOT NULL"}${c.default !== undefined ? ` DEFAULT ${c.default}` : ""}${c.source !== t.source ? ` (only in the ${c.source})` : ""}`),
+            ...(t.fks.length ? { foreignKeys: t.fks.map((f) => `${f.columns.join(", ")} → ${f.refTable.slice(f.refTable.lastIndexOf(":") + 1)}(${f.refColumns.join(", ")})${f.inferred ? " (from an ORM relation)" : ""}`) } : {}),
+            ...(t.indexes.length ? { indexes: t.indexes.map((i) => `${i.unique ? "unique " : ""}${i.name ?? ""}(${i.columns.join(", ")})`) } : {}),
+            ...(t.models.length ? { models: t.models.map((m) => `${m.tool} ${m.name} (${m.file}:${m.line})`) } : {}),
+            ...(t.endpoints?.length ? { endpoints: t.endpoints.map((e) => `${e.label}${e.access ? ` [${e.access}]` : ""}${e.via.length === 1 && e.via[0] === "sql" ? " (from SQL text)" : ""}`) } : {}),
+            ...(t.drift.length ? { drift: t.drift.map((d) => d.text) } : {}),
+          })),
+          ...(list.length > 200 ? { truncated: "Showing 200 — narrow it with query." } : {}),
+        };
+      })
+  );
+
+  server.registerTool(
+    "get_schema_changes",
+    {
+      title: "Get schema changes",
+      description:
+        "What a review target does to the database schema: tables added, removed, renamed or changed (columns added, dropped, retyped, renamed, nullability and defaults; indexes, FKs, checks), enum values, the migrations it adds, drift it introduces (a model changed without a migration, or the reverse), and the certain schema findings. Computed by comparing the target's merge-base and head; started on first call.",
+      inputSchema: { repoId: z.string(), target: targetSchema },
+      annotations: { readOnlyHint: true },
+    },
+    ({ repoId, target }) =>
+      json(async () => {
+        const repo = await loadRepo(repoId);
+        const parsed = parseTarget(target);
+        if (repo.provider === "local" && parsed.kind === "pr") throw new ToolError("This repo has no git-host link, so it has no PRs — use a refs target.");
+        const stored = readTargetGraph<TargetGraphData>(repoId, reviewTargetKey(parsed));
+        const job = await ensureTargetGraph(repoId, parsed);
+        const state = await job.getState();
+        if (!stored?.data.db) {
+          if (state === "failed") throw new ToolError(`The comparison failed: ${job.failedReason ?? "unknown error"}`);
+          return { state: "computing", message: "Comparing base and head — call again in a few seconds." };
+        }
+        const db = stored.data.db;
+        return {
+          baseSha: stored.baseSha,
+          headSha: stored.headSha,
+          summary: schemaChangeSummary(db),
+          tables: db.tables.map((c) => ({ status: c.status, table: dbTableLabel(c.table), description: describeTableChange(c, 40), ...(c.findings?.length ? { findings: c.findings.length } : {}) })),
+          enums: db.enums.map((e) => ({ name: e.name, status: e.status, ...(e.added.length ? { added: e.added } : {}), ...(e.removed.length ? { removed: e.removed } : {}) })),
+          migrations: db.migrations.map((m) => ({ id: m.id, file: m.file, tool: m.tool })),
+          drift: db.drift.map((d) => `${d.tableName}: ${d.drift.text}`),
+          findings: db.findings.map((f) => ({ rule: f.rule, summary: describeDbFinding(f), rationale: f.rationale })),
           ...(state !== "completed" ? { note: "A newer comparison is running; this is the last stored one." } : {}),
         };
       })

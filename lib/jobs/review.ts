@@ -62,8 +62,13 @@ import { openHeadSource } from "./head-source";
 import { runImpactPass } from "./impact";
 import { blockDiff, loadTargetAnalyses, movedCodeChanges, symbolRelatedFiles } from "./symbol-context";
 import { compareApis } from "@/lib/analysis/api/compare";
+import { compareInfra } from "@/lib/analysis/infra/compare";
+import { compareSchemas, schemaChanged } from "@/lib/analysis/db/compare";
+import { describeDbFinding, describeSchemaChange, reviewTables, schemaChangeSummary, schemaFindingsTouching, tablesTouching } from "@/lib/analysis/db/describe";
+import { describeInfraChange, describeInfraChangeEntry, describeInfraFinding, infraChangeSummary, infraChangesTouching } from "@/lib/analysis/infra/describe";
 import { apiChangeSummary, changesTouching, describeApiChange, describeEndpointChange, describeLogicChange, logicTouching } from "@/lib/analysis/api/describe";
 import { gatherRelatedContext } from "./review-context";
+import { ownerLookup } from "./target-graph";
 import {
   assemblePrMap,
   collectPrMapLinks,
@@ -522,6 +527,10 @@ async function runIntentPass(args: {
   findingLines: string[];
   /** The change to the endpoints, one line each (DESIGN.md §6.11). */
   apiLines?: string[];
+  /** The change to the infrastructure, plan-style, one line each (DESIGN.md §6.12). */
+  infraLines?: string[];
+  /** The change to the database schema, one line each (DESIGN.md §6.13). */
+  schemaLines?: string[];
   aiConfig: AiProviderConfig;
   tokenBudget: number;
   prId?: string;
@@ -551,6 +560,8 @@ async function runIntentPass(args: {
         })),
         findings: args.findingLines,
         ...(args.apiLines ? { api: args.apiLines } : {}),
+        ...(args.infraLines ? { infra: args.infraLines } : {}),
+        ...(args.schemaLines ? { schema: args.schemaLines } : {}),
       },
       { tokenBudget: args.tokenBudget, signal: args.signal }
     );
@@ -694,10 +705,49 @@ export async function runReviewJob(
   // ones it serves or sits behind, the intent check sees all of them.
   const apiChange = analyses ? compareApis(analyses.base, analyses.head, analyses.changed) : null;
   if (apiChange && (apiChange.changes.length > 0 || apiChange.logic.length > 0)) log(`API: ${apiChangeSummary(apiChange)} Logic changed behind ${apiChange.logic.length}.`);
+  // What it does to the infrastructure: each component's review sees the
+  // changes to its infra files and to the workloads that deploy its code,
+  // with the certain infra findings marked as already reported; the intent
+  // check sees the whole plan.
+  const infraChange = analyses ? compareInfra(analyses.base.infra, analyses.head.infra) : null;
+  const infraChanged = Boolean(infraChange && (infraChange.changes.length > 0 || infraChange.links.length > 0));
+  if (infraChange && infraChanged) log(`infra: ${infraChangeSummary(infraChange)}`);
+  // What it does to the database schema: each component's review sees the
+  // full definition of every table its code touches, the change marked, with
+  // the certain schema findings as already reported; the intent check sees
+  // the whole schema change (DESIGN.md §6.13 §6).
+  const dbChange = analyses ? compareSchemas(analyses.base.db, analyses.head.db) : null;
+  const dbChanged = schemaChanged(dbChange ?? undefined);
+  if (dbChange && dbChanged) log(`schema: ${schemaChangeSummary(dbChange)}`);
 
   // --- Map the diff onto the component graph -----------------------------
   const filesByPath = new Map(resolved.files.map((file) => [file.path, file]));
   const match = await matchFilesToComponents(repoId, [...filesByPath.keys()]);
+  // A migration or schema file only the head has (a new migration) isn't in
+  // the analysed graph: it joins the component owning its nearest analysed
+  // folder, so a change that only adds a migration is still reviewed, with
+  // its tables as context (DESIGN.md §6.13 §6). Other new files keep the
+  // existing behaviour.
+  const headSchemaFiles = new Set(
+    (analyses?.head.db.databases ?? []).flatMap((d) => [...d.migrations.map((m) => m.file), ...d.tables.map((t) => t.definedAt.file)])
+  );
+  if (match.unmatchedFiles.some((path) => headSchemaFiles.has(path))) {
+    const ownerOf = ownerLookup(await getFileOwnerMap(repoId));
+    const still: string[] = [];
+    for (const path of match.unmatchedFiles) {
+      const id = headSchemaFiles.has(path) ? ownerOf(path) : undefined;
+      if (!id) {
+        still.push(path);
+        continue;
+      }
+      match.componentIdByPath.set(path, id);
+      const group = match.pathsByComponentId.get(id);
+      if (group) group.push(path);
+      else match.pathsByComponentId.set(id, [path]);
+      if (!match.touchedComponentIds.includes(id)) match.touchedComponentIds.push(id);
+    }
+    match.unmatchedFiles = still;
+  }
   const contexts = await getComponentReviewContexts(repoId, match.touchedComponentIds);
   log(
     `mapped to ${contexts.length} touched component(s); ` +
@@ -789,9 +839,24 @@ export async function runReviewJob(
             ...logicTouching(apiChange, pathSet).slice(0, 8).map(describeLogicChange),
           ]
         : [];
+      const componentInfra = infraChange && infraChanged ? infraChangesTouching(infraChange, analyses?.head.infra, pathSet) : null;
+      const infraLines = componentInfra ? [...componentInfra.entries.slice(0, 15).map((e) => describeInfraChangeEntry(e)), ...componentInfra.links.slice(0, 10)] : [];
+      const tableIds = analyses ? tablesTouching(analyses.head.db, dbChange ?? undefined, pathSet) : [];
+      const tables = tableIds.length ? reviewTables(tableIds, analyses?.head.db, dbChange ?? undefined, pathSet).slice(0, 30) : [];
+      const alreadyReported = [
+        ...(componentInfra ? componentInfra.findings.map(describeInfraFinding) : []),
+        ...(dbChange ? schemaFindingsTouching(dbChange, tableIds, pathSet).map(describeDbFinding) : []),
+      ];
       const relatedWithMoves =
-        componentMoves.length > 0 || componentEndpoints.length > 0
-          ? { ...(related ?? {}), ...(componentMoves.length ? { moves: componentMoves } : {}), ...(componentEndpoints.length ? { endpoints: componentEndpoints } : {}) }
+        componentMoves.length > 0 || componentEndpoints.length > 0 || infraLines.length > 0 || alreadyReported.length > 0 || tables.length > 0
+          ? {
+              ...(related ?? {}),
+              ...(componentMoves.length ? { moves: componentMoves } : {}),
+              ...(componentEndpoints.length ? { endpoints: componentEndpoints } : {}),
+              ...(infraLines.length ? { infra: infraLines } : {}),
+              ...(alreadyReported.length ? { alreadyReported } : {}),
+              ...(tables.length ? { tables } : {}),
+            }
           : related;
       signal?.throwIfAborted();
       sent = true;
@@ -959,6 +1024,8 @@ export async function runReviewJob(
         files: resolved.files,
         findingLines: lines,
         ...(apiChange && (apiChange.changes.length || apiChange.logic.length) ? { apiLines: describeApiChange(apiChange) } : {}),
+        ...(infraChange && infraChanged ? { infraLines: describeInfraChange(infraChange) } : {}),
+        ...(dbChange && dbChanged ? { schemaLines: describeSchemaChange(dbChange) } : {}),
         aiConfig,
         tokenBudget: effortSettings.tokenBudget,
         prId: resolved.prId,
@@ -1013,6 +1080,8 @@ export async function runReviewJob(
       files: resolved.files,
       findingLines,
       ...(apiChange && (apiChange.changes.length || apiChange.logic.length) ? { apiLines: describeApiChange(apiChange) } : {}),
+      ...(infraChange && infraChanged ? { infraLines: describeInfraChange(infraChange) } : {}),
+      ...(dbChange && dbChanged ? { schemaLines: describeSchemaChange(dbChange) } : {}),
       aiConfig,
       tokenBudget: effortSettings.tokenBudget,
       prId: resolved.prId,

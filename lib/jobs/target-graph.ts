@@ -10,6 +10,15 @@
 //               depend on what it touched
 //   call graph  the functions it touches with one hop of callers/callees,
 //               for the PR map's function view and the review's context
+//   api         what it does to the endpoints (shown, never findings)
+//   infra       what it does to the infrastructure, plan-style; three
+//               certain kinds of `infra` finding (DESIGN.md §6.12)
+//   db          what it does to the database schema; certain `schema`
+//               findings from the migrations it adds (DESIGN.md §6.13)
+//
+// Each comparison of two catalogs is one entry in `compareCatalogs` below,
+// and each kind of static finding one entry in `staticFindings`: a new
+// catalog (the DB schema of §6.13) adds a line to each.
 //
 // Changed lines come from a local `git diff -U0` of the two commits, not
 // from the host's API (which drops patches for big files).
@@ -17,7 +26,7 @@
 // Kept out of lib/jobs' barrel: it pulls in lib/analysis.
 
 import { createHash } from "node:crypto";
-import { buildCallGraph, compareApis, compareStructure, parseChangedLines, type NewCycle } from "@/lib/analysis";
+import { buildCallGraph, compareApis, compareInfra, compareSchemas, compareStructure, parseChangedLines, type DbFinding, type InfraFinding, type NewCycle } from "@/lib/analysis";
 import { getFileOwnerMap, getRepoById, listComponentsByRepoId, syncFindingsForTargetCategory, writeTargetGraph } from "@/lib/db";
 import type { RepoRecord, TargetFindingInput } from "@/lib/db";
 import { emitFindingsChanged } from "@/lib/mcp/events";
@@ -41,7 +50,7 @@ export async function changedLinesBetween(repoDir: string, baseSha: string, head
 }
 
 /** Each path's owning component; a file the stored graph doesn't know yet takes its folder's. */
-function ownerLookup(owners: Map<string, string>): (path: string) => string | undefined {
+export function ownerLookup(owners: Map<string, string>): (path: string) => string | undefined {
   const byFolder = new Map<string, string>();
   for (const [path, componentId] of owners) {
     const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
@@ -83,11 +92,18 @@ function componentChanges(
   return [...byPair.values()];
 }
 
-function cycleFinding(cycle: NewCycle, targetKey: string, componentId: string, revision: Pick<TargetFindingInput, "reviewedBaseSha" | "reviewedHeadSha" | "reviewedAt">, prId?: string): TargetFindingInput & { componentId: string } {
+type Revision = Pick<TargetFindingInput, "reviewedBaseSha" | "reviewedHeadSha" | "reviewedAt">;
+
+/** A finding id derived from what it is about, so replies survive a recomputation. */
+function stableFindingId(seed: string): string {
+  const id = createHash("sha1").update(seed).digest("hex");
+  return `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20, 32)}`;
+}
+
+function cycleFinding(cycle: NewCycle, targetKey: string, componentId: string, revision: Revision, prId?: string): TargetFindingInput & { componentId: string } {
   const loop = cycle.files.map((f) => f.split("/").pop()).join(" → ");
-  const id = createHash("sha1").update(`structure|${targetKey}|${cycle.id}`).digest("hex");
   return {
-    id: `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20, 32)}`,
+    id: stableFindingId(`structure|${targetKey}|${cycle.id}`),
     componentId,
     ...(prId ? { prId } : {}),
     filePath: cycle.closingEdge.from,
@@ -98,6 +114,42 @@ function cycleFinding(cycle: NewCycle, targetKey: string, componentId: string, r
       `This change adds an import from ${cycle.closingEdge.from} to ${cycle.closingEdge.to}, and ${cycle.closingEdge.to} already ` +
       `leads back to ${cycle.closingEdge.from} (${cycle.files.join(" → ")}). Modules that import each other at load time can see each ` +
       `other half-initialised, and the loop ties them together for every future change. Type-only and lazy imports are not counted.`,
+    model: "static analysis",
+    createdAt: new Date().toISOString(),
+    ...revision,
+  };
+}
+
+/** One of the schema comparison's certain findings (DESIGN.md §6.13 §5) — `concern`, no model. */
+function schemaFinding(f: DbFinding, targetKey: string, componentId: string, revision: Revision, prId?: string): TargetFindingInput & { componentId: string } {
+  return {
+    id: stableFindingId(`schema|${targetKey}|${f.key}`),
+    componentId,
+    ...(prId ? { prId } : {}),
+    filePath: f.file,
+    ...(f.line ? { lineRange: String(f.line) } : {}),
+    summary: f.summary,
+    assessment: "concern",
+    confidence: 1,
+    rationale: f.rationale,
+    model: "static analysis",
+    createdAt: new Date().toISOString(),
+    ...revision,
+  };
+}
+
+/** One of the infra comparison's certain findings (DESIGN.md §6.12 §5) — `concern`, no model. */
+function infraFinding(f: InfraFinding, targetKey: string, componentId: string, revision: Revision, prId?: string): TargetFindingInput & { componentId: string } {
+  return {
+    id: stableFindingId(`infra|${targetKey}|${f.key}`),
+    componentId,
+    ...(prId ? { prId } : {}),
+    filePath: f.file,
+    ...(f.line ? { lineRange: String(f.line) } : {}),
+    summary: f.summary,
+    assessment: "concern",
+    confidence: 1,
+    rationale: f.rationale,
     model: "static analysis",
     createdAt: new Date().toISOString(),
     ...revision,
@@ -121,7 +173,13 @@ export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger
   const changed = await changedLinesBetween(repoDir, baseSha, headSha);
   const structure = compareStructure(base, head, [...changed.keys()]);
   const callGraph = buildCallGraph(base, head, changed);
-  const api = compareApis(base, head, changed);
+  // The catalogs, base against head — stored beside each other in the result.
+  const compareCatalogs = {
+    api: compareApis(base, head, changed),
+    infra: compareInfra(base.infra, head.infra),
+    db: compareSchemas(base.db, head.db),
+  };
+  const { api, infra, db } = compareCatalogs;
 
   const [owners, components] = await Promise.all([getFileOwnerMap(repo.id), listComponentsByRepoId(repo.id)]);
   const ownerOf = ownerLookup(owners);
@@ -180,7 +238,7 @@ export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger
       dependentComponents: dependentComponents.size,
     },
     callGraph,
-    api,
+    ...compareCatalogs,
     stats: {
       baseFiles: base.files.length,
       headFiles: head.files.length,
@@ -195,23 +253,29 @@ export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger
   };
   writeTargetGraph(repo.id, targetKey, { baseSha, headSha, computedAt: new Date().toISOString(), data: result });
 
-  // New cycles are findings; everything else is shown, not counted.
-  const revision = { reviewedBaseSha: baseSha, reviewedHeadSha: headSha, reviewedAt: new Date().toISOString() };
+  // Static findings: new cycles, and the infra and schema comparisons' certain ones.
+  // Everything else is shown, not counted. Each category is synced as a
+  // whole (stable ids keep replies), and an open review dock refetches.
+  const revision: Revision = { reviewedBaseSha: baseSha, reviewedHeadSha: headSha, reviewedAt: new Date().toISOString() };
   const prId = target.kind === "pr" ? `${repo.id}:pr:${target.prNumber}` : undefined;
-  await syncFindingsForTargetCategory(
-    repo.id,
-    targetKey,
-    "structure",
-    structure.newCycles.map((cycle) => cycleFinding(cycle, targetKey, ownerOf(cycle.closingEdge.from) ?? "", revision, prId))
-  );
-  // An open review dock refetches its findings (the same signal as an MCP reply).
-  emitFindingsChanged(repo.id, targetKey, "structure");
+  const staticFindings: Array<{ category: "structure" | "infra" | "schema"; findings: Array<TargetFindingInput & { componentId: string }> }> = [
+    { category: "structure", findings: structure.newCycles.map((cycle) => cycleFinding(cycle, targetKey, ownerOf(cycle.closingEdge.from) ?? "", revision, prId)) },
+    { category: "infra", findings: infra.findings.map((f) => infraFinding(f, targetKey, ownerOf(f.file) ?? "", revision, prId)) },
+    { category: "schema", findings: db.findings.map((f) => schemaFinding(f, targetKey, ownerOf(f.file) ?? "", revision, prId)) },
+  ];
+  for (const { category, findings } of staticFindings) {
+    await syncFindingsForTargetCategory(repo.id, targetKey, category, findings);
+    // An open review dock refetches its findings (the same signal as an MCP reply).
+    emitFindingsChanged(repo.id, targetKey, category);
+  }
 
   log(
     `${structure.newCycles.length} new import cycle(s), ${result.structure.components.added.length} new / ` +
       `${result.structure.components.removed.length} removed component dependenc(ies), ${structure.orphaned.length} orphaned file(s), ` +
       `${structure.dependents.count} dependent file(s); call graph: ${callGraph.functions.length} function(s), ${callGraph.edges.length} call(s); ` +
-      `API: +${api.counts.added} −${api.counts.removed} ~${api.counts.changed} changed (${api.counts.breaking} breaking); logic changed behind ${api.counts.logic}`
+      `API: +${api.counts.added} −${api.counts.removed} ~${api.counts.changed} changed (${api.counts.breaking} breaking); logic changed behind ${api.counts.logic}; ` +
+      `infra: +${infra.counts.create} −${infra.counts.destroy} ~${infra.counts.update} (${infra.counts.moved} moved, ${infra.counts.version} version), ${infra.findings.length} finding(s); ` +
+      `schema: +${db.counts.added} −${db.counts.removed} ~${db.counts.changed} (${db.counts.renamed} renamed), ${db.counts.migrations} new migration(s), ${db.findings.length} finding(s)`
   );
   return { baseSha, headSha, cycles: structure.newCycles.length, functions: callGraph.functions.length };
 }

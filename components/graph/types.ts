@@ -118,7 +118,7 @@ export type FindingScope = "described" | "supporting" | "unmentioned";
 /** Mirrors `FindingKind`. */
 export type FindingKind = "fix" | "feature" | "refactor" | "test" | "docs" | "config" | "chore";
 /** Which review pass wrote a finding. Mirrors `FindingCategory`. */
-export type FindingCategory = "change" | "impact" | "intent" | "structure" | "chat";
+export type FindingCategory = "change" | "impact" | "intent" | "structure" | "infra" | "schema" | "chat";
 
 /**
  * What a review is about — exactly one of the two shapes, matching the

@@ -83,6 +83,20 @@ export interface ReviewMovedCode {
   diff: string;
 }
 
+/**
+ * A table the component's code touches (DESIGN.md §6.13 §6): its whole
+ * definition, this change's edits marked (`+` / `−` / `~` lines), with
+ * indexes, references, drift and where this component uses it as notes.
+ */
+export interface ReviewTable {
+  name: string;
+  /** The change touches it (its columns, indexes or enum values). */
+  changed: boolean;
+  header: string;
+  columns: Array<{ text: string; changed: boolean }>;
+  notes: string[];
+}
+
 export interface ReviewRelatedContext {
   neighbors?: ReviewNeighbor[];
   files?: ReviewRelatedFile[];
@@ -90,6 +104,19 @@ export interface ReviewRelatedContext {
   moves?: ReviewMovedCode[];
   /** Endpoints whose handler is in this component's change or reaches it (DESIGN.md §6.11), one line each. */
   endpoints?: string[];
+  /**
+   * Infrastructure this component's change touches (its infra files) or that
+   * deploys its code, plan-style, with env / route / port link deltas
+   * (DESIGN.md §6.12), one line each.
+   */
+  infra?: string[];
+  /**
+   * Findings static analysis already reported about this component (the
+   * infra comparison's certain ones) — the model is asked not to repeat them.
+   */
+  alreadyReported?: string[];
+  /** Tables this component's code touches, changed ones first (DESIGN.md §6.13 §6). */
+  tables?: ReviewTable[];
 }
 
 export interface ReviewInput {
@@ -380,6 +407,16 @@ function fitRelatedContext(
   const ctx: ReviewRelatedContext = {
     neighbors: related.neighbors?.map((n) => ({ ...n })),
     files: related.files?.map((f) => ({ ...f, snippets: [...f.snippets] })),
+    // Facts about the change itself (moved code, endpoints, infrastructure,
+    // findings already reported) are short and never trimmed — only the
+    // surrounding code is.
+    ...(related.moves?.length ? { moves: related.moves } : {}),
+    ...(related.endpoints?.length ? { endpoints: related.endpoints } : {}),
+    ...(related.infra?.length ? { infra: related.infra } : {}),
+    ...(related.alreadyReported?.length ? { alreadyReported: related.alreadyReported } : {}),
+    // Tables are trimmed, but after the surrounding code: unchanged tables
+    // first, unchanged columns of the changed ones last (DESIGN.md §6.13 §6).
+    ...(related.tables?.length ? { tables: related.tables.map((t) => ({ ...t, columns: [...t.columns], notes: [...t.notes] })) } : {}),
   };
   if (size(ctx) <= maxChars) return ctx;
 
@@ -388,10 +425,24 @@ function fitRelatedContext(
     while (file.snippets.length > 0 && size(ctx) > maxChars) file.snippets.pop();
   }
   while ((ctx.files?.length ?? 0) > 0 && size(ctx) > maxChars) ctx.files!.pop();
+  if (ctx.tables) {
+    for (let i = ctx.tables.length - 1; i >= 0 && size(ctx) > maxChars; i--) if (!ctx.tables[i].changed) ctx.tables.splice(i, 1);
+  }
   if (size(ctx) > maxChars && ctx.neighbors) {
     ctx.neighbors = ctx.neighbors.map(({ name, direction }) => ({ name, direction }));
   }
   while ((ctx.neighbors?.length ?? 0) > 0 && size(ctx) > maxChars) ctx.neighbors!.pop();
+  // Last: the changed tables' unchanged columns, then their notes, then whole tables from the end.
+  for (const t of ctx.tables ?? []) {
+    if (size(ctx) <= maxChars) break;
+    const kept = t.columns.filter((c) => c.changed);
+    const dropped = t.columns.length - kept.length;
+    if (dropped > 0) t.columns = [...kept, { text: `  … ${dropped} unchanged column${dropped === 1 ? "" : "s"} not shown`, changed: false }];
+  }
+  for (const t of ctx.tables ?? []) {
+    while (t.notes.length > 0 && size(ctx) > maxChars) t.notes.pop();
+  }
+  while ((ctx.tables?.length ?? 0) > 1 && size(ctx) > maxChars) ctx.tables!.pop();
   return ctx;
 }
 

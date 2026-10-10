@@ -44,6 +44,11 @@ export interface ApiViewProps {
   /** An endpoint opened from elsewhere (the left column) — opened and scrolled to. A new object each time, so the same one can be asked for twice. */
   focus: { id: string } | null;
   infer: Pick<UseApiCatalogResult, "inferring" | "inferErrors" | "infer">;
+  /** Auth only the infrastructure shows (a gateway / ingress in front of the route), by endpoint id (DESIGN.md §6.12 §3). */
+  gatewayAuth?: ReadonlyMap<string, string[]>;
+  /** Tables each endpoint reaches, by endpoint id (DESIGN.md §6.13 §4). */
+  touches?: ReadonlyMap<string, Array<{ id: string; name: string; sqlOnly: boolean; access?: string }>>;
+  onOpenTable?: (tableId: string) => void;
   onOpenFile: (path: string, line?: number) => void;
   leading?: React.ReactNode;
   className?: string;
@@ -60,6 +65,9 @@ export function ApiView({
   onChangedOnlyChange,
   focus,
   infer,
+  gatewayAuth,
+  touches,
+  onOpenTable,
   onOpenFile,
   leading,
   className,
@@ -256,6 +264,9 @@ export function ApiView({
                         inferring={infer.inferring.has(id)}
                         inferError={infer.inferErrors.get(id)}
                         onInfer={() => void infer.infer(id)}
+                        gatewayAuth={gatewayAuth?.get(id)}
+                        touches={touches?.get(id)}
+                        onOpenTable={onOpenTable}
                         onOpenFile={onOpenFile}
                       />
                     )}

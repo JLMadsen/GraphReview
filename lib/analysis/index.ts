@@ -56,6 +56,12 @@ export type { DeadImport, SymbolCall, SymbolDecl, SymbolGraph, SymbolUse } from 
 export { buildApiCatalog, endpointId } from "./api/catalog";
 export { compareApis } from "./api/compare";
 export type * from "./api/types";
+export { buildInfraCatalog } from "./infra/catalog";
+export { compareInfra } from "./infra/compare";
+export type * from "./infra/types";
+export { buildDbSchema } from "./db/catalog";
+export { compareSchemas, schemaChanged } from "./db/compare";
+export type * from "./db/types";
 export { disposeTreeSitter, initTreeSitter, withSyntaxTree } from "./tree-sitter";
 export { dirOf, extensionOf, joinPosix, repoRelative, toPosix } from "./paths";
 export {

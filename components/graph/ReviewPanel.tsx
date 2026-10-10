@@ -84,9 +84,22 @@ import {
   type ReviewProgressDTO,
   type ReviewStateDTO,
   type ReviewTargetDTO,
+  type FindingCategory,
 } from "./types";
 
 const NUMBER = new Intl.NumberFormat("en-US");
+
+/**
+ * Finding categories static analysis produces, without a model: each gets a
+ * tag on its rows and a chip in the dock's header that shows only it. A new
+ * static check (the DB schema's, DESIGN.md §6.13) is one more entry.
+ */
+const STATIC_CATEGORIES: ReadonlyArray<{ category: FindingCategory; label: string; what: string }> = [
+  { category: "structure", label: "Structure", what: "what static analysis found in the change's structure — import cycles it creates" },
+  { category: "infra", label: "Infra", what: "what static analysis found in the change's infrastructure — renames without a moved block, destroyed stateful resources, env vars no longer set" },
+  { category: "schema", label: "Schema", what: "what static analysis found in the migrations this change adds — dropped tables or columns, NOT NULL without a default, narrowed types, renames, Postgres index locks" },
+];
+const STATIC_CATEGORY_LABEL: Partial<Record<FindingCategory, string>> = Object.fromEntries(STATIC_CATEGORIES.map((c) => [c.category, c.label]));
 
 export interface ReviewPanelProps {
   repoId: string;
@@ -326,8 +339,8 @@ function FindingRow({
   const impact = isImpactFinding(finding);
   const tag = impact
     ? null
-    : finding.category === "structure"
-      ? "Structure"
+    : STATIC_CATEGORY_LABEL[finding.category]
+      ? STATIC_CATEGORY_LABEL[finding.category]
       : finding.category === "chat"
         ? "From chat"
         : findingTag(finding);
@@ -948,15 +961,15 @@ export function ReviewPanel({
   const [diffFinding, setDiffFinding] = useState<FindingDTO | null>(null);
   const [tab, setTab] = useState<DockTab>("findings");
   const [shown, setShown] = useState<Record<FindingBucket, boolean>>(DEFAULT_SHOWN);
-  /** Only the structure findings (static analysis: import cycles the change creates). */
-  const [onlyStructure, setOnlyStructure] = useState(false);
+  /** Only one category of static-analysis findings (import cycles, infra), or every finding. */
+  const [onlyCategory, setOnlyCategory] = useState<FindingCategory | null>(null);
 
   // A new target is a different review.
   const targetKey = target ? reviewTargetLabel(target) : null;
   useEffect(() => {
     setDiffFinding(null);
     setShown(DEFAULT_SHOWN);
-    setOnlyStructure(false);
+    setOnlyCategory(null);
   }, [targetKey]);
 
   const inScope = useMemo(() => {
@@ -968,11 +981,12 @@ export function ReviewPanel({
 
   const notes = useMemo(() => findings.filter(isImpactNote), [findings]);
   const inArea = useMemo(() => findings.filter((f) => isAreaFinding(f) && inScope(f)), [findings, inScope]);
-  const structureCount = useMemo(() => inArea.filter((f) => f.category === "structure").length, [inArea]);
-  const scoped = useMemo(
-    () => (onlyStructure && structureCount > 0 ? inArea.filter((f) => f.category === "structure") : inArea),
-    [inArea, onlyStructure, structureCount]
+  const staticCounts = useMemo(
+    () => STATIC_CATEGORIES.map((c) => ({ ...c, count: inArea.filter((f) => f.category === c.category).length })).filter((c) => c.count > 0),
+    [inArea]
   );
+  const activeOnly = onlyCategory && staticCounts.some((c) => c.category === onlyCategory) ? onlyCategory : null;
+  const scoped = useMemo(() => (activeOnly ? inArea.filter((f) => f.category === activeOnly) : inArea), [inArea, activeOnly]);
   const counts = useMemo(() => {
     const c = emptyCounts();
     for (const f of scoped) c[findingBucket(f)] += 1;
@@ -1163,25 +1177,23 @@ export function ReviewPanel({
               <BucketChips counts={counts} shown={shown} onToggle={(b) => setShown((s) => ({ ...s, [b]: !s[b] }))} />
             </div>
           )}
-          {tab === "findings" && structureCount > 0 && (
-            <button
-              type="button"
-              onClick={() => setOnlyStructure((v) => !v)}
-              aria-pressed={onlyStructure}
-              className={cn(
-                "mb-1.5 inline-flex h-6 items-center gap-1.5 rounded-[2px] border px-1.5 text-[11px] transition-colors",
-                onlyStructure ? "border-foreground/40 bg-secondary text-foreground" : "border-border text-muted-foreground hover:text-foreground"
-              )}
-              title={
-                onlyStructure
-                  ? "Showing only what static analysis found in the change's structure. Click to show every finding."
-                  : "Show only what static analysis found in the change's structure — import cycles it creates."
-              }
-            >
-              Structure
-              <span className="font-mono font-semibold">{structureCount}</span>
-            </button>
-          )}
+          {tab === "findings" &&
+            staticCounts.map((c) => (
+              <button
+                key={c.category}
+                type="button"
+                onClick={() => setOnlyCategory((v) => (v === c.category ? null : c.category))}
+                aria-pressed={activeOnly === c.category}
+                className={cn(
+                  "mb-1.5 inline-flex h-6 items-center gap-1.5 rounded-[2px] border px-1.5 text-[11px] transition-colors",
+                  activeOnly === c.category ? "border-foreground/40 bg-secondary text-foreground" : "border-border text-muted-foreground hover:text-foreground"
+                )}
+                title={activeOnly === c.category ? `Showing only ${c.what}. Click to show every finding.` : `Show only ${c.what}.`}
+              >
+                {c.label}
+                <span className="font-mono font-semibold">{c.count}</span>
+              </button>
+            ))}
           {scopeParts.length > 0 && (
             <span className="mb-1.5 inline-flex h-6 items-center gap-1 rounded-[2px] bg-brand/12 pr-0.5 pl-2 text-[11px] text-foreground">
               In {scopeParts.join(" › ")}

@@ -119,6 +119,8 @@ function dirSegments(filePath: string): string[] {
 // ---------------------------------------------------------------------------
 
 const INFRA_DIR = /(^|\/)(worker|workers|cmd|bin|scripts?|deploy|deployment|infra|infrastructure|terraform|k8s|kubernetes|helm|docker|\.github|\.gitlab|ci)\//i;
+/** Infrastructure-as-code files (DESIGN.md §6.12): Terraform, Nomad, Dockerfiles, Helm / Kustomize. */
+const INFRA_FILE = /(\.tf|\.tfvars|\.tf\.json|\.tfvars\.json|\.nomad|\.hcl|\.dockerfile)$|(^|\/)(dockerfile|containerfile)(\.[^/]*)?$|(^|\/)(chart|kustomization|values[^/]*)\.ya?ml$/i;
 const INFRA_WORDS = new Set(["queue", "queues", "worker", "workers", "cron", "scheduler", "instrumentation", "middleware", "bootstrap", "server"]);
 const SERVER_DIR = /(^|\/)(api|routes?|controllers?|handlers?|endpoints?|resolvers?|rpc|trpc|graphql)\//i;
 const SERVER_STEM = /^(route|actions?|server-actions?|handler|controller|resolver|endpoint)s?$|\.(actions?|controller|handler|resolver|route)$/i;
@@ -150,7 +152,9 @@ export function classifyLayer(filePath: string): AppLayerId {
   const all = new Set([...lowerSegments, ...stemWords]);
 
   if (role === "test" || /^smoke-test/i.test(stem) || lowerSegments.includes("__fixtures__")) return "tests";
-  if (role === "config" || role === "dependency" || INFRA_DIR.test(filePath)) return "infrastructure";
+  // Migrations and schema files (DESIGN.md §6.13) are the data layer wherever they live.
+  if (/\.(sql|prisma)$/i.test(filePath)) return "data";
+  if (role === "config" || role === "dependency" || INFRA_DIR.test(filePath) || INFRA_FILE.test(filePath)) return "infrastructure";
   if (/(^|\/)pages\/api\//.test(filePath) || SERVER_STEM.test(stem) || SERVER_DIR.test(filePath)) return "server";
   // A component file is UI wherever it lives (`github-notice.tsx` is a banner, not an integration).
   if (/\.(tsx|jsx|vue|svelte|astro)$/i.test(filePath)) return "ui";

@@ -42,6 +42,10 @@ export interface PrIntentInput {
   findings: string[];
   /** What the change does to the endpoints (DESIGN.md §6.11), one line each. */
   api?: string[];
+  /** What the change does to the infrastructure, plan-style (DESIGN.md §6.12), one line each. */
+  infra?: string[];
+  /** What the change does to the database schema (DESIGN.md §6.13), one line each. */
+  schema?: string[];
 }
 
 /**
@@ -133,6 +137,14 @@ function renderUserMessage(input: PrIntentInput, patchBudgetTokens: number): str
   if (input.api && input.api.length > 0) {
     lines.push("", "## What this change does to the API (static analysis)");
     for (const line of input.api) lines.push(`- ${oneLine(line)}`);
+  }
+  if (input.infra && input.infra.length > 0) {
+    lines.push("", "## What this change does to the infrastructure (static analysis, plan-style)");
+    for (const line of input.infra) lines.push(`- ${oneLine(line)}`);
+  }
+  if (input.schema && input.schema.length > 0) {
+    lines.push("", "## What this change does to the database schema (static analysis of the migrations, schema files and models)");
+    for (const line of input.schema) lines.push(`- ${oneLine(line)}`);
   }
   if (input.findings.length > 0) {
     lines.push("", "## Review findings (one line per change)");

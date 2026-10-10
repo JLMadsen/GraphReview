@@ -23,6 +23,8 @@ import {
   setRepoDefaultBranch,
   upsertFiles,
   writeApiCatalog,
+  writeInfraCatalog,
+  writeDbSchema,
 } from "@/lib/db";
 import { writeModuleTier } from "./module-tier";
 import { ANALYSIS_VERSION, type AnalysisJobResult } from "./queue";
@@ -198,6 +200,19 @@ export async function runAnalysisJob(
     `endpoint catalog: ${result.api.endpoints.length} endpoint(s)` +
       (result.api.frameworks.length ? ` (${result.api.frameworks.join(", ")})` : "") +
       (result.api.specs.length ? `, ${result.api.specs.length} OpenAPI document(s)` : "")
+  );
+  writeInfraCatalog(repo.id, sha, result.infra);
+  log(
+    `infra catalog: ${result.infra.resources.length} resource(s) in ${result.infra.stacks.length} stack(s)` +
+      (result.infra.tools.length ? ` (${result.infra.tools.join(", ")})` : "") +
+      (result.infra.links.deploys.length ? `, ${result.infra.links.deploys.filter((d) => d.resolved).length}/${result.infra.links.deploys.length} deploy link(s) resolved` : "")
+  );
+  writeDbSchema(repo.id, sha, result.db);
+  log(
+    `schema catalog: ${result.db.databases.reduce((n, d) => n + d.tables.length, 0)} table(s) in ${result.db.databases.length} database(s)` +
+      (result.db.databases.length ? ` (${[...new Set(result.db.databases.flatMap((d) => d.tools))].join(", ")})` : "") +
+      `, ${result.db.databases.reduce((n, d) => n + d.migrations.length, 0)} migration(s), ${result.db.uses.length} use(s) in code` +
+      (result.db.databases.some((d) => d.orderProblems.length) ? `; order problems: ${result.db.databases.flatMap((d) => d.orderProblems).slice(0, 3).join(" | ")}` : "")
   );
   await markRepoAnalyzed(repo.id, sha, ANALYSIS_VERSION);
 

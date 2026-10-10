@@ -241,6 +241,37 @@ export function renderRelatedSections(related: ReviewRelatedContext): string {
     for (const line of endpoints) lines.push(`- ${oneLine(line)}`);
   }
 
+  const infra = related.infra ?? [];
+  if (infra.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("## Infrastructure this change affects (from static analysis of base and head)");
+    lines.push(
+      "Read like a terraform plan: create / destroy / update / moved / version per resource, then links between the infrastructure and this code (env vars a workload sets against those the code reads, routes, ports). Nothing was evaluated — expressions, Helm templates and Kustomize patches are as written, and replace-vs-update isn't known. Judge whether the infrastructure and the code still fit together."
+    );
+    for (const line of infra) lines.push(`- ${oneLine(line)}`);
+  }
+
+  const tables = related.tables ?? [];
+  if (tables.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("## Tables this code touches (from static analysis of the schema at base and head)");
+    lines.push(
+      "The full definition of each table this component's code uses (through its model, a query builder or SQL text), this change's edits marked: `+` added, `−` removed, `~` changed. Check the code against them: inserts and updates (and creates through the model) must set every new NOT NULL column that has no default; a dropped or renamed column must not still be read or written anywhere in the diff; a new enum value must be handled where the code switches or maps over that enum; types and nullability the code assumes must match. Drift notes say where a model and the migrations disagree — judge whether it matters here."
+    );
+    for (const t of tables) {
+      const body = [...t.columns.map((c) => c.text), ...t.notes.map((n) => `  · ${n}`)].join("\n");
+      const fence = "`".repeat(Math.max(3, longestBacktickRun(body) + 1));
+      lines.push(`Table ${oneLine(t.header)}`, `${fence}\n${body}\n${fence}`);
+    }
+  }
+
+  const reported = related.alreadyReported ?? [];
+  if (reported.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("## Already reported (by static analysis) — do not repeat these as findings");
+    for (const line of reported) lines.push(`- ${oneLine(line)}`);
+  }
+
   return lines.join("\n");
 }
 

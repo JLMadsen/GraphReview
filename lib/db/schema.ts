@@ -235,6 +235,26 @@ const MIGRATIONS: string[] = [
     data        TEXT NOT NULL
   );
   `,
+  // 4 — the infra catalog of each repo's analysed commit (lib/analysis/infra/,
+  // DESIGN.md §6.12). A review target's infra change rides in target_graphs.
+  `
+  CREATE TABLE infra_catalogs (
+    repo_id     TEXT PRIMARY KEY,
+    sha         TEXT NOT NULL,
+    computed_at TEXT NOT NULL,
+    data        TEXT NOT NULL
+  );
+  `,
+  // 5 — the schema catalog of each repo's analysed commit (lib/analysis/db/,
+  // DESIGN.md §6.13). A review target's schema change rides in target_graphs.
+  `
+  CREATE TABLE db_schemas (
+    repo_id     TEXT PRIMARY KEY,
+    sha         TEXT NOT NULL,
+    computed_at TEXT NOT NULL,
+    data        TEXT NOT NULL
+  );
+  `,
 ];
 
 /** Brings the database up to the latest schema version. */

@@ -169,7 +169,23 @@ function CardNode({ data }: NodeProps<Node<CardData>>) {
   );
 }
 
-const NODE_TYPES = { card: CardNode };
+type GroupData = { label: string; width: number; height: number };
+
+/** A box drawn behind the cards it groups (`groups`), its label in the top-left corner. */
+function GroupNode({ data }: NodeProps<Node<GroupData>>) {
+  return (
+    <div
+      className="pointer-events-none rounded-lg border border-dashed border-foreground/25 bg-foreground/[0.02]"
+      style={{ width: data.width, height: data.height }}
+    >
+      <p className="amc-status truncate px-3 pt-1.5 font-mono text-[11px] text-muted-foreground">{data.label}</p>
+    </div>
+  );
+}
+
+const NODE_TYPES = { card: CardNode, cardGroup: GroupNode };
+/** Room above a group's cards for its label. */
+const GROUP_LABEL_SPACE = 30;
 
 /** An orthogonal polyline with its corners rounded (radius shrinks on short legs). */
 function roundedPath(points: Point[], radius = 10): string {
@@ -285,6 +301,12 @@ export interface CardFlowProps {
   /** Links drawn lit, overriding the highlighted-card rule (`linkId`s). */
   activeLinks?: Set<string>;
   elkOptions?: Record<string, string>;
+  /**
+   * Boxes that hold cards (the Data view's tables by component): laid out by
+   * ELK as compound nodes, drawn behind their cards with a label. A card in
+   * no group sits outside the boxes.
+   */
+  groups?: ReadonlyArray<{ id: string; label: string; cardIds: readonly string[] }>;
   /** Classes for the canvas pane (size, rounding, ring). */
   className?: string;
   /** Overlays drawn over the canvas (empty/loading states). */
@@ -316,6 +338,7 @@ function CardFlowInner({
   ports = false,
   activeLinks,
   elkOptions = DEFAULT_ELK_OPTIONS,
+  groups,
   className,
   children,
 }: CardFlowProps) {
@@ -326,6 +349,8 @@ function CardFlowInner({
   const [positions, setPositions] = useState<Map<string, { x: number; y: number; width: number; height: number }> | null>(null);
   /** ELK's route per link (`linkId`) for the links that were part of the last layout. */
   const [routes, setRoutes] = useState<Map<string, Point[]>>(new Map());
+  /** Where ELK put the group boxes (`groups`). */
+  const [boxes, setBoxes] = useState<Array<{ id: string; label: string; x: number; y: number; width: number; height: number }>>([]);
   const layoutRun = useRef(0);
 
   useLayoutEffect(() => {
@@ -368,10 +393,26 @@ function CardFlowInner({
     });
     const hasPort = (card: string, key: string | undefined) => Boolean(key && portRows.get(card)?.has(key));
     const laidOut = links.map(linkId);
+    // Groups become compound nodes; coordinates come back absolute (ROOT), edges routed across them.
+    const present = new Set(cardIds);
+    const usedGroups = (groups ?? []).map((g) => ({ ...g, cardIds: g.cardIds.filter((id) => present.has(id)) })).filter((g) => g.cardIds.length > 0);
+    const inGroup = new Set(usedGroups.flatMap((g) => g.cardIds));
+    const byId = new Map(children.map((c) => [c.id, c]));
     const graph = {
       id: "root",
-      layoutOptions: elkOptions,
-      children,
+      layoutOptions: usedGroups.length
+        ? { ...elkOptions, "elk.hierarchyHandling": "INCLUDE_CHILDREN", "elk.json.shapeCoords": "ROOT", "elk.json.edgeCoords": "ROOT" }
+        : elkOptions,
+      children: usedGroups.length
+        ? [
+            ...usedGroups.map((g) => ({
+              id: `group::${g.id}`,
+              layoutOptions: { ...elkOptions, "elk.padding": `[top=${GROUP_LABEL_SPACE},left=16,bottom=16,right=16]` },
+              children: g.cardIds.map((id) => byId.get(id)!),
+            })),
+            ...children.filter((c) => !inGroup.has(c.id)),
+          ]
+        : children,
       edges: links.map((e, i) => ({
         id: `e${i}`,
         sources: [hasPort(e.source, e.sourcePort) ? portId(e.source, e.sourcePort!, "out") : e.source],
@@ -384,7 +425,24 @@ function CardFlowInner({
         if (run !== layoutRun.current) return;
         const size = new Map(children.map((c) => [c.id, c]));
         const nextRoutes = new Map<string, Point[]>();
-        for (const edge of result.edges ?? []) {
+        // With groups the laid-out nodes and edges are nested; flatten them (coordinates are absolute).
+        type Laid = { id: string; x?: number; y?: number; width?: number; height?: number; children?: Laid[]; edges?: Array<{ id: string; sections?: ElkSection[] }> };
+        const flatNodes: Laid[] = [];
+        const flatEdges: Array<{ id: string; sections?: ElkSection[] }> = [];
+        const walk = (n: Laid) => {
+          for (const c of n.children ?? []) {
+            flatNodes.push(c);
+            walk(c);
+          }
+          flatEdges.push(...(n.edges ?? []));
+        };
+        walk(result as Laid);
+        const nextBoxes = usedGroups.flatMap((g) => {
+          const n = flatNodes.find((x) => x.id === `group::${g.id}`);
+          return n ? [{ id: g.id, label: g.label, x: n.x ?? 0, y: n.y ?? 0, width: n.width ?? 0, height: n.height ?? 0 }] : [];
+        });
+        setBoxes(nextBoxes);
+        for (const edge of flatEdges) {
           const section = edge.sections?.[0];
           const index = Number(edge.id.slice(1));
           if (!section || !Number.isInteger(index) || !laidOut[index]) continue;
@@ -393,7 +451,7 @@ function CardFlowInner({
         setRoutes(nextRoutes);
         setPositions(
           new Map(
-            (result.children ?? []).map((c) => [
+            flatNodes.filter((c) => size.has(c.id)).map((c) => [
               c.id,
               { x: c.x ?? 0, y: c.y ?? 0, width: cardWidth, height: size.get(c.id)?.height ?? 120 },
             ])
@@ -404,6 +462,7 @@ function CardFlowInner({
         console.error("Card map layout failed:", err);
         if (run !== layoutRun.current) return;
         setRoutes(new Map());
+        setBoxes([]);
         // A plain column is still readable.
         let y = 0;
         setPositions(
@@ -433,7 +492,7 @@ function CardFlowInner({
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
-    for (const p of positions.values()) {
+    for (const p of [...positions.values(), ...boxes]) {
       minX = Math.min(minX, p.x);
       minY = Math.min(minY, p.y);
       maxX = Math.max(maxX, p.x + p.width);
@@ -461,24 +520,38 @@ function CardFlowInner({
     });
     observer.observe(pane);
     return () => observer.disconnect();
-  }, [positions, setViewport]);
+  }, [positions, boxes, setViewport]);
 
-  const nodes = useMemo<Node<CardData>[]>(
+  const nodes = useMemo<Node<CardData | GroupData>[]>(
     () =>
       positions
-        ? cardIds
-            .filter((id) => positions.has(id))
-            .map((id) => ({
-              id,
-              type: "card",
-              position: { x: positions.get(id)!.x, y: positions.get(id)!.y },
-              data: { content: renderCard(id), height: positions.get(id)!.height },
+        ? [
+            // Group boxes first, under the cards.
+            ...boxes.map((b) => ({
+              id: `group::${b.id}`,
+              type: "cardGroup",
+              position: { x: b.x, y: b.y },
+              data: { label: b.label, width: b.width, height: b.height },
               draggable: false,
               selectable: false,
               connectable: false,
-            }))
+              focusable: false,
+              zIndex: -1,
+            })),
+            ...cardIds
+              .filter((id) => positions.has(id))
+              .map((id) => ({
+                id,
+                type: "card",
+                position: { x: positions.get(id)!.x, y: positions.get(id)!.y },
+                data: { content: renderCard(id), height: positions.get(id)!.height },
+                draggable: false,
+                selectable: false,
+                connectable: false,
+              })),
+          ]
         : [],
-    [positions, cardIds, renderCard]
+    [positions, boxes, cardIds, renderCard]
   );
 
   const edges = useMemo<Edge<RoutedEdgeData>[]>(
@@ -558,7 +631,9 @@ function CardFlowInner({
         minZoom={MIN_ZOOM}
         maxZoom={1.6}
         proOptions={{ hideAttribution: true }}
-        onNodeClick={(_, node) => onCardClick(node.id)}
+        onNodeClick={(_, node) => {
+          if (!node.id.startsWith("group::")) onCardClick(node.id);
+        }}
         onEdgeClick={
           onLinkClick
             ? (_, edge) => {

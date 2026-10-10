@@ -16,12 +16,29 @@ columns (`PanelResizeHandle.tsx`, width remembered per browser):
   a summary (the diff as a picker button, author/branch/size lines) with
   `ChecklistPanel.tsx` (the PR prerequisite checks; `ChecklistEditor.tsx` is
   the per-repo editor behind its gear) and `LooksDifferentPanel.tsx` (the
-  before/after preview scan) under it. It reports a `DiffTargetMeta` with
+  before/after preview scan) under it, and one section per catalog the diff
+  changed (`ApiChangesSection.tsx`, `InfraChangesSection.tsx`,
+  `SchemaChangesSection.tsx`) — each shown
+  only when the diff changed it. It reports a `DiffTargetMeta` with
   each result: whether the review may start on its own and whether the diff
   is historical.
 - **Middle** — the map, with the review dock under it when a diff is
-  selected. Two views share one grid cell, both kept mounted once opened
-  (the inactive one transparent and `inert`):
+  selected. The views share one grid cell, each kept mounted once opened
+  (the inactive one transparent and `inert`). The full-column views (API, Infra,
+  Data) take the whole column, without the dock:
+  - **API** (`ApiView.tsx`, `ApiEndpointDetail.tsx`, `useApiCatalog.ts`,
+    `api-view-model.ts`, `api-types.ts`) — every endpoint, rows open in
+    place; with a diff, its API changes (DESIGN.md §6.11).
+  - **Infra** (`InfraView.tsx`, `InfraResourceDetail.tsx`,
+    `useInfraCatalog.ts`, `infra-view-model.ts`, `infra-types.ts`) — the
+    infrastructure as code by stack, rows open in place; with a diff, its
+    plan-style changes, findings first (DESIGN.md §6.12).
+  - **Data** (`DataView.tsx`, `DbTableDetail.tsx`, `useDbSchema.ts`,
+    `db-view-model.ts`, `db-types.ts`) — the database schema as an ER canvas
+    (tables boxed by component through `CardFlow`'s `groups`; a selected
+    table's explainer opens in the right column) or a list whose rows open
+    in place; with a diff, "Changed only" with its FK neighbours faded
+    (DESIGN.md §6.13).
   - **App map** (`AppMapView.tsx`, `AppMapCard.tsx`, `useAppMap.ts`,
     `app-map-types.ts`) — the whole codebase as cards at an architecture,
     feature or module level; the default with no diff selected.

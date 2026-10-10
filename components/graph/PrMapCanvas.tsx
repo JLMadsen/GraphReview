@@ -68,6 +68,8 @@ export interface PrMapCanvasProps {
   onHideCard?: (cardId: string) => void;
   /** Puts everything hidden back on the map. */
   onShowHidden?: () => void;
+  /** Table names per file (DESIGN.md §6.13 §7): each area card gets a ⛁N badge for the tables its files touch. */
+  tablesByFile?: ReadonlyMap<string, readonly string[]>;
 }
 
 export function PrMapCanvas({
@@ -78,6 +80,7 @@ export function PrMapCanvas({
   selectedCardId,
   onSelectCard,
   selectedComponentId,
+  tablesByFile,
   reviewPending,
   leading,
   className,
@@ -131,10 +134,11 @@ export function PrMapCanvas({
           area={areas.areas.get(card.id)}
           selected={highlighted.has(card.id)}
           dimmed={Boolean(selectedCardId) && card.id !== selectedCardId}
+          tables={tablesByFile ? [...new Set(card.files.flatMap((f) => tablesByFile.get(f.path) ?? []))].sort() : undefined}
         />
       );
     },
-    [cards, areas, highlighted, selectedCardId]
+    [cards, areas, highlighted, selectedCardId, tablesByFile]
   );
 
   // Only what changes a card's size or the edge set re-runs the layout: the
