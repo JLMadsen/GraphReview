@@ -176,10 +176,10 @@ export function GraphView({
   // (the dock's Files tab, an area's most-changed files) open on the diff;
   // the rest (the explainer's files, chat) on the
   // whole file, its changed lines marked.
-  const [openFile, setOpenFile] = useState<{ path: string; component?: string; tab?: "diff" | "file"; line?: number } | null>(null);
+  const [openFile, setOpenFile] = useState<{ path: string; component?: string; tab?: "diff" | "file"; lines?: string } | null>(null);
   const openFilePath = useCallback((path: string) => setOpenFile({ path }), []);
-  const openFileAtLine = useCallback((path: string, line?: number) => setOpenFile({ path, line }), []);
-  const openFileView = useCallback((path: string) => setOpenFile({ path, tab: "file" }), []);
+  const openFileAtLine = useCallback((path: string, line?: number) => setOpenFile({ path, lines: line ? String(line) : undefined }), []);
+  const openFileView = useCallback((path: string, lines?: string) => setOpenFile({ path, tab: "file", lines }), []);
   /** A changed file's diff, in the shared file viewer. */
   const openFileDiff = useCallback((path: string) => setOpenFile({ path, tab: "diff" }), []);
   const [leftWidth, setLeftWidth] = usePanelWidth("graphreview.panel.diff", 236, 200, 480);
@@ -766,7 +766,7 @@ export function GraphView({
         <FileDiffModal
           repoId={repoId}
           target={reviewTarget}
-          finding={openFile ? { filePath: openFile.path, ...(openFile.line ? { lineRange: String(openFile.line) } : {}) } : null}
+          finding={openFile ? { filePath: openFile.path, ...(openFile.lines ? { lineRange: openFile.lines } : {}) } : null}
           initialComponent={openFile?.component}
           initialTab={openFile?.tab}
           onClose={() => setOpenFile(null)}

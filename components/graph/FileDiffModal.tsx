@@ -212,6 +212,11 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
             <span className="truncate" title={filePath}>
               {filePath}
             </span>
+            {highlightRange && (
+              <span className="shrink-0 rounded-sm bg-brand/15 px-1 text-[11px] text-brand">
+                {highlightRange[0] === highlightRange[1] ? `line ${highlightRange[0]}` : `lines ${highlightRange[0]}–${highlightRange[1]}`}
+              </span>
+            )}
             {!outsideDiff && (
               <Segmented
                 className="ml-auto shrink-0 font-sans"
@@ -351,11 +356,16 @@ export function FileText({
   const to = windowed && highlightRange ? Math.min(lines.length, highlightRange[1] + FILE_CONTEXT_LINES) : lines.length;
   let firstAdded: number | null = null;
   if (addedLines) for (const n of addedLines) if (firstAdded === null || n < firstAdded) firstAdded = n;
-  const scrollLine = whole ? ((scrollToRange ? highlightRange?.[0] : undefined) ?? firstAdded) : null;
+  // A span (a chat answer's `file.ts:305-350`) is scrolled to its top, a few
+  // lines of context above it, so as much of it as fits is on screen; a single
+  // line is centred.
+  const span = highlightRange !== null && highlightRange[1] > highlightRange[0];
+  const rangeLine = whole && scrollToRange && highlightRange ? (span ? Math.max(1, highlightRange[0] - 3) : highlightRange[0]) : null;
+  const scrollLine = whole ? (rangeLine ?? firstAdded) : null;
   const scrollRef = useRef<HTMLTableRowElement>(null);
   useEffect(() => {
-    scrollRef.current?.scrollIntoView({ block: "center" });
-  }, [content, scrollLine]);
+    scrollRef.current?.scrollIntoView({ block: span && rangeLine !== null ? "start" : "center" });
+  }, [content, scrollLine, span, rangeLine]);
   return (
     <div className="overflow-x-auto rounded-md border border-border">
       <table className="w-full border-collapse">
@@ -375,12 +385,19 @@ export function FileText({
               <tr
                 key={n}
                 ref={n === scrollLine ? scrollRef : undefined}
-                className={cn(added && "bg-success/10", highlighted && "bg-destructive/10 ring-1 ring-inset ring-brand/60")}
+                className={cn(
+                  added && "bg-success/10",
+                  // One line is ringed; a span is one tinted band with a bar in the gutter.
+                  highlighted && (span ? "bg-brand/10" : "bg-destructive/10 ring-1 ring-inset ring-brand/60"),
+                  highlighted && span && n === highlightRange![0] && "border-t border-brand/50",
+                  highlighted && span && n === highlightRange![1] && "border-b border-brand/50"
+                )}
               >
                 <td
                   className={cn(
                     "w-10 shrink-0 border-r border-border/40 px-1.5 text-right font-mono text-[10px] text-muted-foreground select-none",
                     added && "border-l-[3px] border-l-success text-success/80",
+                    highlighted && span && "border-l-[3px] border-l-brand text-brand",
                     onLineClick && "cursor-pointer hover:text-foreground"
                   )}
                   onClick={onLineClick ? () => onLineClick(n) : undefined}

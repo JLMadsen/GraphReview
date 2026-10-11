@@ -67,7 +67,7 @@ export interface ChatPanelProps {
   componentName: (id: string) => string | undefined;
   changedFiles: ReadonlySet<string>;
   onSelectComponent: (id: string) => void;
-  onOpenFile?: (path: string) => void;
+  onOpenFile?: (path: string, lines?: string) => void;
   /** Does again what an answer did to the view. */
   onApplyAction?: (action: ChatActionDTO) => void;
 }
@@ -379,7 +379,7 @@ function Message({
   onSelectComponent: (id: string) => void;
   renderInline: (text: string) => ReactNode;
   onAnswerSuggestion: (suggestionId: string, action: ChatSuggestionActionDTO["action"]) => Promise<void>;
-  onOpenFile?: (path: string) => void;
+  onOpenFile?: (path: string, lines?: string) => void;
   onApplyAction?: (action: ChatActionDTO) => void;
 }) {
   if (message.role === "user") return <UserBubble text={message.content} />;
@@ -467,7 +467,7 @@ function SuggestionCard({
 }: {
   suggestion: ChatSuggestionDTO;
   onAnswer: (action: ChatSuggestionActionDTO["action"]) => Promise<void>;
-  onOpenFile?: (path: string) => void;
+  onOpenFile?: (path: string, lines?: string) => void;
 }) {
   const [working, setWorking] = useState<ChatSuggestionActionDTO["action"] | null>(null);
   const [open, setOpen] = useState(false);
@@ -499,7 +499,7 @@ function SuggestionCard({
         <button
           type="button"
           disabled={!onOpenFile}
-          onClick={() => onOpenFile?.(suggestion.filePath!)}
+          onClick={() => onOpenFile?.(suggestion.filePath!, suggestion.line ? String(suggestion.line) : undefined)}
           className="mt-0.5 block max-w-full truncate font-mono text-[11px] text-muted-foreground enabled:hover:text-foreground enabled:hover:underline"
         >
           {where}
@@ -562,7 +562,7 @@ const PATH_LIKE = /^(?!\/)(?!https?:)[\w@.+\-[\]()]+(\/[\w@.+\-[\]()]+)+\.[A-Za-
  * says so if a path-like one turns out not to exist.
  */
 function fileOf(code: string, changedFiles: ReadonlySet<string>): string | null {
-  const path = code.replace(/:\d+(-\d+)?$/, "");
+  const path = code.replace(LINES_SUFFIX, "");
   if (changedFiles.has(path) || PATH_LIKE.test(path)) return path;
   // A bare name (`usePrChat.ts`) is the diff's file when exactly one has it.
   if (!path.includes("/") && /\.[A-Za-z0-9]{1,10}$/.test(path)) {
@@ -572,14 +572,24 @@ function fileOf(code: string, changedFiles: ReadonlySet<string>): string | null 
   return null;
 }
 
+/** `:12`, `:305-350`, `:305–350`, `#L305-L350` after a path. */
+const LINES_SUFFIX = /(?::|#L)(\d+)(?:\s*[-–]\s*L?(\d+))?$/;
+
+/** The lines a citation names, as `"305-350"` or `"12"`. */
+function linesOf(code: string): string | undefined {
+  const match = LINES_SUFFIX.exec(code);
+  if (!match) return undefined;
+  return match[2] ? `${match[1]}-${match[2]}` : match[1];
+}
+
 /** A file the answer names: a small file icon and its name, the full path on hover. */
-function FileChip({ code, file, onOpen }: { code: string; file: string; onOpen: (path: string) => void }) {
-  const line = /:(\d+(?:-\d+)?)$/.exec(code)?.[1];
+function FileChip({ code, file, onOpen }: { code: string; file: string; onOpen: (path: string, lines?: string) => void }) {
+  const line = linesOf(code);
   const name = file.slice(file.lastIndexOf("/") + 1);
   return (
     <button
       type="button"
-      onClick={() => onOpen(file)}
+      onClick={() => onOpen(file, line)}
       className="mx-px inline-flex max-w-full items-baseline gap-0.5 rounded px-0.5 align-baseline font-mono text-[11px] text-foreground hover:bg-muted"
       title={`Open ${file}${line ? `:${line}` : ""}`}
     >
@@ -590,7 +600,7 @@ function FileChip({ code, file, onOpen }: { code: string; file: string; onOpen: 
   );
 }
 
-function renderInline(text: string, changedFiles: ReadonlySet<string>, onOpenFile?: (path: string) => void): ReactNode {
+function renderInline(text: string, changedFiles: ReadonlySet<string>, onOpenFile?: (path: string, lines?: string) => void): ReactNode {
   const parts: ReactNode[] = [];
   const pattern = /`([^`]+)`|\*\*(.+?)\*\*/g;
   let last = 0;
