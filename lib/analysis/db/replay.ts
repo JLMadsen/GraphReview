@@ -131,6 +131,61 @@ export class SchemaState {
     return t.columns.find((c) => sameName(c.name, name));
   }
 
+  /**
+   * Whether `op` fits the schema so far, without applying it: `reflected`
+   * when what it would do is already there (a column it adds exists, one it
+   * drops is gone — a change log that the schema file already includes),
+   * `conflict` when it can't apply (a table or column it needs is missing),
+   * `null` when it applies cleanly. `IF [NOT] EXISTS` statements never clash.
+   */
+  check(op: DbOp): { kind: "reflected" | "conflict"; text: string } | null {
+    const guarded = "guarded" in op && op.guarded;
+    const has = (table: string, column: string) => Boolean(this.table(table) && this.column(this.table(table)!, column));
+    const nm = (q: string) => splitName(q).name;
+    switch (op.op) {
+      case "createTable":
+        return !op.ifNotExists && this.table(op.table) ? { kind: "reflected", text: `creates ${nm(op.table)}, which already exists` } : null;
+      case "dropTable":
+        return !guarded && !op.view && !this.table(op.table) ? { kind: "reflected", text: `drops ${nm(op.table)}, which isn't there` } : null;
+      case "renameTable":
+        if (this.table(op.table)) return null;
+        return this.table(op.to) ? { kind: "reflected", text: `renames ${nm(op.table)} to ${nm(op.to)}, which already has that name` } : { kind: "conflict", text: `renames ${nm(op.table)}, which isn't there` };
+      case "addColumn":
+        if (!this.table(op.table)) return { kind: "conflict", text: `adds ${op.column.name} to ${nm(op.table)}, which isn't there` };
+        return !guarded && has(op.table, op.column.name) ? { kind: "reflected", text: `adds ${op.column.name}, which ${nm(op.table)} already has` } : null;
+      case "dropColumn":
+        if (!this.table(op.table)) return { kind: "conflict", text: `drops ${op.column} from ${nm(op.table)}, which isn't there` };
+        return !guarded && !has(op.table, op.column) ? { kind: "reflected", text: `drops ${op.column}, which ${nm(op.table)} doesn't have` } : null;
+      case "renameColumn":
+        if (!this.table(op.table)) return { kind: "conflict", text: `renames a column of ${nm(op.table)}, which isn't there` };
+        if (has(op.table, op.column)) return null;
+        return has(op.table, op.to) ? { kind: "reflected", text: `renames ${op.column} to ${op.to}, which ${nm(op.table)} already has` } : { kind: "conflict", text: `renames ${op.column}, which ${nm(op.table)} doesn't have` };
+      case "alterColumn":
+        if (!this.table(op.table)) return { kind: "conflict", text: `alters ${op.column} of ${nm(op.table)}, which isn't there` };
+        return has(op.table, op.column) ? null : { kind: "conflict", text: `alters ${op.column}, which ${nm(op.table)} doesn't have` };
+      case "createIndex": {
+        const t = this.table(op.table);
+        if (!t) return { kind: "conflict", text: `indexes ${nm(op.table)}, which isn't there` };
+        const same = t.indexes.some((i) => (op.index.name && i.name && sameName(i.name, op.index.name)) || i.columns.join(",").toLowerCase() === op.index.columns.join(",").toLowerCase());
+        return !guarded && same ? { kind: "reflected", text: `creates index ${op.index.name ?? op.index.columns.join(", ")}, which ${nm(op.table)} already has` } : null;
+      }
+      case "addFk":
+      case "addPk":
+      case "addCheck":
+      case "dropConstraint":
+        return this.table(op.table) ? null : { kind: "conflict", text: `changes ${nm(op.table)}, which isn't there` };
+      default:
+        return null;
+    }
+  }
+
+  /** Records `op` in its table's history without applying it (a change log already reflected in the schema). */
+  record(op: DbOp, m: MigrationContext): void {
+    const name = "table" in op ? op.table : undefined;
+    const t = name ? (this.table(name) ?? (op.op === "renameTable" ? this.table(op.to) : undefined)) : undefined;
+    if (t) this.log(t, op, m);
+  }
+
   /** Applies one op; ops on tables it doesn't know are kept as opaque (a table made outside the history). */
   apply(op: DbOp, m: MigrationContext): void {
     const keep = (text: string) => {

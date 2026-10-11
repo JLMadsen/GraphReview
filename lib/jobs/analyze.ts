@@ -25,6 +25,7 @@ import {
   writeApiCatalog,
   writeInfraCatalog,
   writeDbSchema,
+  readDbSource,
 } from "@/lib/db";
 import { writeModuleTier } from "./module-tier";
 import { ANALYSIS_VERSION, type AnalysisJobResult } from "./queue";
@@ -177,12 +178,14 @@ export async function runAnalysisJob(
   log(`analyzing ${dir} at ${sha.slice(0, 12)}`);
 
   let lastLogged = 0;
+  const dbSource = readDbSource(repo.id)?.file;
+  if (dbSource) log(`schema source pinned: ${dbSource}`);
   const result = await analyzeRepoCommit(dir, sha, ({ analyzed, total }) => {
     if (analyzed - lastLogged >= 500) {
       lastLogged = analyzed;
       log(`parsed ${analyzed} of ${total} file(s)`);
     }
-  });
+  }, dbSource);
   const skipped = result.skipped;
   log(
     `static analysis done: ${result.files.length} file(s) (${result.cached} from the cache), ` +

@@ -38,10 +38,12 @@ function memo(): Map<string, Promise<AnalysisResult>> {
 export function analyzeRepoCommit(
   repoDir: string,
   sha: string,
-  onProgress?: (progress: { analyzed: number; total: number; file: string }) => void
+  onProgress?: (progress: { analyzed: number; total: number; file: string }) => void,
+  /** The repo's pinned schema source file (lib/db/db-source.ts), when it has one. */
+  dbSource?: string
 ): Promise<AnalysisResult> {
   const results = memo();
-  const key = `${path.resolve(repoDir)}\u0000${sha}`;
+  const key = `${path.resolve(repoDir)}\u0000${sha}\u0000${dbSource ?? ""}`;
   const existing = results.get(key);
   if (existing) {
     // Most recently used goes last.
@@ -49,7 +51,7 @@ export function analyzeRepoCommit(
     results.set(key, existing);
     return existing;
   }
-  const pending = analyzeCommit(repoDir, sha, { moduleDepth: DEFAULT_MODULE_DEPTH, cache: dbParseCache, onProgress });
+  const pending = analyzeCommit(repoDir, sha, { moduleDepth: DEFAULT_MODULE_DEPTH, cache: dbParseCache, onProgress, ...(dbSource ? { dbSource } : {}) });
   results.set(key, pending);
   pending.catch(() => results.delete(key));
   while (results.size > MEMO_SIZE) results.delete(results.keys().next().value!);

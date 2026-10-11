@@ -27,7 +27,7 @@
 
 import { createHash } from "node:crypto";
 import { buildCallGraph, compareApis, compareInfra, compareSchemas, compareStructure, parseChangedLines, type DbFinding, type InfraFinding, type NewCycle } from "@/lib/analysis";
-import { getFileOwnerMap, getRepoById, listComponentsByRepoId, syncFindingsForTargetCategory, writeTargetGraph } from "@/lib/db";
+import { getFileOwnerMap, getRepoById, listComponentsByRepoId, readDbSource, syncFindingsForTargetCategory, writeTargetGraph } from "@/lib/db";
 import type { RepoRecord, TargetFindingInput } from "@/lib/db";
 import { emitFindingsChanged } from "@/lib/mcp/events";
 import type { JobLogger } from "./analyze";
@@ -166,8 +166,10 @@ export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger
   const { repoDir, baseSha, headSha, changedFiles } = await resolveCommits(repo, target, log);
   log(`comparing ${baseSha.slice(0, 7)} (merge-base) with ${headSha.slice(0, 7)} — ${changedFiles.length} changed file(s)`);
 
-  const base = await analyzeRepoCommit(repoDir, baseSha);
-  const head = await analyzeRepoCommit(repoDir, headSha);
+  // A pinned schema source (lib/db/db-source.ts) is read at both commits.
+  const dbSource = readDbSource(repo.id)?.file;
+  const base = await analyzeRepoCommit(repoDir, baseSha, undefined, dbSource);
+  const head = await analyzeRepoCommit(repoDir, headSha, undefined, dbSource);
   log(`analysed: base ${base.files.length} file(s), head ${head.files.length} file(s), ${base.cached + head.cached} from the cache`);
 
   const changed = await changedLinesBetween(repoDir, baseSha, headSha);

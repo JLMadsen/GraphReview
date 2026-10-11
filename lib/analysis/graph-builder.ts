@@ -105,7 +105,7 @@ const READ_CONCURRENCY = 24;
  * Bumped whenever what a parse produces changes (queries, extractors, the
  * cached shape), so stale cache entries are never read back.
  */
-export const PARSE_VERSION = 7;
+export const PARSE_VERSION = 8;
 
 /** What a file's own syntax says — the cached unit. */
 export interface CachedParse {
@@ -138,6 +138,8 @@ export interface AnalyzeRepoOptions extends WalkOptions {
   onProgress?: (progress: { analyzed: number; total: number; file: string }) => void;
   /** Reuse parses by blob id (only trees that know blob ids — commits — use it). */
   cache?: ParseCache;
+  /** The repo's pinned schema source file (DESIGN.md §6.13): it replaces the schema catalog's auto-detection. */
+  dbSource?: string;
 }
 
 /** Name used for files that sit directly in the repo root. */
@@ -663,6 +665,8 @@ export async function analyzeTree(tree: SourceTree, options: AnalyzeRepoOptions 
         }),
         symbols,
         api,
+        ...(options.dbSource ? { pinned: options.dbSource } : {}),
+        allFiles: ctx.files,
       });
     } catch (error) {
       console.warn(`[analysis] schema catalog failed: ${(error as Error).message}`);

@@ -12,12 +12,12 @@ import type { SymbolGraph } from "../symbols";
 import { baseOf, dirOf, sharedDepth, type DeclSet, type MigrationSet, type TableDecl } from "./common";
 import { linkTables } from "./link";
 import type { DbFileFacts } from "./read";
-import { SchemaState, splitName, tableKey, type TableState } from "./replay";
+import { describeOp, SchemaState, splitName, tableKey, type TableState } from "./replay";
 import { resolveDjango } from "./sources/django";
 import { resolveDrizzle } from "./sources/drizzle";
-import { resolvePrisma } from "./sources/prisma";
-import { resolveSqlFiles } from "./sources/sql-files";
-import { resolveSqlInCode } from "./sources/sql-in-code";
+import { prismaDecls, resolvePrisma } from "./sources/prisma";
+import { changeLogMigrations, resolveSqlFiles } from "./sources/sql-files";
+import { ddlOps, resolveSqlInCode, TEST_PATH } from "./sources/sql-in-code";
 import { alembicMigrations, sqlalchemyModels } from "./sources/sqlalchemy";
 import { typeormEntities, typeormMigrations } from "./sources/typeorm";
 import { guessDialect } from "./sql";
@@ -30,6 +30,7 @@ import {
   type DbOp,
   type DbSchema,
   type DbSourceKind,
+  type DbSourceCandidate,
   type DbSourceRef,
   type DbTable,
   type DbTool,
@@ -42,6 +43,13 @@ export interface BuildDbSchemaInput {
   code: ReadonlyArray<{ file: string; facts: DbCodeFacts; symbols?: SymbolFacts }>;
   symbols: SymbolGraph;
   api: ApiCatalog;
+  /**
+   * The repo's pinned source file (DESIGN.md §6.13, pinned source): when set,
+   * the only database is built from it and auto-detection is skipped.
+   */
+  pinned?: string;
+  /** Every path of the tree — to tell a pinned file that isn't in this commit. */
+  allFiles?: ReadonlySet<string>;
 }
 
 function run<T>(name: string, fn: () => T, fallback: T): T {
@@ -115,11 +123,30 @@ const lc = (s: string) => s.toLowerCase();
 function buildDatabase(build: DbBuild, hints: readonly DbDialect[], onlyDatabase: boolean): Database {
   const sources: DbSourceRef[] = [];
   const tools = new Set<DbTool>();
-  const problems = [...(build.set?.problems ?? []), ...(build.problems ?? [])];
+  const problems = [...(build.set?.problems ?? []), ...(build.problems ?? []), ...build.decls.flatMap((d) => d.problems ?? [])].filter((p, i, all) => all.indexOf(p) === i);
   // 1. Migrations, replayed.
   const state = new SchemaState("migration", true);
   const migrations = build.set?.migrations ?? [];
-  for (const m of migrations) for (const op of m.ops) state.apply(op, { id: m.id, name: m.name, file: m.file });
+  for (const m of migrations) {
+    const ctx = { id: m.id, name: m.name, file: m.file };
+    for (const op of m.ops) {
+      // A change log already reflected in the schema before it: history only.
+      if (m.historyOnly) {
+        state.record(op, ctx);
+        continue;
+      }
+      // A pinned file: a statement that doesn't fit the schema so far is kept opaque and listed.
+      if (build.set?.strict) {
+        const clash = state.check(op);
+        if (clash) {
+          problems.push(`${m.file}:${op.line} ${clash.text} — kept as not modelled.`);
+          if (state.opaque.length < 400) state.opaque.push({ migration: m.id, file: m.file, line: op.line, text: describeOp(op) });
+          continue;
+        }
+      }
+      state.apply(op, ctx);
+    }
+  }
   if (build.set) {
     tools.add(build.set.tool);
     sources.push({ tool: build.set.tool, kind: "migration", path: build.set.root, files: new Set(migrations.map((m) => m.file)).size });
@@ -269,7 +296,7 @@ function buildDatabase(build: DbBuild, hints: readonly DbDialect[], onlyDatabase
 }
 
 /** Schema files' tables (from `schema.sql`, `structure.sql`, `schema/`) as a declarative source. */
-function sqlSchemaDecl(file: string, ops: DbOp[], dialect?: DbDialect): DeclSet {
+function sqlSchemaDecl(file: string, ops: DbOp[], dialect?: DbDialect, problems?: string[]): DeclSet {
   const state = new SchemaState("schema", false);
   for (const op of ops) state.apply(op, { id: file, name: baseOf(file), file });
   const tables: TableDecl[] = [...state.tables.values()].map((t) => ({
@@ -291,13 +318,91 @@ function sqlSchemaDecl(file: string, ops: DbOp[], dialect?: DbDialect): DeclSet 
     tables,
     enums: [...state.enums.values()].map((e) => ({ name: e.schema ? `${e.schema}.${e.name}` : e.name, values: e.values, file, line: e.line })),
     ...(dialect ? { dialect } : {}),
+    ...(problems?.length ? { problems } : {}),
   };
+}
+
+/** Files holding schema statements, non-test first, then by tables: what the Data view offers to pin. */
+function sourceCandidates(input: BuildDbSchemaInput): DbSourceCandidate[] {
+  const out: DbSourceCandidate[] = [];
+  const add = (file: string, kind: DbSourceCandidate["kind"], ops: readonly DbOp[], models?: number) => {
+    const tables = models ?? ops.filter((op) => op.op === "createTable" && !op.view).length;
+    const statements = ops.filter((op) => op.op !== "createTable" && op.op !== "opaque").length;
+    if (tables === 0 && statements === 0) return;
+    out.push({ file, kind, tables, statements, ...(TEST_PATH.test(file) ? { test: true as const } : {}) });
+  };
+  for (const f of input.dbFiles) {
+    if (f.facts.kind === "sql") add(f.file, "sql", f.facts.ops);
+    else if (f.facts.kind === "prisma") add(f.file, "prisma", [], f.facts.prisma.blocks.filter((b) => b.kind === "model").length);
+  }
+  for (const c of input.code) {
+    if (!c.facts.ddl?.length) continue;
+    add(c.file, "code", c.facts.ddl.flatMap((d) => ddlOps(d.text, d.line)));
+  }
+  out.sort((a, b) => Number(Boolean(a.test)) - Number(Boolean(b.test)) || b.tables - a.tables || b.statements - a.statements || a.file.localeCompare(b.file));
+  return out.slice(0, 60);
+}
+
+/**
+ * The one database a pinned file makes: `.sql` replayed in line order (each
+ * comment-led block one migration; a statement that doesn't fit is opaque
+ * and listed), `.prisma` as a Prisma schema, a code file's DDL literals as
+ * "SQL in code" reads them. A file missing at this commit is a problem, not
+ * an empty schema.
+ */
+function pinnedBuild(file: string, input: BuildDbSchemaInput, code: ReadonlyArray<{ file: string; facts: DbCodeFacts }>): DbBuild {
+  const id = `pinned:${file}`;
+  const base: DbBuild = { id, name: file, decls: [] };
+  if (input.allFiles && !input.allFiles.has(file)) return { ...base, problems: [`The pinned source file ${file} isn't in this commit.`] };
+  const dbFile = input.dbFiles.find((f) => f.file === file);
+  if (dbFile?.facts.kind === "sql") {
+    const facts = dbFile.facts;
+    return {
+      ...base,
+      set: {
+        tool: "sql",
+        root: file,
+        family: "sql",
+        migrations: changeLogMigrations(file, facts, 0),
+        problems: [],
+        strict: true,
+        ...(facts.dialect ? { dialect: facts.dialect, dialectGuessed: true as const } : {}),
+      },
+    };
+  }
+  if (dbFile?.facts.kind === "prisma") return { ...base, decls: [prismaDecls([{ file, prisma: dbFile.facts.prisma }])] };
+  const facts = code.find((c) => c.file === file);
+  if (facts?.facts.ddl?.length) {
+    const inCode = resolveSqlInCode([facts], new Set(), { includeTests: true });
+    const sets = inCode.migrations;
+    const set = sets.length
+      ? { ...sets[0], root: file, migrations: sets.flatMap((s) => s.migrations).map((m, i) => ({ ...m, order: i })) }
+      : undefined;
+    return { ...base, ...(set ? { set } : {}), decls: inCode.decls };
+  }
+  return { ...base, problems: [`The pinned source file ${file} holds no schema statements this reader understands (CREATE / ALTER TABLE, a Prisma schema, DDL in string literals).`] };
 }
 
 export function buildDbSchema(input: BuildDbSchemaInput): DbSchema {
   const code = input.code.map(({ file, facts }) => ({ file, facts }));
+  const candidates = run("candidates", () => sourceCandidates(input), []);
+  const withCandidates = candidates.length ? { candidates } : {};
+  if (input.pinned) {
+    const file = input.pinned;
+    const hints = [...new Set(code.flatMap(({ facts }) => facts.hints ?? []))];
+    const database = run(`pinned ${file}`, () => buildDatabase(pinnedBuild(file, input, code), hints, true), null);
+    const databases = database ? [database] : [];
+    const missing = Boolean(input.allFiles && !input.allFiles.has(file));
+    return {
+      databases,
+      files: 1,
+      pinned: { file, ...(missing ? { missing: true as const } : {}) },
+      ...withCandidates,
+      ...run("links", () => linkTables(databases, input), { uses: [], endpointTables: {} }),
+    };
+  }
   if (input.dbFiles.length === 0 && !code.some(({ facts }) => facts.entities || facts.migrations || facts.tables || facts.classes || facts.assigns || facts.ddl)) {
-    return { ...EMPTY_DB_SCHEMA, ...linkTables([], input) };
+    return { ...EMPTY_DB_SCHEMA, ...withCandidates, ...linkTables([], input) };
   }
   const prisma = run("Prisma", () => resolvePrisma(input.dbFiles), { migrations: [], decls: [], claimed: new Set<string>() });
   const drizzle = run("Drizzle", () => resolveDrizzle(input.dbFiles, code), { migrations: [], decls: [], claimed: new Set<string>() });
@@ -320,7 +425,7 @@ export function buildDbSchema(input: BuildDbSchemaInput): DbSchema {
     ...(typeormDecl ? [typeormDecl] : []),
     ...django.decls,
     ...saDecls,
-    ...run("schema files", () => sql.schemas.map((s) => sqlSchemaDecl(s.file, s.ops, s.dialect)), []),
+    ...run("schema files", () => sql.schemas.map((s) => sqlSchemaDecl(s.file, s.ops, s.dialect, s.problems)), []),
   ].filter((d) => d.tables.length > 0 || d.enums.length > 0);
 
   // One database per migration set; each declarative source joins the nearest compatible one.
@@ -361,7 +466,8 @@ export function buildDbSchema(input: BuildDbSchemaInput): DbSchema {
       if (!sameFamily && d.tool !== "sql" && depth === 0 && sqlCount > 1) continue;
       const single = builds.filter((x) => x.set).length === 1;
       if (d.tool === "sql" && !single && b.set.family === "sql" && sharedDepth(dirOf(b.set.root) || ".", d.root || ".") < (dirOf(b.set.root) ? dirOf(b.set.root).split("/").length : 0)) continue;
-      if (d.tool === "sql" && !single && b.set.family !== "sql" && depth === 0) continue;
+      // A .sql schema file joins another tool's migrations only when it sits beside them (a Django app's own dump is another database).
+      if (d.tool === "sql" && b.set.family !== "sql" && depth === 0) continue;
       const score = (families.length - rank) * 100 + depth;
       if (score > bestScore) {
         best = b;
@@ -388,5 +494,5 @@ export function buildDbSchema(input: BuildDbSchemaInput): DbSchema {
     .filter((d): d is Database => d !== null && (d.tables.length > 0 || d.migrations.length > 0 || d.orderProblems.length > 0));
   databases.sort((a, b) => b.tables.length - a.tables.length || a.id.localeCompare(b.id));
   const files = new Set([...input.dbFiles.filter((f) => f.facts.kind !== "none").map((f) => f.file), ...databases.flatMap((d) => [...d.migrations.map((m) => m.file), ...d.tables.flatMap((t) => t.models.map((m) => m.file))])]).size;
-  return { databases, files, ...run("links", () => linkTables(databases, input), { uses: [], endpointTables: {} }) };
+  return { databases, files, ...withCandidates, ...run("links", () => linkTables(databases, input), { uses: [], endpointTables: {} }) };
 }

@@ -31,6 +31,7 @@ import {
   type DbFk,
   type DbIndex,
   type DbMigration,
+  type DbOp,
   type DbSchema,
   type DbTable,
   type DbTableChange,
@@ -283,14 +284,21 @@ export function compareSchemas(base: DbSchema | undefined, head: DbSchema | unde
     const after = h ?? empty;
     const baseMigrationIds = new Set(before.migrations.map((m) => m.id));
     const added = after.migrations.filter((m) => !baseMigrationIds.has(m.id));
-    newMigrations.push(...added);
-    // A migration the base already had whose statements changed (lines aside): shown, never turned into findings.
-    const opsOf = (m: DbMigration) => JSON.stringify(m.ops, (key, value) => (key === "line" ? undefined : value));
+    // A migration the base already had whose statements changed (lines aside): shown, never turned into findings —
+    // unless the change only appends statements (a change log's last entry grew): those are statements the PR adds.
+    const opJson = (op: DbOp) => JSON.stringify(op, (key, value) => (key === "line" ? undefined : value));
     const baseMigrationsById = new Map(before.migrations.map((m) => [m.id, m]));
     for (const m of after.migrations) {
       const prev = baseMigrationsById.get(m.id);
-      if (prev && opsOf(prev) !== opsOf(m)) edited.push({ id: m.id, name: m.name, file: m.file, line: m.line });
+      if (!prev) continue;
+      const was = prev.ops.map(opJson);
+      const now = m.ops.map(opJson);
+      if (was.join("\n") === now.join("\n")) continue;
+      if (now.length > was.length && was.every((op, i) => op === now[i])) {
+        added.push({ ...m, id: `${m.id}+${now.length}`, name: `${m.name} (statements added)`, ops: m.ops.slice(was.length), line: m.ops[was.length]?.line ?? m.line });
+      } else edited.push({ id: m.id, name: m.name, file: m.file, line: m.line });
     }
+    newMigrations.push(...added);
     const renames = explicitRenames(after, added);
     const baseById = new Map(before.tables.map((t) => [t.id, t]));
     const headById = new Map(after.tables.map((t) => [t.id, t]));

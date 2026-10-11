@@ -63,14 +63,19 @@ export interface SqlInCodeOutput {
   problem?: string;
 }
 
-export function resolveSqlInCode(code: ReadonlyArray<{ file: string; facts: DbCodeFacts }>, exclude: ReadonlySet<string>): SqlInCodeOutput {
+export function resolveSqlInCode(
+  code: ReadonlyArray<{ file: string; facts: DbCodeFacts }>,
+  exclude: ReadonlySet<string>,
+  /** A pinned file is read whatever its path. */
+  options: { includeTests?: boolean } = {},
+): SqlInCodeOutput {
   const migrations: MigrationSet[] = [];
   const decls: DeclSet[] = [];
   /** Per file with loose DDL: the tables it creates, and the ones it changes without creating them. */
   const creates = new Map<string, Set<string>>();
   const touches = new Map<string, Set<string>>();
   for (const { file, facts } of code) {
-    if (!facts.ddl?.length || exclude.has(file) || TEST_PATH.test(file)) continue;
+    if (!facts.ddl?.length || exclude.has(file) || (TEST_PATH.test(file) && !options.includeTests)) continue;
     const groups = new Map<string, NonNullable<DbCodeFacts["ddl"]>>();
     for (const d of facts.ddl) if (d.group) (groups.get(d.group) ?? groups.set(d.group, []).get(d.group)!).push(d);
     const arrays = [...groups.values()].filter((g) => g.length >= 2);

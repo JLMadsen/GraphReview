@@ -549,6 +549,93 @@ async function main(): Promise<void> {
     rmSync(headDir, { recursive: true, force: true });
   }
 
+  // --- .sql read by content, and a pinned source file (2026-10-11) ---
+  console.log("\n.sql by content");
+  const sqlDir = "app/src/main/resources/sql";
+  const creates = (withEmail: boolean) =>
+    lines(
+      "-- the tables",
+      `CREATE TABLE users (id BIGINT PRIMARY KEY, name VARCHAR(100) NOT NULL${withEmail ? ", email VARCHAR(200)" : ""});`,
+      "CREATE TABLE orders (id BIGINT PRIMARY KEY, user_id BIGINT REFERENCES users(id));",
+    );
+  const changes = (...blocks: string[][]) => lines(...blocks.flat());
+  const block1 = ["-- 2024-01: users get an email", "ALTER TABLE users ADD COLUMN email VARCHAR(200);"];
+  const block2 = ["", "-- 2024-02: index orders by user", "CREATE INDEX orders_user ON orders (user_id);"];
+  const analyse = async (files: Record<string, string>, dbSource?: string) => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "graphreview-db-sqlfiles-"));
+    try {
+      writeTree(dir, files);
+      return (await analyzeRepo(dir, dbSource ? { dbSource } : {})).db;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const users = (s: DbSchema) => s.databases[0]?.tables.find((t) => t.name === "users");
+
+  // A: the changes apply cleanly → creates + changes.
+  const caseA = await analyse({ [`${sqlDir}/create-tables.sql`]: creates(false), [`${sqlDir}/schema-changes.sql`]: changes(block1, block2) });
+  const aDb = caseA.databases[0];
+  check(
+    "A: a schema file and its change log (any names) → one database, changes applied",
+    caseA.databases.length === 1 && users(caseA)?.columns.some((c) => c.name === "email") === true && aDb.migrations.length === 3 && aDb.orderProblems.length === 0,
+    JSON.stringify(caseA.databases.map((d) => [d.id, d.migrations.map((m) => m.name), d.orderProblems])),
+  );
+  check("A: each comment-led block is a migration, read as table history", users(caseA)?.history.some((h) => h.name.includes("users get an email") && /add column email/.test(h.summary)) === true, JSON.stringify(users(caseA)?.history));
+  // B: the creates already include the changes → creates are the schema, changes are history.
+  const caseB = await analyse({ [`${sqlDir}/create-tables.sql`]: creates(true), [`${sqlDir}/schema-changes.sql`]: changes(block1, block2.map((l) => l.replace("orders_user", "orders_user_idx")).slice(0, 2)) });
+  check(
+    "B: changes already in the creates → history only, no problem",
+    users(caseB)?.columns.filter((c) => c.name === "email").length === 1 && caseB.databases[0]?.orderProblems.length === 0 && caseB.databases[0]?.migrations.slice(1).every((m) => m.historyOnly) === true && users(caseB)?.history.some((h) => /add column email/.test(h.summary)) === true,
+    JSON.stringify(caseB.databases[0]),
+  );
+  // Mixed: one change is already there, one isn't → creates as written, the conflict named.
+  const caseMixed = await analyse({ [`${sqlDir}/create-tables.sql`]: creates(true), [`${sqlDir}/schema-changes.sql`]: changes(block1, ["", "-- phones", "ALTER TABLE users ADD COLUMN phone VARCHAR(30);"]) });
+  const mixedProblem = caseMixed.databases[0]?.orderProblems.join(" ") ?? "";
+  check(
+    "mixed: creates as written, and an order problem naming what didn't fit",
+    /schema-changes\.sql:2 adds email, which users already has/.test(mixedProblem) && !users(caseMixed)?.columns.some((c) => c.name === "phone"),
+    mixedProblem,
+  );
+  // A renamed-anything file of CREATE TABLEs, and a folder that can't be paired.
+  const renamed = await analyse({ "db/stuff/tables-v2.sql": creates(false) });
+  check("a .sql file of CREATE TABLEs, whatever its name, is a schema source", renamed.databases[0]?.tables.length === 2, JSON.stringify(renamed.databases.map((d) => d.id)));
+  const unpaired = await analyse({ [`${sqlDir}/a.sql`]: creates(false), [`${sqlDir}/b.sql`]: lines("CREATE TABLE things (id INT);"), [`${sqlDir}/changes.sql`]: changes(block1) });
+  check("two schema files and a change file → no pairing, the problem shown", unpaired.databases.some((d) => d.orderProblems.some((p) => /which changes go with which schema is unknown/.test(p))), JSON.stringify(unpaired.databases.map((d) => d.orderProblems)));
+  const testOnly = await analyse({ "src/test/resources/fixture.sql": creates(false) });
+  check("a test path's .sql isn't a schema source (but is a candidate)", testOnly.databases.length === 0 && testOnly.candidates?.[0]?.test === true, JSON.stringify(testOnly));
+  // A PR appending a block to the change log: its statements are migrations the PR adds.
+  const prBase = await analyse({ [`${sqlDir}/create-tables.sql`]: creates(false), [`${sqlDir}/schema-changes.sql`]: changes(block1, block2) });
+  const prHead = await analyse({ [`${sqlDir}/create-tables.sql`]: creates(false), [`${sqlDir}/schema-changes.sql`]: changes(block1, block2, ["", "-- 2024-03: names go", "ALTER TABLE users DROP COLUMN name;"]) });
+  const appendedChange = compareSchemas(prBase, prHead);
+  check("a block appended to the change log is a migration the PR adds → drop-column finding", appendedChange.findings.some((f) => f.rule === "drop-column" && f.column === "name" && f.migration.endsWith("schema-changes.sql#3")), JSON.stringify(appendedChange.findings));
+  const grownHead = await analyse({ [`${sqlDir}/create-tables.sql`]: creates(false), [`${sqlDir}/schema-changes.sql`]: changes(block1, block2, ["ALTER TABLE users DROP COLUMN name;"]) });
+  const grown = compareSchemas(prBase, grownHead);
+  check("statements appended to the last block count as added too, not as an edit", grown.findings.some((f) => f.rule === "drop-column" && f.column === "name") && !(grown.edited ?? []).length, JSON.stringify([grown.findings, grown.edited]));
+
+  console.log("\nPinned source");
+  const pinnedTree = {
+    "prisma/schema.prisma": PRISMA_SCHEMA(),
+    "docs/model.sql": lines("CREATE TABLE things (id INT PRIMARY KEY, label TEXT);", "ALTER TABLE things ADD COLUMN label TEXT;", "ALTER TABLE things ADD COLUMN size INT;"),
+    "src/schema.ts": lines("export const M = [", "  `CREATE TABLE widgets (id TEXT PRIMARY KEY)`,", "  `ALTER TABLE widgets ADD COLUMN name TEXT`,", "];"),
+  };
+  const auto = await analyse(pinnedTree);
+  check("auto-detection finds the Prisma schema (and SQL in code)", auto.databases.some((d) => d.tools.includes("prisma")) && !auto.pinned, JSON.stringify(auto.databases.map((d) => d.id)));
+  const pinSql = await analyse(pinnedTree, "docs/model.sql");
+  const things = pinSql.databases[0]?.tables.find((t) => t.name === "things");
+  check(
+    "a pinned .sql replaces auto-detection: one database, line order, a clashing ALTER kept opaque and listed",
+    pinSql.databases.length === 1 && pinSql.databases[0].id === "pinned:docs/model.sql" && things?.columns.map((c) => c.name).join(",") === "id,label,size" && pinSql.databases[0].orderProblems.some((p) => /adds label, which things already has/.test(p)) && pinSql.pinned?.file === "docs/model.sql",
+    JSON.stringify(pinSql.databases[0]),
+  );
+  const pinPrisma = await analyse({ ...pinnedTree, "db/other.sql": creates(false) }, "prisma/schema.prisma");
+  check("a pinned .prisma is read as a Prisma schema, nothing else", pinPrisma.databases.length === 1 && pinPrisma.databases[0].tables.some((t) => t.name === "orders") && !pinPrisma.databases[0].tables.some((t) => t.name === "users"), JSON.stringify(pinPrisma.databases.map((d) => [d.id, d.tables.map((t) => t.name)])));
+  const pinCode = await analyse(pinnedTree, "src/schema.ts");
+  check("a pinned code file is read for its DDL literals", pinCode.databases.length === 1 && pinCode.databases[0].tables[0]?.name === "widgets" && pinCode.databases[0].tables[0].columns.length === 2 && pinCode.databases[0].migrations.length === 2, JSON.stringify(pinCode.databases[0]));
+  const pinMissing = await analyse(pinnedTree, "db/gone.sql");
+  check("a pinned file missing at a commit is a problem, not an empty schema", pinMissing.pinned?.missing === true && pinMissing.databases[0]?.orderProblems.some((p) => /isn't in this commit/.test(p)) === true, JSON.stringify(pinMissing));
+  const candidates = auto.candidates?.map((c) => c.file) ?? [];
+  check("candidates: files with schema statements, by CREATE TABLE count", candidates.includes("docs/model.sql") && candidates.includes("prisma/schema.prisma") && candidates.includes("src/schema.ts"), JSON.stringify(auto.candidates));
+
   if (failures > 0) {
     console.log(`\n${failures} check(s) failed`);
     process.exit(1);

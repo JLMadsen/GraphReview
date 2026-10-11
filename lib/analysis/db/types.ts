@@ -169,14 +169,14 @@ export interface DbOpaque {
 
 export type DbOp =
   | { op: "createTable"; table: string; columns: DbColumn[]; pk: string[]; fks: DbFk[]; indexes: DbIndex[]; checks: DbCheck[]; ifNotExists?: true; view?: true; line: number }
-  | { op: "dropTable"; table: string; view?: true; line: number }
+  | { op: "dropTable"; table: string; view?: true; guarded?: true; line: number }
   | { op: "renameTable"; table: string; to: string; line: number }
-  | { op: "addColumn"; table: string; column: DbColumn; fk?: DbFk; line: number }
-  | { op: "dropColumn"; table: string; column: string; line: number }
+  | { op: "addColumn"; table: string; column: DbColumn; fk?: DbFk; guarded?: true; line: number }
+  | { op: "dropColumn"; table: string; column: string; guarded?: true; line: number }
   | { op: "alterColumn"; table: string; column: string; type?: string; nullable?: boolean; default?: string | null; line: number }
   | { op: "renameColumn"; table: string; column: string; to: string; line: number }
-  | { op: "createIndex"; table: string; index: DbIndex; concurrently?: true; line: number }
-  | { op: "dropIndex"; name: string; table?: string; line: number }
+  | { op: "createIndex"; table: string; index: DbIndex; concurrently?: true; guarded?: true; line: number }
+  | { op: "dropIndex"; name: string; table?: string; guarded?: true; line: number }
   | { op: "addFk"; table: string; fk: DbFk; line: number }
   | { op: "addPk"; table: string; columns: string[]; line: number }
   | { op: "addCheck"; table: string; check: DbCheck; line: number }
@@ -196,6 +196,12 @@ export interface DbMigration {
   /** Its place in the replay (0-based), or -1 when it couldn't be ordered. */
   order: number;
   ops: DbOp[];
+  /**
+   * Its statements are already reflected in the schema it comes after (a
+   * change log kept beside a schema file that includes it): they fill the
+   * tables' history but aren't applied.
+   */
+  historyOnly?: true;
 }
 
 export interface Database {
@@ -247,6 +253,22 @@ export interface DbSchema {
   endpointTables: Record<string, Array<{ table: string; via: DbUseVia[]; access?: "read" | "write" | "both" }>>;
   /** Schema files read (for the empty state). */
   files: number;
+  /** The repo's pinned source file, when the user chose one: it replaces auto-detection. `missing` when this commit doesn't have it. */
+  pinned?: { file: string; missing?: true };
+  /** Files holding schema statements, best first — what the Data view offers to pin when nothing was found. */
+  candidates?: DbSourceCandidate[];
+}
+
+/** A file that could be the repo's schema source (DESIGN.md §6.13, pinned source). */
+export interface DbSourceCandidate {
+  file: string;
+  kind: "sql" | "prisma" | "code";
+  /** CREATE TABLE statements (Prisma: models). */
+  tables: number;
+  /** Other schema statements (ALTER, CREATE INDEX, …). */
+  statements: number;
+  /** Under a test / fixture path. */
+  test?: true;
 }
 
 export const MAX_USES = 8000;

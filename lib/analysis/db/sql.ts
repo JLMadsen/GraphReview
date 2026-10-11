@@ -721,12 +721,12 @@ function alterTable(c: Cursor, line: number, stmt: string): DbOp[] {
         continue;
       }
       a.eat("COLUMN");
-      a.eat("IF", "NOT", "EXISTS");
+      const guardedAdd = a.eat("IF", "NOT", "EXISTS");
       const defs = a.peek()?.v === "(" ? splitTop(a.group()) : [a.rest()];
       for (const def of defs) {
         const parsed = parseColumnDef(def);
         if (!parsed) continue;
-        ops.push({ op: "addColumn", table, column: parsed.column, ...(parsed.fk ? { fk: parsed.fk } : {}), line });
+        ops.push({ op: "addColumn", table, column: parsed.column, ...(parsed.fk ? { fk: parsed.fk } : {}), ...(guardedAdd ? { guarded: true as const } : {}), line });
         if (parsed.pk) ops.push({ op: "addPk", table, columns: [parsed.column.name], line });
       }
       continue;
@@ -748,9 +748,9 @@ function alterTable(c: Cursor, line: number, stmt: string): DbOp[] {
         continue;
       }
       a.eat("COLUMN");
-      a.eat("IF", "EXISTS");
+      const guardedDrop = a.eat("IF", "EXISTS");
       const column = a.name();
-      if (column) ops.push({ op: "dropColumn", table, column, line });
+      if (column) ops.push({ op: "dropColumn", table, column, ...(guardedDrop ? { guarded: true as const } : {}), line });
       continue;
     }
     if (a.eat("ALTER")) {
@@ -798,7 +798,7 @@ function alterTable(c: Cursor, line: number, stmt: string): DbOp[] {
 
 function createIndex(c: Cursor, unique: boolean, line: number, stmt: string): DbOp[] {
   const concurrently = c.eat("CONCURRENTLY");
-  c.eat("IF", "NOT", "EXISTS");
+  const guarded = c.eat("IF", "NOT", "EXISTS");
   let name: string | undefined;
   if (!c.is("ON")) name = c.name();
   if (!c.eat("ON")) return [opaque(stmt, line)];
@@ -816,7 +816,7 @@ function createIndex(c: Cursor, unique: boolean, line: number, stmt: string): Db
     if (c.peek()?.v === "(") c.group();
     else c.next();
   }
-  return [{ op: "createIndex", table, index: { ...(name ? { name } : {}), columns, ...(unique ? { unique: true } : {}), ...(where ? { where } : {}) }, ...(concurrently ? { concurrently: true } : {}), line }];
+  return [{ op: "createIndex", table, index: { ...(name ? { name } : {}), columns, ...(unique ? { unique: true } : {}), ...(where ? { where } : {}) }, ...(concurrently ? { concurrently: true } : {}), ...(guarded ? { guarded: true as const } : {}), line }];
 }
 
 /** The tables a view's query reads. */
@@ -864,21 +864,21 @@ export function parseStatement(stmt: SqlStatement): DbOp[] {
   }
   if (c.eat("DROP")) {
     if (c.eat("TABLE")) {
-      c.eat("IF", "EXISTS");
+      const guarded = c.eat("IF", "EXISTS");
       const ops: DbOp[] = [];
       for (const part of splitTop(c.rest())) {
         const name = new Cursor(part).name();
-        if (name) ops.push({ op: "dropTable", table: name, line });
+        if (name) ops.push({ op: "dropTable", table: name, ...(guarded ? { guarded: true as const } : {}), line });
       }
       return ops;
     }
     if (c.eat("INDEX")) {
       c.eat("CONCURRENTLY");
-      c.eat("IF", "EXISTS");
+      const guarded = c.eat("IF", "EXISTS");
       const name = c.name();
       let table: string | undefined;
       if (c.eat("ON")) table = c.name();
-      return name ? [{ op: "dropIndex", name, ...(table ? { table } : {}), line }] : [];
+      return name ? [{ op: "dropIndex", name, ...(table ? { table } : {}), ...(guarded ? { guarded: true as const } : {}), line }] : [];
     }
     if (c.eat("TYPE")) {
       c.eat("IF", "EXISTS");

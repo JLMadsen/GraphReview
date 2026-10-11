@@ -790,6 +790,8 @@ export function GraphView({
               focus={dataFocus}
               onOpenFile={openFileAtLine}
               onOpenEndpoint={openEndpoint}
+              repoId={repoId}
+              onReload={dbSchema.reload}
             />
           </div>
         )}

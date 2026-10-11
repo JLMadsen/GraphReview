@@ -20,11 +20,11 @@ export const ANALYSIS_QUEUE_NAME = "analysis";
  * catalog; 4: infra files, env/port code facts and the infra catalog;
  * 5: schema files, table facts and the schema catalog; 6: payloads,
  * params and proxies read from handler code, wrapped Next.js handlers unwrapped;
- * 7: DDL read from code literals, re-parsed under PARSE_VERSION 6);
+ * 7: DDL read from code literals, re-parsed under PARSE_VERSION 6; 8: .sql files read by content — schema files and their change logs —, and a pinned schema source file);
  * a repo analysed by an older version is
  * re-analysed on its next view, like one whose branch moved.
  */
-export const ANALYSIS_VERSION = 7;
+export const ANALYSIS_VERSION = 8;
 
 /** Job name inside the analysis queue. One job type for now (v1 has no AI jobs yet). */
 export const ANALYSIS_JOB_NAME = "analyze-repo";

@@ -44,7 +44,19 @@ export interface PrismaFacts {
 }
 
 export type DbFileFacts =
-  | { kind: "sql"; ops: DbOp[]; dialect?: DbDialect; markers?: "dbmate" | "goose"; statements: number }
+  | {
+      kind: "sql";
+      ops: DbOp[];
+      dialect?: DbDialect;
+      markers?: "dbmate" | "goose";
+      statements: number;
+      /**
+       * Where a comment starts a new part of the file (the first line of a
+       * run of comment lines after code), with the comment's first line —
+       * a change log's entries (./sources/sql-files.ts).
+       */
+      blocks?: Array<{ line: number; title: string }>;
+    }
   | { kind: "prisma"; prisma: PrismaFacts }
   | { kind: "journal"; dialect?: string; entries: Array<{ idx: number; tag: string; when?: number }> }
   | { kind: "prisma-lock"; provider?: string }
@@ -146,6 +158,24 @@ export function readPrisma(source: string): PrismaFacts {
   return facts;
 }
 
+/** Comment runs that follow code (or open the file): each starts a part of the file. */
+export function commentBlocks(text: string, firstLine = 1): Array<{ line: number; title: string }> {
+  const out: Array<{ line: number; title: string }> = [];
+  const lines = text.split("\n");
+  let prev: "code" | "comment" | "start" = "start";
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i].trim();
+    if (!l) continue;
+    const comment = l.startsWith("--") || l.startsWith("/*") || l.startsWith("#");
+    if (comment && prev !== "comment") {
+      const title = l.replace(/^(--+|\/\*+|#+)\s*/, "").replace(/\*+\/\s*$/, "").trim();
+      out.push({ line: firstLine + i, title: title.slice(0, 120) });
+    }
+    prev = comment ? "comment" : "code";
+  }
+  return out;
+}
+
 export function readDbFile(reader: DbReader, path: string, source: string): DbFileFacts {
   try {
     switch (reader) {
@@ -153,7 +183,8 @@ export function readDbFile(reader: DbReader, path: string, source: string): DbFi
         const up = upSection(source.replace(/\r\n/g, "\n"));
         const ops = parseSql(up.text, up.firstLine);
         const dialect = guessDialect([up.text]);
-        return { kind: "sql", ops, ...(dialect ? { dialect } : {}), ...(up.markers ? { markers: up.markers } : {}), statements: ops.length };
+        const blocks = commentBlocks(up.text, up.firstLine);
+        return { kind: "sql", ops, ...(dialect ? { dialect } : {}), ...(up.markers ? { markers: up.markers } : {}), statements: ops.length, ...(blocks.length ? { blocks } : {}) };
       }
       case "prisma":
         return { kind: "prisma", prisma: readPrisma(source) };

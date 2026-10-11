@@ -642,6 +642,9 @@ export function createGraphReviewMcpServer(): McpServer {
         const list = filterTables(stored.schema, query);
         return {
           analysedCommit: stored.sha,
+          ...(stored.schema.pinned
+            ? { source: `pinned: ${stored.schema.pinned.file} — the user chose this file as the schema source; auto-detection is off${stored.schema.pinned.missing ? " (the file isn't in the analysed commit)" : ""}` }
+            : { source: "auto-detected" }),
           databases: stored.schema.databases.map((d) => ({
             id: d.id,
             name: d.name,

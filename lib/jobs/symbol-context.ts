@@ -21,7 +21,7 @@
 
 import { findMovedDeclarations, type AnalysisResult, type ChangedLines, type DeadImport, type SymbolDecl } from "@/lib/analysis";
 import type { ReviewRelatedFile } from "@/lib/ai";
-import type { RepoRecord } from "@/lib/db";
+import { readDbSource, type RepoRecord } from "@/lib/db";
 import { mergeBaseOf, readFileAt } from "@/lib/preview/checkout";
 import type { JobLogger } from "./analyze";
 import { analyzeRepoCommit } from "./commit-analysis";
@@ -66,8 +66,8 @@ export async function loadTargetAnalyses(
         : await ensureCommitsInCache(repo, [reviewed.baseSha, reviewed.headSha], fallbackRefspecs(repo, target), log);
     const baseSha = await mergeBaseOf(dir, reviewed.baseSha, reviewed.headSha);
     const [base, headAnalysis, changed] = await Promise.all([
-      analyzeRepoCommit(dir, baseSha),
-      analyzeRepoCommit(dir, reviewed.headSha),
+      analyzeRepoCommit(dir, baseSha, undefined, readDbSource(repo.id)?.file),
+      analyzeRepoCommit(dir, reviewed.headSha, undefined, readDbSource(repo.id)?.file),
       changedLinesBetween(dir, baseSha, reviewed.headSha),
     ]);
     log(`names: analysed ${baseSha.slice(0, 7)} and ${reviewed.headSha.slice(0, 7)} (${base.cached + headAnalysis.cached} file(s) from the cache)`);

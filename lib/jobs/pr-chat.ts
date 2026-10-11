@@ -380,6 +380,7 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
       const list = filterTables(stored.schema, typeof args.query === "string" ? args.query : undefined);
       const lines = list.slice(0, 40).map(({ table, db }) => `- ${describeTable(table, db)}`);
       if (list.length > 40) lines.push(`… ${list.length - 40} more — narrow it with a query`);
+      if (stored.schema.pinned) lines.unshift(`Source: ${stored.schema.pinned.file} (pinned by the user — auto-detection is off${stored.schema.pinned.missing ? "; the file isn't in the analysed commit" : ""}).`);
       const problems = stored.schema.databases.flatMap((d) => d.orderProblems.map((p) => `- ${d.name}: ${p}`));
       if (problems.length) lines.push("Migration order problems:", ...problems);
       return {

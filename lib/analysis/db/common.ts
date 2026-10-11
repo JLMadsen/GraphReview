@@ -38,6 +38,8 @@ export interface DeclSet {
   dialect?: DbDialect;
   /** Tables the source declares the whole schema of (Prisma, Drizzle): drift both ways. */
   complete?: boolean;
+  /** Shown with the database it joins (a folder whose schema and change files can't be paired). */
+  problems?: string[];
 }
 
 /** A set of migrations (one folder / chain) in replay order. */
@@ -50,6 +52,8 @@ export interface MigrationSet {
   dialectGuessed?: true;
   /** For matching declarative sources: the tool family it serves. */
   family: string;
+  /** A statement that doesn't fit the schema so far is kept opaque and listed as a problem (a pinned file). */
+  strict?: true;
 }
 
 export function str(v: DV | undefined): string | undefined {

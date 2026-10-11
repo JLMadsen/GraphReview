@@ -20,6 +20,7 @@ import type {
   DbMigration,
   DbMigrationRef,
   DbSchema,
+  DbSourceCandidate,
   DbSourceKind,
   DbTable,
   DbTableChange,
@@ -46,6 +47,7 @@ export type {
   DbMigration,
   DbMigrationRef,
   DbSchema,
+  DbSourceCandidate,
   DbSourceKind,
   DbTable,
   DbTableChange,
@@ -60,4 +62,16 @@ export interface DbSchemaResponseDTO extends DbSchema {
   state: "ready" | "none";
   sha?: string;
   computedAt?: string;
+  /** The repo's pinned source file as chosen now; `pinned` is what the stored catalog was built from (they differ while a re-analysis runs). */
+  pin?: string | null;
+}
+
+/** `GET /api/repos/[repoId]/db-schema/candidates`. */
+export interface DbSourceCandidatesDTO {
+  candidates: DbSourceCandidate[];
+  /** Every path at the analysed commit, for the search. */
+  files: string[];
+  truncated: boolean;
+  sha?: string;
+  pin: string | null;
 }

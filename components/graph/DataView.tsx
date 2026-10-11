@@ -24,6 +24,7 @@ import { CardFlow, DEFAULT_ELK_OPTIONS, type CardFlowLink } from "./CardFlow";
 import { Segmented } from "./Segmented";
 import { VIEW_CANVAS, VIEW_TOOLBAR } from "./view-chrome";
 import { DbTableDetail, SourceBadge } from "./DbTableDetail";
+import { DbSourcePicker } from "./DbSourcePicker";
 import { ASSESSMENT_VISUALS } from "./review-visuals";
 import { STATUS_STYLES, groupTables, tableLabel, type DbRow } from "./db-view-model";
 import type { Database, DbChange, DbSchemaResponseDTO, DbTable } from "./db-types";
@@ -57,6 +58,10 @@ export interface DataViewProps {
   focus: { id: string } | null;
   onOpenFile: (path: string, line?: number) => void;
   onOpenEndpoint?: (endpointId: string) => void;
+  /** For choosing the schema source file (`DbSourcePicker`); without it the source can't be changed here. */
+  repoId?: string;
+  /** Re-read the schema — after the source changed and the re-analysis finished. */
+  onReload?: () => void;
   leading?: React.ReactNode;
   className?: string;
 }
@@ -179,10 +184,48 @@ export function DataView({
   focus,
   onOpenFile,
   onOpenEndpoint,
+  repoId,
+  onReload,
   leading,
   className,
 }: DataViewProps) {
   const [query, setQuery] = useState("");
+  // --- The schema source (DESIGN.md §6.13, pinned source) --------------------
+  const [picking, setPicking] = useState(false);
+  /** A source change is being applied: the re-analysis it started hasn't finished. */
+  const [reReading, setReReading] = useState(false);
+  const pin = schema?.pin ?? null;
+  const builtFrom = schema?.pinned?.file ?? null;
+  useEffect(() => {
+    if (!reReading || !repoId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/repos/${encodeURIComponent(repoId)}`, { cache: "no-store" });
+        const repo = res.ok ? ((await res.json()) as { status?: string }) : null;
+        if (cancelled) return;
+        if (repo && repo.status !== "analyzing" && repo.status !== "stale") {
+          setReReading(false);
+          onReload?.();
+          return;
+        }
+      } catch {
+        /* try again */
+      }
+      timer = setTimeout(() => void poll(), 2000);
+    };
+    timer = setTimeout(() => void poll(), 1500);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [reReading, repoId, onReload]);
+  const sourceChanged = () => {
+    setPicking(false);
+    setReReading(true);
+    onReload?.();
+  };
   const databases = useMemo(() => schema?.databases ?? [], [schema]);
   const [dbId, setDbId] = useState<string | null>(null);
   const showChanges = Boolean(change) && changedOnly;
@@ -432,6 +475,44 @@ export function DataView({
         </div>
       </div>
 
+      {schema?.state === "ready" && repoId && (pin || databases.length > 0 || reReading) && (
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 border-b border-border bg-card/60 px-4 py-1 text-[11px] text-muted-foreground">
+          {pin ? (
+            <>
+              <span>
+                Source: <span className="font-mono text-foreground">{pin}</span> (pinned)
+              </span>
+              <span aria-hidden>·</span>
+              <button type="button" onClick={() => setPicking(true)} className="hover:text-foreground hover:underline">
+                Change
+              </button>
+              <span aria-hidden>·</span>
+              <button
+                type="button"
+                onClick={() =>
+                  void fetch(`/api/repos/${encodeURIComponent(repoId)}/db-schema/source`, { method: "DELETE" }).then((res) => {
+                    if (res.ok) sourceChanged();
+                  })
+                }
+                className="hover:text-foreground hover:underline"
+              >
+                Use auto-detect
+              </button>
+            </>
+          ) : (
+            <button type="button" onClick={() => setPicking(true)} className="hover:text-foreground hover:underline">
+              Choose the source file…
+            </button>
+          )}
+          {(reReading || pin !== builtFrom) && (
+            <span className="ml-auto flex items-center gap-1">
+              <LoaderCircle className="size-3 animate-spin" aria-hidden /> Re-reading the schema{pin ? ` from ${pin}` : " by auto-detection"}…
+            </span>
+          )}
+        </div>
+      )}
+      {picking && repoId && <DbSourcePicker repoId={repoId} pin={pin} onChanged={sourceChanged} onClose={() => setPicking(false)} className="border-b border-border bg-card/60 px-4 py-3" />}
+
       {activeDb && (activeDb.orderProblems.length > 0 || activeDb.sources.length > 0) && (
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-0.5 border-b border-border bg-card/60 px-4 py-1 text-[11px] text-muted-foreground">
           <span className="font-mono">
@@ -468,8 +549,8 @@ export function DataView({
       {schema?.state === "none" && (
         <p className="px-6 py-12 text-center text-sm text-muted-foreground">The schema is read during analysis — it appears once this repo&apos;s next analysis finishes.</p>
       )}
-      {schema?.state === "ready" && total === 0 && !change && (
-        <div className="mx-auto max-w-lg px-6 py-12 text-sm text-muted-foreground">
+      {schema?.state === "ready" && databases.length === 0 && !change?.tables.length && (
+        <div className="mx-auto max-w-2xl overflow-y-auto px-6 py-12 text-sm text-muted-foreground">
           <p className="text-foreground">No database schema found.</p>
           <p className="mt-2 leading-relaxed">
             Looked for migrations (Prisma, Drizzle, TypeORM, Django, Alembic, golang-migrate, dbmate, goose, Supabase, Flyway, numbered <span className="font-mono">.sql</span> folders),
@@ -477,9 +558,10 @@ export function DataView({
             CREATE / ALTER statements in code strings. Rails, Sequelize, Knex
             migrations, Mongoose and JPA aren&apos;t read yet.
           </p>
+          {repoId && !picking && <DbSourcePicker repoId={repoId} pin={pin} onChanged={sourceChanged} className="mt-6 border-t border-border pt-4" />}
         </div>
       )}
-      {schema?.state === "ready" && visible.length === 0 && (total > 0 || change) && (
+      {schema?.state === "ready" && visible.length === 0 && (total > 0 || Boolean(change?.tables.length)) && (
         <p className="px-6 py-12 text-center text-sm text-muted-foreground">
           {showChanges && changeCount === 0 ? "This diff doesn't change the schema." : showChanges ? "This diff doesn't change this database — pick another one, or show all tables." : "Nothing matches."}
         </p>

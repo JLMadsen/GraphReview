@@ -8,7 +8,7 @@
 // review target's schema change rides on the target graph (`/target-graph`).
 
 import { NextResponse } from "next/server";
-import { getFileOwnerMap, getRepoById, listComponentsByRepoId, readDbSchema } from "@/lib/db";
+import { getFileOwnerMap, getRepoById, listComponentsByRepoId, readDbSchema, readDbSource } from "@/lib/db";
 import { EMPTY_DB_SCHEMA } from "@/lib/analysis/db/types";
 import { ownerLookup } from "@/lib/jobs/target-graph";
 import type { DbSchemaResponseDTO } from "@/components/graph/db-types";
@@ -22,7 +22,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ rep
     const repo = await getRepoById(repoId);
     if (!repo) return apiError("Repo not found.", 404);
     const stored = readDbSchema(repoId);
-    if (!stored) return NextResponse.json({ state: "none", ...EMPTY_DB_SCHEMA } satisfies DbSchemaResponseDTO);
+    // The pin as chosen now — ahead of the stored catalog while the re-analysis it started runs.
+    const pin = readDbSource(repoId)?.file ?? null;
+    if (!stored) return NextResponse.json({ state: "none", ...EMPTY_DB_SCHEMA, pin } satisfies DbSchemaResponseDTO);
     const [owners, components] = await Promise.all([getFileOwnerMap(repoId), listComponentsByRepoId(repoId)]);
     const ownerOf = ownerLookup(owners);
     const nameOf = new Map(components.map((c) => [c.id, c.name]));
@@ -32,7 +34,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ rep
         if (id) t.component = { id, name: nameOf.get(id) ?? id };
       }
     }
-    const body: DbSchemaResponseDTO = { state: "ready", sha: stored.sha, computedAt: stored.computedAt, ...stored.schema };
+    const body: DbSchemaResponseDTO = { state: "ready", sha: stored.sha, computedAt: stored.computedAt, ...stored.schema, pin };
     return NextResponse.json(body);
   } catch (error) {
     console.error(`GET /api/repos/${repoId}/db-schema failed:`, error);

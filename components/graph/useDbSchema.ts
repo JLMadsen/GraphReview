@@ -3,19 +3,23 @@
 // Data for the Data view (DESIGN.md §6.13): the analysed commit's schema
 // catalog, re-read whenever `refreshKey` changes (a finished analysis).
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { DbSchemaResponseDTO } from "./db-types";
 
 export interface UseDbSchemaResult {
   schema: DbSchemaResponseDTO | null;
   loading: boolean;
   error: string | null;
+  /** Read it again now (the schema source changed and its re-analysis finished). */
+  reload: () => void;
 }
 
 export function useDbSchema(repoId: string, enabled: boolean, refreshKey: unknown): UseDbSchemaResult {
   const [schema, setSchema] = useState<DbSchemaResponseDTO | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+  const reload = useCallback(() => setNonce((n) => n + 1), []);
 
   useEffect(() => {
     if (!enabled) return;
@@ -41,7 +45,7 @@ export function useDbSchema(repoId: string, enabled: boolean, refreshKey: unknow
     return () => {
       cancelled = true;
     };
-  }, [repoId, enabled, refreshKey]);
+  }, [repoId, enabled, refreshKey, nonce]);
 
-  return { schema, loading, error };
+  return { schema, loading, error, reload };
 }

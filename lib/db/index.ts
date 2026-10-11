@@ -25,3 +25,4 @@ export * from "./target-graph";
 export * from "./api-catalog";
 export * from "./infra-catalog";
 export * from "./db-schema";
+export * from "./db-source";
