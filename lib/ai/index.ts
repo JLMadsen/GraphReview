@@ -41,42 +41,6 @@ export {
 export type { ReviewEffort, ReviewEffortSettings } from "./effort";
 
 export {
-  DEFAULT_DESCRIPTION_BATCH,
-  DESCRIBE_TASK_MARKER,
-  DOMAIN_TASK_MARKER,
-  FALLBACK_DOMAIN_NAME,
-  MAX_DOMAINS,
-  buildDescribeSystemPrompt,
-  buildDomainSystemPrompt,
-  describeModules,
-  labelComponents,
-  labelDomains,
-} from "./label";
-export type {
-  LabelDomain,
-  LabelInput,
-  LabelModuleDescription,
-  LabelModuleInput,
-  LabelOptions,
-  LabelPhase,
-  LabelProgressEvent,
-  LabelResult,
-  PhaseResult,
-} from "./label";
-
-export {
-  MERGE_NAME_TASK_MARKER,
-  buildMergeNameSystemPrompt,
-  nameMergeGroup,
-} from "./merge-name";
-export type {
-  MergeNameFile,
-  MergeNameInput,
-  MergeNameOptions,
-  MergeNameResult,
-} from "./merge-name";
-
-export {
   PR_MAP_TASK_MARKER,
   buildPrMapSystemPrompt,
   groupPrMap,

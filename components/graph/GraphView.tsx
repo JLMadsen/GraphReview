@@ -48,21 +48,17 @@
 // about the diff when one is selected, about the repo otherwise.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { cn } from "cn";
 import { FileDiffModal } from "./FileDiffModal";
 import { PrMapCanvas, type PrMapMode } from "./PrMapCanvas";
 import { FunctionPanel } from "./FunctionPanel";
-import { buildFunctionView, NOTHING_HIDDEN, type HiddenFunctions } from "./call-graph-view";
 import { useTargetGraph } from "./useTargetGraph";
 import { PrAreaList, PrAreaPanel } from "./PrAreaPanel";
 import { buildPrAreas } from "./pr-areas";
 import { usePrMap } from "./usePrMap";
 import type { PrMapRequestDTO } from "./pr-map-types";
 import { AppMapView } from "./AppMapView";
-import { AppMapPanel, type AppMapSelection } from "./AppMapPanel";
-import { useAppMap, useAppMapCardActions, useAppMapJob } from "./useAppMap";
-import { isAppMapLevel, type AppMapLevel } from "./app-map-types";
+import { AppMapPanel } from "./AppMapPanel";
 import { PanelResizeHandle, usePanelWidth } from "./PanelResizeHandle";
 import { ChatPanel } from "./ChatPanel";
 import { ChecklistPanel } from "./ChecklistPanel";
@@ -77,19 +73,17 @@ import { effectiveAssessment, worstAssessment } from "./review-visuals";
 import { useReview } from "./useReview";
 import { ApiView } from "./ApiView";
 import { ApiChangesSection } from "./ApiChangesSection";
-import { useApiCatalog } from "./useApiCatalog";
-import { buildApiRows } from "./api-view-model";
 import { InfraView } from "./InfraView";
 import { InfraChangesSection } from "./InfraChangesSection";
-import { useInfraCatalog } from "./useInfraCatalog";
-import { buildInfraRows, gatewayAuth } from "./infra-view-model";
-import { DataView, type DataMode } from "./DataView";
+import { DataView } from "./DataView";
 import { DbTableDetail } from "./DbTableDetail";
 import { SchemaChangesSection } from "./SchemaChangesSection";
-import { useDbSchema } from "./useDbSchema";
-import { buildDbRows, endpointTouches, tableLabel, tablesByFile } from "./db-view-model";
 import { FilesView } from "./FilesView";
 import { useRepoTree } from "./useRepoTree";
+import { useRepoContext, useTabHeight } from "./graph-view/useRepoContext";
+import { useLazyMount, useStoredState } from "./graph-view/view-state";
+import { usePrAreaSelection, usePrFunctions } from "./graph-view/usePrMapSelection";
+import { useApiViewState, useAppMapViewState, useDataViewState, useInfraViewState } from "./graph-view/useCatalogViews";
 import {
   DEFAULT_REVIEW_EFFORT,
   reviewTargetLabel,
@@ -97,7 +91,6 @@ import {
 } from "./types";
 import type {
   DiffImpactResponseDTO,
-  GraphResponseDTO,
   Assessment,
   ReviewTargetDTO,
 } from "./types";
@@ -122,23 +115,14 @@ function viewLayerClass(active: boolean): string {
   return cn("col-start-1 row-start-1 min-w-0", active ? "relative z-10" : "pointer-events-none opacity-0");
 }
 const VIEW_STORAGE_KEY = "graphreview.graph.view";
-const APP_LEVEL_STORAGE_KEY = "graphreview.appmap.level";
 const REVIEW_EXPANDED_STORAGE_KEY = "graphreview.review.expanded";
 const PR_MODE_STORAGE_KEY = "graphreview.prmap.mode";
-const DATA_MODE_STORAGE_KEY = "graphreview.data.mode";
-/** Functions and cards hidden on the Functions view, per repo and target. */
-const hiddenFunctionsKey = (repoId: string, target: ReviewTargetDTO) => `graphreview.prmap.hidden.${repoId}.${reviewTargetLabel(target)}`;
 
-/** Trimmed shape of `GET /api/repos/[repoId]` — see this repo's task brief. Only the fields this view needs. */
-interface RepoContext {
-  name: string;
-  defaultBranch?: string;
-  lastAnalyzedSha?: string;
-  status?: "analyzing" | "up_to_date" | "stale" | "error";
-}
-
-/** How often the repo's status is re-read while an analysis runs. */
-const ANALYSIS_POLL_MS = 3000;
+// A stored "repo" (the removed Repo view) falls back to the default.
+const parseView = (raw: string | null) => (isGraphViewMode(raw) ? raw : undefined);
+const parseExpanded = (raw: string | null) => (raw === "1" ? true : undefined);
+const serializeExpanded = (expanded: boolean) => (expanded ? "1" : "0");
+const parsePrMode = (raw: string | null): PrMapMode | undefined => (raw === "functions" ? "functions" : undefined);
 
 export interface GraphViewProps {
   repoId: string;
@@ -155,18 +139,10 @@ export function GraphView({
   initialBaseRef,
   initialHeadRef,
 }: GraphViewProps) {
-  const [repo, setRepo] = useState<RepoContext | null>(null);
-  /** The component graph — only its node names are used now (the dock and inspector label components with them). */
-  const [graph, setGraph] = useState<GraphResponseDTO | null>(null);
+  const { repo, graph, graphNonce } = useRepoContext(repoId);
   const [diffResult, setDiffResult] = useState<DiffImpactResponseDTO | null>(null);
   /** What the current impact result was a check *of* — `null` for "paste paths" (no diff to review) and before any check. Drives the whole review flow below. */
   const [reviewTarget, setReviewTarget] = useState<ReviewTargetDTO | null>(null);
-  /**
-   * Bumped to re-fetch the component graph and the App map without
-   * remounting anything — when an analysis finishes. Never read by the
-   * effects it retriggers.
-   */
-  const [graphNonce, setGraphNonce] = useState(0);
 
   const [reviewEffort, setReviewEffort] = useState<ReviewEffort>(DEFAULT_REVIEW_EFFORT);
   /** Whether the selected target reviews itself — open PRs and branch comparisons only (see DiffPanel's `DiffTargetMeta`). */
@@ -178,57 +154,14 @@ export function GraphView({
   const previewScan = usePreviewScan(repoId, reviewTarget);
   /** The target's base vs head: structure change and call graph (static analysis, no model). */
   const targetGraph = useTargetGraph(repoId, reviewTarget);
-  /** The PR map shows areas (files) or opens them into functions — remembered per browser. */
-  const [prMode, setPrModeState] = useState<PrMapMode>("files");
-  const [selectedFunction, setSelectedFunction] = useState<string | null>(null);
-  const setPrMode = useCallback((mode: PrMapMode) => {
-    setPrModeState(mode);
-    setSelectedFunction(null);
-    try {
-      window.localStorage.setItem(PR_MODE_STORAGE_KEY, mode);
-    } catch {
-      /* ignored */
-    }
-  }, []);
+  const targetData = reviewTarget ? targetGraph.graph?.data : undefined;
   /** The view last chosen — remembered per browser, `pr` by default. With no diff selected, `pr` falls back to the App map. */
-  const [preferredView, setPreferredViewState] = useState<GraphViewMode>("pr");
-  const [appLevel, setAppLevelState] = useState<AppMapLevel>("architecture");
+  const [preferredView, setPreferredView] = useStoredState<GraphViewMode>(VIEW_STORAGE_KEY, "pr", parseView);
   /** The review dock took the whole column (map folded away) — remembered per browser. */
-  const [reviewExpanded, setReviewExpandedState] = useState(false);
-  useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
-      // A stored "repo" (the removed Repo view) falls back to the default.
-      if (isGraphViewMode(stored)) setPreferredViewState(stored);
-      const level = window.localStorage.getItem(APP_LEVEL_STORAGE_KEY);
-      if (isAppMapLevel(level)) setAppLevelState(level);
-      if (window.localStorage.getItem(REVIEW_EXPANDED_STORAGE_KEY) === "1") setReviewExpandedState(true);
-      const storedMode = window.localStorage.getItem(PR_MODE_STORAGE_KEY);
-      if (storedMode === "functions") setPrModeState(storedMode);
-    } catch {
-      /* storage unavailable — keep the defaults */
-    }
-  }, []);
-  const setPreferredView = useCallback((view: GraphViewMode) => {
-    setPreferredViewState(view);
-    try {
-      window.localStorage.setItem(VIEW_STORAGE_KEY, view);
-    } catch {
-      /* ignored */
-    }
-  }, []);
+  const [reviewExpanded, setReviewExpanded] = useStoredState(REVIEW_EXPANDED_STORAGE_KEY, false, parseExpanded, serializeExpanded);
   /** The map is folded away only while there is a review to give the room to. */
   const mapFolded = reviewExpanded && reviewTarget !== null;
-  const toggleReviewExpanded = useCallback(() => {
-    setReviewExpandedState((expanded) => {
-      try {
-        window.localStorage.setItem(REVIEW_EXPANDED_STORAGE_KEY, expanded ? "0" : "1");
-      } catch {
-        /* ignored */
-      }
-      return !expanded;
-    });
-  }, []);
+  const toggleReviewExpanded = useCallback(() => setReviewExpanded(!reviewExpanded), [reviewExpanded, setReviewExpanded]);
   // Every file in every list opens the one file viewer (FileDiffModal) —
   // with a diff selected, a changed file shows its diff and the rest show
   // whole; with none, every file shows as analyzed. Lists about the change
@@ -239,92 +172,12 @@ export function GraphView({
   const openFilePath = useCallback((path: string) => setOpenFile({ path }), []);
   const openFileAtLine = useCallback((path: string, line?: number) => setOpenFile({ path, line }), []);
   const openFileView = useCallback((path: string) => setOpenFile({ path, tab: "file" }), []);
+  /** A changed file's diff, in the shared file viewer. */
+  const openFileDiff = useCallback((path: string) => setOpenFile({ path, tab: "diff" }), []);
   const [leftWidth, setLeftWidth] = usePanelWidth("graphreview.panel.diff", 236, 200, 480);
   const [chatWidth, setChatWidth] = usePanelWidth("graphreview.panel.chat", 380, 300, 720);
   const rootRef = useRef<HTMLDivElement>(null);
-
-  // On a desktop-sized window the tab exactly fills the viewport under the
-  // app's nav and the repo header, and each column scrolls on its own — the
-  // page itself never does. `--tab-h` is that height; the map takes a fixed
-  // share of it and the review scrolls in the rest (see `--map-h` below).
-  useEffect(() => {
-    const el = rootRef.current;
-    if (!el) return;
-    let frame = 0;
-    const fit = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        const top = el.getBoundingClientRect().top + window.scrollY;
-        el.style.setProperty("--tab-h", `${Math.max(480, window.innerHeight - top)}px`);
-      });
-    };
-    fit();
-    window.addEventListener("resize", fit);
-    return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener("resize", fit);
-    };
-  }, []);
-
-  // Repo context: the header/defaults, and the analysis status. While an
-  // analysis is running (`analyzing`, or `stale` = refreshing an existing
-  // graph) the status is re-read every few seconds — a cheap read of the job
-  // queue, no git call — and the moment it finishes (or the analyzed commit
-  // changes) the graph and the App map are fetched again and the server-
-  // rendered header is refreshed. Without this the tab kept showing the old
-  // map until a manual reload. Fails silently: the
-  // endpoint 404s for an unknown repo and errors without a readable database.
-  const router = useRouter();
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let wasWorking = false;
-    let lastSha: string | undefined;
-    let first = true;
-    const load = async () => {
-      try {
-        const res = await fetch(`/api/repos/${repoId}`);
-        const data = res.ok ? ((await res.json()) as RepoContext) : null;
-        if (cancelled || !data) return;
-        setRepo(data);
-        const working = data.status === "analyzing" || data.status === "stale";
-        const finished = (wasWorking && !working) || (!first && data.lastAnalyzedSha !== lastSha);
-        if (finished) {
-          setGraphNonce((n) => n + 1);
-          router.refresh();
-        }
-        wasWorking = working;
-        lastSha = data.lastAnalyzedSha;
-        first = false;
-        if (working) timer = setTimeout(() => void load(), ANALYSIS_POLL_MS);
-      } catch {
-        /* nice-to-have — keep what's on screen */
-      }
-    };
-    void load();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [repoId, router]);
-
-  // The component graph, for component names. An unanalyzed repo or an
-  // unreadable database just leaves names unresolved (ids show instead) —
-  // the App map has its own "not analyzed yet" state.
-  useEffect(() => {
-    let cancelled = false;
-    fetch(`/api/repos/${repoId}/graph`)
-      .then(async (res) => (res.ok ? ((await res.json()) as GraphResponseDTO) : null))
-      .then((data) => {
-        if (!cancelled) setGraph(data);
-      })
-      .catch(() => {
-        if (!cancelled) setGraph(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [repoId, graphNonce]);
+  useTabHeight(rootRef);
 
   const handleDiffResult = useCallback(
     (result: DiffImpactResponseDTO | null, target: ReviewTargetDTO | null, meta: DiffTargetMeta) => {
@@ -337,7 +190,7 @@ export function GraphView({
     [setPreferredView]
   );
 
-
+  // --- PR map (DESIGN.md §6.4) ----------------------------------------------
   // The PR map follows the diff selection: the review target when there is
   // one, the pasted paths otherwise. Keyed on the review's state so the
   // cards pick up the AI grouping the moment the review job stores it.
@@ -349,68 +202,18 @@ export function GraphView({
   const prMap = usePrMap(repoId, prRequest, review.state);
   /** The PR map's cards as areas, with their findings — one object for the canvas, the dock and the inspector. */
   const prAreas = useMemo(() => buildPrAreas(prMap.map, review.findings), [prMap.map, review.findings]);
-  /** What the reviewer took off the Functions view (the eyes on rows and cards) — remembered per target in this browser. */
-  const [hiddenFunctions, setHiddenFunctions] = useState<HiddenFunctions>(NOTHING_HIDDEN);
-  useEffect(() => {
-    setSelectedFunction(null);
-    let restored = NOTHING_HIDDEN;
-    if (reviewTarget) {
-      try {
-        const raw = window.localStorage.getItem(hiddenFunctionsKey(repoId, reviewTarget));
-        const parsed = raw ? (JSON.parse(raw) as { functions?: string[]; cards?: string[] }) : null;
-        if (parsed) restored = { functions: new Set(parsed.functions ?? []), cards: new Set(parsed.cards ?? []) };
-      } catch {
-        /* storage unavailable or unreadable — start with nothing hidden */
-      }
-    }
-    setHiddenFunctions(restored);
-  }, [repoId, reviewTarget]);
-  const updateHidden = useCallback(
-    (next: HiddenFunctions) => {
-      setHiddenFunctions(next);
-      if (!reviewTarget) return;
-      try {
-        const key = hiddenFunctionsKey(repoId, reviewTarget);
-        if (next.functions.size === 0 && next.cards.size === 0) window.localStorage.removeItem(key);
-        else window.localStorage.setItem(key, JSON.stringify({ functions: [...next.functions], cards: [...next.cards] }));
-      } catch {
-        /* ignored */
-      }
+  const { prArea, prAreaComponent, setPrAreaComponent, selectPrArea } = usePrAreaSelection(prRequest, prMap.map);
+  const { functionView, selectedFunction, setSelectedFunction, hideFunction, hideFunctionCard, showHiddenFunctions } =
+    usePrFunctions(repoId, reviewTarget, prMap.map, targetGraph);
+  /** The PR map shows areas (files) or opens them into functions — remembered per browser. */
+  const [prMode, storePrMode] = useStoredState<PrMapMode>(PR_MODE_STORAGE_KEY, "files", parsePrMode);
+  const setPrMode = useCallback(
+    (mode: PrMapMode) => {
+      storePrMode(mode);
+      setSelectedFunction(null);
     },
-    [repoId, reviewTarget]
+    [storePrMode, setSelectedFunction]
   );
-  const hideFunction = useCallback(
-    (id: string) => {
-      updateHidden({ functions: new Set([...hiddenFunctions.functions, id]), cards: hiddenFunctions.cards });
-      setSelectedFunction((current) => (current === id ? null : current));
-    },
-    [hiddenFunctions, updateHidden]
-  );
-  const hideFunctionCard = useCallback(
-    (cardId: string) => updateHidden({ functions: hiddenFunctions.functions, cards: new Set([...hiddenFunctions.cards, cardId]) }),
-    [hiddenFunctions, updateHidden]
-  );
-  const showHiddenFunctions = useCallback(() => updateHidden(NOTHING_HIDDEN), [updateHidden]);
-  const functionView = useMemo(
-    () => buildFunctionView(prMap.map, targetGraph.graph?.data, hiddenFunctions),
-    [prMap.map, targetGraph.graph, hiddenFunctions]
-  );
-  // A selected function the reviewer just hid (or that a hidden card took with it) is deselected.
-  useEffect(() => {
-    if (selectedFunction && functionView && !functionView.cardOf.has(selectedFunction)) setSelectedFunction(null);
-  }, [selectedFunction, functionView]);
-  /** The area (PR map card) the PR view is focused on, and optionally one of its components — they scope the dock. */
-  const [prArea, setPrArea] = useState<string | null>(null);
-  const [prAreaComponent, setPrAreaComponent] = useState<string | null>(null);
-  const selectPrArea = useCallback((cardId: string | null) => {
-    setPrArea(cardId);
-    setPrAreaComponent(null);
-  }, []);
-  useEffect(() => selectPrArea(null), [prRequest, selectPrArea]);
-  // A refreshed map (the review's grouping arriving) has new card ids.
-  useEffect(() => {
-    if (prArea && prMap.map && !prMap.map.nodes.some((n) => n.id === prArea)) selectPrArea(null);
-  }, [prArea, prMap.map, selectPrArea]);
   /** The diff's line totals for the summary — the PR map carries per-file +/-. */
   const lineStats = useMemo(() => {
     if (!prMap.map) return null;
@@ -427,30 +230,26 @@ export function GraphView({
   /** `pr` with no diff selected falls back to the App map. */
   const view: GraphViewMode = preferredView === "pr" && !prRequest ? "app" : preferredView;
 
-  // --- App map (DESIGN.md §6.5) ---------------------------------------------
-  /** Mounted (and fetching) from the first time the view is opened. */
-  const [appMounted, setAppMounted] = useState(false);
-  useEffect(() => {
-    if (view === "app") setAppMounted(true);
-  }, [view]);
-  const [appRunNonce, setAppRunNonce] = useState(0);
-  const appMap = useAppMap(repoId, appLevel, appMounted, `${graphNonce}:${appRunNonce}`);
-  const handleAppRunCompleted = useCallback(() => setAppRunNonce((n) => n + 1), []);
-  const appJob = useAppMapJob(repoId, appMounted, handleAppRunCompleted);
-  const appCardActions = useAppMapCardActions(repoId, appJob, handleAppRunCompleted);
-  const [appSelection, setAppSelection] = useState<AppMapSelection | null>(null);
-  // A connection row hovered in the app-map panel; its line is lit on the map.
-  const [appHoveredLink, setAppHoveredLink] = useState<string | null>(null);
-  const setAppLevel = useCallback((level: AppMapLevel) => {
-    setAppLevelState(level);
-    setAppSelection(null);
-    try {
-      window.localStorage.setItem(APP_LEVEL_STORAGE_KEY, level);
-    } catch {
-      /* ignored */
-    }
-  }, []);
-  useEffect(() => setAppSelection(null), [repoId]);
+  // --- The catalog views. Each mounts (and fetches) from the first time it,
+  // or something in it, is opened; some load early because another view reads them.
+  const [appMounted] = useLazyMount(view === "app");
+  const [apiMounted, mountApi] = useLazyMount(view === "api");
+  const [infraMounted, mountInfra] = useLazyMount(view === "infra");
+  const [dataMounted, mountData] = useLazyMount(view === "data");
+  const [filesMounted] = useLazyMount(view === "files");
+
+  // App map (DESIGN.md §6.5)
+  const {
+    level: appLevel,
+    setLevel: setAppLevel,
+    map: appMap,
+    job: appJob,
+    cardActions: appCardActions,
+    selection: appSelection,
+    setSelection: setAppSelection,
+    hoveredLink: appHoveredLink,
+    setHoveredLink: setAppHoveredLink,
+  } = useAppMapViewState(repoId, appMounted, graphNonce);
   /** The selected diff's files — the app map marks the cards they land on. */
   const changedFiles = useMemo(
     () => (diffResult ? new Set([...diffResult.touchedFiles, ...diffResult.unmatchedFiles]) : undefined),
@@ -468,7 +267,7 @@ export function GraphView({
       setAppSelection({ kind: "card", id: `mod:${componentId}` });
       setPreferredView("app");
     },
-    [setAppLevel, setPreferredView]
+    [setAppLevel, setAppSelection, setPreferredView]
   );
   const selectComponentLink = useCallback(
     (componentId: string | null) => {
@@ -478,131 +277,79 @@ export function GraphView({
   );
   const showAppPanel = view === "app" && appSelection !== null && appMap.map !== null;
 
-  // --- API (DESIGN.md §6.11) ------------------------------------------------
-  /** Mounted (and fetching) from the first time the view is opened, or an endpoint is. */
-  const [apiMounted, setApiMounted] = useState(false);
-  useEffect(() => {
-    if (view === "api") setApiMounted(true);
-  }, [view]);
-  const apiCatalog = useApiCatalog(repoId, apiMounted, graphNonce);
-  const apiChange = reviewTarget ? targetGraph.graph?.data?.api : undefined;
-  const apiRows = useMemo(() => buildApiRows(apiCatalog.catalog, apiChange), [apiCatalog.catalog, apiChange]);
-  /** An endpoint asked for from the left column — the API view opens it and scrolls to it. */
-  const [apiFocus, setApiFocus] = useState<{ id: string } | null>(null);
-  /** With a diff selected the API view lists only its API changes; "All endpoints" shows the whole catalog with them marked. */
-  const [apiChangedOnly, setApiChangedOnly] = useState(true);
-  useEffect(() => setApiFocus(null), [repoId]);
-  useEffect(() => setApiChangedOnly(true), [reviewTarget]);
+  // API (DESIGN.md §6.11)
+  const {
+    catalog: apiCatalog,
+    change: apiChange,
+    rows: apiRows,
+    focus: apiFocus,
+    setFocus: setApiFocus,
+    changedOnly: apiChangedOnly,
+    setChangedOnly: setApiChangedOnly,
+    endpointLabel,
+  } = useApiViewState(repoId, apiMounted, graphNonce, reviewTarget, targetData);
   /** Every endpoint link (the left column's API section) opens the API view at it. */
   const openEndpoint = useCallback(
     (endpointId: string) => {
-      setApiMounted(true);
+      mountApi();
       setApiFocus({ id: endpointId });
       setPreferredView("api");
     },
-    [setPreferredView]
+    [mountApi, setApiFocus, setPreferredView]
   );
-  // --- Infra (DESIGN.md §6.12) ----------------------------------------------
-  const [infraMounted, setInfraMounted] = useState(false);
-  useEffect(() => {
-    if (view === "infra") setInfraMounted(true);
-  }, [view]);
-  // Also read for the App map's explainer ("Deployed as") and the API view's gateway auth.
-  const infraCatalog = useInfraCatalog(repoId, infraMounted || appMounted || apiMounted, graphNonce);
-  const infraChange = reviewTarget ? targetGraph.graph?.data?.infra : undefined;
-  const infraRows = useMemo(() => buildInfraRows(infraCatalog.catalog, infraChange), [infraCatalog.catalog, infraChange]);
-  const endpointGatewayAuth = useMemo(() => gatewayAuth(infraCatalog.catalog), [infraCatalog.catalog]);
-  const [infraFocus, setInfraFocus] = useState<{ id: string } | null>(null);
-  const [infraChangedOnly, setInfraChangedOnly] = useState(true);
-  useEffect(() => setInfraFocus(null), [repoId]);
-  useEffect(() => setInfraChangedOnly(true), [reviewTarget]);
+
+  // Infra (DESIGN.md §6.12) — also read for the App map's explainer and the API view's gateway auth.
+  const {
+    catalog: infraCatalog,
+    change: infraChange,
+    rows: infraRows,
+    endpointGatewayAuth,
+    focus: infraFocus,
+    setFocus: setInfraFocus,
+    changedOnly: infraChangedOnly,
+    setChangedOnly: setInfraChangedOnly,
+  } = useInfraViewState(repoId, infraMounted || appMounted || apiMounted, graphNonce, reviewTarget, targetData);
   /** Every resource link (the left column's Infra section) opens the Infra view at it. */
   const openInfraResource = useCallback(
     (resourceId: string) => {
-      setInfraMounted(true);
+      mountInfra();
       setInfraFocus({ id: resourceId });
       setPreferredView("infra");
     },
-    [setPreferredView]
+    [mountInfra, setInfraFocus, setPreferredView]
   );
-  // --- Data (DESIGN.md §6.13) -----------------------------------------------
-  const [dataMounted, setDataMounted] = useState(false);
-  useEffect(() => {
-    if (view === "data") setDataMounted(true);
-  }, [view]);
-  // Also read for the API explainer's "touches" and the PR map's ⛁ badges.
-  const dbSchema = useDbSchema(repoId, dataMounted || apiMounted || Boolean(prRequest), graphNonce);
-  const dbChange = reviewTarget ? targetGraph.graph?.data?.db : undefined;
-  const dbRows = useMemo(() => buildDbRows(dbSchema.schema, dbChange), [dbSchema.schema, dbChange]);
-  const dbTablesById = useMemo(() => new Map(dbRows.map((r) => [r.table.id, r.table])), [dbRows]);
-  const endpointTables = useMemo(() => endpointTouches(dbSchema.schema), [dbSchema.schema]);
-  const fileTableNames = useMemo(() => {
-    const names = new Map((dbSchema.schema?.databases ?? []).flatMap((d) => d.tables.map((t) => [t.id, tableLabel(t)] as const)));
-    const out = new Map<string, string[]>();
-    for (const [file, ids] of tablesByFile(dbSchema.schema)) out.set(file, [...ids].map((id) => names.get(id) ?? id));
-    // Migrations only the diff adds aren't in the analysed catalog: the change says what they touch.
-    for (const c of dbChange?.tables ?? []) {
-      for (const m of c.migrations) {
-        const file = m.split("#")[0];
-        const list = out.get(file) ?? [];
-        if (!list.includes(tableLabel(c.table))) out.set(file, [...list, tableLabel(c.table)]);
-      }
-    }
-    return out;
-  }, [dbSchema.schema, dbChange]);
-  const [dataFocus, setDataFocus] = useState<{ id: string } | null>(null);
-  const [dataChangedOnly, setDataChangedOnly] = useState(true);
-  const [dataSelected, setDataSelected] = useState<string | null>(null);
-  const [dataMode, setDataModeState] = useState<DataMode>("canvas");
-  useEffect(() => {
-    try {
-      if (window.localStorage.getItem(DATA_MODE_STORAGE_KEY) === "list") setDataModeState("list");
-    } catch {
-      /* storage unavailable — canvas */
-    }
-  }, []);
-  const setDataMode = useCallback((mode: DataMode) => {
-    setDataModeState(mode);
-    try {
-      window.localStorage.setItem(DATA_MODE_STORAGE_KEY, mode);
-    } catch {
-      /* ignored */
-    }
-  }, []);
-  useEffect(() => {
-    setDataFocus(null);
-    setDataSelected(null);
-  }, [repoId]);
-  useEffect(() => setDataChangedOnly(true), [reviewTarget]);
+
+  // Data (DESIGN.md §6.13) — also read for the API explainer's "touches" and the PR map's ⛁ badges.
+  const {
+    schema: dbSchema,
+    change: dbChange,
+    rows: dbRows,
+    tablesById: dbTablesById,
+    endpointTables,
+    fileTableNames,
+    focus: dataFocus,
+    setFocus: setDataFocus,
+    changedOnly: dataChangedOnly,
+    setChangedOnly: setDataChangedOnly,
+    selected: dataSelected,
+    setSelected: setDataSelected,
+    selectedRow: selectedDbRow,
+    mode: dataMode,
+    setMode: setDataMode,
+  } = useDataViewState(repoId, dataMounted || apiMounted || Boolean(prRequest), graphNonce, reviewTarget, targetData);
   /** Every table link (the left column's Schema section, an endpoint's "touches") opens the Data view at it. */
   const openTable = useCallback(
     (tableId: string) => {
-      setDataMounted(true);
+      mountData();
       setDataFocus({ id: tableId });
       setPreferredView("data");
     },
-    [setPreferredView]
+    [mountData, setDataFocus, setPreferredView]
   );
-  const selectedDbRow = dataSelected ? dbRows.find((r) => r.table.id === dataSelected) : undefined;
   const showDataPanel = view === "data" && dataMode === "canvas" && selectedDbRow !== undefined;
 
-  // --- Files ------------------------------------------------------------------
-  const [filesMounted, setFilesMounted] = useState(false);
-  useEffect(() => {
-    if (view === "files") setFilesMounted(true);
-  }, [view]);
+  // Files (DESIGN.md §6.14)
   const repoTree = useRepoTree(repoId, filesMounted, graphNonce);
-  /** A changed file's diff, in the shared file viewer. */
-  const openFileDiff = useCallback((path: string) => setOpenFile({ path, tab: "diff" }), []);
-
-  /** "GET /orders/{id}" for an endpoint id, from the catalog when it is loaded. */
-  const endpointLabel = useCallback(
-    (id: string) => {
-      const e = apiCatalog.catalog?.endpoints.find((x) => x.id === id);
-      return e ? `${e.method} ${e.path}` : id.replace(/^http /, "");
-    },
-    [apiCatalog.catalog]
-  );
 
   /** The list views take the whole column: no review dock under them, nothing folded. */
   const apiFull = LIST_VIEWS.has(view);
@@ -610,7 +357,6 @@ export function GraphView({
   useEffect(() => {
     setOpenFile(null);
   }, [prRequest]);
-
 
   const componentNameById = useCallback(
     (id: string) => graph?.nodes.find((n) => n.id === id)?.name,

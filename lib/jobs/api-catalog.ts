@@ -6,7 +6,7 @@
 import { shapeIncomplete, type ApiCatalog, type Endpoint } from "@/lib/analysis/api/types";
 import { inferApiShape } from "@/lib/ai/api-shape";
 import { readApiCatalog, readInferredApiShape, writeInferredApiShape, type InferredApiShape, type RepoRecord } from "@/lib/db";
-import { loadAiConfigOrNull } from "./merge-naming";
+import { loadAiConfigOrNull } from "./ai-config";
 import { readFileAtCommit } from "./pr-context";
 
 /** Fills an endpoint's unknown shapes from an inference, marked `ai`. */

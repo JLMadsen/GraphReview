@@ -1,7 +1,6 @@
 // Queue for the app map's AI runs (DESIGN.md §6.5).
 //
-// Same policy as the label queue (./label-queue.ts), for the same reasons:
-// a run spends model calls, so it is `attempts: 1` and never retried, and it
+// A run spends model calls, so it is `attempts: 1` and never retried, and it
 // is strictly on demand — nothing enqueues it except someone pressing
 // "Explain with AI" (or "Place N files") on the App map. One run per repo at a time (whatever the
 // level), cancellable cooperatively through a flag the worker polls.

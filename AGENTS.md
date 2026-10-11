@@ -61,3 +61,12 @@ with trusted publishing (GitHub OIDC; no token secret — the trusted
 publisher is configured on npmjs.com). Never push a release tag without the user asking. To try
 the bundle locally, run both scripts inside a `node:22-bookworm` container
 on a copy of the working tree, without node_modules or `.next*`.
+
+## Design docs
+
+`docs/DESIGN.md` is a short index: the product concept, the locked
+decisions and a table of sections. Each section lives in its own file under
+`docs/design/` (`6.13-db-schema.md`, `ai-pipeline.md`, …); code comments
+cite them by number (`DESIGN.md §6.13`). Read only the section a task
+touches. A new feature gets a new `docs/design/6.<n>-<slug>.md` and a row
+in the index.

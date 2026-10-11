@@ -8,7 +8,7 @@
 // import graph, and the caller only applies this call's verbs to edges the
 // links already justify.
 //
-// Same contract as ./merge-name.ts: plain-prompted JSON in one fenced block,
+// Same contract as the other structured calls: plain-prompted JSON in one fenced block,
 // recovered with `extractJson`, fitted to the token budget by dropping detail.
 
 import { chatCompletion } from "./client";

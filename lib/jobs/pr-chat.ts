@@ -53,9 +53,9 @@ import { readServedApiCatalog } from "./api-catalog";
 import type { TargetGraphData } from "./target-graph-queue";
 import type { ChatMessageRecord, ChatSuggestionRecord, ComponentRecord, FindingRecord, FindingWithComponent, RepoRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
-import { loadAiConfigOrNull } from "./merge-naming";
+import { loadAiConfigOrNull } from "./ai-config";
 import { loadPrContext, readFileAtCommit, searchCode } from "./pr-context";
-import type { ResolvedTarget } from "./review";
+import type { ResolvedTarget } from "./review-target";
 import { reviewTargetKey, type ReviewTarget } from "./review-queue";
 
 /** The thread key of the repo-wide chat — review target keys are `pr:…` / `refs:…`, so it can't collide. */

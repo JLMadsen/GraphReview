@@ -262,8 +262,8 @@ interface JvmSourceRoot {
 }
 
 /**
- * Locate a JVM file's source root from its path alone (the stored graph that
- * `regroupRepo` re-clusters has no package declarations). Recognizes the
+ * Locate a JVM file's source root from its path alone (clustering sees paths,
+ * not package declarations). Recognizes the
  * Maven/Gradle `<project>/src/<set>/<lang>/` layout first, then a bare
  * `<project>/src/` (Eclipse/Ant). `undefined` for non-JVM files and JVM files
  * outside any `src` folder.

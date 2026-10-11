@@ -19,7 +19,7 @@ import type { JobLogger } from "./analyze";
 import { resolveGitHubAccess } from "./github-access";
 import { resolveGitLabAccess } from "./gitlab-access";
 import { grepLocalAtRef, readLocalFileAtRef } from "./local-git";
-import { resolveTarget, type ResolvedTarget } from "./review";
+import { resolveTarget, type ResolvedTarget } from "./review-target";
 import { reviewTargetKey, type ReviewTarget } from "./review-queue";
 import { readRepoFile, sourceDir } from "./review-context";
 import { gitIn } from "./source";

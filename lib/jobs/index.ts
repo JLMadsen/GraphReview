@@ -119,30 +119,6 @@ export {
 } from "./review-queue";
 
 export {
-  LABEL_JOB_NAME,
-  LABEL_CANCELLED_REASON,
-  LABEL_QUEUE_NAME,
-  cancelLabel,
-  clearLabelCancel,
-  closeLabelQueue,
-  enqueueLabel,
-  getLabelJob,
-  getLabelJobLogs,
-  getLabelJobState,
-  getLabelQueue,
-  isLabelCancelRequested,
-  labelJobId,
-  type CancelLabelResult,
-  type EnqueueLabelResult,
-  type LabelJob,
-  type LabelJobData,
-  type LabelJobResult,
-  type LabelPhaseName,
-  type LabelProgress,
-  type LabelQueue,
-} from "./label-queue";
-
-export {
   getComponentReviewContexts,
   matchFilesToComponents,
   toDiffImpactResponse,
@@ -270,9 +246,7 @@ export {
 // worker imports it directly:
 //     import { runReviewJob } from "@/lib/jobs/review";
 //
-// `./label` likewise (lib/ai):
-//     import { runLabelJob } from "@/lib/jobs/label";
-// and `./app-map-job`:
+// `./app-map-job` likewise (lib/ai):
 //     import { runAppMapJob } from "@/lib/jobs/app-map-job";
 // and `./preview` (lib/ai, lib/analysis, the Docker sandbox):
 //     import { runPreviewJob } from "@/lib/jobs/preview";

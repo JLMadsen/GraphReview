@@ -2,9 +2,9 @@
 //
 // Returns every component of the repo plus the `DEPENDS_ON` edges
 // between them, in the flat DTO shape `components/graph/` reads (the Graph
-// tab uses it to resolve component ids to names). The domain tier is only
-// written by the AI labeling job (lib/jobs/label.ts), so a repo may
-// legitimately have none: a component simply has no `parentId` when no
+// tab uses it to resolve component ids to names). The domain tier was only
+// ever written by the AI labeling job (removed with the Repo view,
+// docs/ideas.md), so a repo may legitimately have none: a component simply has no `parentId` when no
 // `CHILD_OF` edge exists.
 //
 // Domain-tier nodes carry no files of their own — `BELONGS_TO` only ever

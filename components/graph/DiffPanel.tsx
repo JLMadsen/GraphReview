@@ -17,16 +17,18 @@
 // the diff is older than the analyzed graph it is mapped onto.
 
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronsUpDown, History, LoaderCircle, TriangleAlert } from "lucide-react";
+import { ChevronDown, LoaderCircle, TriangleAlert } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { cn } from "cn";
 import { Segmented } from "./Segmented";
-import { isShaLike, shortRef } from "./types";
+import { isShaLike } from "./types";
 import type {
   DiffImpactRequestDTO,
   DiffImpactResponseDTO,
   ReviewTargetDTO,
 } from "./types";
+import { CommitPicker } from "./diff/CommitPicker";
+import { DiffSummary } from "./diff/DiffSummary";
+import { useLazyList, type BranchesApiResponse, type PullRequestsApiResponse, type CommitsApiResponse, sameCommit } from "./diff/options";
 
 /** What GraphView needs to know about a result beyond the target itself. */
 export interface DiffTargetMeta {
@@ -77,27 +79,6 @@ const PR_FILTER_STORAGE_KEY = "graphreview.diff.prFilter";
 const PR_LIST_LIMIT = 100;
 const COMMIT_LIST_LIMIT = 100;
 
-const RELATIVE = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-/** "3 days ago" — coarse on purpose, it's for telling commits apart. */
-function relativeDate(iso: string): string {
-  const then = Date.parse(iso);
-  if (!Number.isFinite(then)) return "";
-  const minutes = Math.round((then - Date.now()) / 60_000);
-  if (Math.abs(minutes) < 60) return RELATIVE.format(minutes, "minute");
-  const hours = Math.round(minutes / 60);
-  if (Math.abs(hours) < 24) return RELATIVE.format(hours, "hour");
-  const days = Math.round(hours / 24);
-  if (Math.abs(days) < 30) return RELATIVE.format(days, "day");
-  const months = Math.round(days / 30);
-  if (Math.abs(months) < 12) return RELATIVE.format(months, "month");
-  return RELATIVE.format(Math.round(months / 12), "year");
-}
-
-/** Whether a picked (possibly abbreviated) sha names this commit. */
-function sameCommit(sha: string, picked: string): boolean {
-  return sha.toLowerCase().startsWith(picked.toLowerCase());
-}
-
 /** Mirrors the current check into the URL (`?pr=` / `?base=&head=`) so it can be bookmarked or shared; the page reads the same params on load. */
 function syncUrl(body: DiffImpactRequestDTO): void {
   try {
@@ -113,69 +94,6 @@ function syncUrl(body: DiffImpactRequestDTO): void {
     /* URL sync is a convenience */
   }
 }
-
-// Minimal shapes for the two GitHub-backed list endpoints this panel
-// consumes (`GET /api/repos/[repoId]/branches`,
-// `GET /api/repos/[repoId]/pull-requests`). Kept local and framework-agnostic
-// (mirroring this directory's types.ts convention) rather than importing
-// lib/jobs's `BranchesResponse`/`PullRequestsResponse` — that package is
-// server-only and this is a client component. Both endpoints share the
-// `linked`/`error` envelope from lib/jobs/github-access.ts.
-interface BranchOption {
-  name: string;
-  protected: boolean;
-}
-
-interface PullRequestOption {
-  number: number;
-  title: string;
-  state: "open" | "closed" | "merged";
-  updatedAt: string;
-  // The rest of the summary the endpoint sends — the diff summary's meta lines.
-  draft?: boolean;
-  author?: string | null;
-  baseRef?: string;
-  headRef?: string;
-  createdAt?: string;
-}
-
-interface CommitOption {
-  sha: string;
-  subject: string;
-  author: string | null;
-  date: string;
-  parents: string[];
-}
-
-interface CommitsApiResponse {
-  linked: boolean;
-  error?: string;
-  commits: CommitOption[];
-}
-
-interface BranchesApiResponse {
-  linked: boolean;
-  error?: string;
-  branches: BranchOption[];
-}
-
-interface PullRequestsApiResponse {
-  linked: boolean;
-  error?: string;
-  pullRequests: PullRequestOption[];
-}
-
-/**
- * `idle` → not fetched yet (mode never opened). `loading` → in flight.
- * `loaded` → use the dropdown. `fallback` → not linked, fetch failed, or the
- * list came back empty — keep the free-text input rather than show a dead
- * end.
- */
-type ListFetchState<T> =
-  | { status: "idle" }
-  | { status: "loading" }
-  | { status: "loaded"; items: T[] }
-  | { status: "fallback" };
 
 // `appearance-none` + the chevron rendered next to it (see `SelectShell`)
 // replaces the OS-native dropdown arrow, which on a dark surface renders as
@@ -301,106 +219,17 @@ export function DiffPanel({
   /** The picker is open — always before the first result, and after "Change". */
   const [picking, setPicking] = useState(true);
 
-  const [branchesState, setBranchesState] = useState<ListFetchState<BranchOption>>({
-    status: "idle",
-  });
-  const [prListState, setPrListState] = useState<ListFetchState<PullRequestOption>>({
-    status: "idle",
-  });
-  const [commitsState, setCommitsState] = useState<ListFetchState<CommitOption>>({
-    status: "idle",
-  });
-
-  // Lazily fetch branches the first time "Compare refs" mode is open (on
-  // mount if it's the initial mode, e.g. arriving via `?base=`/`?head=`).
-  // Falls back to the free-text inputs — rather than an empty dropdown — if
-  // the repo isn't linked to GitHub, the request fails, or it comes back
-  // with zero branches.
-  useEffect(() => {
-    if (mode !== "refs" || branchesState.status !== "idle") return;
-    let cancelled = false;
-    setBranchesState({ status: "loading" });
-    fetch(`/api/repos/${repoId}/branches`)
-      .then((res) => res.json())
-      .then((json: BranchesApiResponse) => {
-        if (cancelled) return;
-        if (json?.linked && !json.error && Array.isArray(json.branches) && json.branches.length > 0) {
-          setBranchesState({ status: "loaded", items: json.branches });
-        } else {
-          setBranchesState({ status: "fallback" });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setBranchesState({ status: "fallback" });
-      });
-    return () => {
-      cancelled = true;
-    };
-    // `branchesState.status` is intentionally read but not listed: this
-    // effect must run only when `mode`/`repoId` change, not whenever the
-    // state *it* just set changes too. Including it self-triggers a second
-    // invocation the instant `setBranchesState({ status: "loading" })`
-    // commits — the cleanup from that first invocation then cancels the
-    // in-flight fetch before its response ever arrives, so `branchesState`
-    // gets stuck on "loading" forever (rendering the same fallback input as
-    // "fallback", silently, even though the request actually succeeded).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, repoId]);
-
-  // Same lazy-fetch-once-then-fallback pattern for the PR dropdown: the
-  // most recently updated PRs of every state in one request, filtered
-  // client-side by the Open/Merged/Closed/All chips.
-  useEffect(() => {
-    if (mode !== "pr" || prListState.status !== "idle") return;
-    let cancelled = false;
-    setPrListState({ status: "loading" });
-    fetch(`/api/repos/${repoId}/pull-requests?state=all&limit=${PR_LIST_LIMIT}`)
-      .then((res) => res.json())
-      .then((json: PullRequestsApiResponse) => {
-        if (cancelled) return;
-        const loaded = json?.linked && !json.error && Array.isArray(json.pullRequests);
-        if (loaded && json.pullRequests.length > 0) {
-          setPrListState({ status: "loaded", items: json.pullRequests });
-        } else {
-          setPrListState({ status: "fallback" });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setPrListState({ status: "fallback" });
-      });
-    return () => {
-      cancelled = true;
-    };
-    // See the branches effect above for why `prListState.status` is
-    // deliberately not in this array.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, repoId]);
-
-  // The commit picker's list: the default branch's newest commits.
-  useEffect(() => {
-    if (mode !== "commits" || commitsState.status !== "idle") return;
-    let cancelled = false;
-    setCommitsState({ status: "loading" });
-    fetch(`/api/repos/${repoId}/commits?limit=${COMMIT_LIST_LIMIT}`)
-      .then((res) => res.json())
-      .then((json: CommitsApiResponse) => {
-        if (cancelled) return;
-        if (json?.linked && !json.error && Array.isArray(json.commits) && json.commits.length > 0) {
-          setCommitsState({ status: "loaded", items: json.commits });
-        } else {
-          setCommitsState({ status: "fallback" });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setCommitsState({ status: "fallback" });
-      });
-    return () => {
-      cancelled = true;
-    };
-    // See the branches effect above for why `commitsState.status` is
-    // deliberately not in this array.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, repoId]);
+  // The pickers' lists, each fetched the first time its mode is open. The PR
+  // list is the most recently updated PRs of every state in one request,
+  // filtered client-side by the Open/Merged/Closed/All chips; the commit
+  // picker's is the default branch's newest commits.
+  const branchesState = useLazyList(mode === "refs", `/api/repos/${repoId}/branches`, (json: BranchesApiResponse) => json.branches);
+  const prListState = useLazyList(
+    mode === "pr",
+    `/api/repos/${repoId}/pull-requests?state=all&limit=${PR_LIST_LIMIT}`,
+    (json: PullRequestsApiResponse) => json.pullRequests
+  );
+  const commitsState = useLazyList(mode === "commits", `/api/repos/${repoId}/commits?limit=${COMMIT_LIST_LIMIT}`, (json: CommitsApiResponse) => json.commits);
 
   const visiblePrs = useMemo(
     () =>
@@ -828,245 +657,3 @@ export function DiffPanel({
   );
 }
 
-/** The folded-away picker: what was checked, how big it is, and what isn't on the map. */
-function DiffSummary({
-  result,
-  checked,
-  meta,
-  lastAnalyzedSha,
-  pr,
-  lineStats,
-  loading,
-  onChange,
-  headline,
-  children,
-}: {
-  result: DiffImpactResponseDTO;
-  checked: DiffImpactRequestDTO;
-  meta: DiffTargetMeta;
-  lastAnalyzedSha?: string;
-  /** The PR's summary from the list, when the check was of a PR that is in it. */
-  pr?: PullRequestOption;
-  lineStats?: { additions: number; deletions: number } | null;
-  loading: boolean;
-  onChange: () => void;
-  headline?: React.ReactNode;
-  children?: React.ReactNode;
-}) {
-  const kind = "prNumber" in checked ? "Pull request" : "baseRef" in checked ? (isShaLike(checked.headRef) ? "Commits" : "Branches") : "Files";
-  // One file count for the whole page: every file in the diff, on the map or not.
-  const files = result.touchedFiles.length + result.unmatchedFiles.length;
-
-  const prState = pr ? (pr.state === "open" && pr.draft ? "draft" : pr.state) : null;
-  const prWhen = pr ? relativeDate(pr.state === "open" ? pr.createdAt ?? pr.updatedAt : pr.updatedAt) : "";
-
-  return (
-    <div className="text-xs">
-      {/* What is being looked at, as the picker it reopens. */}
-      <button
-        type="button"
-        onClick={onChange}
-        className="flex w-full items-start gap-2 rounded-md border border-border bg-background/40 px-2.5 py-2 text-left transition-colors hover:border-foreground/25 hover:bg-background/70"
-        title={`${kind} — pick another diff`}
-      >
-        <span className="line-clamp-2 min-w-0 flex-1 text-[13px] leading-snug font-medium">
-          {"prNumber" in checked ? (
-            <>
-              <span className="font-mono font-normal text-muted-foreground">#{checked.prNumber}</span>{" "}
-              {pr?.title ?? "Pull request"}
-            </>
-          ) : "baseRef" in checked ? (
-            <span className="font-mono text-xs">
-              {shortRef(checked.baseRef)} <span className="text-muted-foreground">→</span> {shortRef(checked.headRef)}
-            </span>
-          ) : (
-            "Pasted paths"
-          )}
-        </span>
-        {loading ? (
-          <LoaderCircle className="mt-0.5 size-3.5 shrink-0 animate-spin text-muted-foreground" aria-label="Checking" />
-        ) : (
-          <ChevronsUpDown className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-        )}
-      </button>
-
-      <div className="mt-2.5 space-y-0.5 font-mono text-[11px] leading-relaxed text-muted-foreground">
-        {pr ? (
-          <>
-            <p className="truncate">
-              {pr.author ?? "unknown"} · {prState}
-              {prWhen ? ` ${prWhen}` : ""}
-            </p>
-            {pr.headRef && pr.baseRef && (
-              <p className="truncate" title={`${pr.headRef} → ${pr.baseRef}`}>
-                {pr.headRef} → {pr.baseRef}
-              </p>
-            )}
-          </>
-        ) : null}
-        <p>
-          {pr ? "" : `${kind} · `}
-          {files} file{files === 1 ? "" : "s"} · {result.touchedComponentIds.length} component
-          {result.touchedComponentIds.length === 1 ? "" : "s"}
-        </p>
-        {lineStats && (
-          <p>
-            <span className="text-success">+{lineStats.additions.toLocaleString("en-US")}</span>{" "}
-            <span className="text-destructive">−{lineStats.deletions.toLocaleString("en-US")}</span>
-          </p>
-        )}
-      </div>
-      {meta.historical && (
-        <p className="mt-1.5 text-[11px] leading-snug text-muted-foreground">
-          History, mapped onto the graph at{" "}
-          <span className="font-mono">{lastAnalyzedSha ? shortRef(lastAnalyzedSha) : "the latest analysis"}</span>.
-        </p>
-      )}
-
-      {(headline || children) && (
-        <div className="mt-3 border-t border-border pt-3">
-          {headline}
-          {children}
-        </div>
-      )}
-
-    </div>
-  );
-}
-
-interface CommitPickerProps {
-  state: ListFetchState<CommitOption>;
-  picked: string[];
-  lastAnalyzedSha?: string;
-  onToggle: (sha: string) => void;
-  onClear: () => void;
-  /** `[base, head]` for the current pick, or `null` until two are picked. */
-  ordered: [string, string] | null;
-  commitIndex: (sha: string) => number;
-  /** Compare immediately (the per-row and "since last analysis" shortcuts). */
-  onCompare: (base: string, head: string) => void;
-}
-
-/**
- * The default branch's newest commits; pick two to compare. Whichever is
- * older becomes the base (the diff is `base...head`), so the order they're
- * clicked in never matters.
- */
-function CommitPicker({
-  state,
-  picked,
-  lastAnalyzedSha,
-  onToggle,
-  onClear,
-  ordered,
-  commitIndex,
-  onCompare,
-}: CommitPickerProps) {
-  if (state.status === "idle" || state.status === "loading") {
-    return (
-      <p className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
-        <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
-        Loading commits…
-      </p>
-    );
-  }
-  if (state.status === "fallback") {
-    return (
-      <p className="text-xs text-muted-foreground">
-        Couldn&apos;t list this repo&apos;s commits (not linked, or the request failed). Use{" "}
-        <span className="font-medium text-foreground">Branches</span> with commit shas instead.
-      </p>
-    );
-  }
-
-  const commits = state.items;
-  const isPicked = (sha: string) => picked.some((p) => sameCommit(sha, p));
-  const analyzedIndex = lastAnalyzedSha ? commits.findIndex((c) => sameCommit(c.sha, lastAnalyzedSha)) : -1;
-  const span =
-    ordered && commitIndex(ordered[0]) !== -1 && commitIndex(ordered[1]) !== -1
-      ? commitIndex(ordered[0]) - commitIndex(ordered[1])
-      : null;
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[11px] font-medium text-muted-foreground">Commits on the default branch</span>
-        {analyzedIndex > 0 && (
-          <button
-            type="button"
-            onClick={() => onCompare(commits[analyzedIndex].sha, commits[0].sha)}
-            className="flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-            title="Compare the analyzed commit with the newest one"
-          >
-            <History className="size-3" aria-hidden />
-            Since last analysis
-          </button>
-        )}
-      </div>
-
-      <p className="min-h-4 text-[11px] text-muted-foreground">
-        {ordered ? (
-          <>
-            <span className="font-mono text-foreground">{shortRef(ordered[0])}</span> →{" "}
-            <span className="font-mono text-foreground">{shortRef(ordered[1])}</span>
-            {span !== null && ` · ${span} commit${span === 1 ? "" : "s"}`}
-            <button type="button" onClick={onClear} className="ml-2 underline-offset-2 hover:text-foreground hover:underline">
-              clear
-            </button>
-          </>
-        ) : picked.length === 1 ? (
-          "Pick one more commit."
-        ) : (
-          "Pick two commits — the older one is the base."
-        )}
-      </p>
-
-      <ul className="max-h-72 divide-y divide-border/60 overflow-y-auto border-y border-border">
-        {commits.map((commit, index) => {
-          const selected = isPicked(commit.sha);
-          const parent = commit.parents[0];
-          return (
-            <li key={commit.sha} className={cn("group flex items-stretch", selected && "bg-brand-muted")}>
-              <button
-                type="button"
-                onClick={() => onToggle(commit.sha)}
-                aria-pressed={selected}
-                className="flex min-w-0 flex-1 items-start gap-2 px-2.5 py-1.5 text-left"
-                title={commit.subject}
-              >
-                <span
-                  className={cn(
-                    "mt-1 size-2.5 shrink-0 rounded-full ring-1",
-                    selected ? "bg-brand ring-brand" : "ring-border"
-                  )}
-                  aria-hidden
-                />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-xs">{commit.subject || "(no message)"}</span>
-                  <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                    <span className="font-mono">{commit.sha.slice(0, 7)}</span>
-                    <span>{relativeDate(commit.date)}</span>
-                    {commit.author && <span className="truncate">{commit.author}</span>}
-                    {index === analyzedIndex && (
-                      <span className="text-foreground">analyzed</span>
-                    )}
-                  </span>
-                </span>
-              </button>
-              {parent && (
-                <button
-                  type="button"
-                  onClick={() => onCompare(parent, commit.sha)}
-                  className="shrink-0 px-2 text-[11px] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100"
-                  title="What this commit changed (compare with its parent)"
-                >
-                  Only this
-                </button>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
-}

@@ -16,7 +16,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { reviewTargetKey, type ReviewTarget } from "@/lib/jobs";
-import { loadAiConfigOrNull } from "@/lib/jobs/merge-naming";
+import { loadAiConfigOrNull } from "@/lib/jobs/ai-config";
 import { loadPrContext } from "@/lib/jobs/pr-context";
 import { REPO_CHAT_THREAD_KEY, addSuggestedFinding, runChatTurn } from "@/lib/jobs/pr-chat";
 import { clearChatMessages, getChatMessage, listChatMessages, updateChatSuggestion } from "@/lib/db";

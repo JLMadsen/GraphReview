@@ -66,9 +66,8 @@ import {
   type AppMapJobResult,
   type AppMapProgress,
 } from "./app-map-queue";
-import { readReadmeSnippet } from "./label";
-import { loadAiConfigOrNull } from "./merge-naming";
-import { extractDeclarations, readRepoFile, sourceDir } from "./review-context";
+import { loadAiConfigOrNull } from "./ai-config";
+import { extractDeclarations, readReadmeSnippet, readRepoFile, sourceDir } from "./review-context";
 
 /** Files whose declarations are read from disk — enough for any repo this tool is pointed at. */
 const MAX_FILES_READ = 2500;

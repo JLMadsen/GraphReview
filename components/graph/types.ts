@@ -314,3 +314,21 @@ export function formatAgo(iso: string | undefined): string {
   if (hours < 48) return `${hours} h ago`;
   return `${Math.round(hours / 24)} days ago`;
 }
+
+const RELATIVE = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+
+/** "3 days ago", "last month" — coarse on purpose, for telling commits and files apart; empty for an invalid time. */
+export function formatRelativeDate(iso: string): string {
+  const then = Date.parse(iso);
+  if (!Number.isFinite(then)) return "";
+  const minutes = Math.round((then - Date.now()) / 60_000);
+  if (minutes === 0) return "just now";
+  if (Math.abs(minutes) < 60) return RELATIVE.format(minutes, "minute");
+  const hours = Math.round(minutes / 60);
+  if (Math.abs(hours) < 24) return RELATIVE.format(hours, "hour");
+  const days = Math.round(hours / 24);
+  if (Math.abs(days) < 30) return RELATIVE.format(days, "day");
+  const months = Math.round(days / 30);
+  if (Math.abs(months) < 12) return RELATIVE.format(months, "month");
+  return RELATIVE.format(Math.round(months / 12), "year");
+}

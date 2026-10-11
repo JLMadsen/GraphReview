@@ -28,6 +28,14 @@ import { listComponentNeighbours, listRelatedFiles } from "@/lib/db";
 import type { RepoRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import type { HeadSource } from "./head-source";
+import type { compareApis } from "@/lib/analysis/api/compare";
+import type { compareInfra } from "@/lib/analysis/infra/compare";
+import type { compareSchemas } from "@/lib/analysis/db/compare";
+import { describeDbFinding, reviewTables, schemaFindingsTouching, tablesTouching } from "@/lib/analysis/db/describe";
+import { describeInfraChangeEntry, describeInfraFinding, infraChangesTouching } from "@/lib/analysis/infra/describe";
+import { changesTouching, describeEndpointChange, describeLogicChange, logicTouching } from "@/lib/analysis/api/describe";
+import { blockDiff, symbolRelatedFiles, type MovedCode, type TargetAnalyses } from "./symbol-context";
+import type { loadOwnerNames } from "./review-target";
 import { repoCacheDir, validateLocalRepoPath } from "./source";
 
 /** Related files per component, nearest relation first ("imported" before "importer"). */
@@ -277,4 +285,133 @@ export async function gatherRelatedContext({
   }
 
   return context;
+}
+
+// --- Everything one component's review sees beyond its diff -----------------
+
+/** What the target does as a whole, worked out once per review run; each component's review sees the parts that touch its files. */
+export interface TargetChangeContext {
+  analyses: TargetAnalyses | null;
+  head: HeadSource | null;
+  ownerNames: Awaited<ReturnType<typeof loadOwnerNames>> | null;
+  /** Code moved to another file and changed on the way. */
+  moved: readonly MovedCode[];
+  apiChange: ReturnType<typeof compareApis> | null;
+  infraChange: ReturnType<typeof compareInfra> | null;
+  infraChanged: boolean;
+  dbChange: ReturnType<typeof compareSchemas> | null;
+}
+
+/**
+ * One component's related context: the related code by effort level
+ * ({@link gatherRelatedContext}), plus the code moved into or out of its
+ * files, the endpoints it serves or sits behind, the infra changes to its
+ * files and workloads, the tables its code touches (DESIGN.md §6.13 §6), and
+ * the certain infra and schema findings already reported for them.
+ */
+export async function componentReviewContext({
+  repo,
+  componentId,
+  paths,
+  patches,
+  settings,
+  target,
+  log,
+}: {
+  repo: RepoRecord;
+  componentId: string;
+  paths: string[];
+  patches: string[];
+  settings: ReviewEffortSettings;
+  target: TargetChangeContext;
+  log: JobLogger;
+}): Promise<ReviewRelatedContext | undefined> {
+  const { analyses, head, ownerNames, moved, apiChange, infraChange, infraChanged, dbChange } = target;
+  const symbolFiles =
+    analyses && head && ownerNames && (settings.signatures || settings.relatedSource)
+      ? await symbolRelatedFiles(analyses, paths, ownerNames, (path) => head.read(path), {
+          signatures: settings.signatures,
+          source: settings.relatedSource,
+        })
+      : undefined;
+  const related = await gatherRelatedContext({
+    repo,
+    componentId,
+    changedPaths: paths,
+    patches,
+    settings,
+    head,
+    symbolFiles,
+    log,
+  });
+  const componentMoves = moved
+    .filter((m) => paths.includes(m.from) || paths.includes(m.to))
+    .map((m) => ({ name: m.name, from: m.from, to: m.to, diff: blockDiff(m.before, m.after) }));
+  const pathSet = new Set(paths);
+  const componentEndpoints = apiChange
+    ? [
+        ...changesTouching(apiChange, pathSet).slice(0, 12).map(describeEndpointChange),
+        ...logicTouching(apiChange, pathSet).slice(0, 8).map(describeLogicChange),
+      ]
+    : [];
+  const componentInfra = infraChange && infraChanged ? infraChangesTouching(infraChange, analyses?.head.infra, pathSet) : null;
+  const infraLines = componentInfra ? [...componentInfra.entries.slice(0, 15).map((e) => describeInfraChangeEntry(e)), ...componentInfra.links.slice(0, 10)] : [];
+  const tableIds = analyses ? tablesTouching(analyses.head.db, dbChange ?? undefined, pathSet) : [];
+  const tables = tableIds.length ? reviewTables(tableIds, analyses?.head.db, dbChange ?? undefined, pathSet).slice(0, 30) : [];
+  const alreadyReported = [
+    ...(componentInfra ? componentInfra.findings.map(describeInfraFinding) : []),
+    ...(dbChange ? schemaFindingsTouching(dbChange, tableIds, pathSet).map(describeDbFinding) : []),
+  ];
+  return componentMoves.length > 0 || componentEndpoints.length > 0 || infraLines.length > 0 || alreadyReported.length > 0 || tables.length > 0
+    ? {
+        ...(related ?? {}),
+        ...(componentMoves.length ? { moves: componentMoves } : {}),
+        ...(componentEndpoints.length ? { endpoints: componentEndpoints } : {}),
+        ...(infraLines.length ? { infra: infraLines } : {}),
+        ...(alreadyReported.length ? { alreadyReported } : {}),
+        ...(tables.length ? { tables } : {}),
+      }
+    : related;
+}
+
+
+/** How much of a README is worth sending as repo context. */
+export const README_CHARS = 800;
+
+
+export const README_CANDIDATES = ["README.md", "readme.md", "README", "Readme.md", "README.rst"];
+
+/**
+ * A short README excerpt, if one can be read cheaply — sending
+ * "perhaps a README/package.json snippet" alongside the paths.
+ *
+ * Entirely best-effort: a repo whose source isn't on disk (never cloned, or
+ * a local path that no longer exists) simply gets labeled from its
+ * module names and paths, which is the input the feature is designed around
+ * anyway. Never throws.
+ */
+export async function readReadmeSnippet(repo: RepoRecord, log: JobLogger): Promise<string | undefined> {
+  let dir: string | undefined;
+  try {
+    dir = repo.provider === "local" && repo.localPath
+      ? await validateLocalRepoPath(repo.localPath)
+      : repoCacheDir(repo.id);
+  } catch {
+    return undefined;
+  }
+  if (!dir) return undefined;
+
+  for (const candidate of README_CANDIDATES) {
+    try {
+      const text = await readFile(path.join(dir, candidate), "utf8");
+      const snippet = text.slice(0, README_CHARS).trim();
+      if (snippet.length > 0) {
+        log(`using ${candidate} as repo context (${snippet.length} chars)`);
+        return snippet;
+      }
+    } catch {
+      /* next candidate */
+    }
+  }
+  return undefined;
 }

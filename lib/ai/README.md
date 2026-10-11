@@ -1,6 +1,6 @@
 # lib/ai
 
-> `lib/ai/` OpenAI-compatible client wrapper, output parser, token-budget helper, per-component change review, AI-assisted labeling, mock AI server
+> `lib/ai/` OpenAI-compatible client wrapper, output parser, token-budget helper, per-component change review, mock AI server
 
 Because a fully generic OpenAI-compatible endpoint is required, the
 integration **does not rely on `response_format` or tool-calling** for
@@ -104,29 +104,6 @@ here:
   `pingProvider` makes one tiny chat call and returns
   `{ ok, latencyMs, error?, model? }`; it never throws. `options.chat`
   injects a fake `chatCompletion` for tests.
-- `label.ts` — `labelComponents(config, input, options?)` (plus the two
-  phases on their own, `labelDomains` / `describeModules`) — the
-  **AI-assisted labeling**, which is what populates the domain
-  tier that folder structure alone cannot infer. Two tasks, each
-  marked in its system prompt so the mock can recognise it:
-  1. `TASK: label-domains` — one call. Input is the repo name, an optional
-     README excerpt and every module (`{id, name, fileCount, sampleFiles≤3,
-     dependsOn≤5}`); output `{"domains":[{name, description, moduleIds}]}`.
-     Normalisation guarantees a **total, disjoint** assignment: names
-     trimmed and case-insensitively merged, unknown/duplicate members
-     dropped, at most `MAX_DOMAINS` (8) domains (the largest survive), empty
-     domains dropped, and every module the model forgot lands in `Other`.
-     If the reply names domains but leaves modules unassigned (small models
-     such as gemma3:4b drop the member lists), one follow-up
-     `TASK: assign-modules` call asks for a flat `{"assignments":{ref: name}}`
-     map instead. Unparseable output -> no domains + `parseFailed`; the
-     start of every unusable reply is returned in `unusableReplies` for the
-     job log.
-  2. `TASK: describe-modules` — batches of `DEFAULT_DESCRIPTION_BATCH` (25)
-     modules per call; output `{"modules":[{id, description}]}`. One
-     sentence each, collapsed to one line and clipped to 160 chars at a word
-     boundary. Unknown ids dropped; a module the model skipped simply gets
-     no description; a batch that fails to parse costs only that batch.
 
   Modules are referenced on the wire by a short per-call ref (`m1`, `m2`, …)
   rather than their real `<repoId>:module:<name>` id — the real ids are
@@ -151,16 +128,9 @@ here:
   drive-by fix), and an OpenAI-shaped `usage` estimated from prompt
   length. The token `MOCK_FAIL` anywhere in the prompt -> HTTP 500;
   `MOCK_GARBAGE` -> non-JSON prose (parse-failure path). `MOCK_DELAY_MS`
-  (default 900) simulates latency. It also answers the two labeling tasks
-  above, recognised by their `TASK:` marker and parsed from the `- m1 | name
-  | N files | files: … | depends on: …` module lines: domains by crude
-  folder-name heuristics (`app`/`pages`/`components`/`ui`/`hooks`/`styles`
-  -> Frontend, `api`/`server`/`lib`/`db`/`services`/`actions`/`auth` ->
-  Backend, `docker`/`scripts`/`config`/`infra`/`github` -> Infrastructure,
-  else Shared — the module's own name first, then its sample paths), and
-  descriptions always prefixed with the literal `[mock] ` so mock-generated
-  test data is obvious in the UI and trivially deletable from the database. Also
-  exports `startMockServer({port, host, delayMs, log})` for in-process
+  (default 900) simulates latency. Prose in its answers starts with the
+  literal `[mock] `, so mock-generated test data is obvious in the UI and
+  trivially deletable from the database. Also exports `startMockServer({port, host, delayMs, log})` for in-process
   tests. Deliberately **not** in the `index.ts` barrel (it imports
   `node:http`).
 - `smoke-test-review.ts` — `npx tsx lib/ai/smoke-test-review.ts`: part A
@@ -170,14 +140,6 @@ here:
   wording, error propagation); part B starts the mock server on an
   ephemeral port and goes through the **real** `chatCompletion` client
   (including `MOCK_FAIL`, `MOCK_GARBAGE`, `pingProvider`).
-- `smoke-test-label.ts` — `npx tsx lib/ai/smoke-test-label.ts`: the same
-  two-part shape for the labeling layer — prompt shape and ref mapping, the
-  normalisation invariants (total/disjoint assignment, the 8-domain cap,
-  tolerated output shapes, description clipping), batching and progress,
-  budget-driven detail dropping and the parse-failure paths with a fake
-  `chat`; then the real client against the mock server, including the
-  heuristic buckets, the `[mock] ` prefix, determinism, `MOCK_FAIL` and
-  `MOCK_GARBAGE`.
 
 - `pr-map.ts` — `groupPrMap(config, input)`: the PR map's one call per
   review (DESIGN.md §6.4). Regroups a diff's changed files by their role in
@@ -195,11 +157,6 @@ here:
 - Smarter oversized-diff handling (hunks touching top-level
   declarations; pre-summarization is a v2 idea) — today it keeps leading
   whole hunks.
-- A description *editor* in the UI. `label.ts` writes one sentence per
-  module and `lib/jobs/label.ts` refuses to overwrite a non-empty
-  description without `force`, but nothing lets a human curate one yet.
-- Module-tier *renaming* by the model — today labeling
-  writes descriptions and the domain tier, never a module's name.
 
 ## Usage
 
@@ -244,28 +201,6 @@ const result = await reviewComponentChange(config, {
 });
 // result.findings[i] -> { filePath?, lineRange?, summary, kind?, assessment, scope?, confidence, rationale }
 // result.parseFailed / result.truncated / result.calls / result.usage
-```
-
-### Labeling the component graph
-
-```ts
-import { labelComponents } from "@/lib/ai";
-
-const { domains, descriptions, usage, calls, parseFailed } = await labelComponents(
-  config,
-  {
-    repoName: "MultiTool",
-    readme: readmeSnippet,            // optional
-    modules: [
-      { id: "repo:module:auth", name: "auth", fileCount: 9,
-        sampleFiles: ["lib/auth/session.ts"], dependsOn: ["db"] },
-      // …
-    ],
-  },
-  { onProgress: (e) => job.updateProgress(e) }
-);
-// domains[i]      -> { name, description?, moduleIds }  (real ids, every module exactly once)
-// descriptions[i] -> { id, description }                (one sentence, ≤160 chars)
 ```
 
 ### Running the mock AI server

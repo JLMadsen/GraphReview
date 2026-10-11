@@ -37,7 +37,6 @@ function toRepoRecord(props: Record<string, unknown>): RepoRecord {
     lastAnalyzedAt: (props.lastAnalyzedAt as string | undefined) ?? undefined,
     lastAnalyzedSha: (props.lastAnalyzedSha as string | undefined) ?? undefined,
     analysisVersion: typeof props.analysisVersion === "number" ? props.analysisVersion : undefined,
-    domainsStale: props.domainsStale === true ? true : undefined,
   };
 }
 
@@ -98,11 +97,6 @@ export async function markRepoAnalyzed(
 /** Updates a repo's default branch (re-detected for local repos added before graphs followed it). */
 export async function setRepoDefaultBranch(id: string, defaultBranch: string): Promise<void> {
   patchRepo(id, { defaultBranch });
-}
-
-/** Sets or clears `Repo.domainsStale` (DESIGN.md §6.3). */
-export async function setRepoDomainsStale(id: string, stale: boolean): Promise<void> {
-  patchRepo(id, { domainsStale: stale ? true : null });
 }
 
 export async function getRepoById(id: string): Promise<RepoRecord | null> {

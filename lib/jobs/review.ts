@@ -22,65 +22,35 @@ import { UnrecoverableError } from "./runner";
 import {
   DEFAULT_REVIEW_EFFORT,
   REVIEW_EFFORT_SETTINGS,
-  checkPrIntent,
-  groupPrMap,
   reviewComponentChange,
 } from "@/lib/ai";
-import type { AiProviderConfig, PrIntentVerdict, PrMapAiInput, ReviewInput } from "@/lib/ai";
-import { decrypt } from "@/lib/crypto";
-import { compareRefs, getLinkedIssues, getPullRequest, listPullRequestFiles } from "@/lib/github";
-import type { LinkedIssue, PullRequestDetail } from "@/lib/github";
-import {
-  compareRefs as compareGitLabRefs,
-  getLinkedIssues as getGitLabLinkedIssues,
-  getMergeRequest,
-  listMergeRequestFiles,
-} from "@/lib/gitlab";
 import {
   deleteFindingsForTargetExceptComponents,
-  getActiveAiProvider,
   getFileOwnerMap,
-  listComponentsByRepoId,
   getRepoById,
   listFindingsByTargetKey,
-  prMapFilesKey,
   replaceFindingsForTargetCategory,
   replaceFindingsForTargetComponent,
-  savePrMapGrouping,
-  upsertPullRequest,
 } from "@/lib/db";
-import type { RepoRecord } from "@/lib/db";
-import type { FindingAssessment, TargetFindingInput } from "@/lib/db";
+import type { TargetFindingInput } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import {
   getComponentReviewContexts,
   matchFilesToComponents,
   type ComponentReviewContext,
 } from "./diff-components";
-import { resolveGitHubAccess } from "./github-access";
 import { openHeadSource } from "./head-source";
 import { runImpactPass } from "./impact";
-import { blockDiff, loadTargetAnalyses, movedCodeChanges, symbolRelatedFiles } from "./symbol-context";
+import { loadTargetAnalyses, movedCodeChanges } from "./symbol-context";
 import { compareApis } from "@/lib/analysis/api/compare";
 import { compareInfra } from "@/lib/analysis/infra/compare";
 import { compareSchemas, schemaChanged } from "@/lib/analysis/db/compare";
-import { describeDbFinding, describeSchemaChange, reviewTables, schemaChangeSummary, schemaFindingsTouching, tablesTouching } from "@/lib/analysis/db/describe";
-import { describeInfraChange, describeInfraChangeEntry, describeInfraFinding, infraChangeSummary, infraChangesTouching } from "@/lib/analysis/infra/describe";
-import { apiChangeSummary, changesTouching, describeApiChange, describeEndpointChange, describeLogicChange, logicTouching } from "@/lib/analysis/api/describe";
-import { gatherRelatedContext } from "./review-context";
+import { describeSchemaChange, schemaChangeSummary } from "@/lib/analysis/db/describe";
+import { describeInfraChange, infraChangeSummary } from "@/lib/analysis/infra/describe";
+import { apiChangeSummary, describeApiChange } from "@/lib/analysis/api/describe";
+import { componentReviewContext, type TargetChangeContext } from "./review-context";
 import { ownerLookup } from "./target-graph";
 import {
-  assemblePrMap,
-  collectPrMapLinks,
-  heuristicPrMapGroups,
-  loadPrMapInput,
-  patchHighlights,
-} from "./pr-map";
-import { resolveGitLabAccess } from "./gitlab-access";
-import {
-  listLocalFilePatches,
-  resolveLocalRefSha,
-  toLocalFilePatch,
   type LocalFilePatch,
 } from "./local-git";
 import {
@@ -90,8 +60,9 @@ import {
   type ReviewJobData,
   type ReviewJobResult,
   type ReviewProgress,
-  type ReviewTarget,
 } from "./review-queue";
+import { runIntentPass, runPrMapPass } from "./review-passes";
+import { loadAiConfig, resolveTarget, loadOwnerNames } from "./review-target";
 
 /**
  * How many per-component LLM calls are in flight at once.
@@ -105,497 +76,21 @@ import {
  */
 const MODEL_CONCURRENCY = 3;
 
-/** Stable pull request record id for a repo + PR number — mirrors the `<repoId>:<kind>:<key>` convention `analyze.ts` uses for components and files. */
-function pullRequestNodeId(repoId: string, prNumber: number): string {
-  return `${repoId}:pr:${prNumber}`;
-}
-
-/** A path's owning component name ("" when it has none), for related-code headings. */
-async function loadOwnerNames(repoId: string): Promise<(path: string) => string> {
-  const [owners, components] = await Promise.all([getFileOwnerMap(repoId), listComponentsByRepoId(repoId)]);
-  const names = new Map(components.map((c) => [c.id, c.name]));
-  return (path) => names.get(owners.get(path) ?? "") ?? "";
-}
-
 // ---------------------------------------------------------------------------
 // AI provider settings
 // ---------------------------------------------------------------------------
-
-/**
- * Reads and decrypts the currently *active* saved AI provider (multiple
- * providers can be saved, lib/db/ai-provider.ts, with one
- * marked active at a time).
- *
- * All three fields are required and checked together: a half-configured
- * provider can only ever produce a confusing failure deep inside an HTTP
- * call, so it fails fast here with a message that names what is missing.
- * The API route performs the same check *before* enqueueing (returning
- * `ai_not_configured`); this is the worker-side backstop for the window
- * where the active provider is changed/deleted between enqueue and
- * execution.
- */
-async function loadAiConfig(): Promise<AiProviderConfig> {
-  const provider = await getActiveAiProvider();
-  const missing: string[] = [];
-  if (!provider?.baseUrl) missing.push("base URL");
-  if (!provider?.apiKeyEncrypted) missing.push("API key");
-  if (!provider?.model) missing.push("model name");
-
-  if (missing.length > 0 || !provider) {
-    throw new UnrecoverableError(
-      `AI provider is not fully configured — missing ${missing.join(", ")}. Set it in Settings.`
-    );
-  }
-
-  let apiKey: string;
-  try {
-    apiKey = decrypt(provider.apiKeyEncrypted as string);
-  } catch {
-    throw new UnrecoverableError(
-      "The stored AI API key could not be decrypted — has the secret key (SESSION_SECRET or secret.key in the data folder) changed? Re-enter it in Settings."
-    );
-  }
-
-  return {
-    baseUrl: provider.baseUrl,
-    apiKey,
-    model: provider.model,
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Diff + intent sources
 // ---------------------------------------------------------------------------
 
-export interface ResolvedTarget {
-  files: LocalFilePatch[];
-  intent: ReviewInput["intent"];
-  /** pull request record id to hang `Finding -[:FOR]->` off, for PR targets only. */
-  prId?: string;
-  /** Human-readable description of the diff source, for the job log. */
-  description: string;
-  /**
-   * The exact commits this diff was taken from. Stamped onto every finding
-   * so a later read can tell whether the branch/PR has moved since
-   * (`./review-freshness.ts`). Resolved *before* the diff is fetched, so if
-   * the branch moves mid-run the recorded sha is the older one and the
-   * result errs towards "stale", never towards falsely "up to date".
-   */
-  reviewed: { baseSha?: string; headSha?: string };
-}
-
-function toIntentIssues(
-  issues: readonly LinkedIssue[]
-): NonNullable<ReviewInput["intent"]["linkedIssues"]> {
-  return issues.map((issue) => ({
-    number: issue.number,
-    title: issue.title,
-    body: issue.body ?? undefined,
-  }));
-}
-
-/**
- * Persists the PR being reviewed as a pull request record, so findings'
- * `prId` has something to point at.
- *
- * Best-effort by design: if this write fails, the review itself is still
- * perfectly valid — the findings just lose one edge — so it is logged and
- * swallowed rather than failing a job that has already spent API quota.
- */
-async function persistPullRequestNode(
-  repo: RepoRecord,
-  pr: PullRequestDetail,
-  log: JobLogger
-): Promise<string | undefined> {
-  const id = pullRequestNodeId(repo.id, pr.number);
-  try {
-    await upsertPullRequest({
-      id,
-      repoId: repo.id,
-      number: pr.number,
-      title: pr.title,
-      description: pr.body ?? undefined,
-      author: pr.author ?? "",
-      state: pr.state,
-      baseRef: pr.baseRef,
-      headRef: pr.headRef,
-      headSha: pr.headSha,
-      url: pr.url,
-      createdAt: pr.createdAt,
-      updatedAt: pr.updatedAt,
-    });
-    return id;
-  } catch (error) {
-    log(`could not persist PullRequest node ${id}: ${(error as Error).message}`);
-    return undefined;
-  }
-}
-
-/** Fetches the changed files and the intent context for a review target, from whichever source the repo has (local checkout vs. GitHub API). */
-export async function resolveTarget(
-  repo: RepoRecord,
-  target: ReviewTarget,
-  log: JobLogger
-): Promise<ResolvedTarget> {
-  // --- Local repo: refs only, straight off the checkout on disk ---------
-  if (repo.provider === "local") {
-    if (target.kind === "pr") {
-      // The API route rejects this with a 400; this is the backstop for a
-      // job enqueued before a repo was switched to a local source.
-      throw new UnrecoverableError(
-        "A pull request cannot be reviewed on a repo with no GitHub link — compare two refs instead."
-      );
-    }
-    if (!repo.localPath) {
-      throw new UnrecoverableError(`Repo ${repo.id} is a local repo but has no localPath.`);
-    }
-    // Pin both refs to commits first and diff *those*, so the recorded shas
-    // are guaranteed to be what was actually reviewed even if a branch moves
-    // while the job is running. A missing ref fails the whole job here with a
-    // clear message, instead of a cryptic git error a few calls later.
-    let baseSha: string;
-    let headSha: string;
-    try {
-      [baseSha, headSha] = await Promise.all([
-        resolveLocalRefSha(repo.localPath, target.baseRef),
-        resolveLocalRefSha(repo.localPath, target.headRef),
-      ]);
-    } catch (error) {
-      throw new UnrecoverableError((error as Error).message);
-    }
-    const files = await listLocalFilePatches(repo.localPath, baseSha, headSha);
-    return {
-      files,
-      reviewed: { baseSha, headSha },
-      // No PR title/body exists for an ad-hoc comparison, so no intent is
-      // asserted — intent validation is specifically "diff vs. the PR's
-      // stated intent". Inventing a title here would give the model
-      // something to "match" that nobody actually claimed.
-      intent: { source: "ref_comparison" },
-      description: `local ${target.baseRef}...${target.headRef} (${baseSha.slice(0, 7)}...${headSha.slice(0, 7)})`,
-    };
-  }
-
-  // --- GitLab repo --------------------------------------------------------
-  if (repo.provider === "gitlab") {
-    const access = await resolveGitLabAccess(repo);
-    if (!access.ok) {
-      throw new UnrecoverableError(
-        access.reason === "no_token"
-          ? "No GitLab PAT configured in Settings — it is needed to fetch this diff."
-          : `This repo is not usable over the GitLab API (${access.reason}).`
-      );
-    }
-    const { path: projectPath } = access.ref;
-
-    if (target.kind === "refs") {
-      const { data: comparison } = await compareGitLabRefs(
-        access.token,
-        projectPath,
-        target.baseRef,
-        target.headRef
-      );
-      return {
-        files: comparison.files.map(toLocalFilePatch),
-        reviewed: { baseSha: comparison.baseSha, headSha: comparison.headSha },
-        intent: { source: "ref_comparison" },
-        description: `${projectPath} ${target.baseRef}...${target.headRef}`,
-      };
-    }
-
-    const [detail, filesResult, linkedIssues] = await Promise.all([
-      getMergeRequest(access.token, projectPath, target.prNumber),
-      listMergeRequestFiles(access.token, projectPath, target.prNumber),
-      getGitLabLinkedIssues(access.token, projectPath, target.prNumber).catch((error: unknown) => {
-        log(`linked-issue lookup failed (continuing without it): ${(error as Error).message}`);
-        return { data: [] as LinkedIssue[], rateLimit: null };
-      }),
-    ]);
-
-    const mr = detail.data;
-    const prId = await persistPullRequestNode(repo, mr, log);
-
-    return {
-      files: filesResult.data.map(toLocalFilePatch),
-      reviewed: { baseSha: mr.baseSha, headSha: mr.headSha },
-      intent: {
-        source: "pull_request",
-        title: mr.title,
-        body: mr.body ?? undefined,
-        linkedIssues: toIntentIssues(linkedIssues.data),
-      },
-      prId,
-      description: `${projectPath}!${target.prNumber} "${mr.title}"`,
-    };
-  }
-
-  // --- GitHub repo ------------------------------------------------------
-  const access = await resolveGitHubAccess(repo);
-  if (!access.ok) {
-    throw new UnrecoverableError(
-      access.reason === "no_token"
-        ? "No GitHub PAT configured in Settings — it is needed to fetch this diff."
-        : `This repo is not usable over the GitHub API (${access.reason}).`
-    );
-  }
-  const { owner, repo: repoName } = access.ref;
-
-  if (target.kind === "refs") {
-    const { data: comparison } = await compareRefs(
-      access.token,
-      owner,
-      repoName,
-      target.baseRef,
-      target.headRef
-    );
-    return {
-      files: comparison.files.map(toLocalFilePatch),
-      reviewed: { baseSha: comparison.baseSha, headSha: comparison.headSha },
-      intent: { source: "ref_comparison" },
-      description: `${owner}/${repoName} ${target.baseRef}...${target.headRef}`,
-    };
-  }
-
-  // PR: detail (title/body) + files (patches) + linked issues (the shared
-  // intent context). The three are independent reads, so they go out
-  // together rather than serially.
-  const [detail, filesResult, linkedIssues] = await Promise.all([
-    getPullRequest(access.token, owner, repoName, target.prNumber),
-    listPullRequestFiles(access.token, owner, repoName, target.prNumber),
-    // Linked issues are a nice-to-have enrichment, and the GraphQL endpoint
-    // needs scopes the REST calls don't — never fail a whole review over it.
-    getLinkedIssues(access.token, owner, repoName, target.prNumber).catch(
-      (error: unknown) => {
-        log(`linked-issue lookup failed (continuing without it): ${(error as Error).message}`);
-        return { data: [] as LinkedIssue[], rateLimit: null };
-      }
-    ),
-  ]);
-
-  const pr = detail.data;
-  const prId = await persistPullRequestNode(repo, pr, log);
-
-  return {
-    files: filesResult.data.map(toLocalFilePatch),
-    reviewed: { baseSha: pr.baseSha, headSha: pr.headSha },
-    intent: {
-      source: "pull_request",
-      title: pr.title,
-      body: pr.body ?? undefined,
-      linkedIssues: toIntentIssues(linkedIssues.data),
-    },
-    prId,
-    description: `${owner}/${repoName}#${target.prNumber} "${pr.title}"`,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // The PR map pass
 // ---------------------------------------------------------------------------
 
-interface PrMapPassResult {
-  calls: number;
-  promptTokens: number;
-  completionTokens: number;
-}
-
-/**
- * One model call that regroups the changed files by their role in the
- * change and names the PR map's cards and edges (DESIGN.md §6.4), stored
- * for the PR map endpoint to apply. Runs after the per-component calls so
- * their finding summaries can inform the names.
- *
- * Never throws: the findings are already persisted and paid for, and the
- * PR map falls back to its heuristic grouping without this.
- */
-async function runPrMapPass(args: {
-  repoId: string;
-  targetKey: string;
-  prId?: string;
-  files: LocalFilePatch[];
-  intent: ReviewInput["intent"];
-  summariesByComponent: Map<string, string[]>;
-  aiConfig: AiProviderConfig;
-  tokenBudget: number;
-  log: JobLogger;
-  signal?: AbortSignal;
-}): Promise<PrMapPassResult> {
-  const { repoId, targetKey, files, log } = args;
-  const spent: PrMapPassResult = { calls: 0, promptTokens: 0, completionTokens: 0 };
-  if (files.length === 0) return spent;
-
-  let aiInput: PrMapAiInput;
-  try {
-    const input = await loadPrMapInput(repoId, files);
-    const map = assemblePrMap(input, collectPrMapLinks(input), heuristicPrMapGroups(input));
-    const nameOf = new Map(map.nodes.map((node) => [node.id, node.name]));
-    const cardOfFile = new Map<string, string>();
-    for (const node of map.nodes) for (const file of node.files) cardOfFile.set(file.path, node.name);
-    const cardOfComponent = (componentId: string): string | undefined =>
-      (
-        map.nodes.find((n) => n.role === "code" && n.componentIds.includes(componentId)) ??
-        map.nodes.find((n) => n.role !== "context" && n.componentIds.includes(componentId))
-      )?.name;
-
-    aiInput = {
-      intent:
-        args.intent.source === "pull_request"
-          ? { title: args.intent.title, body: args.intent.body }
-          : undefined,
-      files: files.map((file) => ({
-        path: file.path,
-        status: file.status,
-        additions: file.additions,
-        deletions: file.deletions,
-        group: cardOfFile.get(file.path) ?? "",
-        highlights: patchHighlights(file.patch),
-      })),
-      groups: map.nodes
-        .filter((node) => node.role !== "context")
-        .map((node) => ({ name: node.name, description: node.description, role: node.role })),
-      context: map.nodes
-        .filter((node) => node.role === "context")
-        .map((node) => ({ name: node.name, description: node.description })),
-      links: map.edges.map((edge) => ({
-        from: nameOf.get(edge.source) ?? edge.source,
-        to: nameOf.get(edge.target) ?? edge.target,
-        label: edge.label,
-        weight: edge.weight,
-      })),
-      summaries: [...args.summariesByComponent].flatMap(([componentId, summaries]) => {
-        const group = cardOfComponent(componentId);
-        return group ? summaries.map((summary) => ({ group, summary })) : [];
-      }),
-    };
-  } catch (error) {
-    log(`PR map: could not load the import graph — ${(error as Error).message}`);
-    return spent;
-  }
-
-  try {
-    const result = await groupPrMap(args.aiConfig, aiInput, { tokenBudget: args.tokenBudget, signal: args.signal });
-    spent.calls = result.calls;
-    spent.promptTokens = result.usage.promptTokens;
-    spent.completionTokens = result.usage.completionTokens;
-    if (result.parseFailed) {
-      log("PR map: model output could not be parsed — keeping the heuristic grouping");
-      return spent;
-    }
-    await savePrMapGrouping(
-      {
-        repoId,
-        targetKey,
-        filesKey: prMapFilesKey(files.map((file) => file.path)),
-        groups: result.groups,
-        edgeLabels: result.edgeLabels,
-        model: args.aiConfig.model,
-        createdAt: new Date().toISOString(),
-      },
-      args.prId
-    );
-    log(`PR map: ${result.groups.length} group(s), ${result.edgeLabels.length} edge label(s)`);
-  } catch (error) {
-    // As with a failed component call, it went out and may be billed.
-    spent.calls = Math.max(spent.calls, 1);
-    log(args.signal?.aborted ? "PR map: stopped — the review was cancelled" : `PR map: failed — ${(error as Error).message}`);
-  }
-  return spent;
-}
-
 // ---------------------------------------------------------------------------
 // The PR-level intent pass
 // ---------------------------------------------------------------------------
-
-const INTENT_ASSESSMENT: Record<PrIntentVerdict, FindingAssessment> = {
-  delivers: "ok",
-  partial: "concern",
-  missing: "defect",
-  unknown: "unknown",
-};
-
-/**
- * One call: does the PR, as a whole, deliver what its title, description
- * and linked issues claim? Its answer is one `category: "intent"` finding
- * with no component — a line of the review verdict. A failed call becomes
- * an `unknown` one, the same as a failed component. Never throws — a
- * cancelled call comes back as that placeholder too, which the caller then
- * doesn't write.
- */
-async function runIntentPass(args: {
-  intent: ReviewInput["intent"];
-  files: LocalFilePatch[];
-  findingLines: string[];
-  /** The change to the endpoints, one line each (DESIGN.md §6.11). */
-  apiLines?: string[];
-  /** The change to the infrastructure, plan-style, one line each (DESIGN.md §6.12). */
-  infraLines?: string[];
-  /** The change to the database schema, one line each (DESIGN.md §6.13). */
-  schemaLines?: string[];
-  aiConfig: AiProviderConfig;
-  tokenBudget: number;
-  prId?: string;
-  revision: Pick<TargetFindingInput, "reviewedBaseSha" | "reviewedHeadSha" | "reviewedAt">;
-  log: JobLogger;
-  signal?: AbortSignal;
-}): Promise<PrMapPassResult & { finding: TargetFindingInput & { componentId: string } }> {
-  const base = {
-    id: randomUUID(),
-    prId: args.prId,
-    componentId: "",
-    model: args.aiConfig.model,
-    createdAt: new Date().toISOString(),
-    ...args.revision,
-  };
-  try {
-    const result = await checkPrIntent(
-      args.aiConfig,
-      {
-        intent: args.intent,
-        files: args.files.map((file) => ({
-          path: file.path,
-          status: file.status,
-          additions: file.additions ?? 0,
-          deletions: file.deletions ?? 0,
-          patch: file.patch,
-        })),
-        findings: args.findingLines,
-        ...(args.apiLines ? { api: args.apiLines } : {}),
-        ...(args.infraLines ? { infra: args.infraLines } : {}),
-        ...(args.schemaLines ? { schema: args.schemaLines } : {}),
-      },
-      { tokenBudget: args.tokenBudget, signal: args.signal }
-    );
-    args.log(`intent: ${result.verdict}${result.parseFailed ? " (model output could not be parsed)" : ""}`);
-    return {
-      calls: 1,
-      promptTokens: result.usage.promptTokens,
-      completionTokens: result.usage.completionTokens,
-      finding: {
-        ...base,
-        summary: result.summary,
-        assessment: INTENT_ASSESSMENT[result.verdict],
-        confidence: result.parseFailed ? 0 : 0.7,
-        rationale: result.rationale,
-      },
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    args.log(args.signal?.aborted ? "intent: stopped — the review was cancelled" : `intent: model call failed — ${message}`);
-    return {
-      calls: 1,
-      promptTokens: 0,
-      completionTokens: 0,
-      finding: {
-        ...base,
-        summary: "The check of whether this PR delivers what it describes failed.",
-        assessment: "unknown",
-        confidence: 0,
-        rationale: `The AI intent-check call did not complete: ${message}`,
-        callFailed: true,
-      },
-    };
-  }
-}
 
 // ---------------------------------------------------------------------------
 // The job
@@ -719,6 +214,7 @@ export async function runReviewJob(
   const dbChange = analyses ? compareSchemas(analyses.base.db, analyses.head.db) : null;
   const dbChanged = schemaChanged(dbChange ?? undefined);
   if (dbChange && dbChanged) log(`schema: ${schemaChangeSummary(dbChange)}`);
+  const targetChanges: TargetChangeContext = { analyses, head, ownerNames, moved, apiChange, infraChange, infraChanged, dbChange };
 
   // --- Map the diff onto the component graph -----------------------------
   const filesByPath = new Map(resolved.files.map((file) => [file.path, file]));
@@ -812,52 +308,15 @@ export async function runReviewJob(
     let sent = false;
 
     try {
-      const symbolFiles =
-        analyses && head && ownerNames && (effortSettings.signatures || effortSettings.relatedSource)
-          ? await symbolRelatedFiles(analyses, paths, ownerNames, (path) => head.read(path), {
-              signatures: effortSettings.signatures,
-              source: effortSettings.relatedSource,
-            })
-          : undefined;
-      const related = await gatherRelatedContext({
+      const relatedWithMoves = await componentReviewContext({
         repo,
         componentId: context.id,
-        changedPaths: paths,
+        paths,
         patches: files.map((file) => file.patch ?? ""),
         settings: effortSettings,
-        head,
-        symbolFiles,
+        target: targetChanges,
         log: (message) => log(`${context.name}: ${message}`),
       });
-      const componentMoves = moved
-        .filter((m) => paths.includes(m.from) || paths.includes(m.to))
-        .map((m) => ({ name: m.name, from: m.from, to: m.to, diff: blockDiff(m.before, m.after) }));
-      const pathSet = new Set(paths);
-      const componentEndpoints = apiChange
-        ? [
-            ...changesTouching(apiChange, pathSet).slice(0, 12).map(describeEndpointChange),
-            ...logicTouching(apiChange, pathSet).slice(0, 8).map(describeLogicChange),
-          ]
-        : [];
-      const componentInfra = infraChange && infraChanged ? infraChangesTouching(infraChange, analyses?.head.infra, pathSet) : null;
-      const infraLines = componentInfra ? [...componentInfra.entries.slice(0, 15).map((e) => describeInfraChangeEntry(e)), ...componentInfra.links.slice(0, 10)] : [];
-      const tableIds = analyses ? tablesTouching(analyses.head.db, dbChange ?? undefined, pathSet) : [];
-      const tables = tableIds.length ? reviewTables(tableIds, analyses?.head.db, dbChange ?? undefined, pathSet).slice(0, 30) : [];
-      const alreadyReported = [
-        ...(componentInfra ? componentInfra.findings.map(describeInfraFinding) : []),
-        ...(dbChange ? schemaFindingsTouching(dbChange, tableIds, pathSet).map(describeDbFinding) : []),
-      ];
-      const relatedWithMoves =
-        componentMoves.length > 0 || componentEndpoints.length > 0 || infraLines.length > 0 || alreadyReported.length > 0 || tables.length > 0
-          ? {
-              ...(related ?? {}),
-              ...(componentMoves.length ? { moves: componentMoves } : {}),
-              ...(componentEndpoints.length ? { endpoints: componentEndpoints } : {}),
-              ...(infraLines.length ? { infra: infraLines } : {}),
-              ...(alreadyReported.length ? { alreadyReported } : {}),
-              ...(tables.length ? { tables } : {}),
-            }
-          : related;
       signal?.throwIfAborted();
       sent = true;
       const result = await reviewComponentChange(
@@ -907,7 +366,7 @@ export async function runReviewJob(
       log(
         `${context.name}: ${findings.length} finding(s) from ${files.length} changed file(s)` +
           (result.chunks > 1 ? ` in ${result.chunks} parts` : "") +
-          (related?.files?.length ? `, ${related.files.length} related file(s) as context` : "") +
+          (relatedWithMoves?.files?.length ? `, ${relatedWithMoves.files.length} related file(s) as context` : "") +
           (result.truncated ? " (diff truncated)" : "") +
           (result.parseFailed ? " (model output could not be parsed)" : "")
       );

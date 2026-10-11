@@ -11,7 +11,7 @@
 //
 // Kept out of lib/jobs' barrel: it pulls in lib/ai and lib/analysis.
 
-import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { UnrecoverableError } from "./runner";
@@ -237,8 +237,13 @@ async function runSide(options: {
       await mkdir(jobDir, { recursive: true });
       const script = harnessScript(runtime);
       await copyFile(script, path.join(jobDir, path.basename(script)));
-      // The Node harness loads its stand-in values from a file beside it.
-      if (runtime === "node") await copyFile(path.join(path.dirname(script), "preview-fakes.mjs"), path.join(jobDir, "preview-fakes.mjs"));
+      // The Node harness is split into modules beside it (plus its stand-in values,
+      // preview-fakes.mjs): every .mjs file goes along.
+      if (runtime === "node") {
+        for (const name of await readdir(path.dirname(script))) {
+          if (name.endsWith(".mjs") && name !== path.basename(script)) await copyFile(path.join(path.dirname(script), name), path.join(jobDir, name));
+        }
+      }
       prepared = { treeDir, jobDir, projectRoot, prepared: installed };
     }
     const spec = {

@@ -190,7 +190,7 @@ export async function getReviewJobLogs(
 // Cancellation
 // ---------------------------------------------------------------------------
 //
-// Cooperative, exactly like the label queue (./label-queue.ts): the request
+// Cooperative, like the app-map queue (./app-map-queue.ts): the request
 // sets a short-lived flag (./runner.ts), the worker polls it while the job
 // runs and aborts the job's model calls when it appears (worker/index.ts). A
 // job still *waiting* in the queue has no worker yet and is simply removed.

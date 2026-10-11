@@ -27,11 +27,11 @@ hover-to-see-progress. Errors are rethrown so the runner applies the
 queue's retry/backoff policy; failures that retrying can't fix (repo
 deleted, path outside `LOCAL_REPOS_ROOT`) are raised as `UnrecoverableError`.
 
-Labeling and app-map runs are cancellable cooperatively: the worker polls a
+Reviews and app-map runs are cancellable cooperatively: the worker polls a
 cancel flag (lib/jobs/runner.ts `setFlag`/`hasFlag`) and aborts the run's
 model calls.
 
 Optional env vars: `ANALYSIS_CONCURRENCY`, `REVIEW_CONCURRENCY`,
-`LABEL_CONCURRENCY`, `APP_MAP_CONCURRENCY`, `PREVIEW_CONCURRENCY` (all
+`APP_MAP_CONCURRENCY`, `PREVIEW_CONCURRENCY` (all
 default 1) and `STALENESS_SWEEP_INTERVAL_MS` (default 0 = off, since the
 normal refresh trigger is "on view").

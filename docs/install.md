@@ -171,7 +171,6 @@ head, only parses what changed.
   ```bash
   npx tsx lib/ai/smoke-test.ts
   npx tsx lib/ai/smoke-test-review.ts
-  npx tsx lib/ai/smoke-test-label.ts
   npx tsx lib/analysis/smoke-test.ts
   npx tsx lib/analysis/smoke-test-langs.ts [dir]   # Go/Java/Rust
   npx tsx lib/analysis/smoke-test-jvm.ts [dir]     # Java+Kotlin resolver
@@ -199,7 +198,7 @@ since it decides where the file is.)
 | `SESSION_SECRET` | `secret.key` in the data folder | Key credential encryption with this string instead of the generated key |
 | `AI_REQUEST_TIMEOUT_MS` | `1800000` (30 min) | Longest one AI request may take; `0` = no limit. Raise it for large local models |
 | `ANALYSIS_CONCURRENCY` | `1` | Parallel static-analysis jobs (CPU-bound; 1 is sensible) |
-| `REVIEW_CONCURRENCY` / `LABEL_CONCURRENCY` / `APP_MAP_CONCURRENCY` | `1` | Parallel AI jobs of each kind |
+| `REVIEW_CONCURRENCY` / `APP_MAP_CONCURRENCY` | `1` | Parallel AI jobs of each kind |
 | `STALENESS_SWEEP_INTERVAL_MS` | `0` (off) | Periodic background staleness re-check; the normal trigger is "on view" |
 | `GRAPHREVIEW_NO_WORKER` | unset | `1` serves the UI without processing jobs |
 | `GRAPHREVIEW_ALLOWED_HOSTS` | unset | Comma-separated extra host names to answer to besides localhost/127.0.0.1 (e.g. when reaching `npm run dev` by a LAN name) |

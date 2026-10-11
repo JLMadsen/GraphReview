@@ -1,84 +1,51 @@
 // Writing the module tier (DESIGN.md §6.3).
 //
-// One function owns module membership: `writeModuleTier`. The analysis job
-// calls it with fresh folder clusters; `regroupRepo` calls it with clusters
-// rebuilt from the graph already stored in the database, after the user accepted a
-// merge or unmerged one. Either way it:
+// One function owns module membership: `writeModuleTier`, which the
+// analysis job calls with fresh folder clusters. It:
 //
 //   1. resolves which component owns each file (./ownership.ts — merged
 //      feature modules claim files out of folder modules);
 //   2. upserts folder modules, and updates/deletes merged modules whose
-//      folders disappeared (remembering them for rename detection);
+//      folders disappeared;
 //   3. rewrites BELONGS_TO (only the files whose owner changed) and DEPENDS_ON;
 //   4. prunes folder modules left with no files;
 //   5. lets a module without a domain inherit the domain most of its files
-//      were in before, and flags the domain tier as stale when that happens;
-//   6. moves findings along with their files;
-//   7. refreshes the free merge suggestions — only when the caller passes
-//      `suggestions`. `regroupRepo` (the merge actions) does; analysis
-//      doesn't, because nothing shows suggestions while the merge UI is
-//      removed (docs/ideas.md).
+//      were in before;
+//   6. moves findings along with their files.
 //
-// Deliberately free of lib/analysis's parser: `regroupRepo` runs inside an
-// API route (the merge actions'), and only `clusterByFolderDepth` (pure) is
-// needed from there.
+// Merged modules are the ones a user accepted from the merge suggestions,
+// which were removed with the Repo view (docs/ideas.md); those already
+// accepted stay in effect.
 
-import { clusterByFolderDepth, DEFAULT_MODULE_DEPTH } from "@/lib/analysis/graph-builder";
 import type { ModuleCluster } from "@/lib/analysis/graph-builder";
-import { splitLargeModules } from "@/lib/analysis/split-modules";
 import {
   deleteComponent,
   deleteEmptyAutoDomainComponents,
   getComponentById,
   getDomainByModule,
   getFileOwnerMap,
-  getStoredImportGraph,
   linkComponentChildOf,
   listComponentsByRepoId,
   listMergedModules,
   relinkFindings,
   replaceComponentDependencies,
   setFileOwners,
-  setRepoDomainsStale,
-  syncMergeSuggestions,
   upsertComponent,
 } from "@/lib/db";
-import type { ComponentRecord, LostFolder } from "@/lib/db";
+import type { ComponentRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
-import { computeMergeSuggestions, type HeuristicModule } from "./merge-heuristics";
-import { folderOfPattern, isUnderFolder, pathPatternsFor, resolveOwnership } from "./ownership";
-
-/** How many lost folders a merged module remembers for rename detection. */
-const MAX_LOST_FOLDERS = 10;
-
-export function parseLostFolders(raw: string | undefined): LostFolder[] {
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? (parsed as LostFolder[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function baseName(filePath: string): string {
-  return filePath.slice(filePath.lastIndexOf("/") + 1);
-}
+import { pathPatternsFor, resolveOwnership } from "./ownership";
 
 export interface ModuleTierInput {
   repoId: string;
   edges: ReadonlyArray<{ from: string; to: string; weight?: number }>;
   folderClusters: readonly ModuleCluster[];
-  /** Set to refresh the merge suggestions (step 7) from these; left out, they are not touched. */
-  suggestions?: { filePaths: readonly string[]; moduleDepth: number };
   log: JobLogger;
 }
 
 export interface ModuleTierCounts {
   components: number;
   componentEdges: number;
-  /** Only when suggestions were refreshed. */
-  openSuggestions?: number;
 }
 
 export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTierCounts> {
@@ -126,23 +93,7 @@ export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTie
       continue;
     }
 
-    // Remember vanished folders (with their file names) so a rename can be
-    // suggested back; exact file paths that vanished are simply dropped.
-    const now = new Date().toISOString();
-    const lost: LostFolder[] = dead.flatMap((pattern) => {
-      const dir = folderOfPattern(pattern);
-      if (dir === null) return [];
-      const fileNames = [...previousOwners]
-        .filter(([path, owner]) => owner === merged.id && isUnderFolder(path, dir))
-        .map(([path]) => baseName(path));
-      return [{ pattern, fileNames, lostAt: now }];
-    });
-    const lostFolders = [...parseLostFolders(merged.lostFolders), ...lost].slice(-MAX_LOST_FOLDERS);
-    const updated: ComponentRecord = {
-      ...merged,
-      pathPatterns: merged.pathPatterns.filter((p) => !dead.includes(p)),
-      lostFolders: JSON.stringify(lostFolders),
-    };
+    const updated: ComponentRecord = { ...merged, pathPatterns: merged.pathPatterns.filter((p) => !dead.includes(p)) };
     log(`merged module "${merged.name}": dropped ${dead.length} vanished pattern(s)`);
     await upsertComponent(updated);
     liveMerged.push(updated);
@@ -214,10 +165,7 @@ export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTie
     await linkComponentChildOf(id, winner[0]);
     inherited++;
   }
-  if (inherited > 0) {
-    await setRepoDomainsStale(repoId, true);
-    log(`${inherited} module(s) inherited a domain — domain grouping marked for regrouping`);
-  }
+  if (inherited > 0) log(`${inherited} module(s) inherited a domain`);
 
   // After the modules are gone, a domain that grouped only those modules has
   // nothing left under it. Only ever affects `createdBy: 'auto'` domains.
@@ -228,52 +176,6 @@ export async function writeModuleTier(input: ModuleTierInput): Promise<ModuleTie
   const movedFindings = await relinkFindings(repoId);
   if (movedFindings > 0) log(`moved ${movedFindings} finding(s) to the module that now owns their file`);
 
-  // --- suggestions (free heuristics; never fails the caller) ---------------
-  const counts: ModuleTierCounts = { components: liveIds.size, componentEdges: componentEdges.length };
-  if (!input.suggestions) return counts;
-  try {
-    const modules: HeuristicModule[] = [
-      ...ownership.liveFolderModules.map(({ id, cluster }) => ({
-        id,
-        name: cluster.name,
-        origin: "folder" as const,
-        pathPatterns: pathPatternsFor(cluster),
-      })),
-      ...liveMerged.map((m) => ({
-        id: m.id,
-        name: m.name,
-        origin: "merge" as const,
-        pathPatterns: m.pathPatterns,
-        lostFolders: parseLostFolders(m.lostFolders),
-      })),
-    ];
-    const suggestions = computeMergeSuggestions({
-      filePaths: input.suggestions.filePaths,
-      edges,
-      ownerByFile: ownership.componentIdByFile,
-      modules,
-      moduleDepth: input.suggestions.moduleDepth,
-    });
-    counts.openSuggestions = await syncMergeSuggestions(repoId, suggestions);
-    log(`${counts.openSuggestions} open merge suggestion(s)`);
-  } catch (error) {
-    log(`merge suggestions skipped: ${(error as Error).message}`);
-  }
-  return counts;
+  return { components: liveIds.size, componentEdges: componentEdges.length };
 }
 
-/**
- * Re-applies module membership from the graph already stored in the database — no
- * checkout, no parsing. Runs after the user accepts a merge suggestion or
- * unmerges a module, so the change shows up immediately.
- */
-export async function regroupRepo(repoId: string, log: JobLogger): Promise<ModuleTierCounts> {
-  const { filePaths, edges } = await getStoredImportGraph(repoId);
-  return writeModuleTier({
-    repoId,
-    edges,
-    folderClusters: splitLargeModules(clusterByFolderDepth(filePaths, DEFAULT_MODULE_DEPTH), edges),
-    suggestions: { filePaths, moduleDepth: DEFAULT_MODULE_DEPTH },
-    log,
-  });
-}

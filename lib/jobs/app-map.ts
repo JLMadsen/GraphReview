@@ -27,7 +27,7 @@ import {
   type AppMapLevel,
   type AppMapNodeDTO,
 } from "@/components/graph/app-map-types";
-import { GENERIC_KEYS, LAYER_SEGMENTS, normaliseSegment } from "./merge-heuristics";
+import { GENERIC_KEYS, LAYER_SEGMENTS, normaliseSegment } from "./folder-names";
 import { classifyPath } from "./pr-map";
 
 export interface AppMapComponentInfo {

@@ -23,16 +23,6 @@
  * the rest `compatible`. The PR intent check (`TASK: pr-intent`) answers
  * `delivers` unless the title contains MOCK_PARTIAL.
  *
- * The AI-labeling calls (lib/ai/label.ts) are recognised by
- * the `TASK: label-domains` / `TASK: describe-modules` marker in their system
- * prompt and answered from the `- m1 | name | N files | files: … | depends
- * on: …` module lines that file emits:
- *   - domains      -> folder-name heuristics (Frontend / Backend /
- *                     Infrastructure / Shared), every module assigned once.
- *   - descriptions -> one sentence per module, always prefixed `[mock] ` so
- *                     mock-generated test data is obvious in the UI and easy
- *                     to delete again.
- *
  * The PR map call (lib/ai/pr-map.ts, `TASK: pr-map`) is answered from its
  * `File: <path> (...) card: <name>` lines: the same grouping as the current
  * cards, each renamed from its folder to a Title Case name, a `[mock] `
@@ -50,10 +40,8 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-// The two task markers are imported rather than re-typed so the mock can
+// The task markers are imported rather than re-typed so the mock can
 // never drift out of sync with the prompts it is pretending to answer.
-import { DESCRIBE_TASK_MARKER, DOMAIN_TASK_MARKER } from "./label";
-import { MERGE_NAME_TASK_MARKER } from "./merge-name";
 import { CHECKLIST_TASK_MARKER } from "./checklist";
 import { PR_CHAT_TASK_MARKER, REPO_CHAT_SCOPE_MARKER } from "./pr-chat";
 import { PR_MAP_TASK_MARKER } from "./pr-map";
@@ -222,16 +210,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
       .map((m) => m.content)
       .join("\n");
     // Task dispatch. MOCK_GARBAGE wins over everything so the parse-failure
-    // path can be exercised for the labeling prompts too.
+    // path can be exercised for every task.
     const { content, note } = prompt.includes("MOCK_GARBAGE")
       ? { content: garbageContent(userText), note: "MOCK_GARBAGE" }
-      : prompt.includes(DOMAIN_TASK_MARKER)
-        ? domainContent(userText)
-        : prompt.includes(DESCRIBE_TASK_MARKER)
-          ? describeContent(userText)
-          : prompt.includes(MERGE_NAME_TASK_MARKER)
-            ? mergeNameContent(userText)
-            : prompt.includes(PR_MAP_TASK_MARKER)
+      : prompt.includes(PR_MAP_TASK_MARKER)
               ? prMapContent(userText)
               : prompt.includes(APP_FEATURES_TASK_MARKER)
                 ? appFeaturesContent(userText)
@@ -443,150 +425,12 @@ function makeFinding(
 }
 
 // ---------------------------------------------------------------------------
-// Canned responses — AI labeling (lib/ai/label.ts)
+// Canned responses — the other tasks
 // ---------------------------------------------------------------------------
-
-interface MockModuleLine {
-  /** The short per-call ref (`m1`, `m2`, …) label.ts sends instead of the real component id. */
-  ref: string;
-  name: string;
-  fileCount: number;
-  sampleFiles: string[];
-  dependsOn: string[];
-}
-
-/**
- * Parses the `- m1 | name | 8 files | files: a, b | depends on: x, y` lines
- * `lib/ai/label.ts` emits. Segments after the first three are optional and
- * order-independent, matching what that file drops when the token budget is
- * tight.
- */
-function parseModuleLines(userText: string): MockModuleLine[] {
-  const out: MockModuleLine[] = [];
-  for (const line of userText.split(/\r?\n/)) {
-    if (!line.startsWith("- m")) continue;
-    const parts = line.slice(2).split(" | ").map((part) => part.trim());
-    if (parts.length < 3 || !/^m\d+$/.test(parts[0])) continue;
-
-    const parsed: MockModuleLine = {
-      ref: parts[0],
-      name: parts[1],
-      fileCount: Number.parseInt(parts[2], 10) || 0,
-      sampleFiles: [],
-      dependsOn: [],
-    };
-    for (const part of parts.slice(3)) {
-      if (part.startsWith("files:")) {
-        parsed.sampleFiles = splitList(part.slice("files:".length));
-      } else if (part.startsWith("depends on:")) {
-        parsed.dependsOn = splitList(part.slice("depends on:".length));
-      }
-    }
-    out.push(parsed);
-  }
-  return out;
-}
-
-function splitList(text: string): string[] {
-  return text
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-/**
- * Folder-name heuristics, deliberately crude and fully deterministic — the
- * point is recognisable, stable test data, not good labels. The module's own
- * name is consulted first, then its sample paths, so `components/graph`
- * (name "graph") still lands in Frontend.
- */
-const DOMAIN_RULES: Array<{ name: string; description: string; keywords: string[] }> = [
-  {
-    name: "Frontend",
-    description: "User-facing pages, components and client-side state.",
-    keywords: ["app", "pages", "components", "ui", "hooks", "styles"],
-  },
-  {
-    name: "Backend",
-    description: "Server-side routes, data access and domain services.",
-    keywords: ["api", "server", "lib", "db", "services", "actions", "auth"],
-  },
-  {
-    name: "Infrastructure",
-    description: "Build, deployment and environment configuration.",
-    keywords: ["docker", "scripts", "config", "infra", "github"],
-  },
-];
-
-const SHARED_DOMAIN = {
-  name: "Shared",
-  description: "Modules that are not clearly part of any other domain.",
-};
-
-function matchesKeyword(haystack: string, keyword: string): boolean {
-  return new RegExp(`(^|[^a-z0-9])${keyword}([^a-z0-9]|$)`).test(haystack);
-}
-
-export function mockDomainFor(module: Pick<MockModuleLine, "name" | "sampleFiles">): string {
-  const name = module.name.toLowerCase();
-  for (const rule of DOMAIN_RULES) {
-    if (rule.keywords.some((keyword) => matchesKeyword(name, keyword))) return rule.name;
-  }
-  const paths = module.sampleFiles.join(" ").toLowerCase();
-  for (const rule of DOMAIN_RULES) {
-    if (rule.keywords.some((keyword) => matchesKeyword(paths, keyword))) return rule.name;
-  }
-  return SHARED_DOMAIN.name;
-}
-
-function domainContent(userText: string): { content: string; note: string } {
-  const modules = parseModuleLines(userText);
-  if (modules.length === 0) {
-    // No module lines at all — answer with an empty (but valid) shape rather
-    // than pretending to have grouped something.
-    return { content: ["```json", JSON.stringify({ domains: [] }), "```"].join("\n"), note: "label-domains(0)" };
-  }
-
-  const buckets = new Map<string, string[]>();
-  for (const entry of modules) {
-    const domain = mockDomainFor(entry);
-    const bucket = buckets.get(domain);
-    if (bucket) bucket.push(entry.ref);
-    else buckets.set(domain, [entry.ref]);
-  }
-
-  const described = new Map(
-    [...DOMAIN_RULES, SHARED_DOMAIN].map((rule) => [rule.name, rule.description])
-  );
-  const domains = [...DOMAIN_RULES.map((r) => r.name), SHARED_DOMAIN.name]
-    .filter((name) => buckets.has(name))
-    .map((name) => ({
-      name,
-      description: described.get(name) ?? "",
-      moduleIds: buckets.get(name) ?? [],
-    }));
-
-  const content = ["```json", JSON.stringify({ domains }, null, 2), "```"].join("\n");
-  return {
-    content,
-    note: `label-domains modules=${modules.length} domains=${domains.length}`,
-  };
-}
 
 /** The literal prefix every mock-written module description carries, so test data is recognisable (and deletable) in the UI and in the database. */
 export const MOCK_DESCRIPTION_PREFIX = "[mock] ";
 
-function describeContent(userText: string): { content: string; note: string } {
-  const modules = parseModuleLines(userText);
-  const described = modules.map((module) => ({
-    id: module.ref,
-    description: mockDescriptionFor(module),
-  }));
-  const content = ["```json", JSON.stringify({ modules: described }, null, 2), "```"].join("\n");
-  return { content, note: `describe-modules modules=${modules.length}` };
-}
-
-/** Answers every checklist question: "pass" when the PR has a description, "unknown" otherwise. */
 /** Impact check: removed declarations break every usage; otherwise usages whose id hashes odd do. */
 function impactContent(userText: string): { content: string; note: string } {
   const results: Array<Record<string, string>> = [];
@@ -624,6 +468,7 @@ function prIntentContent(userText: string): { content: string; note: string } {
   return { content, note: `pr-intent ${verdict}` };
 }
 
+/** Answers every checklist question: "pass" when the PR has a description, "unknown" otherwise. */
 function checklistContent(userText: string): { content: string; note: string } {
   const ids = [...userText.matchAll(/^- (q\d+): /gm)].map((m) => m[1]);
   const hasDescription = !/^Description: \(none\)$/m.test(userText);
@@ -658,18 +503,6 @@ function repoChatContent(userText: string): { content: string; note: string } {
   const answer = `${MOCK_DESCRIPTION_PREFIX}I looked at the components; the first one is ${first}.`;
   const content = ["```json", JSON.stringify({ answer }), "```"].join("\n");
   return { content, note: "repo-chat answer" };
-}
-
-/** Echoes the proposed feature name back, with a recognisable mock description. */
-function mergeNameContent(userText: string): { content: string; note: string } {
-  const proposed = /^Proposed name: (.*)$/m.exec(userText)?.[1]?.trim() || "Feature";
-  const members = (userText.match(/^- .*\*\*$/gm) ?? []).length;
-  const body = {
-    name: proposed,
-    description: `${MOCK_DESCRIPTION_PREFIX}Brings together ${members} folder(s) that implement ${proposed.toLowerCase()}.`,
-  };
-  const content = ["```json", JSON.stringify(body, null, 2), "```"].join("\n");
-  return { content, note: `name-feature "${proposed}"` };
 }
 
 /** "src/ffi" → "Ffi", "lib/jobs tests" → "Jobs Tests" — recognisably renamed, still traceable. */
@@ -802,16 +635,6 @@ function appExplainContent(userText: string): { content: string; note: string } 
     }
   }
   return { content: fenced({ cards, edges }), note: `app-map-explain cards=${cards.length} edges=${edges.length}` };
-}
-
-function mockDescriptionFor(module: MockModuleLine): string {
-  const where = module.sampleFiles[0]?.split("/").slice(0, -1).join("/") || module.name;
-  const files = `${module.fileCount} file${module.fileCount === 1 ? "" : "s"}`;
-  const deps =
-    module.dependsOn.length > 0
-      ? ` and depends on ${module.dependsOn.slice(0, 2).join(" and ")}`
-      : "";
-  return `${MOCK_DESCRIPTION_PREFIX}Groups ${files} under ${where}${deps}.`;
 }
 
 /** A plausible identifier from the file's basename, e.g. `src/math/square.ts` -> `square()`. */

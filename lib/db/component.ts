@@ -16,7 +16,6 @@ export function toComponentRecord(props: Record<string, unknown>): ComponentReco
     origin: (props.origin as ComponentRecord["origin"] | undefined) ?? undefined,
     absorbedModuleIds: (props.absorbedModuleIds as string[] | undefined) ?? undefined,
     absorbedDescriptions: (props.absorbedDescriptions as string | undefined) ?? undefined,
-    lostFolders: (props.lostFolders as string | undefined) ?? undefined,
   };
 }
 

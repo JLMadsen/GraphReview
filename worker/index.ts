@@ -1,8 +1,8 @@
 // The background job workers.
 //
 // Started once per process from instrumentation.ts, alongside the web
-// server: they consume the `analysis`, `review`, `label`, `app-map` and
-// `preview` queues defined in lib/jobs/ (stored in SQLite, see
+// server: they consume the `analysis`, `review`, `app-map`, `preview`,
+// `preview-scan` and `target-graph` queues defined in lib/jobs/ (stored in SQLite, see
 // lib/jobs/runner.ts) and write results through lib/db. Everything they do
 // is logged to stdout, and each job's own lines are mirrored into its job
 // log so the UI can show them.
@@ -14,17 +14,14 @@ import { Worker, purgeExpiredFlags, recoverInterruptedJobs, type Job } from "@/l
 import {
   ANALYSIS_QUEUE_NAME,
   APP_MAP_QUEUE_NAME,
-  LABEL_QUEUE_NAME,
   PREVIEW_QUEUE_NAME,
   PREVIEW_SCAN_QUEUE_NAME,
   REVIEW_QUEUE_NAME,
   TARGET_GRAPH_QUEUE_NAME,
   clearAppMapCancel,
-  clearLabelCancel,
   clearReviewCancel,
   cleanUpIfRepoRemoved,
   isAppMapCancelRequested,
-  isLabelCancelRequested,
   isReviewCancelRequested,
   listRepoDtos,
   reviewTargetKey,
@@ -32,8 +29,6 @@ import {
   type AppMapJobResult,
   type AnalysisJobData,
   type AnalysisJobResult,
-  type LabelJobData,
-  type LabelJobResult,
   type PreviewJobData,
   type PreviewJobResult,
   type PreviewScanJobData,
@@ -49,7 +44,6 @@ import {
 // See the note in lib/jobs/index.ts.
 import { runAnalysisJob } from "@/lib/jobs/analyze";
 import { runReviewJob } from "@/lib/jobs/review";
-import { runLabelJob } from "@/lib/jobs/label";
 import { runAppMapJob } from "@/lib/jobs/app-map-job";
 import { runPreviewJob } from "@/lib/jobs/preview";
 import { runPreviewScanJob } from "@/lib/jobs/preview-scan";
@@ -68,16 +62,10 @@ const CONCURRENCY = Number(process.env.ANALYSIS_CONCURRENCY ?? 1);
  */
 const REVIEW_CONCURRENCY = Number(process.env.REVIEW_CONCURRENCY ?? 1);
 
-/** How often an active review, labeling or app-map job checks whether the user cancelled it. */
-const LABEL_CANCEL_POLL_MS = 1000;
+/** How often an active review or app-map job checks whether the user cancelled it. */
+const CANCEL_POLL_MS = 1000;
 
-/**
- * One labeling job at a time, for the same reasons as a review — it spends
- * model calls against a provider that may be a single local server.
- */
-const LABEL_CONCURRENCY = Number(process.env.LABEL_CONCURRENCY ?? 1);
-
-/** App-map runs (DESIGN.md §6.5): on demand, model calls — one at a time, like labeling. */
+/** App-map runs (DESIGN.md §6.5): on demand, model calls — one at a time, like a review. */
 const APP_MAP_CONCURRENCY = Number(process.env.APP_MAP_CONCURRENCY ?? 1);
 
 /** Before/after previews (DESIGN.md §6.9): each runs two sandbox containers already, so one file at a time by default. */
@@ -122,9 +110,9 @@ export async function processReviewJob(job: Job<ReviewJobData, ReviewJobResult>)
       : `${target.baseRef}...${target.headRef}`;
   log(`review job ${job.id} started — repo ${repoId}, ${describedTarget}`);
 
-  // Cooperative cancellation, exactly like the label queue: the request
-  // sets a flag (lib/jobs/review-queue.ts), this polls it and aborts the
-  // run's model calls.
+  // Cooperative cancellation: the request sets a flag
+  // (lib/jobs/review-queue.ts), this polls it and aborts the run's model
+  // calls.
   const targetKey = reviewTargetKey(target);
   const abort = new AbortController();
   const poll = setInterval(() => {
@@ -136,7 +124,7 @@ export async function processReviewJob(job: Job<ReviewJobData, ReviewJobResult>)
         }
       })
       .catch(() => undefined);
-  }, LABEL_CANCEL_POLL_MS);
+  }, CANCEL_POLL_MS);
 
   try {
     return await runReviewJob(
@@ -169,7 +157,6 @@ export async function startWorker(): Promise<void> {
   log(
     `starting — queue "${ANALYSIS_QUEUE_NAME}" (concurrency ${CONCURRENCY}), ` +
       `queue "${REVIEW_QUEUE_NAME}" (concurrency ${REVIEW_CONCURRENCY}), ` +
-      `queue "${LABEL_QUEUE_NAME}" (concurrency ${LABEL_CONCURRENCY}), ` +
       `queue "${APP_MAP_QUEUE_NAME}" (concurrency ${APP_MAP_CONCURRENCY}), ` +
       `queue "${PREVIEW_QUEUE_NAME}" (concurrency ${PREVIEW_CONCURRENCY}), queue "${TARGET_GRAPH_QUEUE_NAME}" (concurrency 1)`
   );
@@ -252,73 +239,13 @@ export async function startWorker(): Promise<void> {
     logError(`review worker error: ${error.message}`);
   });
 
-  // --- label queue ---------------------------------------------------------
-  const labelWorker = new Worker<LabelJobData, LabelJobResult>(
-    LABEL_QUEUE_NAME,
-    async (job: Job<LabelJobData, LabelJobResult>) => {
-      const { repoId, force } = job.data;
-      log(`label job ${job.id} started — repo ${repoId}${force ? " (force)" : ""}`);
-
-      // Cooperative cancellation (see lib/jobs/label-queue.ts): the request
-      // sets a flag, this polls it and aborts the run's model calls.
-      const abort = new AbortController();
-      const poll = setInterval(() => {
-        isLabelCancelRequested(repoId)
-          .then((requested) => {
-            if (requested && !abort.signal.aborted) {
-              log(`label job ${job.id} · cancel requested`);
-              abort.abort();
-            }
-          })
-          .catch(() => undefined);
-      }, LABEL_CANCEL_POLL_MS);
-
-      try {
-        return await runLabelJob(
-          job.data,
-          job,
-          (message) => {
-            log(`label job ${job.id} · ${message}`);
-            mirrorToJobLog(job, message);
-          },
-          abort.signal
-        );
-      } finally {
-        clearInterval(poll);
-        await clearLabelCancel(repoId).catch(() => undefined);
-      }
-    },
-    { concurrency: LABEL_CONCURRENCY }
-  );
-
-  labelWorker.on("completed", (job, result) => {
-    log(
-      `label job ${job.id} completed — repo ${result.repoId}: ` +
-        `${result.domains} domain(s) over ${result.modules} module(s) ` +
-        `(replaced ${result.replacedDomains}), ${result.describedModules} description(s), ` +
-        `${result.calls} model call(s), ${result.promptTokens}+${result.completionTokens} token(s) ` +
-        `in ${result.durationMs}ms${result.parseFailed ? " (some output unparseable)" : ""}`
-    );
-  });
-
-  labelWorker.on("failed", (job, error) => {
-    logError(
-      `label job ${job?.id ?? "?"} failed — repo ${job?.data?.repoId ?? "?"}: ${error.message}`
-    );
-    if (error.stack) console.error(error.stack);
-  });
-
-  labelWorker.on("error", (error) => {
-    logError(`label worker error: ${error.message}`);
-  });
-
   // --- app-map queue -------------------------------------------------------
   const appMapWorker = new Worker<AppMapJobData, AppMapJobResult>(
     APP_MAP_QUEUE_NAME,
     async (job: Job<AppMapJobData, AppMapJobResult>) => {
       const { repoId, level, mode } = job.data;
       log(`app-map job ${job.id} started — repo ${repoId}, level ${level}${mode === "place" ? ", placing leftover files" : ""}`);
-      // Cooperative cancellation, exactly like the label queue above.
+      // Cooperative cancellation, exactly like the review queue.
       const abort = new AbortController();
       const poll = setInterval(() => {
         isAppMapCancelRequested(repoId)
@@ -329,7 +256,7 @@ export async function startWorker(): Promise<void> {
             }
           })
           .catch(() => undefined);
-      }, LABEL_CANCEL_POLL_MS);
+      }, CANCEL_POLL_MS);
       try {
         return await runAppMapJob(
           job.data,
@@ -441,7 +368,7 @@ export async function startWorker(): Promise<void> {
       logError(`cleanup after a removed repo failed: ${(error as Error).message}`)
     );
   };
-  for (const w of [worker, reviewWorker, labelWorker, appMapWorker, previewWorker, previewScanWorker, targetGraphWorker]) {
+  for (const w of [worker, reviewWorker, appMapWorker, previewWorker, previewScanWorker, targetGraphWorker]) {
     (w as Worker<{ repoId: string }, unknown>).on("completed", cleanUp).on("failed", cleanUp);
   }
 

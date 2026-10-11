@@ -6,6 +6,23 @@ wires the pieces below together. Wire types shared with the API routes live
 in the `*-types.ts` files and `types.ts`; they import nothing server-only, so
 client components can use them.
 
+The biggest views keep their parts in a subfolder named after them, so a
+change to one part reads only that part:
+
+- `graph-view/` — GraphView's state: the repo context and tab height
+  (`useRepoContext.ts`), each catalog view's state (`useCatalogViews.ts`),
+  the PR view's selection and hidden functions (`usePrMapSelection.ts`), and
+  remembered / lazily mounted state (`view-state.ts`).
+- `review/` — the dock's rows (`FindingRow`, `ImpactGroupRow`), shared
+  badges and chips (`parts.tsx`), row sorting (`rows.ts`), the Files tab,
+  the ⋯ menu, keyboard triage and copying.
+- `diff/` — DiffPanel's lists (`options.ts`, with `useLazyList`), the
+  commit picker and the summary a check folds into.
+- `files/` — the Files view's tree and search (`tree.ts`), panes, and the
+  README/markdown renderer (`MarkdownDoc.tsx`).
+- `preview/` — the before/after preview's component compare, function
+  cases and symbol view.
+
 ## Layout
 
 Three columns, edge to edge (DESIGN.md §6.4–§6.7), with drag-resizable side
@@ -86,5 +103,5 @@ Relabel and Merge suggestions controls that lived in its toolbar, the sample
 graph for unanalyzed repos, and the "added components" labelling of a PR's
 unknown files were removed on 2026-10-06, and their routes with them
 (`label`, `merges/**`, `components/[id]/files`, `diff-impact/added-components`).
-The labelling and merge job backends are kept, unused, so the features can
-come back. See docs/ideas.md.
+Their labelling and merge job backends were deleted on 2026-10-11 (`647cc02`
+has them); merges already accepted stay in effect. See docs/ideas.md.

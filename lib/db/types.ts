@@ -22,12 +22,6 @@ export interface RepoRecord {
    * analysed by an older version is re-analysed, like a moved branch.
    */
   analysisVersion?: number;
-  /**
-   * Set when a feature merge/unmerge moved modules between domains after the
-   * last labeling run (DESIGN.md §6.3), so the domain tier may no longer fit.
-   * Cleared by the next labeling run.
-   */
-  domainsStale?: boolean;
 }
 
 export type ComponentCreatedBy = "auto" | "user";
@@ -63,52 +57,6 @@ export interface ComponentRecord {
    * writes the descriptions back onto the folder modules it restores.
    */
   absorbedDescriptions?: string;
-  /**
-   * Merged modules only: folders that disappeared from the repo, with the
-   * file names they held, as a JSON string (`LostFolder[]`). Used to spot a
-   * rename and suggest adding the new folder back.
-   */
-  lostFolders?: string;
-}
-
-/** One entry of {@link ComponentRecord.lostFolders}. */
-export interface LostFolder {
-  pattern: string;
-  fileNames: string[];
-  lostAt: string;
-}
-
-export type MergeSuggestionKind = "merge" | "extend" | "move-file";
-export type MergeSuggestionStatus = "open" | "rejected";
-
-/**
- * A merge suggestion — a proposed change to the module tier, computed by
- * free heuristics after every analysis (DESIGN.md §6.3).
- *
- * - `merge`: turn the folders in `members` into one new feature module.
- * - `extend`: add the folders in `members` to the existing merged module `targetComponentId`.
- * - `move-file`: move the exact file paths in `members` into `targetComponentId` (a split).
- */
-export interface MergeSuggestionRecord {
-  /** Derived from `key`, so the same suggestion keeps its id across runs. */
-  id: string;
-  repoId: string;
-  /** Identity across runs: kind, target and the sorted members. */
-  key: string;
-  kind: MergeSuggestionKind;
-  /** `<dir>/**` folder patterns, or exact file paths for `move-file`. */
-  members: string[];
-  targetComponentId?: string;
-  /** Proposed name for a `merge` (the shared feature name, title-cased). */
-  name: string;
-  /** 0–1. */
-  score: number;
-  /** Short human-readable reasons, e.g. "shared name 'map'". */
-  reasons: string[];
-  status: MergeSuggestionStatus;
-  /** The score when the user rejected it; it reopens at ≥ 1.5× this. */
-  scoreAtRejection?: number;
-  updatedAt: string;
 }
 
 export interface FileRecord {
