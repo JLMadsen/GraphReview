@@ -12,10 +12,10 @@
 // - what an answer put on screen (show, highlight, filter_findings) is applied
 //   when it arrives (GraphView) and stays as a chip that does it again.
 //
-// It reads as a Q&A log, not a chatbot: each question is a bold line, the
-// answer plain prose under it (bold in an answer is dropped — models love
-// bold lead-ins), file paths are underlined links, and what the answer
-// looked at goes on one quiet mono line.
+// It reads as a chat: questions are bubbles on the right, answers bubbles on
+// the left (bold in an answer is dropped — models love bold lead-ins), file
+// paths are small file-icon chips, and what the answer looked at goes on one
+// quiet line under its bubble.
 //
 // Answers are rendered from a small Markdown subset (paragraphs, lists,
 // headings, code blocks, inline code, bold) — enough for review answers,
@@ -28,6 +28,7 @@ import {
   ChevronRight,
   CircleStop,
   Crosshair,
+  FileText,
   Highlighter,
   Lightbulb,
   ListFilter,
@@ -153,7 +154,7 @@ export function ChatPanel({
 
       <div
         ref={scrollRef}
-        className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3 [&>*:first-child]:border-t-0 [&>*:first-child]:pt-0"
+        className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3"
       >
         {chat.loading ? (
           <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -230,15 +231,16 @@ export function ChatPanel({
               );
             })}
             {chat.pending && (
-              <div className="space-y-1">
+              <div className="space-y-3">
                 {!chat.messages.some((m) => m.role === "user" && m.content === chat.pending!.question) && (
                   <UserBubble text={chat.pending.question} />
                 )}
-                <Steps steps={chat.pending.steps} open />
-                <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                  <LoaderCircle className="size-3 animate-spin" />
-                  {chat.pending.steps.length === 0 ? "Thinking…" : "Looking things up…"}
-                </p>
+                <AssistantBubble footer={<Steps steps={chat.pending.steps} open />}>
+                  <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                    <LoaderCircle className="size-3 animate-spin" />
+                    {chat.pending.steps.length === 0 ? "Thinking…" : "Looking things up…"}
+                  </p>
+                </AssistantBubble>
               </div>
             )}
             {chat.error && (
@@ -320,7 +322,25 @@ export function ChatPanel({
 }
 
 function UserBubble({ text }: { text: string }) {
-  return <p className="border-t border-border/70 pt-3 text-[13px] leading-snug font-medium whitespace-pre-wrap">{text}</p>;
+  return (
+    <div className="flex justify-end pl-8">
+      <p className="rounded-2xl rounded-br-sm bg-primary px-3 py-1.5 text-xs leading-snug whitespace-pre-wrap text-primary-foreground">
+        {text}
+      </p>
+    </div>
+  );
+}
+
+/** The assistant's side: a bubble on the left, what it looked at under it. */
+function AssistantBubble({ children, footer }: { children: ReactNode; footer?: ReactNode }) {
+  return (
+    <div className="flex flex-col items-start gap-1 pr-6">
+      <div className="max-w-full space-y-1.5 rounded-2xl rounded-bl-sm border border-border bg-secondary/40 px-3 py-2">
+        {children}
+      </div>
+      {footer && <div className="px-1">{footer}</div>}
+    </div>
+  );
 }
 
 function Steps({ steps, open: initiallyOpen = false }: { steps: ChatStepDTO[]; open?: boolean }) {
@@ -364,13 +384,38 @@ function Message({
 }) {
   if (message.role === "user") return <UserBubble text={message.content} />;
   if (message.error) {
-    return <p className="text-[11px] text-destructive">{message.content}</p>;
+    return (
+      <AssistantBubble>
+        <p className="text-[11px] text-destructive">{message.content}</p>
+      </AssistantBubble>
+    );
   }
   const chips = message.componentIds
     .map((id) => ({ id, name: componentName(id) }))
     .filter((c): c is { id: string; name: string } => Boolean(c.name));
   return (
-    <div className="space-y-1.5">
+    <AssistantBubble
+      footer={
+        (message.steps.length > 0 || chips.length > 0) && (
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
+            <Steps steps={message.steps} />
+            {chips.slice(0, 8).map((chip, i) => (
+              <span key={chip.id} className="flex items-center gap-1.5">
+                {(i > 0 || message.steps.length > 0) && <span aria-hidden>·</span>}
+                <button
+                  type="button"
+                  onClick={() => onSelectComponent(chip.id)}
+                  className="underline-offset-2 hover:text-foreground hover:underline"
+                  title="Select in the graph"
+                >
+                  {chip.name}
+                </button>
+              </span>
+            ))}
+          </div>
+        )
+      }
+    >
       <div className="space-y-1.5 text-xs leading-relaxed text-foreground/90">{renderMarkdown(message.content, inline)}</div>
       {onApplyAction && message.actions && message.actions.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -387,27 +432,7 @@ function Message({
           onOpenFile={onOpenFile}
         />
       ))}
-      {(message.steps.length > 0 || chips.length > 0) && (
-        <div className="text-[11px] text-muted-foreground">
-          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-            <Steps steps={message.steps} />
-            {chips.slice(0, 8).map((chip, i) => (
-              <span key={chip.id} className="flex items-center gap-1.5">
-                {(i > 0 || message.steps.length > 0) && <span aria-hidden>·</span>}
-                <button
-                  type="button"
-                  onClick={() => onSelectComponent(chip.id)}
-                  className="underline-offset-2 hover:text-foreground hover:underline"
-                  title="Select in the graph"
-                >
-                  {chip.name}
-                </button>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
+    </AssistantBubble>
   );
 }
 
@@ -538,12 +563,36 @@ const PATH_LIKE = /^(?!\/)(?!https?:)[\w@.+\-[\]()]+(\/[\w@.+\-[\]()]+)+\.[A-Za-
  */
 function fileOf(code: string, changedFiles: ReadonlySet<string>): string | null {
   const path = code.replace(/:\d+(-\d+)?$/, "");
-  return changedFiles.has(path) || PATH_LIKE.test(path) ? path : null;
+  if (changedFiles.has(path) || PATH_LIKE.test(path)) return path;
+  // A bare name (`usePrChat.ts`) is the diff's file when exactly one has it.
+  if (!path.includes("/") && /\.[A-Za-z0-9]{1,10}$/.test(path)) {
+    const matches = [...changedFiles].filter((file) => file.endsWith(`/${path}`) || file === path);
+    if (matches.length === 1) return matches[0];
+  }
+  return null;
+}
+
+/** A file the answer names: a small file icon and its name, the full path on hover. */
+function FileChip({ code, file, onOpen }: { code: string; file: string; onOpen: (path: string) => void }) {
+  const line = /:(\d+(?:-\d+)?)$/.exec(code)?.[1];
+  const name = file.slice(file.lastIndexOf("/") + 1);
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(file)}
+      className="mx-px inline-flex max-w-full items-baseline gap-0.5 rounded px-0.5 align-baseline font-mono text-[11px] text-foreground hover:bg-muted"
+      title={`Open ${file}${line ? `:${line}` : ""}`}
+    >
+      <FileText className="size-3 shrink-0 self-center text-muted-foreground" aria-hidden />
+      <span className="truncate">{name}</span>
+      {line && <span className="text-muted-foreground">:{line}</span>}
+    </button>
+  );
 }
 
 function renderInline(text: string, changedFiles: ReadonlySet<string>, onOpenFile?: (path: string) => void): ReactNode {
   const parts: ReactNode[] = [];
-  const pattern = /`([^`]+)`|\*\*([^*]+)\*\*/g;
+  const pattern = /`([^`]+)`|\*\*(.+?)\*\*/g;
   let last = 0;
   let key = 0;
   for (const match of text.matchAll(pattern)) {
@@ -552,15 +601,7 @@ function renderInline(text: string, changedFiles: ReadonlySet<string>, onOpenFil
       const file = onOpenFile ? fileOf(match[1], changedFiles) : null;
       parts.push(
         file ? (
-          <button
-            key={key++}
-            type="button"
-            onClick={() => onOpenFile!(file)}
-            className="font-mono text-[11px] text-foreground underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-foreground"
-            title="Open this file"
-          >
-            {match[1]}
-          </button>
+          <FileChip key={key++} code={match[1]} file={file} onOpen={onOpenFile!} />
         ) : (
           <code key={key++} className="font-mono text-[11px] text-foreground">
             {match[1]}
@@ -569,7 +610,8 @@ function renderInline(text: string, changedFiles: ReadonlySet<string>, onOpenFil
       );
     } else {
       // Bold is dropped on purpose: answers read as prose, not slide bullets.
-      parts.push(<span key={key++}>{match[2]}</span>);
+      // Its inside still gets inline code and file chips.
+      parts.push(<Fragment key={key++}>{renderInline(match[2], changedFiles, onOpenFile)}</Fragment>);
     }
     last = match.index! + match[0].length;
   }

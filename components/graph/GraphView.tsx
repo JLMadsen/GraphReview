@@ -31,8 +31,11 @@
 // one transparent and `inert`, so each keeps its layout and zoom. (Not
 // `visibility: hidden`: React Flow sets `visibility: visible` inline on its
 // nodes, which pokes straight through it.) Every module link — the
-// explainer's modules, chat chips, a finding's component, an area's "App
-// map" button — opens that module's card on the App map (`showInAppMap`).
+// explainer's modules, a finding's component, an area's "App map" button —
+// opens that module's card on the App map (`showInAppMap`). Chat is the
+// exception (`showComponent`): a component the selected change touches opens
+// its area on the PR map, any other one its card on the App map at the
+// level the reviewer is on.
 // The old Repo view (the Cytoscape component graph) was removed on
 // 2026-10-06; see docs/ideas.md for what went with it.
 //
@@ -69,7 +72,6 @@ import { useChecklist } from "./useChecklist";
 import { usePrChat } from "./usePrChat";
 import { DiffPanel, type DiffTargetMeta } from "./DiffPanel";
 import { ReviewPanel } from "./ReviewPanel";
-import { Segmented } from "./Segmented";
 import { effectiveAssessment, worstAssessment } from "./review-visuals";
 import type { FindingBucket } from "./pr-areas";
 import { useReview } from "./useReview";
@@ -370,13 +372,65 @@ export function GraphView({
   useEffect(() => setChatHighlight(null), [repoId, reviewTarget]);
   /** The findings filter a chat answer set; the nonce lets the same filter be applied again. */
   const [reviewFilter, setReviewFilter] = useState<{ nonce: number; buckets?: FindingBucket[]; category?: FindingCategory } | null>(null);
+  /** A file a chat answer showed, for the Files view to open (at its line); the nonce lets the same file be shown again. */
+  const [filesFocus, setFilesFocus] = useState<{ path: string; line?: number; nonce: number } | null>(null);
+  /** The PR map's area holding most of a component's changed files, if the change touches it. */
+  const prAreaOfComponent = useCallback(
+    (componentId: string) => {
+      let best: { id: string; files: number } | undefined;
+      for (const node of prMap.map?.nodes ?? []) {
+        if (node.files.length === 0 || !node.componentIds.includes(componentId)) continue;
+        if (!best || node.files.length > best.files) best = { id: node.id, files: node.files.length };
+      }
+      return best?.id;
+    },
+    [prMap.map]
+  );
+  /**
+   * Where a chat answer (or its component chip) shows a component: with a
+   * change selected that touches it, its area on the PR map; otherwise the
+   * App map at the level the reviewer is on — the module's card on Modules,
+   * else every card holding it ringed and the one holding most of it selected.
+   */
+  const showComponent = useCallback(
+    (componentId: string) => {
+      const area = prRequest ? prAreaOfComponent(componentId) : undefined;
+      if (area) {
+        setPrMode("files");
+        selectPrArea(area);
+        setPrAreaComponent(componentId);
+        setPreferredView("pr");
+        return;
+      }
+      if (appLevel === "modules") {
+        showInAppMap(componentId);
+        return;
+      }
+      let best: { id: string; files: number } | undefined;
+      for (const node of appMap.map?.nodes ?? []) {
+        const files = node.modules.find((m) => m.id === componentId)?.files ?? 0;
+        if (files > 0 && (!best || files > best.files)) best = { id: node.id, files };
+      }
+      setChatHighlight([componentId]);
+      setAppSelection(best ? { kind: "card", id: best.id } : null);
+      setPreferredView("app");
+    },
+    [prRequest, prAreaOfComponent, appLevel, appMap.map, showInAppMap, setPrMode, selectPrArea, setPrAreaComponent, setAppSelection, setPreferredView]
+  );
   const applyChatAction = useCallback(
     (action: ChatActionDTO) => {
       if (action.kind === "highlight") {
-        // On the Modules level each component is one card, so the ringed set reads as the path it is.
-        setAppLevel("modules");
+        // Rings every card holding one of them, on whichever level the map is.
+        // A change that touches every one of them shows the path on its own map.
         setChatHighlight(action.componentIds);
-        setPreferredView("app");
+        if (prRequest && action.componentIds.every((id) => prAreaOfComponent(id))) {
+          setPrMode("files");
+          selectPrArea(null);
+          setPreferredView("pr");
+        } else {
+          setAppSelection(null);
+          setPreferredView("app");
+        }
         return;
       }
       if (action.kind === "filter") {
@@ -393,10 +447,19 @@ export function GraphView({
       }
       switch (action.target) {
         case "component":
-          showInAppMap(action.id);
+          showComponent(action.id);
           break;
         case "file":
-          setOpenFile({ path: action.id, tab: changedFiles?.has(action.id) && !action.line ? "diff" : "file", ...(action.line ? { line: action.line } : {}) });
+          // A file the change touches opens in the file viewer (its diff, or the
+          // changed version at the line) — the Files view shows the analysed
+          // commit, where the change's line numbers don't hold. The rest open in
+          // the Files view, at the line, marked.
+          if (changedFiles?.has(action.id)) {
+            setOpenFile({ path: action.id, tab: action.line ? "file" : "diff", ...(action.line ? { line: action.line } : {}) });
+          } else {
+            setFilesFocus({ path: action.id, ...(action.line ? { line: action.line } : {}), nonce: Date.now() });
+            setPreferredView("files");
+          }
           break;
         case "endpoint":
           setApiChangedOnly(false);
@@ -430,9 +493,10 @@ export function GraphView({
       view,
       prRequest,
       changedFiles,
-      setAppLevel,
+      prAreaOfComponent,
+      setAppSelection,
       setPreferredView,
-      showInAppMap,
+      showComponent,
       openEndpoint,
       openTable,
       openInfraResource,
@@ -483,15 +547,32 @@ export function GraphView({
       ? { id: prAreaComponent, name: componentNameById(prAreaComponent) ?? prAreaComponent }
       : null;
 
-  // The view switch leads each view's own toolbar (see view-chrome.ts), so
-  // the switch and the view's controls are one bar rather than two rows.
-  // PR is only there while a diff is selected.
-  const viewSwitch = (
-    <>
-    <Segmented label="Graph view" value={view} onChange={setPreferredView} options={VIEW_OPTIONS.filter((o) => o.value !== "pr" || prRequest)} />
-    {/* Sets the view switch apart from the view's own controls after it. */}
-    <span className="h-5 w-px shrink-0 bg-border" aria-hidden />
-    </>
+  // The view switch is a row of tabs across the column; the active view's
+  // own toolbar sits directly under it (view-chrome.ts), so a view's
+  // controls always start at the same place, under the tabs rather than
+  // after them. PR is only there while a diff is selected.
+  const viewTabs = (
+    <div role="tablist" aria-label="Graph view" className="flex shrink-0 items-end gap-0.5 overflow-x-auto border-b border-border bg-card px-3">
+      {VIEW_OPTIONS.filter((o) => o.value !== "pr" || prRequest).map((o) => {
+        const active = o.value === view;
+        return (
+          <button
+            key={o.value}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            title={o.title}
+            onClick={() => setPreferredView(o.value)}
+            className={cn(
+              "-mb-px border-b-2 px-3 pt-2 pb-1.5 text-xs font-medium whitespace-nowrap transition-colors",
+              active ? "border-brand text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
   );
 
   return (
@@ -534,11 +615,11 @@ export function GraphView({
             column whose canvas takes whatever its own toolbar leaves. With a
             review under it the map section gets half the tab (the dock has a
             tab bar and column headers to fit), without one all of it. The
-            view switch sits in each view's toolbar. The review's Expand
+            view tabs run across the top, above whichever view is active. The review's Expand
             folds it to nothing (the canvases skip a zero size and refit when
             it comes back), so the findings get the whole column. */}
         <div
-          className={cn("grid shrink-0 grid-rows-[minmax(0,1fr)] transition-[height] duration-200", mapFolded && !apiFull && "overflow-hidden")}
+          className={cn("flex shrink-0 flex-col transition-[height] duration-200", mapFolded && !apiFull && "overflow-hidden")}
           style={{
             height: apiFull
               ? "var(--tab-h, 100vh)"
@@ -550,11 +631,12 @@ export function GraphView({
           }}
           inert={mapFolded && !apiFull}
         >
+        {viewTabs}
+        <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)]">
         {appMounted && (
           <div className={viewLayerClass(view === "app")} inert={view !== "app"}>
             <AppMapView
               className="flex h-full flex-col"
-              leading={viewSwitch}
               map={appMap.map}
               cardActions={appCardActions}
               loading={appMap.loading}
@@ -576,7 +658,6 @@ export function GraphView({
           <div className={viewLayerClass(view === "api")} inert={view !== "api"}>
             <ApiView
               className="flex h-full flex-col"
-              leading={viewSwitch}
               catalog={apiCatalog.catalog}
               rows={apiRows}
               loading={apiCatalog.loading}
@@ -598,7 +679,6 @@ export function GraphView({
           <div className={viewLayerClass(view === "infra")} inert={view !== "infra"}>
             <InfraView
               className="flex h-full flex-col"
-              leading={viewSwitch}
               catalog={infraCatalog.catalog}
               rows={infraRows}
               loading={infraCatalog.loading}
@@ -618,7 +698,6 @@ export function GraphView({
           <div className={viewLayerClass(view === "data")} inert={view !== "data"}>
             <DataView
               className="flex h-full flex-col"
-              leading={viewSwitch}
               schema={dbSchema.schema}
               rows={dbRows}
               loading={dbSchema.loading}
@@ -643,7 +722,6 @@ export function GraphView({
           <div className={viewLayerClass(view === "files")} inert={view !== "files"}>
             <FilesView
               className="flex h-full flex-col"
-              leading={viewSwitch}
               repoId={repoId}
               repoName={repo?.name}
               tree={repoTree.tree}
@@ -652,6 +730,7 @@ export function GraphView({
               changedFiles={changedFiles}
               onOpenDiff={openFileDiff}
               active={view === "files"}
+              focus={filesFocus}
             />
           </div>
         )}
@@ -659,7 +738,6 @@ export function GraphView({
           <div className={viewLayerClass(view === "pr")} inert={view !== "pr"}>
           <PrMapCanvas
             className="flex h-full flex-col"
-            leading={viewSwitch}
             map={prMap.map}
             loading={prMap.loading}
             error={prMap.error}
@@ -667,6 +745,7 @@ export function GraphView({
             selectedCardId={prArea}
             onSelectCard={selectPrArea}
             selectedComponentId={prAreaComponent}
+            highlightComponentIds={chatHighlight}
             reviewPending={review.state === "queued" || review.state === "running"}
             mode={reviewTarget ? prMode : "files"}
             onModeChange={reviewTarget ? setPrMode : undefined}
@@ -681,6 +760,7 @@ export function GraphView({
           />
           </div>
         )}
+        </div>
         </div>
 
         <FileDiffModal
@@ -814,7 +894,7 @@ export function GraphView({
                 focus={chatFocus}
                 componentName={componentNameById}
                 changedFiles={chatChangedFiles}
-                onSelectComponent={showInAppMap}
+                onSelectComponent={showComponent}
                 onOpenFile={openFileView}
                 onApplyAction={applyChatAction}
               />

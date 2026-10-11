@@ -64,8 +64,6 @@ export interface AppMapViewProps {
   highlightModuleIds?: readonly string[] | null;
   /** A connection pointed at in the side panel (`source->target`), drawn lit. */
   hoveredLink?: string | null;
-  /** Drawn first in the toolbar — GraphView's view switch. */
-  leading?: React.ReactNode;
   className?: string;
 }
 
@@ -84,7 +82,6 @@ export function AppMapView({
   focusModuleId,
   highlightModuleIds,
   hoveredLink,
-  leading,
   className,
 }: AppMapViewProps) {
   const [query, setQuery] = useState("");
@@ -237,7 +234,6 @@ export function AppMapView({
   return (
     <div className={className}>
       <div className={VIEW_TOOLBAR}>
-        {leading}
         <Segmented
           label="Level of detail"
           value={level}

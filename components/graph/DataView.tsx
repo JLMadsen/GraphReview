@@ -62,7 +62,6 @@ export interface DataViewProps {
   repoId?: string;
   /** Re-read the schema — after the source changed and the re-analysis finished. */
   onReload?: () => void;
-  leading?: React.ReactNode;
   className?: string;
 }
 
@@ -186,7 +185,6 @@ export function DataView({
   onOpenEndpoint,
   repoId,
   onReload,
-  leading,
   className,
 }: DataViewProps) {
   const [query, setQuery] = useState("");
@@ -391,7 +389,6 @@ export function DataView({
   return (
     <div className={className}>
       <div className={VIEW_TOOLBAR}>
-        {leading}
         {change ? (
           <Segmented
             label="Show"

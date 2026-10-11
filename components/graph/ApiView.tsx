@@ -50,7 +50,6 @@ export interface ApiViewProps {
   touches?: ReadonlyMap<string, Array<{ id: string; name: string; sqlOnly: boolean; access?: string }>>;
   onOpenTable?: (tableId: string) => void;
   onOpenFile: (path: string, line?: number) => void;
-  leading?: React.ReactNode;
   className?: string;
 }
 
@@ -69,7 +68,6 @@ export function ApiView({
   touches,
   onOpenTable,
   onOpenFile,
-  leading,
   className,
 }: ApiViewProps) {
   const [query, setQuery] = useState("");
@@ -141,7 +139,6 @@ export function ApiView({
   return (
     <div className={className}>
       <div className={VIEW_TOOLBAR}>
-        {leading}
         {change ? (
           <Segmented
             label="Show"

@@ -50,10 +50,10 @@ export interface PrMapCanvasProps {
   onSelectCard: (cardId: string | null) => void;
   /** A component selected elsewhere in the Graph tab — the cards holding it light up while no area is picked. */
   selectedComponentId?: string | null;
+  /** Components a chat answer highlighted — the cards holding any of them light up while no area is picked. */
+  highlightComponentIds?: readonly string[] | null;
   /** A review of this target is queued or running — its PR map pass will rename the cards. */
   reviewPending?: boolean;
-  /** Drawn first in the toolbar — GraphView's view switch. */
-  leading?: React.ReactNode;
   className?: string;
   /** Files (areas) or Functions (the call graph). */
   mode?: PrMapMode;
@@ -80,9 +80,9 @@ export function PrMapCanvas({
   selectedCardId,
   onSelectCard,
   selectedComponentId,
+  highlightComponentIds,
   tablesByFile,
   reviewPending,
-  leading,
   className,
   mode = "files",
   onModeChange,
@@ -120,9 +120,10 @@ export function PrMapCanvas({
 
   const highlighted = useMemo(() => {
     if (selectedCardId) return new Set([selectedCardId]);
-    if (!selectedComponentId) return new Set<string>();
-    return new Set(cards.filter((c) => c.componentIds.includes(selectedComponentId)).map((c) => c.id));
-  }, [selectedCardId, selectedComponentId, cards]);
+    const ids = new Set([...(selectedComponentId ? [selectedComponentId] : []), ...(highlightComponentIds ?? [])]);
+    if (ids.size === 0) return new Set<string>();
+    return new Set(cards.filter((c) => c.componentIds.some((id) => ids.has(id))).map((c) => c.id));
+  }, [selectedCardId, selectedComponentId, highlightComponentIds, cards]);
 
   const renderCard = useCallback(
     (id: string) => {
@@ -168,7 +169,6 @@ export function PrMapCanvas({
   return (
     <div className={className}>
       <div className={VIEW_TOOLBAR}>
-        {leading}
         <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
           {map && mode === "files" && (
             <span className="font-mono text-[11px]">

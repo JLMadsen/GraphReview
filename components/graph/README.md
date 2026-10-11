@@ -68,8 +68,9 @@ columns (`PanelResizeHandle.tsx`, width remembered per browser):
 
   Both draw through `CardFlow.tsx` (React Flow + elkjs: cards measured
   offscreen, laid out and edge-routed by ELK, refit on resize).
-  `view-chrome.ts` is the shared frame: one toolbar bar per view, the view
-  switch first (passed in as `leading`), the canvas edge to edge under it.
+  `view-chrome.ts` is the shared frame: one toolbar bar per view with its
+  controls, right under GraphView's view tabs, and the canvas edge to edge
+  under it.
 - **Right** — the inspector for what is selected (`AppMapPanel.tsx` for an
   app map card, `PrAreaPanel.tsx` for a PR area or the list of areas), and
   `ChatPanel.tsx` / `usePrChat.ts` under it (about the diff when one is

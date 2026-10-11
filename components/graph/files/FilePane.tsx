@@ -22,6 +22,7 @@ export function FilePane({
   entry,
   cacheKey,
   line,
+  scrollToLine = false,
   onLine,
   changed,
   onOpenDiff,
@@ -33,6 +34,8 @@ export function FilePane({
   entry: FileEntry;
   cacheKey: string;
   line: number | null;
+  /** The line was asked for from outside the view: show the code (not a preview) and scroll to it. */
+  scrollToLine?: boolean;
   onLine: (line: number | null) => void;
   changed: boolean;
   onOpenDiff: (path: string) => void;
@@ -44,6 +47,9 @@ export function FilePane({
   const svg = /\.svg$/i.test(entry.path);
   const markdown = isMarkdown(entry.path);
   const [mode, setMode] = useState<"preview" | "code">("preview");
+  useEffect(() => {
+    if (scrollToLine && line !== null && (markdown || svg)) setMode("code");
+  }, [scrollToLine, line, markdown, svg]);
   const showPreview = (markdown || image) && mode === "preview";
   // A picture isn't fetched as text — unless it is an SVG asked for as code.
   const state = useFileText(repoId, image && !(svg && mode === "code") ? null : entry.path, cacheKey);
@@ -122,7 +128,7 @@ export function FilePane({
             filePath={entry.path}
             highlightRange={line !== null ? [line, line] : null}
             whole
-            scrollToRange={false}
+            scrollToRange={scrollToLine}
             onLineClick={(n) => onLine(n === line ? null : n)}
           />
         </div>

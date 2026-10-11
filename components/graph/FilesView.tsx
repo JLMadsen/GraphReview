@@ -53,13 +53,14 @@ export interface FilesViewProps {
   onOpenDiff: (path: string) => void;
   /** The view is the one on screen — `t` focuses "Go to file" only then. */
   active: boolean;
-  leading?: React.ReactNode;
+  /** Opens a file from outside the view (a chat answer's `show`), at a line when there is one — scrolled to and marked. */
+  focus?: { path: string; line?: number; nonce: number } | null;
   className?: string;
 }
 
 const pathStorageKey = (repoId: string) => `graphreview.files.path.${repoId}`;
 
-export function FilesView({ repoId, repoName, tree, loading, error, changedFiles, onOpenDiff, active, leading, className }: FilesViewProps) {
+export function FilesView({ repoId, repoName, tree, loading, error, changedFiles, onOpenDiff, active, focus, className }: FilesViewProps) {
   const [changedOnly, setChangedOnly] = useState(false);
   const hasDiff = Boolean(changedFiles && changedFiles.size > 0);
   useEffect(() => setChangedOnly(hasDiff), [hasDiff, changedFiles]);
@@ -82,6 +83,8 @@ export function FilesView({ repoId, repoName, tree, loading, error, changedFiles
   // Where the view is: a folder ("" is the root) or a file — remembered per repo.
   const [path, setPathState] = useState("");
   const [line, setLine] = useState<number | null>(null);
+  /** The marked line came from outside the view — scroll to it (a line clicked here is already on screen). */
+  const [scrollToLine, setScrollToLine] = useState(false);
   useEffect(() => {
     try {
       setPathState(window.localStorage.getItem(pathStorageKey(repoId)) ?? "");
@@ -93,6 +96,7 @@ export function FilesView({ repoId, repoName, tree, loading, error, changedFiles
     (next: string, nextLine: number | null = null) => {
       setPathState(next);
       setLine(nextLine);
+      setScrollToLine(false);
       try {
         window.localStorage.setItem(pathStorageKey(repoId), next);
       } catch {
@@ -101,6 +105,16 @@ export function FilesView({ repoId, repoName, tree, loading, error, changedFiles
     },
     [repoId]
   );
+  // After the remembered path is restored, so an outside request on first mount wins.
+  useEffect(() => {
+    if (!focus) return;
+    navigate(focus.path, focus.line ?? null);
+    setScrollToLine(focus.line !== undefined);
+    // "Changed" would leave a file the diff doesn't touch out of the tree.
+    if (!changedFiles?.has(focus.path)) setChangedOnly(false);
+    // Only a new request moves the view, not the diff changing under it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus]);
   const isDir = dirs.has(path);
   const fileEntry = isDir ? undefined : filesByPath.get(path);
   // A remembered path the tree no longer has (or the Changed filter hides): the nearest folder that's there.
@@ -161,8 +175,11 @@ export function FilesView({ repoId, repoName, tree, loading, error, changedFiles
   const openFile = (entry: FileEntry) => (entry.added ? onOpenDiff(entry.path) : navigate(entry.path));
 
   const contentRef = useRef<HTMLDivElement>(null);
+  const scrollToLineRef = useRef(scrollToLine);
+  scrollToLineRef.current = scrollToLine;
   useEffect(() => {
-    contentRef.current?.scrollTo({ top: 0 });
+    // A line to scroll to is the file's own business (it scrolls in a child effect, which runs first).
+    if (!scrollToLineRef.current) contentRef.current?.scrollTo({ top: 0 });
   }, [path]);
 
   const crumbs = path ? path.split("/") : [];
@@ -170,8 +187,7 @@ export function FilesView({ repoId, repoName, tree, loading, error, changedFiles
   return (
     <div className={className}>
       <div className={VIEW_TOOLBAR}>
-        {leading}
-        <div className="ml-auto flex items-center gap-2">
+        <div className="flex items-center gap-2">
           {loading && <LoaderCircle className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
           {hasDiff && (
             <Segmented
@@ -238,7 +254,7 @@ export function FilesView({ repoId, repoName, tree, loading, error, changedFiles
               <ul
                 role="listbox"
                 aria-label="Matching files"
-                className="absolute top-8 right-0 z-30 max-h-[60vh] w-[min(36rem,80vw)] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-lg"
+                className="absolute top-8 left-0 z-30 max-h-[60vh] w-[min(36rem,80vw)] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-lg"
               >
                 {results.length === 0 ? (
                   <li className="px-3 py-2 text-xs text-muted-foreground">No file matches.</li>
@@ -349,7 +365,11 @@ export function FilesView({ repoId, repoName, tree, loading, error, changedFiles
                     entry={fileEntry}
                     cacheKey={tree.sha}
                     line={line}
-                    onLine={setLine}
+                    scrollToLine={scrollToLine}
+                    onLine={(n) => {
+                      setLine(n);
+                      setScrollToLine(false);
+                    }}
                     changed={Boolean(changedFiles?.has(fileEntry.path))}
                     onOpenDiff={onOpenDiff}
                     onNavigate={navigate}

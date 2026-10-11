@@ -58,7 +58,6 @@ export interface InfraViewProps {
   endpointLabel: (id: string) => string;
   onOpenEndpoint?: (endpointId: string) => void;
   onOpenFile: (path: string, line?: number) => void;
-  leading?: React.ReactNode;
   className?: string;
 }
 
@@ -75,7 +74,6 @@ export function InfraView({
   endpointLabel,
   onOpenEndpoint,
   onOpenFile,
-  leading,
   className,
 }: InfraViewProps) {
   const [query, setQuery] = useState("");
@@ -176,7 +174,6 @@ export function InfraView({
   return (
     <div className={className}>
       <div className={VIEW_TOOLBAR}>
-        {leading}
         {change ? (
           <Segmented
             label="Show"
