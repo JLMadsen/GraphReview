@@ -50,7 +50,7 @@ import {
   isImpactNote,
   reviewMarkdown,
 } from "./review-visuals";
-import { emptyCounts, findingBucket, isAreaFinding, type FindingBucket, type PrAreas } from "./pr-areas";
+import { FINDING_BUCKETS, emptyCounts, findingBucket, isAreaFinding, type FindingBucket, type PrAreas } from "./pr-areas";
 import type { PrMapResponseDTO } from "./pr-map-types";
 import {
   REVIEW_EFFORT_OPTIONS,
@@ -124,6 +124,8 @@ export interface ReviewPanelProps {
   componentName: (id: string) => string | undefined;
   /** Opens a changed file's diff (the Files tab). Absent when there is no diff to show. */
   onOpenFile?: (path: string) => void;
+  /** A filter the chat asked for (filter_findings); a new object (nonce) applies it again. */
+  filterRequest?: { nonce: number; buckets?: FindingBucket[]; category?: FindingCategory } | null;
 }
 
 const DEFAULT_SHOWN: Record<FindingBucket, boolean> = { defect: true, concern: true, unknown: true, fine: false };
@@ -162,6 +164,7 @@ export function ReviewPanel({
   onClearScope,
   componentName,
   onOpenFile,
+  filterRequest,
 }: ReviewPanelProps) {
   /** The finding whose file diff is open in `FileDiffModal`, or `null` when it's closed. */
   const [diffFinding, setDiffFinding] = useState<FindingDTO | null>(null);
@@ -177,6 +180,14 @@ export function ReviewPanel({
     setShown(DEFAULT_SHOWN);
     setOnlyCategory(null);
   }, [targetKey]);
+
+  // A filter the chat set (filter_findings): verdicts and/or one category, on the findings tab.
+  useEffect(() => {
+    if (!filterRequest) return;
+    if (filterRequest.buckets?.length) setShown(Object.fromEntries(FINDING_BUCKETS.map((b) => [b, filterRequest.buckets!.includes(b)])) as Record<FindingBucket, boolean>);
+    setOnlyCategory(filterRequest.category ?? null);
+    setTab("findings");
+  }, [filterRequest]);
 
   const inScope = useMemo(() => {
     if (!scopeAreaId && !scopeComponentId) return () => true;

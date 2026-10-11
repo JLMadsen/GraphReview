@@ -132,6 +132,7 @@ export {
   applyPrMapGrouping,
   assemblePrMap,
   buildHeuristicPrMap,
+  buildPrMapFor,
   classifyPath,
   collectPrMapLinks,
   edgeLabelKey,

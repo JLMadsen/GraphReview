@@ -61,6 +61,7 @@ import { AppMapView } from "./AppMapView";
 import { AppMapPanel } from "./AppMapPanel";
 import { PanelResizeHandle, usePanelWidth } from "./PanelResizeHandle";
 import { ChatPanel } from "./ChatPanel";
+import type { ChatActionDTO } from "./chat-types";
 import { ChecklistPanel } from "./ChecklistPanel";
 import { LooksDifferentPanel } from "./LooksDifferentPanel";
 import { usePreviewScan } from "./usePreviewScan";
@@ -70,6 +71,7 @@ import { DiffPanel, type DiffTargetMeta } from "./DiffPanel";
 import { ReviewPanel } from "./ReviewPanel";
 import { Segmented } from "./Segmented";
 import { effectiveAssessment, worstAssessment } from "./review-visuals";
+import type { FindingBucket } from "./pr-areas";
 import { useReview } from "./useReview";
 import { ApiView } from "./ApiView";
 import { ApiChangesSection } from "./ApiChangesSection";
@@ -92,6 +94,7 @@ import {
 import type {
   DiffImpactResponseDTO,
   Assessment,
+  FindingCategory,
   ReviewTargetDTO,
 } from "./types";
 
@@ -150,7 +153,10 @@ export function GraphView({
   const review = useReview(repoId, reviewTarget, reviewEffort, autoReview);
   // A cancelled review doesn't hand over to the checklist's automatic AI items.
   const checklist = useChecklist(repoId, reviewTarget, review.state, autoReview && !review.cancelled);
-  const chat = usePrChat(repoId, reviewTarget);
+  /** Applies what a chat answer did to the view — set below, once the view's own callbacks exist. */
+  const chatActionsRef = useRef<(actions: ChatActionDTO[]) => void>(undefined);
+  const handleChatActions = useCallback((actions: ChatActionDTO[]) => chatActionsRef.current?.(actions), []);
+  const chat = usePrChat(repoId, reviewTarget, handleChatActions);
   const previewScan = usePreviewScan(repoId, reviewTarget);
   /** The target's base vs head: structure change and call graph (static analysis, no model). */
   const targetGraph = useTargetGraph(repoId, reviewTarget);
@@ -358,6 +364,97 @@ export function GraphView({
     setOpenFile(null);
   }, [prRequest]);
 
+  // --- What chat answers do to the view (DESIGN.md §6.7) --------------------
+  /** Components a chat answer highlighted — ringed on the App map until the next answer. */
+  const [chatHighlight, setChatHighlight] = useState<string[] | null>(null);
+  useEffect(() => setChatHighlight(null), [repoId, reviewTarget]);
+  /** The findings filter a chat answer set; the nonce lets the same filter be applied again. */
+  const [reviewFilter, setReviewFilter] = useState<{ nonce: number; buckets?: FindingBucket[]; category?: FindingCategory } | null>(null);
+  const applyChatAction = useCallback(
+    (action: ChatActionDTO) => {
+      if (action.kind === "highlight") {
+        // On the Modules level each component is one card, so the ringed set reads as the path it is.
+        setAppLevel("modules");
+        setChatHighlight(action.componentIds);
+        setPreferredView("app");
+        return;
+      }
+      if (action.kind === "filter") {
+        if (!reviewTarget) return;
+        setReviewFilter({ nonce: Date.now(), buckets: action.buckets, category: action.category as FindingCategory | undefined });
+        if (action.componentId) {
+          const card = prMap.map?.nodes.find((n) => n.files.length > 0 && n.componentIds.includes(action.componentId!));
+          selectPrArea(card?.id ?? null);
+          setPrAreaComponent(action.componentId);
+        }
+        // The findings list sits under the maps, not under the list views.
+        if (LIST_VIEWS.has(view)) setPreferredView(prRequest ? "pr" : "app");
+        return;
+      }
+      switch (action.target) {
+        case "component":
+          showInAppMap(action.id);
+          break;
+        case "file":
+          setOpenFile({ path: action.id, tab: changedFiles?.has(action.id) && !action.line ? "diff" : "file", ...(action.line ? { line: action.line } : {}) });
+          break;
+        case "endpoint":
+          setApiChangedOnly(false);
+          openEndpoint(action.id);
+          break;
+        case "table":
+          setDataChangedOnly(false);
+          openTable(action.id);
+          setDataSelected(action.id);
+          break;
+        case "infra":
+          setInfraChangedOnly(false);
+          openInfraResource(action.id);
+          break;
+        case "area":
+          if (!prRequest) break;
+          setPreferredView("pr");
+          selectPrArea(action.id);
+          break;
+        case "function":
+          if (!reviewTarget) break;
+          setPreferredView("pr");
+          setPrMode("functions");
+          setSelectedFunction(action.id);
+          break;
+      }
+    },
+    [
+      reviewTarget,
+      prMap.map,
+      view,
+      prRequest,
+      changedFiles,
+      setAppLevel,
+      setPreferredView,
+      showInAppMap,
+      openEndpoint,
+      openTable,
+      openInfraResource,
+      selectPrArea,
+      setPrAreaComponent,
+      setPrMode,
+      setSelectedFunction,
+      setApiChangedOnly,
+      setDataChangedOnly,
+      setDataSelected,
+      setInfraChangedOnly,
+    ]
+  );
+  // Every live answer drops the last one's highlight, then applies its own
+  // actions in order — the last view change wins.
+  useEffect(() => {
+    chatActionsRef.current = (actions) => {
+      setChatHighlight(null);
+      actions.forEach(applyChatAction);
+    };
+  }, [applyChatAction]);
+
   const componentNameById = useCallback(
     (id: string) => graph?.nodes.find((n) => n.id === id)?.name,
     [graph]
@@ -470,6 +567,7 @@ export function GraphView({
               changedFiles={changedFiles}
               findings={review.findings}
               focusModuleId={prAreaComponent}
+              highlightModuleIds={chatHighlight}
               hoveredLink={appHoveredLink}
             />
           </div>
@@ -628,6 +726,7 @@ export function GraphView({
             scopeAreaId={prArea}
             scopeComponentId={prAreaComponent}
             onClearScope={() => selectPrArea(null)}
+            filterRequest={reviewFilter}
             componentName={componentNameById}
             onOpenFile={openFilePath}
           />
@@ -717,6 +816,7 @@ export function GraphView({
                 changedFiles={chatChangedFiles}
                 onSelectComponent={showInAppMap}
                 onOpenFile={openFileView}
+                onApplyAction={applyChatAction}
               />
           </div>
       </aside>

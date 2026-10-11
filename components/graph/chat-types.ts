@@ -20,6 +20,24 @@ export interface ChatSuggestionDTO {
   findingId?: string;
 }
 
+/** Something an answer did to the view (`show`, `highlight`, `filter_findings`) — applied on arrival, redone from its chip. */
+export type ChatActionDTO =
+  | {
+      kind: "show";
+      target: "component" | "file" | "endpoint" | "table" | "infra" | "area" | "function";
+      id: string;
+      label: string;
+      line?: number;
+    }
+  | { kind: "highlight"; componentIds: string[]; label: string }
+  | {
+      kind: "filter";
+      buckets?: Array<"defect" | "concern" | "unknown" | "fine">;
+      category?: string;
+      componentId?: string;
+      label: string;
+    };
+
 export interface ChatMessageDTO {
   id: string;
   role: "user" | "assistant";
@@ -32,6 +50,7 @@ export interface ChatMessageDTO {
   model?: string;
   error?: boolean;
   suggestions?: ChatSuggestionDTO[];
+  actions?: ChatActionDTO[];
   createdAt: string;
 }
 

@@ -33,6 +33,28 @@ export interface ChatSuggestionRecord {
   findingId?: string;
 }
 
+/** Where `show` can take the reviewer. */
+export type ChatShowKind = "component" | "file" | "endpoint" | "table" | "infra" | "area" | "function";
+
+/**
+ * Something an answer does to the reviewer's view (`show`, `highlight`,
+ * `filter_findings`). Ids are resolved when the tool runs, so the UI only
+ * applies them: once when the answer arrives, and again from its chip.
+ */
+export type ChatActionRecord =
+  | { kind: "show"; target: ChatShowKind; id: string; label: string; line?: number }
+  | { kind: "highlight"; componentIds: string[]; label: string }
+  | {
+      kind: "filter";
+      /** Verdict buckets to list; `fine` is resolved and OK findings. Absent: leave as is. */
+      buckets?: Array<"defect" | "concern" | "unknown" | "fine">;
+      /** Only this static-analysis category (structure, infra, schema). */
+      category?: string;
+      /** Scope the dock to this component (and the PR map area holding it). */
+      componentId?: string;
+      label: string;
+    };
+
 export interface ChatMessageRecord {
   id: string;
   repoId: string;
@@ -53,6 +75,8 @@ export interface ChatMessageRecord {
   error?: boolean;
   /** Assistant messages: findings the model offered, for the reviewer to add or dismiss. */
   suggestions?: ChatSuggestionRecord[];
+  /** Assistant messages: what the answer did to the reviewer's view. */
+  actions?: ChatActionRecord[];
   createdAt: string;
 }
 
@@ -77,6 +101,7 @@ function toMessage(props: Record<string, unknown>): ChatMessageRecord {
     model: (props.model as string | null) ?? undefined,
     error: props.error === true ? true : undefined,
     suggestions: Array.isArray(props.suggestions) && props.suggestions.length > 0 ? (props.suggestions as ChatSuggestionRecord[]) : undefined,
+    actions: Array.isArray(props.actions) && props.actions.length > 0 ? (props.actions as ChatActionRecord[]) : undefined,
     createdAt: props.createdAt as string,
   };
 }
@@ -114,6 +139,7 @@ export async function addChatMessage(
       model: input.model,
       error: input.error,
       suggestions: input.suggestions?.length ? input.suggestions : undefined,
+      actions: input.actions?.length ? input.actions : undefined,
       createdAt: new Date().toISOString(),
       seq,
     };

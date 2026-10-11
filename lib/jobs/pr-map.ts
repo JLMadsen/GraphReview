@@ -19,11 +19,12 @@
 // job and for tests.
 
 import path from "node:path";
-import { listPrMapComponents, listPrMapImports } from "@/lib/db";
+import { getPrMapGrouping, listPrMapComponents, listPrMapImports, prMapFilesKey } from "@/lib/db";
 import type {
   PrMapEdgeDTO,
   PrMapFileDTO,
   PrMapNodeDTO,
+  PrMapResponseDTO,
   PrMapRole,
 } from "@/components/graph/pr-map-types";
 import { matchFilesToComponents } from "./diff-components";
@@ -714,4 +715,24 @@ export async function loadPrMapInput(
     components: new Map(components.map((c) => [c.id, c])),
     imports,
   };
+}
+
+/**
+ * The map the PR view shows: the review's AI grouping when one is stored for
+ * `targetKey` and the changed files are still exactly the ones it grouped,
+ * the heuristic grouping otherwise (`aiOutdated` when a stale AI one exists).
+ * `targetKey` is null for pasted paths, which have no review. Shared by the
+ * pr-map route and the chat, so both see the same cards.
+ */
+export async function buildPrMapFor(
+  repoId: string,
+  targetKey: string | null,
+  files: PrMapChangedFile[]
+): Promise<PrMapResponseDTO> {
+  const input = await loadPrMapInput(repoId, files);
+  const grouping = targetKey ? await getPrMapGrouping(repoId, targetKey) : null;
+  if (grouping && grouping.filesKey === prMapFilesKey(files.map((f) => f.path))) {
+    return { ...applyPrMapGrouping(input, collectPrMapLinks(input), grouping), source: "ai", model: grouping.model || undefined };
+  }
+  return { ...buildHeuristicPrMap(input), source: "heuristic", ...(grouping ? { aiOutdated: true } : {}) };
 }

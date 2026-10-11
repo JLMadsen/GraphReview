@@ -139,6 +139,17 @@ export function buildPrChatSystemPrompt(input: Pick<PrChatInput, "context" | "to
           "  and the evidence; never for style, guesses or things the question has nothing to do with. At most 3.",
         ]
       : []),
+    ...(input.tools.some((t) => t.name === "show")
+      ? [
+          "- show, highlight and filter_findings change only what is on the reviewer's screen. Use show when pointing at",
+          "  one thing helps the answer (the code you explain, the endpoint or table it is about) or when asked to",
+          "  show, open or go to something; highlight for a path or set of components; filter_findings when asked to",
+          "  narrow the findings list. One or two per answer at most, and say in the answer what you put on screen.",
+        ]
+      : []),
+    ...(input.tools.some((t) => t.name === "get_callers")
+      ? ["- For \"what calls / what breaks\" questions prefer get_callers and get_imports over search_code; they read resolved code structure."]
+      : []),
     "",
     repo ? "## The repo" : "## The change",
     input.context,

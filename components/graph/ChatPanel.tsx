@@ -8,7 +8,9 @@
 // - the component selected in the graph is sent along as the question's
 //   focus (a dismissable chip above the input);
 // - every component an answer's lookups touched becomes a chip that selects
-//   it in the graph, and file paths in an answer open that file's diff.
+//   it in the graph, and file paths in an answer open that file's diff;
+// - what an answer put on screen (show, highlight, filter_findings) is applied
+//   when it arrives (GraphView) and stays as a chip that does it again.
 //
 // It reads as a Q&A log, not a chatbot: each question is a bold line, the
 // answer plain prose under it (bold in an answer is dropped — models love
@@ -25,7 +27,10 @@ import {
   ChevronDown,
   ChevronRight,
   CircleStop,
+  Crosshair,
+  Highlighter,
   Lightbulb,
+  ListFilter,
   LoaderCircle,
   Plus,
   SendHorizontal,
@@ -34,7 +39,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "cn";
-import type { ChatMessageDTO, ChatStepDTO, ChatSuggestionActionDTO, ChatSuggestionDTO } from "./chat-types";
+import type { ChatActionDTO, ChatMessageDTO, ChatStepDTO, ChatSuggestionActionDTO, ChatSuggestionDTO } from "./chat-types";
 import { AssessmentGlyph } from "./PrMapNode";
 import { highlightLines, languageForFence } from "./highlight";
 import { startMiddleScroll } from "./middle-scroll";
@@ -62,6 +67,8 @@ export interface ChatPanelProps {
   changedFiles: ReadonlySet<string>;
   onSelectComponent: (id: string) => void;
   onOpenFile?: (path: string) => void;
+  /** Does again what an answer did to the view. */
+  onApplyAction?: (action: ChatActionDTO) => void;
 }
 
 export function ChatPanel({
@@ -73,6 +80,7 @@ export function ChatPanel({
   changedFiles,
   onSelectComponent,
   onOpenFile,
+  onApplyAction,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState("");
   const [useFocus, setUseFocus] = useState(true);
@@ -170,13 +178,15 @@ export function ChatPanel({
                 <p className="text-[11px] text-muted-foreground">
                   {aboutRepo ? (
                     <>
-                      No diff selected, so this is about the repo: the assistant can read its files, search the code and
-                      look up the component graph before it answers. Pick a PR on the left to ask about a change. Try:
+                      No diff selected, so this is about the repo: the assistant can read its files, search the code,
+                      follow calls and imports, read the history and look up the component graph before it answers
+                      — and point at what it means on screen. Pick a PR on the left to ask about a change. Try:
                     </>
                   ) : (
                     <>
-                      The assistant can read the diff, files at the PR&apos;s head, the component graph and the
-                      review&apos;s findings before it answers. Try:
+                      The assistant can read the diff, files at the PR&apos;s head, calls and imports, the history,
+                      the checklist, CI and the review&apos;s findings before it answers — and point at what it means
+                      on screen. Try:
                     </>
                   )}
                 </p>
@@ -214,6 +224,7 @@ export function ChatPanel({
                     renderInline={inlineRenderer}
                     onAnswerSuggestion={(id, action) => chat.answerSuggestion(message.id, id, action)}
                     onOpenFile={onOpenFile}
+                    onApplyAction={onApplyAction}
                   />
                 </Fragment>
               );
@@ -341,6 +352,7 @@ function Message({
   renderInline: inline,
   onAnswerSuggestion,
   onOpenFile,
+  onApplyAction,
 }: {
   message: ChatMessageDTO;
   componentName: (id: string) => string | undefined;
@@ -348,6 +360,7 @@ function Message({
   renderInline: (text: string) => ReactNode;
   onAnswerSuggestion: (suggestionId: string, action: ChatSuggestionActionDTO["action"]) => Promise<void>;
   onOpenFile?: (path: string) => void;
+  onApplyAction?: (action: ChatActionDTO) => void;
 }) {
   if (message.role === "user") return <UserBubble text={message.content} />;
   if (message.error) {
@@ -359,6 +372,13 @@ function Message({
   return (
     <div className="space-y-1.5">
       <div className="space-y-1.5 text-xs leading-relaxed text-foreground/90">{renderMarkdown(message.content, inline)}</div>
+      {onApplyAction && message.actions && message.actions.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {message.actions.map((action, i) => (
+            <ActionChip key={i} action={action} onApply={() => onApplyAction(action)} />
+          ))}
+        </div>
+      )}
       {message.suggestions?.map((suggestion) => (
         <SuggestionCard
           key={suggestion.id}
@@ -388,6 +408,26 @@ function Message({
         </div>
       )}
     </div>
+  );
+}
+
+const ACTION_VERB: Record<ChatActionDTO["kind"], string> = { show: "Show", highlight: "Highlight", filter: "List" };
+const ACTION_ICON = { show: Crosshair, highlight: Highlighter, filter: ListFilter } as const;
+
+/** What an answer put on screen; a click puts it there again. */
+function ActionChip({ action, onApply }: { action: ChatActionDTO; onApply: () => void }) {
+  const Icon = ACTION_ICON[action.kind];
+  return (
+    <button
+      type="button"
+      onClick={onApply}
+      className="inline-flex max-w-full items-center gap-1 rounded-sm border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-secondary hover:text-foreground"
+      title="Do this again"
+    >
+      <Icon className="size-3 shrink-0" aria-hidden />
+      <span className="shrink-0">{ACTION_VERB[action.kind]}</span>
+      <span className="truncate text-foreground/90">{action.label}</span>
+    </button>
   );
 }
 

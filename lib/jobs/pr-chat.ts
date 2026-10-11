@@ -8,6 +8,12 @@
 //   read_file            a file at the PR's head (or base), a line range at a time
 //   search_code          fixed-string search — "who calls X", "where is Y defined"
 //   get_component        a component: description, files, what it depends on, what depends on it
+//   get_callers/_callees the call edges of a declaration (./chat-lookups.ts)
+//   get_imports          a file's imports, both ways
+//   git_log, blame       the history of the commit the chat is about
+//   get_pr_map           the change's areas, as the PR map shows them
+//   get_checklist        the PR checklist's results
+//   get_ci_status        the CI checks on the head commit
 //   get_findings         the review's findings, optionally for one component
 //
 //   add_finding          records a finding in the change's review — only when
@@ -15,6 +21,11 @@
 //   suggest_finding      offers a finding the model noticed on its own; it is
 //                        stored on the answer, and only the reviewer's Add
 //                        (addSuggestedFinding) puts it in the review
+//
+//   show, highlight,     change what the reviewer's screen shows (a view, a
+//   filter_findings      selection, the findings list). Resolved to ids here
+//                        and stored on the answer as `actions`; the chat
+//                        column applies them when the answer arrives.
 //
 // Nothing here writes to the repo, runs code, or reaches outside the repo's
 // own host (GitHub/GitLab/local checkout). The one write is add_finding, into
@@ -28,7 +39,9 @@
 // Kept out of lib/jobs' barrel: it pulls in lib/ai.
 
 import { randomUUID } from "node:crypto";
+import type { AnalysisResult, CallGraph } from "@/lib/analysis";
 import { runPrChat, type PrChatStep, type PrChatTool, type PrChatToolOutput } from "@/lib/ai";
+import type { PrMapResponseDTO } from "@/components/graph/pr-map-types";
 import { emitFindingsChanged } from "@/lib/mcp/events";
 import {
   addChatMessage,
@@ -51,10 +64,22 @@ import { describeDbFinding, describeSchemaChange, describeTable, filterTables } 
 import { describeInfraChange, describeInfraFinding, describeInfraResource, filterInfra } from "@/lib/analysis/infra/describe";
 import { readServedApiCatalog } from "./api-catalog";
 import type { TargetGraphData } from "./target-graph-queue";
-import type { ChatMessageRecord, ChatSuggestionRecord, ComponentRecord, FindingRecord, FindingWithComponent, RepoRecord } from "@/lib/db";
+import type {
+  ChatActionRecord,
+  ChatMessageRecord,
+  ChatShowKind,
+  ChatSuggestionRecord,
+  ComponentRecord,
+  FindingRecord,
+  FindingWithComponent,
+  RepoRecord,
+} from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import { loadAiConfigOrNull } from "./ai-config";
-import { loadPrContext, readFileAtCommit, searchCode } from "./pr-context";
+import { describeCalls, describeImports, findDeclarations, gitBlame, gitLog, loadChatAnalysis, repoDirWithCommit } from "./chat-lookups";
+import { evaluateChecklist } from "./checklist";
+import { loadCiStatus, loadPrContext, readFileAtCommit, searchCode } from "./pr-context";
+import { buildPrMapFor } from "./pr-map";
 import type { ResolvedTarget } from "./review-target";
 import { reviewTargetKey, type ReviewTarget } from "./review-queue";
 
@@ -86,6 +111,32 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
     description: "a component of the repo graph: what it's for, its files, what it depends on and what depends on it",
   },
   {
+    name: "get_callers",
+    args: '{"name":"<function, or Class.method>","path":"<optional file, to pick one of several>"}',
+    description:
+      "every place that calls a function, method or class, from static analysis (TS/JS, Python, Java, Kotlin) — better than search_code for \"who breaks if this changes\"",
+  },
+  {
+    name: "get_callees",
+    args: '{"name":"<function, or Class.method>","path":"<optional file>"}',
+    description: "the repo functions a function, method or class calls, with where each is defined",
+  },
+  {
+    name: "get_imports",
+    args: '{"path":"<file>"}',
+    description: "the repo files a file imports and the files that import it, each with its component",
+  },
+  {
+    name: "git_log",
+    args: '{"path":"<optional file>","limit":10}',
+    description: "the latest commits (hash, date, author, subject), optionally only those touching one file",
+  },
+  {
+    name: "blame",
+    args: '{"path":"<file>","start":1,"end":40}',
+    description: "who last changed each line of a range and in which commit — why the code looks the way it does",
+  },
+  {
     name: "list_endpoints",
     args: '{"query":"<optional text in the path, handler or framework>"}',
     description: "the app's API: endpoints (HTTP routes, server actions, tRPC, GraphQL) with handler, middleware/auth and request/response shapes",
@@ -113,9 +164,40 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
     description: "what this change does to the database schema: tables and columns added, dropped, retyped or renamed, indexes, FKs, enums, the migrations it adds, drift it introduces and the certain schema findings",
   },
   {
+    name: "get_pr_map",
+    args: "{}",
+    description: "the change grouped into areas as the PR map shows them: each area's files and components, and how the areas connect",
+  },
+  {
+    name: "get_checklist",
+    args: "{}",
+    description: "the PR checklist for this change: each check (CI, description, size, protected paths, AI questions) with pass/fail and why",
+  },
+  {
+    name: "get_ci_status",
+    args: "{}",
+    description: "the CI checks on the change's head commit (GitHub/GitLab), each passing, failing or running, with links",
+  },
+  {
     name: "get_findings",
     args: '{"component":"<optional component name>"}',
     description: "the AI review's findings for this change, optionally for one component",
+  },
+  {
+    name: "show",
+    args: '{"kind":"component|file|endpoint|table|infra|area|function","name":"<its name, path or id>","line":12}',
+    description:
+      "moves the reviewer's screen to one thing: a component's card on the App map, a file (at a line), an endpoint, a table, an infra resource, an area of the PR map or a function of the change — changes nothing else",
+  },
+  {
+    name: "highlight",
+    args: '{"components":["<component>","<component>"]}',
+    description: "rings several components' cards on the App map, e.g. the path a request takes — changes nothing else",
+  },
+  {
+    name: "filter_findings",
+    args: '{"assessment":["defect","concern"],"category":"<optional: structure, infra or schema>","component":"<optional component name>"}',
+    description: "sets which findings the review list under the map shows (verdicts, one static-analysis category, one component) — changes nothing else",
   },
   {
     name: "add_finding",
@@ -134,7 +216,24 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
 /** Most suggestions one answer may carry — beyond that they stop being worth reading. */
 export const MAX_SUGGESTIONS_PER_ANSWER = 3;
 
-const REPO_TOOL_NAMES = new Set(["read_file", "search_code", "get_component", "list_endpoints", "list_infra", "list_tables"]);
+const REPO_TOOL_NAMES = new Set([
+  "read_file",
+  "search_code",
+  "get_component",
+  "get_callers",
+  "get_callees",
+  "get_imports",
+  "git_log",
+  "blame",
+  "list_endpoints",
+  "list_infra",
+  "list_tables",
+  "show",
+  "highlight",
+]);
+
+/** Most view changes one answer may make — the reviewer should still recognise their screen. */
+export const MAX_ACTIONS_PER_ANSWER = 4;
 
 export const REPO_CHAT_TOOLS: PrChatTool[] = [
   {
@@ -149,7 +248,14 @@ export const REPO_CHAT_TOOLS: PrChatTool[] = [
           args: '{"path":"<file>","start":1,"end":200}',
           description: `a file's lines at the analyzed commit; up to ${READ_FILE_MAX_LINES} lines per call`,
         }
-      : t
+      : t.name === "show"
+        ? {
+            ...t,
+            args: '{"kind":"component|file|endpoint|table|infra","name":"<its name, path or id>","line":12}',
+            description:
+              "moves the developer's screen to one thing: a component's card on the App map, a file (at a line), an endpoint, a table or an infra resource — changes nothing else",
+          }
+        : t
   ),
 ];
 
@@ -170,8 +276,52 @@ interface ToolContext {
   infra?: InfraChange;
   /** What the change does to the database schema, likewise (DESIGN.md §6.13). */
   db?: DbChange;
+  /** The change's call graph (functions it touches and their neighbours), for `show` a function. */
+  callGraph?: CallGraph;
   /** suggest_finding's offers in this turn, stored on the answer. */
   suggestions: ChatSuggestionRecord[];
+  /** show / highlight / filter_findings in this turn, stored on the answer and applied by the UI. */
+  actions: ChatActionRecord[];
+  /** The review target, for fetching its commits; null in the repo chat. */
+  target: ReviewTarget | null;
+  /** The commit analysis the call and import tools read, loaded on first use. */
+  analysis?: Promise<AnalysisResult>;
+  /** The PR map, built on first use. */
+  prMap?: Promise<PrMapResponseDTO>;
+}
+
+/** The commit the chat is about: the change's head, or the repo's analysed commit. */
+function chatSha(tc: ToolContext): string | undefined {
+  return tc.ctx ? tc.ctx.reviewed.headSha : tc.repo.lastAnalyzedSha;
+}
+
+function analysisOf(tc: ToolContext): Promise<AnalysisResult> {
+  const sha = chatSha(tc);
+  if (!sha) return Promise.reject(new Error("No commit to analyse — the repo hasn't been analysed yet."));
+  tc.analysis ??= loadChatAnalysis(tc.repo, sha, tc.target);
+  tc.analysis.catch(() => (tc.analysis = undefined));
+  return tc.analysis;
+}
+
+function prMapOf(tc: ToolContext): Promise<PrMapResponseDTO> {
+  if (!tc.prMap) {
+    const seen = new Set<string>();
+    const files = tc.ctx!.files.filter((f) => (seen.has(f.path) ? false : (seen.add(f.path), true)));
+    tc.prMap = buildPrMapFor(tc.repo.id, tc.targetKey, files);
+    tc.prMap.catch(() => (tc.prMap = undefined));
+  }
+  return tc.prMap;
+}
+
+/** The owner's name of a path, "" when the graph doesn't know it. */
+function componentLabel(tc: ToolContext, path: string): string {
+  const owner = ownerOf(tc, path);
+  return owner ? componentName(tc, owner) : "";
+}
+
+/** Component ids owning any of `paths`. */
+function ownersOf(tc: ToolContext, paths: readonly string[]): string[] {
+  return [...new Set(paths.map((p) => ownerOf(tc, p)).filter(Boolean))];
 }
 
 const ASSESSMENTS = new Set(["defect", "concern", "unknown", "ok"]);
@@ -217,7 +367,19 @@ function num(value: unknown): number | undefined {
 }
 
 /** Tools that need a change to talk about; the repo-wide chat answers them with NO_CHANGE. */
-const CHANGE_TOOL_NAMES = new Set(["list_changed_files", "get_diff", "get_findings", "add_finding", "suggest_finding", "get_infra_changes", "get_schema_changes"]);
+const CHANGE_TOOL_NAMES = new Set([
+  "list_changed_files",
+  "get_diff",
+  "get_findings",
+  "add_finding",
+  "suggest_finding",
+  "get_infra_changes",
+  "get_schema_changes",
+  "get_pr_map",
+  "get_checklist",
+  "get_ci_status",
+  "filter_findings",
+]);
 
 /** A chat finding as the model gave it, before it is recorded or offered. */
 type FindingDraft = Omit<ChatSuggestionRecord, "id" | "status" | "findingId">;
@@ -574,9 +736,222 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
       };
     }
 
+    case "get_callers":
+    case "get_callees": {
+      const query = arg(args, "name", "function", "symbol", "method", "query");
+      if (!query) return missing(name);
+      const path = arg(args, ...PATH_KEYS) || undefined;
+      const result = describeCalls(await analysisOf(tc), query, name === "get_callers" ? "callers" : "callees", path, (p) => componentLabel(tc, p));
+      return { ...result, componentIds: ownersOf(tc, result.files) };
+    }
+
+    case "get_imports": {
+      const path = arg(args, ...PATH_KEYS);
+      if (!path) return missing(name);
+      const result = describeImports(await analysisOf(tc), path, (p) => componentLabel(tc, p));
+      return { ...result, componentIds: ownersOf(tc, result.files.slice(0, 1)) };
+    }
+
+    case "git_log":
+    case "blame": {
+      const sha = chatSha(tc);
+      if (!sha) return { text: "No commit to read history at — the repo hasn't been analysed yet.", summary: "no commit" };
+      const path = arg(args, ...PATH_KEYS);
+      if (name === "blame" && !path) return missing(name);
+      const dir = await repoDirWithCommit(tc.repo, sha, tc.target);
+      if (!dir) return { text: "The repo isn't on disk, so its history can't be read.", summary: "no history" };
+      const result =
+        name === "git_log"
+          ? await gitLog(dir, sha, path || undefined, num(args.limit) ?? num(args.n) ?? 10)
+          : await gitBlame(dir, sha, path, num(args.start) ?? 1, num(args.end) ?? (num(args.start) ?? 1) + 39);
+      return { ...result, componentIds: ownersOf(tc, result.files) };
+    }
+
+    case "get_pr_map": {
+      const map = await prMapOf(tc);
+      const names = new Map(map.nodes.map((n) => [n.id, n.name]));
+      const lines = [
+        `${map.source === "ai" ? "Areas named by the review" : "Areas grouped by heuristics (the review hasn't named them yet)"} — ${map.nodes.length}:`,
+        ...map.nodes.map((n) => {
+          const files = n.files.slice(0, 12).map((f) => `${f.path} (${f.status}, +${f.additions}/-${f.deletions})`);
+          return [
+            `- ${n.name} [${n.role}]${n.description ? `: ${n.description}` : ""}`,
+            ...(files.length ? [`  files: ${files.join(", ")}${n.files.length > 12 ? `, … ${n.files.length - 12} more` : ""}`] : []),
+            ...(n.componentIds.length ? [`  components: ${n.componentIds.map((id) => componentName(tc, id)).join(", ")}`] : []),
+          ].join("\n");
+        }),
+        ...(map.edges.length ? ["Links:", ...map.edges.map((e) => `- ${names.get(e.source) ?? e.source} ${e.label} ${names.get(e.target) ?? e.target} (${e.weight})`)] : []),
+      ];
+      return {
+        text: lines.join("\n"),
+        summary: `read the PR map (${map.nodes.length} area${map.nodes.length === 1 ? "" : "s"})`,
+        componentIds: [...new Set(map.nodes.flatMap((n) => n.componentIds))],
+      };
+    }
+
+    case "get_checklist": {
+      const evaluation = await evaluateChecklist(tc.repo, tc.target!);
+      const lines = evaluation.items.map(
+        (item) =>
+          `- [${item.status}] ${item.label} (${item.kind}): ${item.detail || "—"}` +
+          (item.links?.length ? `\n  ${item.links.map((l) => `${l.label}: ${l.url}`).join(" · ")}` : "")
+      );
+      if (evaluation.aiPending > 0) lines.push(`${evaluation.aiPending} AI check(s) not answered for this commit yet.`);
+      const failing = evaluation.items.filter((i) => i.status === "fail").length;
+      return {
+        text: lines.join("\n") || "The checklist has no items for this repo (Settings → Checklist).",
+        summary: `read the checklist (${evaluation.items.length} item${evaluation.items.length === 1 ? "" : "s"}, ${failing} failing)`,
+      };
+    }
+
+    case "get_ci_status": {
+      const ci = await loadCiStatus(tc.repo, ctx!.reviewed.headSha);
+      if (!ci.available) return { text: ci.reason, summary: "no CI status" };
+      const order = { failure: 0, pending: 1, success: 2, none: 3 } as const;
+      const checks = [...ci.status.checks].sort((a, b) => order[a.state] - order[b.state] || a.name.localeCompare(b.name));
+      return {
+        text: [
+          `Overall: ${ci.status.state === "none" ? "no checks reported for this commit" : ci.status.state} (head ${ctx!.reviewed.headSha?.slice(0, 7) ?? "?"})`,
+          ...checks.map((c) => `- [${c.state}] ${c.name}${c.url ? ` — ${c.url}` : ""}`),
+        ].join("\n"),
+        summary: `read CI (${ci.status.state}, ${checks.length} check${checks.length === 1 ? "" : "s"})`,
+      };
+    }
+
+    case "show":
+    case "highlight":
+    case "filter_findings": {
+      if (tc.actions.length >= MAX_ACTIONS_PER_ANSWER) {
+        return { text: `That's ${MAX_ACTIONS_PER_ANSWER} view changes already — give your answer.`, summary: "too many view changes" };
+      }
+      const action =
+        name === "show" ? await resolveShow(tc, args) : name === "highlight" ? resolveHighlight(tc, args) : resolveFilter(tc, args);
+      if (typeof action === "string") return { text: action, summary: `${name}: nothing matched` };
+      tc.actions.push(action);
+      const ids =
+        action.kind === "highlight" ? action.componentIds : action.kind === "show" && action.target === "component" ? [action.id] : [];
+      return {
+        text: `Done — the reviewer's screen now ${action.kind === "filter" ? "lists" : "shows"} ${action.label}. Say so in a few words in your answer.`,
+        summary: `${action.kind === "filter" ? "filtered the findings to" : action.kind === "highlight" ? "highlighted" : "showed"} ${action.label}`,
+        componentIds: ids,
+      };
+    }
+
     default:
       return { text: `Unknown tool "${name}".`, summary: `unknown tool ${name}` };
   }
+}
+
+const SHOW_KINDS = new Set<ChatShowKind>(["component", "file", "endpoint", "table", "infra", "area", "function"]);
+
+/** Exact (case-insensitive) first, then the first that contains the query. */
+function bestMatch<T>(items: readonly T[], query: string, keys: (item: T) => string[]): T | undefined {
+  const q = query.trim().toLowerCase();
+  return (
+    items.find((item) => keys(item).some((k) => k.toLowerCase() === q)) ??
+    items.find((item) => keys(item).some((k) => k.toLowerCase().includes(q)))
+  );
+}
+
+/** `show`'s target, resolved to the id the UI opens; a string says why nothing matched. */
+async function resolveShow(tc: ToolContext, args: Record<string, unknown>): Promise<ChatActionRecord | string> {
+  const rawKind = arg(args, "kind", "type").toLowerCase().replace(/s$/, "");
+  const kind = (rawKind === "module" ? "component" : rawKind === "resource" ? "infra" : rawKind) as ChatShowKind;
+  const query = arg(args, "name", "id", "target", ...PATH_KEYS, "query");
+  if (!SHOW_KINDS.has(kind) || !query) return `show needs a kind (${[...SHOW_KINDS].join(", ")}) and a name, e.g. {"kind":"file","name":"app/page.tsx","line":12}.`;
+  const line = num(args.line) ?? num(args.start);
+  switch (kind) {
+    case "component": {
+      const c = findComponent(tc, query);
+      return c ? { kind: "show", target: "component", id: c.id, label: c.name } : `No component matches "${query}" — list_components or get_component first.`;
+    }
+    case "file": {
+      const path = query.replace(/^\/+/, "").replace(/:(\d+)(-\d+)?$/, "");
+      const lineInPath = num(/:(\d+)(-\d+)?$/.exec(query)?.[1]);
+      const known = tc.ownerByFile.has(path) || tc.ctx?.files.some((f) => f.path === path);
+      if (!known) return `"${path}" isn't a file the graph or the diff knows — check the path with search_code.`;
+      const at = line ?? lineInPath;
+      return { kind: "show", target: "file", id: path, label: at ? `${path}:${at}` : path, ...(at ? { line: at } : {}) };
+    }
+    case "endpoint": {
+      const served = readServedApiCatalog(tc.repo.id);
+      const e = served && bestMatch(served.catalog.endpoints, query, (x) => [endpointLabel(x), x.path, x.id, x.handler?.name ?? ""]);
+      return e ? { kind: "show", target: "endpoint", id: e.id, label: endpointLabel(e) } : `No endpoint matches "${query}" — list_endpoints first.`;
+    }
+    case "table": {
+      const stored = readDbSchema(tc.repo.id);
+      const hit = stored && bestMatch(filterTables(stored.schema), query, ({ table }) => [table.name, table.id, `${table.schema ?? ""}.${table.name}`]);
+      return hit ? { kind: "show", target: "table", id: hit.table.id, label: `table ${hit.table.name}` } : `No table matches "${query}" — list_tables first.`;
+    }
+    case "infra": {
+      const stored = readInfraCatalog(tc.repo.id);
+      const r = stored && bestMatch(stored.catalog.resources, query, (x) => [x.address, x.id, x.name]);
+      return r ? { kind: "show", target: "infra", id: r.id, label: r.address } : `No infrastructure resource matches "${query}" — list_infra first.`;
+    }
+    case "area": {
+      if (!tc.ctx) return "Areas belong to a change — none is selected.";
+      const map = await prMapOf(tc);
+      const node = bestMatch(map.nodes, query, (n) => [n.name, n.id]);
+      return node ? { kind: "show", target: "area", id: node.id, label: `the ${node.name} area` } : `No area matches "${query}" — get_pr_map first.`;
+    }
+    case "function": {
+      if (!tc.ctx) return "Functions are shown for a change — use kind \"file\" with a line instead.";
+      const q = query.replace(/\(\)$/, "");
+      const fn = tc.callGraph && bestMatch(tc.callGraph.functions.filter((f) => f.status !== "removed"), q, (f) => [f.qualified, f.id, f.name]);
+      if (fn) return { kind: "show", target: "function", id: fn.id, label: `${fn.qualified}()` };
+      // Not one the change touches: open its file at the declaration instead.
+      const decl = findDeclarations(await analysisOf(tc), q)[0];
+      return decl
+        ? { kind: "show", target: "file", id: decl.file, line: decl.startLine, label: `${decl.qualified} in ${decl.file}:${decl.startLine}` }
+        : `No function matches "${query}".`;
+    }
+  }
+}
+
+function resolveHighlight(tc: ToolContext, args: Record<string, unknown>): ChatActionRecord | string {
+  const raw = args.components ?? args.names ?? args.path ?? args.name;
+  const names = (Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(/\s*(?:,|→|->)\s*/) : []).map(str).filter(Boolean);
+  if (names.length === 0) return 'highlight needs component names: {"components":["api","jobs"]}.';
+  const found = names.map((n) => findComponent(tc, n));
+  const components = [...new Map(found.filter((c): c is ComponentRecord => Boolean(c)).map((c) => [c.id, c])).values()];
+  if (components.length === 0) return `None of ${names.join(", ")} is a component — list_components first.`;
+  const unknown = names.filter((_, i) => !found[i]);
+  return {
+    kind: "highlight",
+    componentIds: components.map((c) => c.id),
+    label: components.map((c) => c.name).join(" → ") + (unknown.length ? ` (not found: ${unknown.join(", ")})` : ""),
+  };
+}
+
+const BUCKETS = ["defect", "concern", "unknown", "fine"] as const;
+const STATIC_CATEGORIES = new Set(["structure", "infra", "schema"]);
+
+function resolveFilter(tc: ToolContext, args: Record<string, unknown>): ChatActionRecord | string {
+  const raw = args.assessment ?? args.assessments ?? args.verdict ?? args.severity;
+  const words = (Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(/[\s,|]+/) : []).map((w) => str(w).toLowerCase()).filter(Boolean);
+  const buckets = words.includes("all")
+    ? [...BUCKETS]
+    : [...new Set(words.map((w) => (w === "ok" || w === "resolved" ? "fine" : w)).filter((w): w is (typeof BUCKETS)[number] => (BUCKETS as readonly string[]).includes(w)))];
+  const category = arg(args, "category").toLowerCase();
+  if (category && !STATIC_CATEGORIES.has(category)) return `category must be one of ${[...STATIC_CATEGORIES].join(", ")} (or left out).`;
+  const componentQuery = arg(args, "component", "module");
+  const component = componentQuery ? findComponent(tc, componentQuery) : undefined;
+  if (componentQuery && !component) return `No component matches "${componentQuery}".`;
+  if (buckets.length === 0 && !category && !component) return 'filter_findings needs an assessment, a category or a component, e.g. {"assessment":["defect"]}.';
+  const label = [
+    buckets.length ? buckets.join(" + ") : "",
+    category ? `${category} findings` : "findings",
+    component ? `in ${component.name}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return {
+    kind: "filter",
+    ...(buckets.length ? { buckets } : {}),
+    ...(category ? { category } : {}),
+    ...(component ? { componentId: component.id } : {}),
+    label: label || "findings",
+  };
 }
 
 /** The system-message summary of the repo, for the repo-wide chat: what it is and its modules. */
@@ -701,9 +1076,11 @@ export async function runChatTurn(args: {
     model: config.model,
     ...(target ? (() => {
       const stored = readTargetGraph<TargetGraphData>(repo.id, targetKey)?.data;
-      return { api: stored?.api, infra: stored?.infra, db: stored?.db };
+      return { api: stored?.api, infra: stored?.infra, db: stored?.db, callGraph: stored?.callGraph };
     })() : {}),
     suggestions: [],
+    actions: [],
+    target,
   };
 
   const userMessage = await addChatMessage({
@@ -750,6 +1127,7 @@ export async function runChatTurn(args: {
       headSha,
       model: config.model,
       suggestions: tc.suggestions,
+      actions: tc.actions,
     });
     await onEvent({ type: "answer", message: answer });
     return answer;

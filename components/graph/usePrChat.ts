@@ -5,10 +5,12 @@
 // sending a question. The answer streams back
 // as NDJSON — the question, then one line per lookup the model makes, then
 // the answer — so the column can show "read app/map/page.tsx" while a slow
-// model is still working.
+// model is still working. Each answer hands what it did to the view (show,
+// highlight, filter_findings — often nothing) to `onActions` as it arrives;
+// never for answers loaded from the stored thread.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ChatMessageDTO, ChatStepDTO, ChatStreamEventDTO, ChatSuggestionActionDTO, ChatThreadDTO } from "./chat-types";
+import type { ChatActionDTO, ChatMessageDTO, ChatStepDTO, ChatStreamEventDTO, ChatSuggestionActionDTO, ChatThreadDTO } from "./chat-types";
 import { reviewTargetKeyOf, reviewTargetQuery, type ReviewTargetDTO } from "./types";
 
 export interface PendingTurn {
@@ -35,7 +37,15 @@ function threadQuery(target: ReviewTargetDTO | null): string {
   return target ? reviewTargetQuery(target) : "scope=repo";
 }
 
-export function usePrChat(repoId: string, target: ReviewTargetDTO | null): UsePrChatResult {
+export function usePrChat(
+  repoId: string,
+  target: ReviewTargetDTO | null,
+  onActions?: (actions: ChatActionDTO[]) => void
+): UsePrChatResult {
+  const onActionsRef = useRef(onActions);
+  useEffect(() => {
+    onActionsRef.current = onActions;
+  }, [onActions]);
   const [thread, setThread] = useState<ChatThreadDTO | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -109,7 +119,10 @@ export function usePrChat(repoId: string, target: ReviewTargetDTO | null): UsePr
             const event = JSON.parse(line) as ChatStreamEventDTO;
             if (event.type === "user") append(event.message);
             else if (event.type === "step") setPending((p) => (p ? { ...p, steps: [...p.steps, event.step] } : p));
-            else if (event.type === "answer") append(event.message);
+            else if (event.type === "answer") {
+              append(event.message);
+              onActionsRef.current?.(event.message.actions ?? []);
+            }
             else if (event.type === "error") setError(event.error);
           }
         }

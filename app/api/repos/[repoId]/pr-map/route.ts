@@ -14,17 +14,13 @@ import { z } from "zod";
 import { gitRefSchema } from "../../_shared";
 import {
   ChangedFilesError,
-  applyPrMapGrouping,
-  buildHeuristicPrMap,
-  collectPrMapLinks,
+  buildPrMapFor,
   listTargetChangedFiles,
-  loadPrMapInput,
   reviewTargetKey,
   type PrMapChangedFile,
   type ReviewTarget,
 } from "@/lib/jobs";
-import { getPrMapGrouping, getRepoById, prMapFilesKey } from "@/lib/db";
-import type { PrMapResponseDTO } from "@/components/graph/pr-map-types";
+import { getRepoById } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -74,24 +70,7 @@ export async function POST(
       );
     }
 
-    const input = await loadPrMapInput(repoId, files);
-    const grouping = target ? await getPrMapGrouping(repoId, reviewTargetKey(target)) : null;
-    const current = grouping?.filesKey === prMapFilesKey(files.map((f) => f.path));
-
-    let body: PrMapResponseDTO;
-    if (grouping && current) {
-      body = {
-        ...applyPrMapGrouping(input, collectPrMapLinks(input), grouping),
-        source: "ai",
-        model: grouping.model || undefined,
-      };
-    } else {
-      body = {
-        ...buildHeuristicPrMap(input),
-        source: "heuristic",
-        ...(grouping ? { aiOutdated: true } : {}),
-      };
-    }
+    const body = await buildPrMapFor(repoId, target ? reviewTargetKey(target) : null, files);
     return NextResponse.json(body);
   } catch (err) {
     if (err instanceof ChangedFilesError) {

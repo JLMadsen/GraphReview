@@ -60,6 +60,8 @@ export interface AppMapViewProps {
   findings?: FindingDTO[];
   /** The component selected elsewhere; the cards holding it are ringed. */
   focusModuleId?: string | null;
+  /** Components a chat answer highlighted; their cards are ringed like the focused one's. */
+  highlightModuleIds?: readonly string[] | null;
   /** A connection pointed at in the side panel (`source->target`), drawn lit. */
   hoveredLink?: string | null;
   /** Drawn first in the toolbar — GraphView's view switch. */
@@ -80,6 +82,7 @@ export function AppMapView({
   changedFiles,
   findings,
   focusModuleId,
+  highlightModuleIds,
   hoveredLink,
   leading,
   className,
@@ -130,13 +133,12 @@ export function AppMapView({
     );
   }, [nodes, query]);
 
-  // Every card holding the focused component — on the architecture level a
-  // module can straddle several layers.
-  const focused = useMemo(
-    () =>
-      new Set(focusModuleId ? nodes.filter((n) => n.modules.some((m) => m.id === focusModuleId)).map((n) => n.id) : []),
-    [nodes, focusModuleId]
-  );
+  // Every card holding the focused component (or a chat-highlighted one) —
+  // on the architecture level a module can straddle several layers.
+  const focused = useMemo(() => {
+    const ids = new Set([...(focusModuleId ? [focusModuleId] : []), ...(highlightModuleIds ?? [])]);
+    return new Set(ids.size ? nodes.filter((n) => n.modules.some((m) => ids.has(m.id))).map((n) => n.id) : []);
+  }, [nodes, focusModuleId, highlightModuleIds]);
 
   // Findings: one marker per card — the PR map's rule. A finding lands on the
   // card holding its file, else on the card holding most of its component.
