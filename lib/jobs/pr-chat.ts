@@ -22,10 +22,17 @@
 //                        stored on the answer, and only the reviewer's Add
 //                        (addSuggestedFinding) puts it in the review
 //
+//   triage_finding       offers a verdict on a finding already in the review
+//                        (holds / wrong / re-rate); only the reviewer's Apply
+//                        (applyChatTriage) changes the finding
+//
 //   show, highlight,     change what the reviewer's screen shows (a view, a
-//   filter_findings      selection, the findings list). Resolved to ids here
-//                        and stored on the answer as `actions`; the chat
-//                        column applies them when the answer arrives.
+//   filter_findings,     selection, the findings list, the file viewer).
+//   switch_view,         Resolved to ids here and stored on the answer as
+//   open_diff            `actions`; the chat column applies them when the
+//                        answer arrives. The final answer's `point_to` and
+//                        `next` are resolved the same way into actions that
+//                        are only offered (chips), never applied.
 //
 // Nothing here writes to the repo, runs code, or reaches outside the repo's
 // own host (GitHub/GitLab/local checkout). The one write is add_finding, into
@@ -45,6 +52,7 @@ import type { PrMapResponseDTO } from "@/components/graph/pr-map-types";
 import { emitFindingsChanged } from "@/lib/mcp/events";
 import {
   addChatMessage,
+  addFindingResponse,
   getFileOwnerMap,
   listChatMessages,
   listComponentsByRepoId,
@@ -53,8 +61,10 @@ import {
   readInfraCatalog,
   readDbSchema,
   readEnvCatalog,
+  rateFinding,
   readTargetGraph,
   updateChatSuggestion,
+  updateChatTriage,
   upsertFinding,
 } from "@/lib/db";
 import type { ApiChange } from "@/lib/analysis/api/types";
@@ -69,9 +79,12 @@ import { readServedApiCatalog } from "./api-catalog";
 import type { TargetGraphData } from "./target-graph-queue";
 import type {
   ChatActionRecord,
+  ChatFileTab,
   ChatMessageRecord,
   ChatShowKind,
   ChatSuggestionRecord,
+  ChatTriageRecord,
+  ChatViewName,
   ComponentRecord,
   FindingRecord,
   FindingWithComponent,
@@ -94,6 +107,8 @@ const HISTORY_MESSAGES = 12;
 const READ_FILE_MAX_LINES = 250;
 const CONTEXT_MAX_FILES = 80;
 const CONTEXT_MAX_BODY_CHARS = 1500;
+/** The screen note is the UI's own summary — a line or two; anything longer is cut. */
+const SCREEN_MAX_CHARS = 600;
 
 export const PR_CHAT_TOOLS: PrChatTool[] = [
   { name: "list_changed_files", args: "{}", description: "every file this change touches, with +/- line counts and its component" },
@@ -199,9 +214,21 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
   },
   {
     name: "show",
-    args: '{"kind":"component|file|endpoint|table|env|infra|area|function","name":"<its name, path or id>","line":12}',
+    args: '{"kind":"component|file|endpoint|table|env|infra|area|function|finding","name":"<its name, path or id>","line":12}',
     description:
-      "moves the reviewer's screen to one thing: a component's card on the App map, a file (at a line), an endpoint, a table (on the Data view), an env var (on the Env view), an infra resource, an area of the PR map or a function of the change — changes nothing else",
+      "moves the reviewer's screen to one thing: a component's card on the App map, a file (at a line), an endpoint, a table (on the Data view), an env var (on the Env view), an infra resource, an area of the PR map, a function of the change or a finding in the review list (by its #id) — changes nothing else",
+  },
+  {
+    name: "switch_view",
+    args: '{"view":"pr|app|api|infra|data|env|files","level":"architecture|features|modules","mode":"<pr: files|functions; infra: diagram|files|requests|list; data: canvas|list>","changed_only":true}',
+    description:
+      "switches the Graph tab to a view, optionally with the App map's level, the view's mode or its \"changed only\" toggle — e.g. the infra diagram, the PR map's functions, the App map by feature",
+  },
+  {
+    name: "open_diff",
+    args: '{"path":"<changed file>","tab":"diff|file|base|preview","line":12,"end":20,"symbol":"<component or function, for preview>"}',
+    description:
+      "opens a changed file in the file viewer: its diff with lines marked (diff), the whole new file (file), the whole file before the change (base), or the Before / after preview of a component or function in it (preview — only offered as a chip, since it starts a sandbox)",
   },
   {
     name: "highlight",
@@ -225,6 +252,12 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
     description:
       "offers the reviewer a problem you noticed that the review doesn't have yet; they choose whether to add it — use without being asked",
   },
+  {
+    name: "triage_finding",
+    args: '{"id":"<#id from get_findings>","verdict":"holds|wrong|rerate","assessment":"<rerate: defect|concern|unknown|ok>","reason":"<the evidence, a sentence or two>"}',
+    description:
+      "offers your verdict on a finding already in the review — it holds, it is wrong (resolves it), or its verdict should change; the reviewer chooses whether to apply it",
+  },
 ];
 
 /** Most suggestions one answer may carry — beyond that they stop being worth reading. */
@@ -245,6 +278,7 @@ const REPO_TOOL_NAMES = new Set([
   "list_tables",
   "show",
   "highlight",
+  "switch_view",
 ]);
 
 /** Most view changes one answer may make — the reviewer should still recognise their screen. */
@@ -266,13 +300,18 @@ export const REPO_CHAT_TOOLS: PrChatTool[] = [
       : t.name === "show"
         ? {
             ...t,
-            args: '{"kind":"component|file|endpoint|table|infra","name":"<its name, path or id>","line":12}',
+            args: '{"kind":"component|file|endpoint|table|env|infra","name":"<its name, path or id>","line":12}',
             description:
-              "moves the developer's screen to one thing: a component's card on the App map, a file (at a line), an endpoint, a table or an infra resource — changes nothing else",
+              "moves the developer's screen to one thing: a component's card on the App map, a file (at a line), an endpoint, a table, an env var or an infra resource — changes nothing else",
           }
-        : t
+        : t.name === "switch_view"
+          ? { ...t, args: t.args.replace("pr|app", "app").replace("pr: files|functions; ", "") }
+          : t
   ),
 ];
+
+/** Most offered stops (`point_to`) one answer carries, besides its `next`. */
+export const MAX_OFFERS_PER_ANSWER = 4;
 
 interface ToolContext {
   repo: RepoRecord;
@@ -297,8 +336,10 @@ interface ToolContext {
   callGraph?: CallGraph;
   /** suggest_finding's offers in this turn, stored on the answer. */
   suggestions: ChatSuggestionRecord[];
-  /** show / highlight / filter_findings in this turn, stored on the answer and applied by the UI. */
+  /** show / highlight / filter_findings / switch_view / open_diff in this turn, stored on the answer and applied by the UI. */
   actions: ChatActionRecord[];
+  /** triage_finding's verdicts in this turn, stored on the answer. */
+  triage: ChatTriageRecord[];
   /** The review target, for fetching its commits; null in the repo chat. */
   target: ReviewTarget | null;
   /** The commit analysis the call and import tools read, loaded on first use. */
@@ -397,6 +438,8 @@ const CHANGE_TOOL_NAMES = new Set([
   "get_checklist",
   "get_ci_status",
   "filter_findings",
+  "open_diff",
+  "triage_finding",
 ]);
 
 /** A chat finding as the model gave it, before it is recorded or offered. */
@@ -472,6 +515,25 @@ export async function addSuggestedFinding(
   const record = await recordChatFinding(message.repoId, message.targetKey, suggestion, message.model ?? "chat");
   const updated = await updateChatSuggestion(message.repoId, message.id, suggestionId, { status: "added", findingId: record.id });
   return updated ? { message: updated, findingId: record.id } : undefined;
+}
+
+/** A finding's short handle for the model: `#` and the start of its id. */
+function findingRef(f: { id: string }): string {
+  return `#${f.id.slice(0, 8)}`;
+}
+
+/** A finding of this change by its `#id` (or the start of its id). */
+function findFinding(tc: ToolContext, query: string): FindingWithComponent | undefined {
+  const q = query.trim().replace(/^#/, "").toLowerCase();
+  return q.length >= 4 ? tc.findings.find((f) => f.id.toLowerCase().startsWith(q)) : undefined;
+}
+
+/** A finding as the model reads it: handle, verdict and kind, where, what, why. */
+export function describeFinding(f: FindingWithComponent): string {
+  return (
+    `${findingRef(f)} [${findingLabels(f)}${f.resolvedAt ? ", resolved" : ""}] ${f.componentName || "whole PR"}` +
+    `${f.filePath ? ` ${f.filePath}${f.lineRange ? `:${f.lineRange}` : ""}` : ""}: ${f.summary}\n  why: ${f.rationale}`
+  );
 }
 
 /** `"defect, impact"`, `"ok, fix, unmentioned"` — the verdict first, then what kind of finding it is. */
@@ -716,13 +778,7 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
       const query = arg(args, "component", "name", "module");
       const component = query ? findComponent(tc, query) : undefined;
       const findings = component ? tc.findings.filter((f) => f.componentId === component.id) : tc.findings;
-      const text = findings
-        .map(
-          (f) =>
-            `[${findingLabels(f)}${f.resolvedAt ? ", resolved" : ""}] ${f.componentName || "whole PR"}` +
-            `${f.filePath ? ` ${f.filePath}${f.lineRange ? `:${f.lineRange}` : ""}` : ""}: ${f.summary}\n  why: ${f.rationale}`
-        )
-        .join("\n");
+      const text = findings.map(describeFinding).join("\n");
       return {
         text: text || (tc.findings.length ? "No findings for that component." : "The review has no findings (it may not have run)."),
         summary: `read ${findings.length} finding(s)${component ? ` for ${component.name}` : ""}`,
@@ -859,20 +915,84 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
 
     case "show":
     case "highlight":
-    case "filter_findings": {
+    case "filter_findings":
+    case "switch_view":
+    case "open_diff": {
       if (tc.actions.length >= MAX_ACTIONS_PER_ANSWER) {
         return { text: `That's ${MAX_ACTIONS_PER_ANSWER} view changes already — give your answer.`, summary: "too many view changes" };
       }
       const action =
-        name === "show" ? await resolveShow(tc, args) : name === "highlight" ? resolveHighlight(tc, args) : resolveFilter(tc, args);
+        name === "show"
+          ? await resolveShow(tc, args)
+          : name === "highlight"
+            ? resolveHighlight(tc, args)
+            : name === "switch_view"
+              ? resolveView(tc, args)
+              : name === "open_diff"
+                ? resolveOpenDiff(tc, args)
+                : resolveFilter(tc, args);
       if (typeof action === "string") return { text: action, summary: `${name}: nothing matched` };
       tc.actions.push(action);
       const ids =
         action.kind === "highlight" ? action.componentIds : action.kind === "show" && action.target === "component" ? [action.id] : [];
+      if (action.offer) {
+        return {
+          text: `Offered as a chip under your answer — ${action.label} starts a sandbox, so it isn't opened by itself. Say so in a few words.`,
+          summary: `offered ${action.label}`,
+        };
+      }
       return {
         text: `Done — the reviewer's screen now ${action.kind === "filter" ? "lists" : "shows"} ${action.label}. Say so in a few words in your answer.`,
-        summary: `${action.kind === "filter" ? "filtered the findings to" : action.kind === "highlight" ? "highlighted" : "showed"} ${action.label}`,
+        summary: `${action.kind === "filter" ? "filtered the findings to" : action.kind === "highlight" ? "highlighted" : action.kind === "view" ? "switched to" : action.kind === "file" ? "opened" : "showed"} ${action.label}`,
         componentIds: ids,
+        ...(action.kind === "file" ? { files: [action.path] } : {}),
+      };
+    }
+
+    case "triage_finding": {
+      const ref = arg(args, "id", "finding", "findingId", "finding_id");
+      if (!ref) return missing(name);
+      const finding = findFinding(tc, ref);
+      if (!finding) return { text: `No finding ${ref} — get_findings lists them with their #id.`, summary: `no finding ${ref}` };
+      const rawVerdict = arg(args, "verdict", "decision").toLowerCase().replace(/[\s_-]+/g, "");
+      const verdict: ChatTriageRecord["verdict"] | undefined =
+        rawVerdict === "holds" || rawVerdict === "correct" || rawVerdict === "right" || rawVerdict === "valid"
+          ? "holds"
+          : /^(wrong|doesnothold|invalid|falsepositive|incorrect)$/.test(rawVerdict)
+            ? "wrong"
+            : /^(rerate|reassess|upgrade|downgrade|overstated|understated)$/.test(rawVerdict)
+              ? "rerate"
+              : undefined;
+      if (!verdict) return { text: 'verdict must be "holds", "wrong" or "rerate".', summary: "triage: no verdict" };
+      const rawAssessment = arg(args, "assessment", "severity", "to").toLowerCase();
+      const assessment = ASSESSMENTS.has(rawAssessment) ? (rawAssessment as ChatTriageRecord["from"]) : undefined;
+      if (verdict === "rerate" && (!assessment || assessment === finding.assessment)) {
+        return { text: `rerate needs a new assessment other than its current "${finding.assessment}".`, summary: "triage: no new verdict" };
+      }
+      if (verdict === "wrong" && (finding.assessment === "ok" || finding.resolvedAt)) {
+        return { text: "That finding is already OK or resolved — nothing to resolve.", summary: `triage: ${findingRef(finding)} already settled` };
+      }
+      const reason = arg(args, "reason", "rationale", "why", "evidence");
+      if (!reason) return { text: "Give the reason, with the evidence you checked.", summary: "triage: no reason" };
+      if (tc.triage.some((t) => t.findingId === finding.id)) return { text: "You already gave a verdict on that finding in this answer.", summary: "triage: again" };
+      if (tc.triage.length >= MAX_SUGGESTIONS_PER_ANSWER) {
+        return { text: `That's ${MAX_SUGGESTIONS_PER_ANSWER} verdicts already — give your answer.`, summary: "too many verdicts" };
+      }
+      tc.triage.push({
+        id: randomUUID(),
+        findingId: finding.id,
+        findingSummary: finding.summary,
+        from: finding.assessment,
+        verdict,
+        ...(verdict === "rerate" ? { assessment } : {}),
+        reason,
+        status: "pending",
+      });
+      return {
+        text: "Shown under your answer with Apply and Dismiss. Mention your verdict in one line; don't repeat the reasoning.",
+        summary: `${verdict === "holds" ? "confirmed" : verdict === "wrong" ? "disputed" : `re-rated (${finding.assessment} → ${assessment})`} ${findingRef(finding)}: ${finding.summary}`,
+        ...(finding.filePath ? { files: [finding.filePath] } : {}),
+        ...(finding.componentId ? { componentIds: [finding.componentId] } : {}),
       };
     }
 
@@ -881,7 +1001,7 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
   }
 }
 
-const SHOW_KINDS = new Set<ChatShowKind>(["component", "file", "endpoint", "table", "env", "infra", "area", "function"]);
+const SHOW_KINDS = new Set<ChatShowKind>(["component", "file", "endpoint", "table", "env", "infra", "area", "function", "finding"]);
 
 /** Exact (case-insensitive) first, then the first that contains the query. */
 function bestMatch<T>(items: readonly T[], query: string, keys: (item: T) => string[]): T | undefined {
@@ -902,6 +1022,11 @@ async function resolveShow(tc: ToolContext, args: Record<string, unknown>): Prom
   if (!SHOW_KINDS.has(kind) || !query) return `show needs a kind (${[...SHOW_KINDS].join(", ")}) and a name, e.g. {"kind":"file","name":"app/page.tsx","line":12}.`;
   const line = num(args.line) ?? num(args.start);
   switch (kind) {
+    case "finding": {
+      if (!tc.ctx) return "Findings belong to a change — none is selected.";
+      const f = findFinding(tc, query);
+      return f ? { kind: "show", target: "finding", id: f.id, label: `finding: ${clip(f.summary, 60)}` } : `No finding ${query} — get_findings lists them with their #id.`;
+    }
     case "component": {
       const c = findComponent(tc, query);
       return c ? { kind: "show", target: "component", id: c.id, label: c.name } : `No component matches "${query}" — list_components or get_component first.`;
@@ -967,6 +1092,164 @@ function resolveHighlight(tc: ToolContext, args: Record<string, unknown>): ChatA
     componentIds: components.map((c) => c.id),
     label: components.map((c) => c.name).join(" → ") + (unknown.length ? ` (not found: ${unknown.join(", ")})` : ""),
   };
+}
+
+function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+}
+
+const VIEW_LABELS: Record<ChatViewName, string> = {
+  pr: "the PR map",
+  app: "the App map",
+  api: "the API view",
+  infra: "the Infra view",
+  data: "the Data view",
+  env: "the Env view",
+  files: "the Files view",
+};
+const VIEW_ALIASES: Record<string, ChatViewName> = {
+  map: "app",
+  "app map": "app",
+  "pr map": "pr",
+  change: "pr",
+  endpoints: "api",
+  infrastructure: "infra",
+  schema: "data",
+  database: "data",
+  db: "data",
+  tables: "data",
+  "env vars": "env",
+  environment: "env",
+  file: "files",
+};
+const VIEW_MODES: Partial<Record<ChatViewName, string[]>> = {
+  pr: ["files", "functions"],
+  infra: ["diagram", "files", "requests", "list"],
+  data: ["canvas", "list"],
+};
+const APP_LEVELS = ["architecture", "features", "modules"] as const;
+
+/** `switch_view`'s view, level, mode and toggle, checked against what each view has. */
+function resolveView(tc: ToolContext, args: Record<string, unknown>): ChatActionRecord | string {
+  const raw = arg(args, "view", "name", "tab").toLowerCase();
+  const view = (raw in VIEW_LABELS ? raw : VIEW_ALIASES[raw]) as ChatViewName | undefined;
+  if (!view) return `view must be one of ${Object.keys(VIEW_LABELS).join(", ")}.`;
+  if (view === "pr" && !tc.ctx) return "The PR map needs a change — none is selected.";
+  const rawLevel = arg(args, "level").toLowerCase().replace(/^(module|feature)$/, "$1s");
+  const level = APP_LEVELS.find((l) => l === rawLevel || l === `${rawLevel}s`);
+  if (rawLevel && (view !== "app" || !level)) return `level is only for the App map: ${APP_LEVELS.join(", ")}.`;
+  const rawMode = arg(args, "mode", "sub", "subview").toLowerCase();
+  const modes = VIEW_MODES[view] ?? [];
+  const mode = modes.find((m) => m === rawMode || m === `${rawMode}s`);
+  if (rawMode && !mode) return modes.length ? `mode for ${view} is one of ${modes.join(", ")}.` : `${VIEW_LABELS[view]} has no modes.`;
+  const changed = args.changed_only ?? args.changedOnly;
+  const changedOnly = typeof changed === "boolean" && ["api", "infra", "data", "env"].includes(view) && tc.ctx ? changed : undefined;
+  const label = [VIEW_LABELS[view], level ? `by ${level}` : "", mode ? `(${mode})` : "", changedOnly ? "changes only" : ""].filter(Boolean).join(" ");
+  return {
+    kind: "view",
+    view,
+    ...(level ? { level } : {}),
+    ...(mode ? { mode } : {}),
+    ...(changedOnly !== undefined ? { changedOnly } : {}),
+    label,
+  };
+}
+
+const FILE_TABS = new Set<ChatFileTab>(["diff", "file", "base", "preview"]);
+
+/** `open_diff`'s changed file, tab and lines; the Before / after preview is only offered. */
+function resolveOpenDiff(tc: ToolContext, args: Record<string, unknown>): ChatActionRecord | string {
+  const query = arg(args, ...PATH_KEYS, "name");
+  if (!query) return 'open_diff needs a changed file: {"path":"app/page.tsx","tab":"diff","line":12}.';
+  const path = query.replace(/^\/+/, "").replace(/:(\d+)(-\d+)?$/, "");
+  const file = tc.ctx!.files.find((f) => f.path === path) ?? tc.ctx!.files.find((f) => f.path.endsWith(`/${path}`));
+  if (!file) return `"${path}" isn't one of the changed files — use show {"kind":"file"} for any other file.`;
+  const rawTab = arg(args, "tab", "view", "side").toLowerCase();
+  const tab = (rawTab === "before" || rawTab === "old" ? "base" : rawTab === "after" || rawTab === "new" || rawTab === "head" ? "file" : rawTab || "diff") as ChatFileTab;
+  if (!FILE_TABS.has(tab)) return "tab must be diff, file, base or preview.";
+  if (tab === "base" && file.status !== "modified" && file.status !== "changed") {
+    return `${file.path} is ${file.status} in this change — the viewer has no "before" of it at this path; use the diff.`;
+  }
+  if (tab === "file" && file.status === "removed") return `${file.path} is deleted by this change — open its "base" instead.`;
+  const suffix = /:(\d+)(?:-(\d+))?$/.exec(query);
+  const start = num(args.line) ?? num(args.start) ?? num(suffix?.[1]);
+  const end = num(args.end) ?? num(suffix?.[2]);
+  const lines = start ? (end && end > start ? `${start}-${end}` : String(start)) : undefined;
+  const symbol = arg(args, "symbol", "component", "function") || undefined;
+  const name = file.path.slice(file.path.lastIndexOf("/") + 1);
+  const at = lines ? `:${lines}` : "";
+  const label =
+    tab === "diff"
+      ? `the diff of ${name}${at}`
+      : tab === "file"
+        ? `${name}${at} after the change`
+        : tab === "base"
+          ? `${name}${at} before the change`
+          : `Before / after of ${symbol ?? name}`;
+  return {
+    kind: "file",
+    path: file.path,
+    tab,
+    ...(lines && tab !== "preview" ? { lines } : {}),
+    ...(symbol && tab === "preview" ? { symbol } : {}),
+    label,
+    // The preview starts a sandbox: only the reviewer's click runs it.
+    ...(tab === "preview" ? { offer: true } : {}),
+  };
+}
+
+/**
+ * The answer's `point_to` and `next`, resolved like `show` into actions that
+ * are only offered (chips). A stop that matches nothing, repeats one, or is
+ * already what a view change put on screen is dropped.
+ */
+async function resolveStops(
+  tc: ToolContext,
+  stops: Record<string, unknown>[],
+  next: Record<string, unknown> | undefined
+): Promise<ChatActionRecord[]> {
+  const key = (a: ChatActionRecord) => (a.kind === "show" ? `${a.target}:${a.id}:${a.line ?? ""}` : a.kind === "file" ? `file:${a.path}:${a.lines ?? ""}` : "");
+  const seen = new Set(tc.actions.map(key).filter(Boolean));
+  const out: ChatActionRecord[] = [];
+  const add = async (stop: Record<string, unknown>, why?: string) => {
+    const action = await resolveShow(tc, stop).catch(() => "failed");
+    if (typeof action === "string" || seen.has(key(action))) return;
+    seen.add(key(action));
+    out.push({ ...action, offer: true, ...(why !== undefined ? { next: why } : {}) });
+  };
+  for (const stop of stops.slice(0, MAX_OFFERS_PER_ANSWER + 2)) {
+    if (out.length >= MAX_OFFERS_PER_ANSWER) break;
+    await add(stop);
+  }
+  if (next) await add(next, clip(arg(next, "why", "reason", "because"), 100));
+  return out;
+}
+
+/**
+ * The reviewer's Apply on a triage verdict: `holds` adds a confirming reply,
+ * `wrong` answers and resolves the finding, `rerate` changes its verdict —
+ * each reply authored "chat". Marks the verdict applied; a finding a
+ * re-review replaced since is gone (undefined).
+ */
+export async function applyChatTriage(
+  message: ChatMessageRecord,
+  triageId: string
+): Promise<ChatMessageRecord | undefined> {
+  const triage = message.triage?.find((t) => t.id === triageId);
+  if (!triage) return undefined;
+  if (triage.status === "applied") return message;
+  const author = "chat";
+  const finding =
+    triage.verdict === "rerate" && triage.assessment
+      ? await rateFinding(message.repoId, triage.findingId, triage.assessment, { author, body: `Re-rated ${triage.from} → ${triage.assessment}: ${triage.reason}` })
+      : await addFindingResponse(message.repoId, triage.findingId, {
+          kind: triage.verdict === "wrong" ? "answered" : "comment",
+          author,
+          body: triage.verdict === "wrong" ? `Doesn't hold: ${triage.reason}` : `Checked, holds: ${triage.reason}`,
+        });
+  if (!finding) return undefined;
+  emitFindingsChanged(message.repoId, message.targetKey, finding.id);
+  return updateChatTriage(message.repoId, message.id, triageId, "applied");
 }
 
 const BUCKETS = ["defect", "concern", "unknown", "fine"] as const;
@@ -1062,7 +1345,7 @@ function renderContext(tc: ToolContext): string {
     for (const f of tc.findings) counts.set(f.assessment, (counts.get(f.assessment) ?? 0) + 1);
     lines.push("", `AI review: ${tc.findings.length} finding(s) — ${[...counts].map(([k, v]) => `${v} ${k}`).join(", ")}.`);
     for (const f of tc.findings.filter((f) => f.assessment === "defect" || f.assessment === "concern").slice(0, 12)) {
-      lines.push(`- [${findingLabels(f)}] ${f.componentName || "whole PR"}${f.filePath ? ` ${f.filePath}` : ""}: ${f.summary}`);
+      lines.push(`- ${findingRef(f)} [${findingLabels(f)}] ${f.componentName || "whole PR"}${f.filePath ? ` ${f.filePath}` : ""}: ${f.summary}`);
     }
   } else {
     lines.push("", "AI review: no findings yet.");
@@ -1102,11 +1385,16 @@ export async function runChatTurn(args: {
   target: ReviewTarget | null;
   question: string;
   focusComponentId?: string;
+  /** The finding the question is about (a finding's Ask chat). */
+  findingId?: string;
+  /** What is on the reviewer's screen, as the UI describes it. */
+  screen?: string;
   onEvent: (event: ChatEvent) => void | Promise<void>;
   signal?: AbortSignal;
   log?: JobLogger;
 }): Promise<ChatMessageRecord> {
   const { repo, target, question, focusComponentId, onEvent } = args;
+  const screen = args.screen?.trim().slice(0, SCREEN_MAX_CHARS) || undefined;
   const targetKey = target ? reviewTargetKey(target) : REPO_CHAT_THREAD_KEY;
   const config = await loadAiConfigOrNull();
   if (!config) throw new Error("No AI provider is configured — set one in Settings.");
@@ -1134,8 +1422,10 @@ export async function runChatTurn(args: {
     })() : {}),
     suggestions: [],
     actions: [],
+    triage: [],
     target,
   };
+  const finding = args.findingId ? tc.findings.find((f) => f.id === args.findingId) : undefined;
 
   const userMessage = await addChatMessage({
     repoId: repo.id,
@@ -1143,6 +1433,8 @@ export async function runChatTurn(args: {
     role: "user",
     content: question,
     focusComponentId,
+    ...(finding ? { findingId: finding.id } : {}),
+    ...(screen ? { screen } : {}),
     headSha,
   });
   await onEvent({ type: "user", message: userMessage });
@@ -1160,6 +1452,8 @@ export async function runChatTurn(args: {
         history,
         question,
         focus: focusComponentId ? componentName(tc, focusComponentId) : undefined,
+        screen,
+        finding: finding ? describeFinding(finding) : undefined,
         tools: ctx ? PR_CHAT_TOOLS : REPO_CHAT_TOOLS,
         scope: ctx ? "change" : "repo",
       },
@@ -1170,6 +1464,7 @@ export async function runChatTurn(args: {
       `chat: ${result.steps.length} lookup(s), ${result.calls} call(s), ` +
         `${result.usage.promptTokens}+${result.usage.completionTokens} token(s)`
     );
+    const offers = await resolveStops(tc, result.stops, result.next);
     const answer = await addChatMessage({
       repoId: repo.id,
       targetKey,
@@ -1181,7 +1476,8 @@ export async function runChatTurn(args: {
       headSha,
       model: config.model,
       suggestions: tc.suggestions,
-      actions: tc.actions,
+      actions: [...tc.actions, ...offers],
+      triage: tc.triage,
     });
     await onEvent({ type: "answer", message: answer });
     return answer;

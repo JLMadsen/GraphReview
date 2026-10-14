@@ -125,7 +125,7 @@ export function EnvView({ catalog, loading, error, change, changePending, change
   return (
     <div className={className}>
       <div className={VIEW_TOOLBAR}>
-        {change ? (
+        {change && (
           <Segmented
             label="Show"
             size="xs"
@@ -152,8 +152,6 @@ export function EnvView({ catalog, loading, error, change, changePending, change
               },
             ]}
           />
-        ) : (
-          catalog?.state === "ready" && <span className="font-mono text-[11px] text-muted-foreground">{total} variables</span>
         )}
         {changePending && !change && (
           <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
@@ -185,6 +183,10 @@ export function EnvView({ catalog, loading, error, change, changePending, change
               { value: "folder" as const, label: "Folder", title: "Group names by the folder whose code reads them" },
             ]}
           />
+        )}
+        {/* The buttons first, the count after them. */}
+        {!change && catalog?.state === "ready" && (
+          <span className="font-mono text-[11px] text-muted-foreground">{total} variables</span>
         )}
         {!showChanges && (
           <div className="flex flex-wrap items-center gap-1">

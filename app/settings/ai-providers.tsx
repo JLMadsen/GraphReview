@@ -6,6 +6,7 @@ import { useActionState, useEffect, useState } from "react";
 import {
   Check,
   Circle,
+  FolderSearch,
   LoaderCircle,
   Pencil,
   PlugZap,
@@ -30,6 +31,7 @@ import {
 } from "./state";
 import { type AiProviderSummary, ProviderEditForm, TestConnectionResult } from "./provider-edit-form";
 import { FieldLabel } from "./fields";
+import { LocalConfigImport } from "./local-config-import";
 
 export function ProviderViewRow({
   provider,
@@ -202,6 +204,7 @@ export function ProviderViewRow({
 
 export function AddProviderForm() {
   const [open, setOpen] = useState(false);
+  const [localOpen, setLocalOpen] = useState(false);
   const [saveState, saveFormAction, isSaving] = useActionState(
     createAiProviderAction,
     initialSaveAiProviderState
@@ -225,12 +228,22 @@ export function AddProviderForm() {
     setOpen(false);
   }, [saveState]);
 
+  if (localOpen) {
+    return <LocalConfigImport onClose={() => setLocalOpen(false)} />;
+  }
+
   if (!open) {
     return (
-      <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
-        <Plus aria-hidden />
-        Add provider
-      </Button>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
+          <Plus aria-hidden />
+          Add provider
+        </Button>
+        <Button type="button" variant="outline" size="sm" onClick={() => setLocalOpen(true)}>
+          <FolderSearch aria-hidden />
+          Use local config
+        </Button>
+      </div>
     );
   }
 

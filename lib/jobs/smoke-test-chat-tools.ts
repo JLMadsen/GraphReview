@@ -2,8 +2,10 @@
  * Checks for the chat's structure, history and view tools (lib/jobs/pr-chat.ts,
  * ./chat-lookups.ts): get_callers / get_callees / get_imports from the commit
  * analysis, git_log / blame, the PR map, checklist and CI lookups, and
- * show / highlight / filter_findings, which are resolved to ids and stored on
- * the answer as actions. Real chat turns against a scripted
+ * show / highlight / filter_findings / switch_view / open_diff, which are
+ * resolved to ids and stored on the answer as actions, the answer's
+ * point_to / next stops (offered, never applied), the screen note, and
+ * triage_finding with its Apply. Real chat turns against a scripted
  * OpenAI-compatible server; each tool's result is read back from the next
  * request the model gets.
  *
@@ -18,9 +20,10 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { encrypt } from "@/lib/crypto";
-import { createAiProvider, getChatMessage, upsertRepo, writeEnvCatalog, type RepoRecord } from "@/lib/db";
+import { createAiProvider, getChatMessage, getFindingById, listChatMessages, upsertFinding, upsertRepo, writeEnvCatalog, type RepoRecord } from "@/lib/db";
 import { EMPTY_ENV_CATALOG, type EnvVar } from "@/lib/analysis/env/types";
-import { runChatTurn } from "./pr-chat";
+import { applyChatTriage, runChatTurn } from "./pr-chat";
+import { reviewTargetKey } from "./review-queue";
 
 let failures = 0;
 
@@ -129,7 +132,8 @@ async function main(): Promise<void> {
     );
     start = prompts.length;
     const second = await runChatTurn({ repo, target, question: "show me", onEvent: () => undefined });
-    check("the prompt explains the view tools", prompts[start]?.includes("show, highlight and filter_findings change only what is on the reviewer's screen") === true);
+    check("the prompt says which tools move the screen", prompts[start]?.includes("show, switch_view, open_diff, highlight, filter_findings MOVE the reviewer's screen") === true);
+    check("the prompt asks for point_to and next", prompts[start]?.includes("point_to") === true && prompts[start]?.includes("next when there is one obvious place") === true);
     check("a bad component is refused with a hint", lastResult(prompts[start + 2]).includes('No component matches "no-such-thing"'));
     check("a highlight with nothing known is refused", lastResult(prompts[start + 3]).includes("None of nope is a component"));
     const actions = second.actions ?? [];
@@ -153,6 +157,118 @@ async function main(): Promise<void> {
     check("get_checklist reports each item's status", /\[(pass|fail|unknown|pending|not_applicable)\]/.test(checklist) || checklist.includes("no items"), checklist);
     const stored = await getChatMessage(repo.id, second.id);
     check("the actions survive a reload", stored?.actions?.length === 3);
+
+    // Turn 3: views, the file viewer, offered stops, the screen note.
+    scripted.push(
+      reply({ tool: "switch_view", args: { view: "infra", mode: "diagram", changed_only: true } }),
+      reply({ tool: "switch_view", args: { view: "app", mode: "diagram" } }),
+      reply({ tool: "open_diff", args: { path: "lib/geo.ts:2-3" } }),
+      reply({ tool: "open_diff", args: { path: "lib/geo.ts", tab: "preview", symbol: "toKm" } }),
+      reply({
+        answer: "Here.",
+        point_to: [{ kind: "file", name: "lib/geo.ts", line: 2 }, { kind: "component", name: "nothing-like-it" }, { kind: "file", name: "lib/geo.ts:2" }],
+        next: { kind: "function", name: "km", why: "the only caller of toKm" },
+      })
+    );
+    start = prompts.length;
+    const third = await runChatTurn({ repo, target, question: "and the infra?", screen: "App map by modules; card \"lib\" selected", onEvent: () => undefined });
+    check("the screen note reaches the model", lastResult(prompts[start]).includes('On the reviewer\'s screen: App map by modules; card "lib" selected'), lastResult(prompts[start]));
+    check("a mode the view hasn't is refused", lastResult(prompts[start + 2]).includes("App map has no modes"), lastResult(prompts[start + 2]));
+    const views = third.actions ?? [];
+    check(
+      "switch_view keeps the mode and the toggle",
+      views[0]?.kind === "view" && views[0].view === "infra" && views[0].mode === "diagram" && views[0].changedOnly === true && !views[0].offer,
+      JSON.stringify(views[0])
+    );
+    check(
+      "open_diff reads the lines off the path",
+      views[1]?.kind === "file" && views[1].tab === "diff" && views[1].lines === "2-3" && views[1].path === "lib/geo.ts",
+      JSON.stringify(views[1])
+    );
+    check(
+      "a Before / after preview is only offered",
+      views[2]?.kind === "file" && views[2].tab === "preview" && views[2].symbol === "toKm" && views[2].offer === true,
+      JSON.stringify(views[2])
+    );
+    const offers = views.filter((a) => a.offer && a.kind === "show");
+    check(
+      "point_to becomes offered stops; an unknown one and a repeat are dropped",
+      offers.length === 2 && offers[0].kind === "show" && offers[0].id === "lib/geo.ts" && offers[0].line === 2 && offers[0].next === undefined,
+      JSON.stringify(offers)
+    );
+    const next = views.find((a) => a.next !== undefined);
+    check(
+      "next is an offered stop with its reason (a function without a call graph opens at its declaration)",
+      next?.kind === "show" && next.target === "file" && next.line === 5 && next.next === "the only caller of toKm" && next.offer === true,
+      JSON.stringify(next)
+    );
+    const asked = await listChatMessages(repo.id, reviewTargetKey(target));
+    check("the screen note is stored on the question", asked.some((m) => m.role === "user" && m.screen?.startsWith("App map by modules")) === true);
+
+    // Turn 4: triage — an Ask about a finding, verdicts, Apply.
+    const key = reviewTargetKey(target);
+    const finding = await upsertFinding({
+      id: "f0e1d2c3-0000-4000-8000-000000000001",
+      repoId: repo.id,
+      targetKey: key,
+      componentId: "",
+      category: "change",
+      filePath: "lib/geo.ts",
+      lineRange: "2",
+      summary: "toKm no longer converts to km",
+      assessment: "concern",
+      confidence: 0.8,
+      rationale: "The radius is gone.",
+      model: "m",
+    });
+    const other = await upsertFinding({
+      id: "a9b8c7d6-0000-4000-8000-000000000002",
+      repoId: repo.id,
+      targetKey: key,
+      componentId: "",
+      category: "change",
+      filePath: "app/page.ts",
+      summary: "Page renders km",
+      assessment: "unknown",
+      confidence: 0.5,
+      rationale: "Unclear.",
+      model: "m",
+    });
+    scripted.push(
+      reply({ tool: "get_findings", args: {} }),
+      reply({ tool: "triage_finding", args: { id: "#f0e1d2c3", verdict: "rerate", assessment: "defect", reason: "Every caller gets radians now." } }),
+      reply({ tool: "triage_finding", args: { id: "#a9b8c7d6", verdict: "wrong", reason: "Page only passes a number through." } }),
+      reply({ tool: "triage_finding", args: { id: "#a9b8c7d6", verdict: "holds", reason: "again" } }),
+      reply({ tool: "triage_finding", args: { id: "#zzzz", verdict: "holds", reason: "x" } }),
+      reply({ tool: "show", args: { kind: "finding", name: "#f0e1d2c3" } }),
+      reply({ answer: "It's worse than the review says." })
+    );
+    start = prompts.length;
+    const fourth = await runChatTurn({ repo, target, question: "Does this finding hold up?", findingId: finding.id, onEvent: () => undefined });
+    check("the asked-about finding reaches the model", lastResult(prompts[start]).includes("The question is about this finding of the review:\n#f0e1d2c3"), lastResult(prompts[start]));
+    check("get_findings shows each finding's #id", lastResult(prompts[start + 1]).includes("#a9b8c7d6 [unknown"), lastResult(prompts[start + 1]));
+    check("a second verdict on the same finding is refused", lastResult(prompts[start + 4]).includes("already gave a verdict"), lastResult(prompts[start + 4]));
+    check("an unknown #id is refused with a hint", lastResult(prompts[start + 5]).includes("No finding #zzzz"), lastResult(prompts[start + 5]));
+    const triage = fourth.triage ?? [];
+    check("two verdicts are stored", triage.length === 2 && triage[0].verdict === "rerate" && triage[0].assessment === "defect" && triage[1].verdict === "wrong", JSON.stringify(triage));
+    check(
+      "show finding resolves the #id",
+      fourth.actions?.[0]?.kind === "show" && fourth.actions[0].target === "finding" && fourth.actions[0].id === finding.id,
+      JSON.stringify(fourth.actions)
+    );
+    const userTurn = (await listChatMessages(repo.id, key)).find((m) => m.role === "user" && m.findingId);
+    check("the question keeps the finding it was about", userTurn?.findingId === finding.id);
+    const afterRate = await applyChatTriage(fourth, triage[0].id);
+    const rated = await getFindingById(finding.id);
+    check(
+      "Apply re-rates the finding and says why",
+      rated?.assessment === "defect" && rated.responses?.at(-1)?.author === "chat" && rated.responses.at(-1)?.body.startsWith("Re-rated concern → defect") === true,
+      JSON.stringify(rated)
+    );
+    check("…and marks the verdict applied", afterRate?.triage?.[0]?.status === "applied");
+    await applyChatTriage(afterRate!, triage[1].id);
+    const resolved = await getFindingById(other.id);
+    check("Apply on wrong answers and resolves the finding", Boolean(resolved?.resolvedAt) && resolved?.responses?.at(-1)?.kind === "answered", JSON.stringify(resolved));
 
     // The repo chat: no change, so the change-only tools say so.
     scripted.push(reply({ tool: "filter_findings", args: { assessment: "defect" } }), reply({ answer: "ok" }));

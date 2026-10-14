@@ -16,12 +16,18 @@
 
 import { revalidatePath } from "next/cache";
 import { pingProvider } from "@/lib/ai";
+import {
+  discoverLocalProviders,
+  isLocalBaseUrl,
+  publicCandidate,
+} from "@/lib/ai/local-configs";
 import { decrypt, encrypt } from "@/lib/crypto";
 import {
   clearSettingsFields,
   createAiProvider,
   deleteAiProvider,
   getAiProvider,
+  listAiProviders,
   setActiveAiProvider,
   updateAiProvider,
   upsertSettings,
@@ -30,6 +36,9 @@ import type {
   ClearGithubPatState,
   ClearGitlabPatState,
   DeleteAiProviderState,
+  ImportLocalProvidersState,
+  LocalProviderSelection,
+  PublicLocalProviderCandidate,
   SaveAiProviderState,
   SaveGithubPatState,
   SaveGitlabPatState,
@@ -329,3 +338,73 @@ export async function testAiConnectionAction(
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// "Use local config" — providers found in local harness configs (DESIGN.md §6.17)
+// ---------------------------------------------------------------------------
+
+/** Base URLs compare equal regardless of a trailing slash. */
+function sameBaseUrl(a: string, b: string): boolean {
+  return a.trim().replace(/\/+$/, "") === b.trim().replace(/\/+$/, "");
+}
+
+/**
+ * Scans the usual harness config locations. What comes back has no keys —
+ * only whether one was found and where — plus the saved provider each
+ * candidate already matches (same base URL), so the list can say so.
+ */
+export async function discoverLocalProvidersAction(): Promise<
+  Array<PublicLocalProviderCandidate & { savedAs?: string }>
+> {
+  const saved = await listAiProviders();
+  return discoverLocalProviders().map((candidate) => ({
+    ...publicCandidate(candidate),
+    savedAs: saved.find((p) => sameBaseUrl(p.baseUrl, candidate.baseUrl))?.name,
+  }));
+}
+
+/**
+ * Saves the selected candidates as providers. The configs are read again
+ * here, by candidate id, so the key goes straight from the user's config
+ * file to `encrypt` without passing through the browser. A local server
+ * with no key gets a placeholder (any key works there); anything else
+ * without one needs a key typed into the list.
+ */
+export async function importLocalProvidersAction(
+  selections: LocalProviderSelection[]
+): Promise<ImportLocalProvidersState> {
+  try {
+    if (selections.length === 0) return { status: "error", error: "Select at least one provider." };
+    const found = new Map(discoverLocalProviders().map((c) => [c.id, c]));
+
+    const toSave: Array<{ name: string; baseUrl: string; apiKey: string; model: string }> = [];
+    for (const selection of selections) {
+      const candidate = found.get(selection.candidateId);
+      if (!candidate) {
+        return { status: "error", error: `${selection.name} is no longer in the local config — scan again.` };
+      }
+      const model = selection.model.trim();
+      if (!model) return { status: "error", error: `Pick a model for ${selection.name}.` };
+      const apiKey =
+        selection.apiKey?.trim() || candidate.apiKey || (isLocalBaseUrl(candidate.baseUrl) ? "local" : "");
+      if (!apiKey) return { status: "error", error: `${selection.name} needs an API key.` };
+      toSave.push({ name: selection.name.trim() || candidate.name, baseUrl: candidate.baseUrl, apiKey, model });
+    }
+
+    for (const provider of toSave) {
+      await createAiProvider({
+        name: provider.name,
+        baseUrl: provider.baseUrl,
+        apiKeyEncrypted: encrypt(provider.apiKey),
+        model: provider.model,
+      });
+    }
+    revalidatePath("/settings");
+    return { status: "success", imported: toSave.length };
+  } catch (err) {
+    return {
+      status: "error",
+      error: err instanceof Error ? err.message : "Failed to load the providers.",
+    };
+  }
+}

@@ -18,7 +18,9 @@
 //
 // With `?view=file` it returns the whole file instead of its patch
 // (`FileContentResponseDTO`), read at the target's head — or at its base for
-// a file the diff deletes. That is the diff modal's "File" tab.
+// a file the diff deletes. That is the diff modal's "File" tab. With
+// `?view=file&side=base` it is read at the base instead (the "Base" tab: the
+// file before the change).
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -235,7 +237,7 @@ export async function GET(
     }
 
     if (url.searchParams.get("view") === "file") {
-      const side = file?.status === "removed" ? "base" : "head";
+      const side = file?.status === "removed" || url.searchParams.get("side") === "base" ? "base" : "head";
       const ref = await targetRef(repo, parsed.data, side);
       const whole = ref ? await readFileAtCommit(repo, ref, path) : null;
       if (!ref || whole?.source !== "commit") {

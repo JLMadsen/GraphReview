@@ -81,6 +81,8 @@ export interface InfraViewProps {
   onChangedOnlyChange: (value: boolean) => void;
   /** A resource opened from elsewhere (the left column) — opened and scrolled to. A new object each time. */
   focus: { id: string } | null;
+  /** A sub-view asked for from elsewhere (the chat's switch_view). A new object each time. */
+  modeRequest?: { mode: InfraMode } | null;
   /** An endpoint id → "GET /orders/{id}". */
   endpointLabel: (id: string) => string;
   onOpenEndpoint?: (endpointId: string) => void;
@@ -101,6 +103,7 @@ export function InfraView({
   changedOnly,
   onChangedOnlyChange,
   focus,
+  modeRequest,
   endpointLabel,
   onOpenEndpoint,
   onOpenFile,
@@ -108,6 +111,10 @@ export function InfraView({
 }: InfraViewProps) {
   const [query, setQuery] = useState("");
   const [mode, setMode] = useStoredState<InfraMode>(INFRA_MODE_STORAGE_KEY, "diagram", parseInfraMode);
+  useEffect(() => {
+    if (modeRequest) setMode(modeRequest.mode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modeRequest]);
   /** The resource whose detail shows in the side panel (outside List). */
   const [selected, setSelected] = useState<string | null>(null);
   const [route, setRoute] = useState<RouteRef | null>(null);

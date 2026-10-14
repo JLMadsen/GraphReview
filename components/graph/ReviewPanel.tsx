@@ -126,6 +126,10 @@ export interface ReviewPanelProps {
   onOpenFile?: (path: string) => void;
   /** A filter the chat asked for (filter_findings); a new object (nonce) applies it again. */
   filterRequest?: { nonce: number; buckets?: FindingBucket[]; category?: FindingCategory } | null;
+  /** A finding the chat showed (show kind finding): listed, made the active row and scrolled to. A new object each time. */
+  focusRequest?: { nonce: number; findingId: string } | null;
+  /** A finding's Ask: puts it in the chat's input, to ask about. */
+  onAskChat?: (finding: FindingDTO) => void;
 }
 
 const DEFAULT_SHOWN: Record<FindingBucket, boolean> = { defect: true, concern: true, unknown: true, fine: false };
@@ -165,6 +169,8 @@ export function ReviewPanel({
   componentName,
   onOpenFile,
   filterRequest,
+  focusRequest,
+  onAskChat,
 }: ReviewPanelProps) {
   /** The finding whose file diff is open in `FileDiffModal`, or `null` when it's closed. */
   const [diffFinding, setDiffFinding] = useState<FindingDTO | null>(null);
@@ -213,6 +219,27 @@ export function ReviewPanel({
   const visibleRows = useMemo(() => rows.filter((row) => shown[row.bucket]), [rows, shown]);
 
   const { activeKey, setActiveKey, registerRow } = useTriageKeys(tab === "findings", visibleRows);
+
+  // A finding the chat showed: make sure its verdict and category are listed, then make its row the active one.
+  const [pendingFocus, setPendingFocus] = useState<string | null>(null);
+  useEffect(() => {
+    if (!focusRequest) return;
+    const finding = findings.find((f) => f.id === focusRequest.findingId);
+    if (!finding) return;
+    setTab("findings");
+    setShown((s) => ({ ...s, [findingBucket(finding)]: true }));
+    setOnlyCategory((c) => (c && c !== finding.category ? null : c));
+    if (!inScope(finding)) onClearScope();
+    setPendingFocus(finding.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusRequest]);
+  useEffect(() => {
+    if (!pendingFocus) return;
+    const row = visibleRows.find((r) => (r.kind === "one" ? r.finding.id === pendingFocus : r.findings.some((f) => f.id === pendingFocus)));
+    if (!row) return;
+    setActiveKey(row.key);
+    setPendingFocus(null);
+  }, [pendingFocus, visibleRows, setActiveKey]);
   const hiddenFine = shown.fine ? 0 : counts.fine;
 
   const files = useChangedFiles(map, scopeAreaId, scopeComponentId);
@@ -555,6 +582,7 @@ export function ReviewPanel({
                         onViewDiff={setDiffFinding}
                         onSetResolved={onSetResolved}
                         onRetry={retryFromRow}
+                        onAskChat={onAskChat}
                       />
                     )
                   )}

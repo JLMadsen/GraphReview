@@ -6,16 +6,38 @@
 // as NDJSON — the question, then one line per lookup the model makes, then
 // the answer — so the column can show "read app/map/page.tsx" while a slow
 // model is still working. Each answer hands what it did to the view (show,
-// highlight, filter_findings — often nothing) to `onActions` as it arrives;
-// never for answers loaded from the stored thread.
+// highlight, filter_findings, switch_view, open_diff — often nothing; never
+// the stops it only offers) to `onActions` as it arrives, with when the
+// question was sent; never for answers loaded from the stored thread.
+// `onActions` says whether it applied them — it doesn't when the reviewer
+// has been using the screen since — and the answers it held back are listed
+// in `held`, so the column can say so.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ChatActionDTO, ChatMessageDTO, ChatStepDTO, ChatStreamEventDTO, ChatSuggestionActionDTO, ChatThreadDTO } from "./chat-types";
+import type {
+  ChatActionDTO,
+  ChatMessageDTO,
+  ChatStepDTO,
+  ChatStreamEventDTO,
+  ChatSuggestionActionDTO,
+  ChatThreadDTO,
+  ChatTriageActionDTO,
+} from "./chat-types";
 import { reviewTargetKeyOf, reviewTargetQuery, type ReviewTargetDTO } from "./types";
 
 export interface PendingTurn {
   question: string;
   steps: ChatStepDTO[];
+}
+
+/** What a question is sent with besides its text. */
+export interface ChatSendContext {
+  /** The component selected in the graph. */
+  focusComponentId?: string;
+  /** The finding asked about (a finding's Ask). */
+  findingId?: string;
+  /** What is on the screen, in a line or two. */
+  screen?: string;
 }
 
 export interface UsePrChatResult {
@@ -25,11 +47,15 @@ export interface UsePrChatResult {
   loading: boolean;
   error: string | null;
   pending: PendingTurn | null;
-  send(question: string, focusComponentId?: string): Promise<void>;
+  send(question: string, context?: ChatSendContext): Promise<void>;
   stop(): void;
   clear(): Promise<void>;
   /** Adds a suggested finding to the review, or dismisses it. */
   answerSuggestion(messageId: string, suggestionId: string, action: ChatSuggestionActionDTO["action"]): Promise<void>;
+  /** Applies the chat's verdict on a finding, or dismisses it. */
+  answerTriage(messageId: string, triageId: string, action: ChatTriageActionDTO["action"]): Promise<void>;
+  /** Answers whose view changes weren't applied because the reviewer had moved on — their chips still do them. */
+  held: ReadonlySet<string>;
 }
 
 /** The query string naming a thread: the review target's, or the repo-wide one. */
@@ -40,7 +66,7 @@ function threadQuery(target: ReviewTargetDTO | null): string {
 export function usePrChat(
   repoId: string,
   target: ReviewTargetDTO | null,
-  onActions?: (actions: ChatActionDTO[]) => void
+  onActions?: (actions: ChatActionDTO[], sentAt: number) => boolean
 ): UsePrChatResult {
   const onActionsRef = useRef(onActions);
   useEffect(() => {
@@ -50,6 +76,7 @@ export function usePrChat(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingTurn | null>(null);
+  const [held, setHeld] = useState<ReadonlySet<string>>(new Set());
   const abortRef = useRef<AbortController | null>(null);
   const targetKey = target ? reviewTargetKeyOf(target) : "repo";
   const base = `/api/repos/${encodeURIComponent(repoId)}/chat`;
@@ -58,6 +85,7 @@ export function usePrChat(
     setThread(null);
     setError(null);
     setPending(null);
+    setHeld(new Set());
     abortRef.current?.abort();
     let cancelled = false;
     setLoading(true);
@@ -83,8 +111,9 @@ export function usePrChat(
   }, [base, targetKey]);
 
   const send = useCallback(
-    async (question: string, focusComponentId?: string) => {
+    async (question: string, context: ChatSendContext = {}) => {
       if (!question.trim()) return;
+      const sentAt = Date.now();
       const controller = new AbortController();
       abortRef.current = controller;
       setPending({ question, steps: [] });
@@ -95,9 +124,13 @@ export function usePrChat(
         const res = await fetch(base, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(
-            target ? { target, message: question, focusComponentId } : { scope: "repo", message: question, focusComponentId }
-          ),
+          body: JSON.stringify({
+            ...(target ? { target } : { scope: "repo" }),
+            message: question,
+            ...(context.focusComponentId ? { focusComponentId: context.focusComponentId } : {}),
+            ...(context.findingId && target ? { findingId: context.findingId } : {}),
+            ...(context.screen ? { screen: context.screen } : {}),
+          }),
           signal: controller.signal,
         });
         if (!res.ok || !res.body) {
@@ -121,7 +154,11 @@ export function usePrChat(
             else if (event.type === "step") setPending((p) => (p ? { ...p, steps: [...p.steps, event.step] } : p));
             else if (event.type === "answer") {
               append(event.message);
-              onActionsRef.current?.(event.message.actions ?? []);
+              const live = (event.message.actions ?? []).filter((a) => !a.offer);
+              const id = event.message.id;
+              if (live.length > 0 && onActionsRef.current && !onActionsRef.current(live, sentAt)) {
+                setHeld((h) => new Set(h).add(id));
+              }
             }
             else if (event.type === "error") setError(event.error);
           }
@@ -150,17 +187,16 @@ export function usePrChat(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base, targetKey]);
 
-  const answerSuggestion = useCallback(
-    async (messageId: string, suggestionId: string, action: ChatSuggestionActionDTO["action"]) => {
+  const patchMessage = useCallback(
+    async (body: ChatSuggestionActionDTO | ChatTriageActionDTO) => {
       try {
-        const body: ChatSuggestionActionDTO = { messageId, suggestionId, action };
         const res = await fetch(base, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
         const json = (await res.json().catch(() => null)) as { message?: ChatMessageDTO; error?: string } | null;
-        if (!res.ok || !json?.message) throw new Error(json?.error ?? `Could not update the suggestion (${res.status}).`);
+        if (!res.ok || !json?.message) throw new Error(json?.error ?? `Could not update the answer (${res.status}).`);
         const updated = json.message;
         setThread((t) => (t ? { ...t, messages: t.messages.map((m) => (m.id === updated.id ? updated : m)) } : t));
       } catch (err) {
@@ -168,6 +204,14 @@ export function usePrChat(
       }
     },
     [base]
+  );
+  const answerSuggestion = useCallback(
+    (messageId: string, suggestionId: string, action: ChatSuggestionActionDTO["action"]) => patchMessage({ messageId, suggestionId, action }),
+    [patchMessage]
+  );
+  const answerTriage = useCallback(
+    (messageId: string, triageId: string, action: ChatTriageActionDTO["action"]) => patchMessage({ messageId, triageId, action }),
+    [patchMessage]
   );
 
   return {
@@ -181,5 +225,7 @@ export function usePrChat(
     stop,
     clear,
     answerSuggestion,
+    answerTriage,
+    held,
   };
 }

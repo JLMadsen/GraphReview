@@ -2,11 +2,13 @@
 // repo-wide thread for when no diff is selected.
 //
 //   GET    /api/repos/[repoId]/chat?prNumber=12 | ?baseRef=&headRef= | ?scope=repo   the thread
-//   POST   /api/repos/[repoId]/chat  {target, message, focusComponentId?}
-//                                  | {scope:"repo", message, focusComponentId?}
+//   POST   /api/repos/[repoId]/chat  {target, message, focusComponentId?, findingId?, screen?}
+//                                  | {scope:"repo", message, focusComponentId?, screen?}
 //          streams NDJSON: {type:"user"} → {type:"step"}* → {type:"answer"} (or {type:"error"})
 //   PATCH  /api/repos/[repoId]/chat  {messageId, suggestionId, action:"add"|"dismiss"}
-//          the reviewer's answer to a finding the chat suggested; returns the updated message
+//                                  | {messageId, triageId, action:"apply"|"dismiss"}
+//          the reviewer's answer to a finding the chat suggested, or to its verdict on
+//          an existing finding; returns the updated message
 //   DELETE /api/repos/[repoId]/chat?…target | ?scope=repo                           clears the thread
 //
 // POST streams so the chat column can show each lookup ("read
@@ -18,8 +20,8 @@ import { z } from "zod";
 import { reviewTargetKey, type ReviewTarget } from "@/lib/jobs";
 import { loadAiConfigOrNull } from "@/lib/jobs/ai-config";
 import { loadPrContext } from "@/lib/jobs/pr-context";
-import { REPO_CHAT_THREAD_KEY, addSuggestedFinding, runChatTurn } from "@/lib/jobs/pr-chat";
-import { clearChatMessages, getChatMessage, listChatMessages, updateChatSuggestion } from "@/lib/db";
+import { REPO_CHAT_THREAD_KEY, addSuggestedFinding, applyChatTriage, runChatTurn } from "@/lib/jobs/pr-chat";
+import { clearChatMessages, getChatMessage, listChatMessages, updateChatSuggestion, updateChatTriage } from "@/lib/db";
 import {
   apiError,
   errorMessage,
@@ -71,6 +73,8 @@ export async function GET(
 const turnFields = {
   message: z.string().trim().min(1).max(4000),
   focusComponentId: z.string().min(1).optional(),
+  findingId: z.string().min(1).optional(),
+  screen: z.string().max(2000).optional(),
 };
 const postSchema = z.union([
   z.object({ target: targetBodySchema, ...turnFields }),
@@ -98,6 +102,8 @@ export async function POST(
           target: "target" in body ? toReviewTarget(body.target) : null,
           question: body.message,
           focusComponentId: body.focusComponentId,
+          findingId: body.findingId,
+          screen: body.screen,
           onEvent: (event) => send(event),
           signal: request.signal,
           log: (message) => console.log(`[chat] ${repoId} · ${message}`),
@@ -114,11 +120,10 @@ export async function POST(
   });
 }
 
-const suggestionSchema = z.object({
-  messageId: z.string().min(1),
-  suggestionId: z.string().min(1),
-  action: z.enum(["add", "dismiss"]),
-});
+const suggestionSchema = z.union([
+  z.object({ messageId: z.string().min(1), suggestionId: z.string().min(1), action: z.enum(["add", "dismiss"]) }),
+  z.object({ messageId: z.string().min(1), triageId: z.string().min(1), action: z.enum(["apply", "dismiss"]) }),
+]);
 
 export async function PATCH(
   request: Request,
@@ -126,7 +131,21 @@ export async function PATCH(
 ): Promise<NextResponse> {
   const { repoId } = await params;
   const parsed = suggestionSchema.safeParse(await request.json().catch(() => null));
-  if (!parsed.success) return apiError('Expected {messageId, suggestionId, action: "add" | "dismiss"}.', 400);
+  if (!parsed.success) {
+    return apiError('Expected {messageId, suggestionId, action: "add" | "dismiss"} or {messageId, triageId, action: "apply" | "dismiss"}.', 400);
+  }
+  if ("triageId" in parsed.data) {
+    const { messageId, triageId, action } = parsed.data;
+    try {
+      const message = await getChatMessage(repoId, messageId);
+      if (!message?.triage?.some((x) => x.id === triageId)) return apiError("That verdict is gone.", 404);
+      const updated = action === "apply" ? await applyChatTriage(message, triageId) : await updateChatTriage(repoId, messageId, triageId, "dismissed");
+      if (!updated) return apiError(action === "apply" ? "That finding is gone — a re-review replaced it." : "That verdict is gone.", 404);
+      return NextResponse.json({ message: updated });
+    } catch (error) {
+      return apiError(`Could not ${action} the verdict: ${errorMessage(error)}`, 503);
+    }
+  }
   const { messageId, suggestionId, action } = parsed.data;
   try {
     const message = await getChatMessage(repoId, messageId);

@@ -400,7 +400,7 @@ export function DataView({
   return (
     <div className={className}>
       <div className={VIEW_TOOLBAR}>
-        {change ? (
+        {change && (
           <Segmented
             label="Show"
             size="xs"
@@ -427,8 +427,6 @@ export function DataView({
               },
             ]}
           />
-        ) : (
-          schema?.state === "ready" && <span className="font-mono text-[11px] text-muted-foreground">{total} tables</span>
         )}
         <Segmented
           label="Layout"
@@ -440,6 +438,10 @@ export function DataView({
             { value: "list" as const, label: "List", title: "Tables as rows that open in place" },
           ]}
         />
+        {/* The buttons first, the count after them. */}
+        {!change && schema?.state === "ready" && (
+          <span className="font-mono text-[11px] text-muted-foreground">{total} tables</span>
+        )}
         {changePending && !change && (
           <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
             <LoaderCircle className="size-3 animate-spin" aria-hidden /> Comparing the schema…

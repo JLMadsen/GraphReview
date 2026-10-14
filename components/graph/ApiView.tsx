@@ -139,7 +139,7 @@ export function ApiView({
   return (
     <div className={className}>
       <div className={VIEW_TOOLBAR}>
-        {change ? (
+        {change && (
           <Segmented
             label="Show"
             size="xs"
@@ -166,8 +166,19 @@ export function ApiView({
               },
             ]}
           />
-        ) : (
-          catalog?.state === "ready" && <span className="font-mono text-[11px] text-muted-foreground">{total} endpoints</span>
+        )}
+        {/* The buttons first, the count after them. */}
+        {kinds.length > 1 && !showChanges && (
+          <Segmented
+            label="Kind"
+            size="xs"
+            value={kind}
+            onChange={setKind}
+            options={[{ value: "all" as const, label: "All" }, ...kinds.map((k) => ({ value: k, label: k === "action" ? "Actions" : KIND_LABELS[k] }))]}
+          />
+        )}
+        {!change && catalog?.state === "ready" && (
+          <span className="font-mono text-[11px] text-muted-foreground">{total} endpoints</span>
         )}
         {changePending && !change && (
           <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
@@ -176,15 +187,6 @@ export function ApiView({
         )}
         <div className="ml-auto flex items-center gap-2">
           {loading && <LoaderCircle className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
-          {kinds.length > 1 && !showChanges && (
-            <Segmented
-              label="Kind"
-              size="xs"
-              value={kind}
-              onChange={setKind}
-              options={[{ value: "all" as const, label: "All" }, ...kinds.map((k) => ({ value: k, label: k === "action" ? "Actions" : KIND_LABELS[k] }))]}
-            />
-          )}
           <label className="flex h-7 w-44 items-center gap-1.5 rounded-md border border-border bg-background px-2 text-xs focus-within:border-foreground/30">
             <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
             <input

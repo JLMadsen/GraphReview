@@ -34,14 +34,23 @@ export interface ChatSuggestionRecord {
 }
 
 /** Where `show` can take the reviewer. */
-export type ChatShowKind = "component" | "file" | "endpoint" | "table" | "env" | "infra" | "area" | "function";
+export type ChatShowKind = "component" | "file" | "endpoint" | "table" | "env" | "infra" | "area" | "function" | "finding";
+
+/** The Graph tab's views, as `switch_view` names them. */
+export type ChatViewName = "pr" | "app" | "api" | "infra" | "data" | "env" | "files";
+
+/** The file viewer's tabs `open_diff` can open: the diff, the new file, the old file, the Before / after preview. */
+export type ChatFileTab = "diff" | "file" | "base" | "preview";
 
 /**
  * Something an answer does to the reviewer's view (`show`, `highlight`,
- * `filter_findings`). Ids are resolved when the tool runs, so the UI only
- * applies them: once when the answer arrives, and again from its chip.
+ * `filter_findings`, `switch_view`, `open_diff`) — or only offers to do
+ * (`offer`: the answer's `point_to` / `next` stops, and a Before / after
+ * preview, which starts a sandbox). Ids are resolved when the tool runs (or
+ * the answer arrives), so the UI only applies them: an action once when the
+ * answer arrives, every one again from its chip.
  */
-export type ChatActionRecord =
+export type ChatActionRecord = (
   | { kind: "show"; target: ChatShowKind; id: string; label: string; line?: number }
   | { kind: "highlight"; componentIds: string[]; label: string }
   | {
@@ -53,7 +62,45 @@ export type ChatActionRecord =
       /** Scope the dock to this component (and the PR map area holding it). */
       componentId?: string;
       label: string;
-    };
+    }
+  | {
+      kind: "view";
+      view: ChatViewName;
+      /** App map: architecture, features or modules. */
+      level?: "architecture" | "features" | "modules";
+      /** PR map files/functions, Infra diagram/files/requests/list, Data canvas/list. */
+      mode?: string;
+      /** The catalog views' "changed only" toggle. */
+      changedOnly?: boolean;
+      label: string;
+    }
+  | { kind: "file"; path: string; tab: ChatFileTab; lines?: string; symbol?: string; label: string }
+) & {
+  /** Only offered: a chip the reviewer clicks, never applied on arrival. */
+  offer?: boolean;
+  /** The answer's suggested next stop: why go there, in a few words. */
+  next?: string;
+};
+
+/**
+ * The chat's verdict on a finding already in the review (`triage_finding`):
+ * offered, like a suggested finding — nothing changes until the reviewer
+ * applies it. `holds` adds a confirming reply; `wrong` answers and resolves
+ * it; `rerate` changes its verdict to `assessment`.
+ */
+export interface ChatTriageRecord {
+  id: string;
+  findingId: string;
+  /** The finding's summary when triaged, for the card. */
+  findingSummary: string;
+  /** Its verdict when triaged. */
+  from: "defect" | "concern" | "unknown" | "ok";
+  verdict: "holds" | "wrong" | "rerate";
+  /** `rerate`'s new verdict. */
+  assessment?: "defect" | "concern" | "unknown" | "ok";
+  reason: string;
+  status: "pending" | "applied" | "dismissed";
+}
 
 export interface ChatMessageRecord {
   id: string;
@@ -75,8 +122,14 @@ export interface ChatMessageRecord {
   error?: boolean;
   /** Assistant messages: findings the model offered, for the reviewer to add or dismiss. */
   suggestions?: ChatSuggestionRecord[];
-  /** Assistant messages: what the answer did to the reviewer's view. */
+  /** Assistant messages: what the answer did to the reviewer's view, and the stops it offered. */
   actions?: ChatActionRecord[];
+  /** Assistant messages: verdicts on existing findings, for the reviewer to apply or dismiss. */
+  triage?: ChatTriageRecord[];
+  /** User messages: the finding the question was asked about (a finding's Ask chat). */
+  findingId?: string;
+  /** User messages: what was on the reviewer's screen, as sent to the model. */
+  screen?: string;
   createdAt: string;
 }
 
@@ -102,6 +155,9 @@ function toMessage(props: Record<string, unknown>): ChatMessageRecord {
     error: props.error === true ? true : undefined,
     suggestions: Array.isArray(props.suggestions) && props.suggestions.length > 0 ? (props.suggestions as ChatSuggestionRecord[]) : undefined,
     actions: Array.isArray(props.actions) && props.actions.length > 0 ? (props.actions as ChatActionRecord[]) : undefined,
+    triage: Array.isArray(props.triage) && props.triage.length > 0 ? (props.triage as ChatTriageRecord[]) : undefined,
+    findingId: (props.findingId as string | null) ?? undefined,
+    screen: (props.screen as string | null) ?? undefined,
     createdAt: props.createdAt as string,
   };
 }
@@ -140,6 +196,9 @@ export async function addChatMessage(
       error: input.error,
       suggestions: input.suggestions?.length ? input.suggestions : undefined,
       actions: input.actions?.length ? input.actions : undefined,
+      triage: input.triage?.length ? input.triage : undefined,
+      findingId: input.findingId,
+      screen: input.screen,
       createdAt: new Date().toISOString(),
       seq,
     };
@@ -161,6 +220,28 @@ export async function getChatMessage(repoId: string, id: string): Promise<ChatMe
   return row ? toMessage(unpack(row.data)) : undefined;
 }
 
+/** Changes one item of a stored message's `suggestions` or `triage` list; undefined when either is gone. */
+function updateMessageItem<T extends { id: string }>(
+  field: "suggestions" | "triage",
+  repoId: string,
+  messageId: string,
+  itemId: string,
+  patch: Partial<T>
+): ChatMessageRecord | undefined {
+  return transaction(() => {
+    const row = get<{ data: string }>(`SELECT data FROM chat_messages WHERE repo_id = ? AND id = ?`, repoId, messageId);
+    if (!row) return undefined;
+    const props = unpack(row.data);
+    const items = Array.isArray(props[field]) ? (props[field] as T[]) : [];
+    const index = items.findIndex((s) => s.id === itemId);
+    if (index < 0) return undefined;
+    items[index] = { ...items[index], ...patch };
+    const next = { ...props, [field]: items };
+    run(`UPDATE chat_messages SET data = ? WHERE repo_id = ? AND id = ?`, pack(next), repoId, messageId);
+    return toMessage(next);
+  });
+}
+
 /** Changes one suggestion on a stored message; returns the updated message, or undefined when either is gone. */
 export async function updateChatSuggestion(
   repoId: string,
@@ -168,18 +249,17 @@ export async function updateChatSuggestion(
   suggestionId: string,
   patch: Partial<Pick<ChatSuggestionRecord, "status" | "findingId">>
 ): Promise<ChatMessageRecord | undefined> {
-  return transaction(() => {
-    const row = get<{ data: string }>(`SELECT data FROM chat_messages WHERE repo_id = ? AND id = ?`, repoId, messageId);
-    if (!row) return undefined;
-    const props = unpack(row.data);
-    const suggestions = Array.isArray(props.suggestions) ? (props.suggestions as ChatSuggestionRecord[]) : [];
-    const index = suggestions.findIndex((s) => s.id === suggestionId);
-    if (index < 0) return undefined;
-    suggestions[index] = { ...suggestions[index], ...patch };
-    const next = { ...props, suggestions };
-    run(`UPDATE chat_messages SET data = ? WHERE repo_id = ? AND id = ?`, pack(next), repoId, messageId);
-    return toMessage(next);
-  });
+  return updateMessageItem<ChatSuggestionRecord>("suggestions", repoId, messageId, suggestionId, patch);
+}
+
+/** Changes one triage verdict's status on a stored message, likewise. */
+export async function updateChatTriage(
+  repoId: string,
+  messageId: string,
+  triageId: string,
+  status: ChatTriageRecord["status"]
+): Promise<ChatMessageRecord | undefined> {
+  return updateMessageItem<ChatTriageRecord>("triage", repoId, messageId, triageId, { status });
 }
 
 export async function clearChatMessages(repoId: string, targetKey: string): Promise<number> {

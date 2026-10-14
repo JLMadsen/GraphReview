@@ -13,7 +13,8 @@
 //
 // A file in the diff has a second tab, "File": the whole file at the head of
 // the diff (at its base, for a deleted file), with the lines the diff added
-// marked in the gutter — fetched the first time the tab opens. For JS/TS and
+// marked in the gutter — fetched the first time the tab opens; "Base" is the
+// whole file before the change, for a file the diff modifies. For JS/TS and
 // Python files a third, "Before / after", runs the changed functions and
 // components at both ends of the diff (PreviewPanel, DESIGN.md §6.9). The tab
 // resets to the diff whenever another file opens.
@@ -65,7 +66,7 @@ type FileState =
   | { status: "loaded"; data: FileContentResponseDTO }
   | { status: "error"; message: string };
 
-export type ModalTab = "diff" | "file" | "preview";
+export type ModalTab = "diff" | "file" | "base" | "preview";
 
 /** A short sha for a full one; a branch name or "working copy" as is. */
 function shortRefLabel(ref: string): string {
@@ -80,8 +81,8 @@ export interface FileDiffModalProps {
   finding: (Pick<FindingDTO, "filePath" | "lineRange"> & { reviewedHeadSha?: string }) | null;
   /** Open on the Before / after tab, showing this component (from the "Looks different" list). */
   initialComponent?: string;
-  /** The tab a changed file opens on — the diff unless a list asks for the whole file. */
-  initialTab?: "diff" | "file";
+  /** The tab a changed file opens on — the diff unless a list (or the chat) asks for another. */
+  initialTab?: "diff" | "file" | "base" | "preview";
   onClose: () => void;
 }
 
@@ -99,10 +100,10 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
   const previewable = Boolean(target && filePath && runtimeForPath(filePath)) && !outsideDiff;
   const shownTab: ModalTab = outsideDiff ? "diff" : tab;
 
-  /** The file whose whole text has been asked for — at most one request per opened file. */
+  /** The file (and side) whose whole text has been asked for — at most one request per opened file and side. */
   const fileRequested = useRef<string | null>(null);
   useEffect(() => {
-    setTab(initialComponent ? "preview" : initialTab);
+    setTab(initialComponent || initialTab === "preview" ? "preview" : initialTab);
     setFileState({ status: "idle" });
     fileRequested.current = null;
   }, [filePath, initialComponent, initialTab]);
@@ -111,13 +112,16 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
   // in, which says whether the file changed at all and which lines to mark —
   // then kept until another file opens; an answer for a file no longer open is
   // dropped.
-  const wantFile = shownTab === "file" && Boolean(filePath) && state.status === "loaded";
+  const wholeTab = shownTab === "file" || shownTab === "base";
+  const wantFile = wholeTab && Boolean(filePath) && state.status === "loaded";
   useEffect(() => {
-    if (!wantFile || !filePath || !target || fileRequested.current === filePath) return;
-    const path = filePath;
-    fileRequested.current = path;
+    const key = filePath && `${shownTab}:${filePath}`;
+    if (!wantFile || !key || !target || fileRequested.current === key) return;
+    const path = key;
+    fileRequested.current = key;
     setFileState({ status: "loading" });
-    fetch(`/api/repos/${repoId}/diff-impact/file?${diffQuery(target, path, undefined, "file")}`)
+    const query = diffQuery(target, filePath!, undefined, "file") + (shownTab === "base" ? "&side=base" : "");
+    fetch(`/api/repos/${repoId}/diff-impact/file?${query}`)
       .then(async (res) => {
         const json = (await res.json().catch(() => null)) as FileContentResponseDTO | { error: string } | null;
         if (!res.ok || !json || "error" in json) {
@@ -135,7 +139,7 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
       });
     // `target` is fixed for the lifetime of the dock, like the diff fetch below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wantFile, filePath, repoId]);
+  }, [wantFile, filePath, shownTab, repoId]);
 
   useEffect(() => {
     if (!filePath) return;
@@ -193,6 +197,9 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
   const tabOptions = [
     { value: "diff" as const, label: "Diff" },
     { value: "file" as const, label: "File", title: "The whole file at the head of the diff, with the changed lines marked" },
+    ...(state.status === "loaded" && (state.data.status === "modified" || state.data.status === "changed")
+      ? [{ value: "base" as const, label: "Base", title: "The whole file before the change" }]
+      : []),
     ...(previewable
       ? [{ value: "preview" as const, label: "Before / after", title: "Render the changed components and run the changed functions, before and after" }]
       : []),
@@ -273,23 +280,27 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
                   : "No textual diff for this file (binary, or too large)."}
               </p>
             ))}
-          {shownTab === "file" && state.status === "loaded" && (fileState.status === "loading" || fileState.status === "idle") && (
+          {wholeTab && state.status === "loaded" && (fileState.status === "loading" || fileState.status === "idle") && (
             <p className="flex items-center gap-2 px-1 py-6 text-xs text-muted-foreground">
               <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
               Loading the file…
             </p>
           )}
-          {shownTab === "file" && fileState.status === "error" && (
+          {wholeTab && fileState.status === "error" && (
             <p className="flex items-start gap-2 px-1 py-6 text-xs text-destructive">
               <TriangleAlert className="mt-px size-3.5 shrink-0" aria-hidden />
               <span>{fileState.message}</span>
             </p>
           )}
-          {shownTab === "file" && fileState.status === "loaded" && (
+          {wholeTab && fileState.status === "loaded" && (
             <>
               <p className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[11px] text-muted-foreground">
                 <span>
-                  {fileState.data.side === "base" ? "Before the change — this diff deletes the file" : "At the head of the diff"}
+                  {fileState.data.side === "head"
+                    ? "At the head of the diff"
+                    : shownTab === "base"
+                      ? "Before the change"
+                      : "Before the change — this diff deletes the file"}
                   {" · "}
                   <code className="font-mono" title={fileState.data.ref}>
                     {shortRefLabel(fileState.data.ref)}

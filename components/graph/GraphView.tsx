@@ -80,7 +80,7 @@ import type { FindingBucket } from "./pr-areas";
 import { useReview } from "./useReview";
 import { ApiView } from "./ApiView";
 import { ApiChangesSection } from "./ApiChangesSection";
-import { InfraView } from "./InfraView";
+import { InfraView, type InfraMode } from "./InfraView";
 
 const NO_ENDPOINTS: never[] = [];
 import { InfraChangesSection } from "./InfraChangesSection";
@@ -104,6 +104,7 @@ import type {
   DiffImpactResponseDTO,
   Assessment,
   FindingCategory,
+  FindingDTO,
   ReviewTargetDTO,
 } from "./types";
 
@@ -167,7 +168,20 @@ export function GraphView({
   const checklist = useChecklist(repoId, reviewTarget, review.state, autoReview && !review.cancelled);
   /** Applies what a chat answer did to the view — set below, once the view's own callbacks exist. */
   const chatActionsRef = useRef<(actions: ChatActionDTO[]) => void>(undefined);
-  const handleChatActions = useCallback((actions: ChatActionDTO[]) => chatActionsRef.current?.(actions), []);
+  /**
+   * When the reviewer last used the map, the lists or the file viewer (a
+   * click, a scroll, a key). An answer to a question sent before that leaves
+   * the screen alone — they have moved on — and only offers its chips.
+   */
+  const lastInteractionRef = useRef(0);
+  const noteInteraction = useCallback(() => {
+    lastInteractionRef.current = Date.now();
+  }, []);
+  const handleChatActions = useCallback((actions: ChatActionDTO[], sentAt: number) => {
+    if (lastInteractionRef.current > sentAt) return false;
+    chatActionsRef.current?.(actions);
+    return true;
+  }, []);
   const chat = usePrChat(repoId, reviewTarget, handleChatActions);
   const previewScan = usePreviewScan(repoId, reviewTarget);
   /** The target's base vs head: structure change and call graph (static analysis, no model). */
@@ -186,7 +200,7 @@ export function GraphView({
   // (the dock's Files tab, an area's most-changed files) open on the diff;
   // the rest (the explainer's files, chat) on the
   // whole file, its changed lines marked.
-  const [openFile, setOpenFile] = useState<{ path: string; component?: string; tab?: "diff" | "file"; lines?: string } | null>(null);
+  const [openFile, setOpenFile] = useState<{ path: string; component?: string; tab?: "diff" | "file" | "base" | "preview"; lines?: string } | null>(null);
   const openFilePath = useCallback((path: string) => setOpenFile({ path }), []);
   const openFileAtLine = useCallback((path: string, line?: number) => setOpenFile({ path, lines: line ? String(line) : undefined }), []);
   const openFileView = useCallback((path: string, lines?: string) => setOpenFile({ path, tab: "file", lines }), []);
@@ -405,6 +419,13 @@ export function GraphView({
   const [reviewFilter, setReviewFilter] = useState<{ nonce: number; buckets?: FindingBucket[]; category?: FindingCategory } | null>(null);
   /** A file a chat answer showed, for the Files view to open (at its line); the nonce lets the same file be shown again. */
   const [filesFocus, setFilesFocus] = useState<{ path: string; line?: number; nonce: number } | null>(null);
+  /** The Infra view's sub-view a chat answer asked for. */
+  const [infraModeRequest, setInfraModeRequest] = useState<{ mode: InfraMode } | null>(null);
+  /** A finding a chat answer showed, for the review dock to list and make active. */
+  const [findingFocus, setFindingFocus] = useState<{ findingId: string; nonce: number } | null>(null);
+  /** A finding whose Ask was clicked, for the chat's input. */
+  const [chatFinding, setChatFinding] = useState<{ id: string; summary: string; nonce: number } | null>(null);
+  const askChatAbout = useCallback((finding: FindingDTO) => setChatFinding({ id: finding.id, summary: finding.summary, nonce: Date.now() }), []);
   /** The PR map's area holding most of a component's changed files, if the change touches it. */
   const prAreaOfComponent = useCallback(
     (componentId: string) => {
@@ -476,7 +497,50 @@ export function GraphView({
         if (LIST_VIEWS.has(view)) setPreferredView(prRequest ? "pr" : "app");
         return;
       }
+      if (action.kind === "view") {
+        if (action.view === "pr" && !prRequest) return;
+        switch (action.view) {
+          case "app":
+            if (action.level) setAppLevel(action.level);
+            break;
+          case "pr":
+            if (action.mode === "files" || (action.mode === "functions" && reviewTarget)) setPrMode(action.mode);
+            break;
+          case "api":
+            mountApi();
+            if (action.changedOnly !== undefined) setApiChangedOnly(action.changedOnly);
+            break;
+          case "infra":
+            mountInfra();
+            if (action.mode) setInfraModeRequest({ mode: action.mode as InfraMode });
+            if (action.changedOnly !== undefined) setInfraChangedOnly(action.changedOnly);
+            break;
+          case "data":
+            mountData();
+            if (action.mode === "canvas" || action.mode === "list") setDataMode(action.mode);
+            if (action.changedOnly !== undefined) setDataChangedOnly(action.changedOnly);
+            break;
+          case "env":
+            mountEnv();
+            if (action.changedOnly !== undefined) setEnvChangedOnly(action.changedOnly);
+            break;
+        }
+        setPreferredView(action.view);
+        return;
+      }
+      if (action.kind === "file") {
+        if (!reviewTarget) return;
+        setOpenFile({ path: action.path, tab: action.tab, ...(action.lines ? { lines: action.lines } : {}), ...(action.symbol ? { component: action.symbol } : {}) });
+        return;
+      }
       switch (action.target) {
+        case "finding":
+          if (!reviewTarget) break;
+          setFindingFocus({ findingId: action.id, nonce: Date.now() });
+          if (reviewExpanded) break;
+          // The findings list sits under the maps, not under the list views.
+          if (LIST_VIEWS.has(view)) setPreferredView(prRequest ? "pr" : "app");
+          break;
         case "component":
           showComponent(action.id);
           break;
@@ -486,7 +550,7 @@ export function GraphView({
           // commit, where the change's line numbers don't hold. The rest open in
           // the Files view, at the line, marked.
           if (changedFiles?.has(action.id)) {
-            setOpenFile({ path: action.id, tab: action.line ? "file" : "diff", ...(action.line ? { line: action.line } : {}) });
+            setOpenFile({ path: action.id, tab: action.line ? "file" : "diff", ...(action.line ? { lines: String(action.line) } : {}) });
           } else {
             setFilesFocus({ path: action.id, ...(action.line ? { line: action.line } : {}), nonce: Date.now() });
             setPreferredView("files");
@@ -543,6 +607,14 @@ export function GraphView({
       setDataChangedOnly,
       setDataSelected,
       setInfraChangedOnly,
+      setAppLevel,
+      setDataMode,
+      setEnvChangedOnly,
+      mountApi,
+      mountInfra,
+      mountData,
+      mountEnv,
+      reviewExpanded,
     ]
   );
   // Every live answer drops the last one's highlight, then applies its own
@@ -582,6 +654,26 @@ export function GraphView({
       ? { id: prAreaComponent, name: componentNameById(prAreaComponent) ?? prAreaComponent }
       : null;
 
+  /** What is on the screen, in a line, for the chat (DESIGN.md §6.7): the view, what is selected in it, an open file. */
+  const chatScreen = useMemo(() => {
+    const parts = [VIEW_OPTIONS.find((o) => o.value === view)?.label ?? view];
+    if (view === "app") {
+      parts[0] += ` by ${appLevel}`;
+      const card = appSelection?.kind === "card" ? appMap.map?.nodes.find((n) => n.id === appSelection.id) : undefined;
+      if (card) parts.push(`card "${card.name}" selected`);
+    } else if (view === "pr") {
+      parts[0] += prMode === "functions" ? " (functions)" : "";
+      if (selectedFn) parts.push(`function ${selectedFn.qualified}() selected`);
+      else if (selectedPrArea) parts.push(`area "${selectedPrArea.node.name}" selected`);
+    } else if (view === "data") {
+      parts[0] += ` (${dataMode})`;
+      if (selectedDbRow) parts.push(`table ${selectedDbRow.table.name} selected`);
+    }
+    if (openFile) parts.push(`file viewer open on ${openFile.path}${openFile.lines ? `:${openFile.lines}` : ""} (${openFile.tab ?? "diff"})`);
+    if (reviewTarget && mapFolded) parts.push("the findings list expanded");
+    return parts.join("; ");
+  }, [view, appLevel, appSelection, appMap.map, prMode, selectedFn, selectedPrArea, dataMode, selectedDbRow, openFile, reviewTarget, mapFolded]);
+
   // The view switch is a row of tabs across the column; the active view's
   // own toolbar sits directly under it (view-chrome.ts), so a view's
   // controls always start at the same place, under the tabs rather than
@@ -617,6 +709,8 @@ export function GraphView({
     <div ref={rootRef} data-wide-shell className="flex flex-col lg:h-(--tab-h) lg:flex-row lg:overflow-hidden">
       <aside
         data-pane="left"
+        onPointerDownCapture={noteInteraction}
+        onKeyDownCapture={noteInteraction}
         className="relative w-full shrink-0 border-border bg-card lg:h-full lg:w-(--panel-w) lg:border-r"
         style={{ "--panel-w": `${leftWidth}px` } as React.CSSProperties}
       >
@@ -648,7 +742,13 @@ export function GraphView({
         </div>
       </aside>
 
-      <div data-pane="center" className="flex min-w-0 flex-1 flex-col lg:h-full lg:overflow-hidden">
+      <div
+        data-pane="center"
+        className="flex min-w-0 flex-1 flex-col lg:h-full lg:overflow-hidden"
+        onPointerDownCapture={noteInteraction}
+        onWheelCapture={noteInteraction}
+        onKeyDownCapture={noteInteraction}
+      >
         {/* The two views share this one fixed-height cell; each is a flex
             column whose canvas takes whatever its own toolbar leaves. With a
             review under it the map section gets half the tab (the dock has a
@@ -730,6 +830,7 @@ export function GraphView({
               changedOnly={infraChangedOnly}
               onChangedOnlyChange={setInfraChangedOnly}
               focus={infraFocus}
+              modeRequest={infraModeRequest}
               endpointLabel={endpointLabel}
               onOpenEndpoint={openEndpoint}
               onOpenFile={openFileAtLine}
@@ -868,6 +969,8 @@ export function GraphView({
             scopeComponentId={prAreaComponent}
             onClearScope={() => selectPrArea(null)}
             filterRequest={reviewFilter}
+            focusRequest={findingFocus}
+            onAskChat={askChatAbout}
             componentName={componentNameById}
             onOpenFile={openFilePath}
           />
@@ -957,6 +1060,8 @@ export function GraphView({
                 onSelectComponent={showComponent}
                 onOpenFile={openFileView}
                 onApplyAction={applyChatAction}
+                screen={chatScreen}
+                finding={chatFinding}
               />
           </div>
       </aside>

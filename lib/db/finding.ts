@@ -159,6 +159,31 @@ export async function addFindingResponse(
   });
 }
 
+/**
+ * Changes one finding's verdict and records why as a `comment` reply (the
+ * chat's re-rating, DESIGN.md §6.7). Like a reply, not carried over by a
+ * re-review. Returns `null` when no such finding exists in that repo.
+ */
+export async function rateFinding(
+  repoId: string,
+  id: string,
+  assessment: FindingRecord["assessment"],
+  reply: { author: string; body: string }
+): Promise<FindingRecord | null> {
+  return transaction(() => {
+    const row = get<{ data: string }>(`SELECT data FROM findings WHERE id = ? AND repo_id = ?`, id, repoId);
+    if (!row) return null;
+    const record = toFindingRecord(unpack(row.data));
+    const now = new Date().toISOString();
+    record.assessment = assessment;
+    // An OK finding has nothing left to resolve.
+    if (assessment === "ok") record.resolvedAt = undefined;
+    record.responses = [...(record.responses ?? []), { id: crypto.randomUUID(), kind: "comment", ...reply, createdAt: now }];
+    writeFinding(record);
+    return record;
+  });
+}
+
 export async function deleteFinding(id: string): Promise<void> {
   run(`DELETE FROM findings WHERE id = ?`, id);
 }

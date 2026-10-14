@@ -40,7 +40,7 @@ The rest of the design is split into one file per section, so a task reads only 
 | §6.4 | [design/6.4-pr-map.md](design/6.4-pr-map.md) | The PR map — a second view of the same diff (built 2026-09-24) |
 | §6.5 | [design/6.5-app-map.md](design/6.5-app-map.md) | The app map — the whole codebase as cards, at three levels (built 2026-09-26) |
 | §6.6 | [design/6.6-checklist.md](design/6.6-checklist.md) | The PR prerequisite checklist (built 2026-09-26) |
-| §6.7 | [design/6.7-pr-chat.md](design/6.7-pr-chat.md) | The PR chat (built 2026-09-26) |
+| §6.7 | [design/6.7-pr-chat.md](design/6.7-pr-chat.md) | The PR chat (built 2026-09-26; pointing, screen context, views, triage 2026-10-14) |
 | §6.8 | [design/6.8-graph-tab-layout.md](design/6.8-graph-tab-layout.md) | Visual language and layout of the Graph tab (redesign, 2026-09-26) |
 | §6.9 | [design/6.9-preview.md](design/6.9-preview.md) | Before/after preview: running the changed code (built 2026-10-02) |
 | §6.10 | [design/6.10-names-and-call-graph.md](design/6.10-names-and-call-graph.md) | Names, base/head comparison and the call graph (built 2026-10-08) |
@@ -50,6 +50,7 @@ The rest of the design is split into one file per section, so a task reads only 
 | §6.14 | [design/6.14-files.md](design/6.14-files.md) | Files: the repo as files (built 2026-10-11) |
 | §6.15 | [design/6.15-env.md](design/6.15-env.md) | Env variables: a variable catalog, its diff and four certain findings (decided and built 2026-10-13) |
 | §6.16 | [design/6.16-infra-views.md](design/6.16-infra-views.md) | Infra sub-views: Diagram, Files with plain-English notes, Requests (built 2026-10-13) |
+| §6.17 | [design/6.17-local-config.md](design/6.17-local-config.md) | Use local config: AI providers from OpenCode, Codex, Claude Code and other harness configs (built 2026-10-14) |
 | §7–8 | [design/data-model.md](design/data-model.md) | Data model, GitHub integration surface |
 | §9–10 | [design/ai-pipeline.md](design/ai-pipeline.md) | AI integration flow, the review pipeline, labeling, analysis lifecycle & AI cost |
 | §11–14 | [design/runtime.md](design/runtime.md) | Secrets, distribution & runtime layout, module/folder structure, local repo access |

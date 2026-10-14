@@ -8,6 +8,7 @@ import {
   Check,
   ChevronRight,
   FileDiff,
+  MessageSquare,
   RotateCcw,
   Wrench,
 } from "lucide-react";
@@ -31,7 +32,8 @@ import { type RowKeyboardProps, STATIC_CATEGORY_LABEL, useRowKeyboard, FINDING_G
  * One finding as a row: the labelled severity badge (colour is never the
  * only channel), the summary — which expands the model's reasoning — with its
  * facts as chips under it (component, kind, low confidence, fixing), the
- * file:line, and real Diff / Resolve buttons. Open defects carry a faint tint.
+ * file:line, and real Diff / Resolve buttons — and Ask, which puts the finding
+ * in the chat's input. Open defects carry a faint tint.
  */
 export function FindingRow({
   finding,
@@ -39,6 +41,7 @@ export function FindingRow({
   onViewDiff,
   onSetResolved,
   onRetry,
+  onAskChat,
   ...keyboard
 }: RowKeyboardProps & {
   finding: FindingDTO;
@@ -47,6 +50,8 @@ export function FindingRow({
   onSetResolved: (findingId: string, resolved: boolean) => void;
   /** Present when failed calls can be retried right now. */
   onRetry?: () => void;
+  /** Puts the finding in the chat's input, to ask about it. */
+  onAskChat?: (finding: FindingDTO) => void;
 }) {
   const [open, setOpen] = useState(false);
   const location = formatLocation(finding);
@@ -151,6 +156,18 @@ export function FindingRow({
         )}
       </div>
       <div className="flex shrink-0 items-center justify-end gap-1">
+        {onAskChat && !finding.callFailed && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={() => onAskChat(finding)}
+            title="Ask the chat about this finding — whether it holds, what it means, how to fix it"
+            aria-label="Ask the chat about this finding"
+          >
+            <MessageSquare aria-hidden />
+          </Button>
+        )}
         {finding.filePath && (
           <Button
             type="button"

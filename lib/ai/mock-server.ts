@@ -481,16 +481,34 @@ function checklistContent(userText: string): { content: string; note: string } {
   return { content, note: `pr-checklist questions=${ids.length}` };
 }
 
-/** First turn: look at the changed files. After a tool result: answer, quoting the first file. */
+/**
+ * First turn: look at the changed files. Asked about a finding, then: say it
+ * holds (triage_finding). Then answer, quoting the first file, pointing at it
+ * (point_to) and at the second as the next stop.
+ */
 function prChatContent(userText: string): { content: string; note: string } {
+  const json = (value: unknown) => ["```json", JSON.stringify(value), "```"].join("\n");
   if (!userText.includes("Result of list_changed_files")) {
-    const content = ["```json", JSON.stringify({ tool: "list_changed_files", args: {} }), "```"].join("\n");
-    return { content, note: "pr-chat tool" };
+    return { content: json({ tool: "list_changed_files", args: {} }), note: "pr-chat tool" };
   }
-  const firstFile = /Result of list_changed_files:\n```\n([^ \n]+)/.exec(userText)?.[1] ?? "(none)";
+  const finding = /The question is about this finding of the review:\n(#[0-9a-f]{8})/.exec(userText)?.[1];
+  if (finding && !userText.includes("Result of triage_finding")) {
+    return {
+      content: json({ tool: "triage_finding", args: { id: finding, verdict: "holds", reason: `${MOCK_DESCRIPTION_PREFIX}The diff does what the finding says.` } }),
+      note: "pr-chat triage",
+    };
+  }
+  const files = /Result of list_changed_files:\n```\n([\s\S]*?)\n```/.exec(userText)?.[1]?.split("\n").map((line) => line.split(" ")[0]) ?? [];
+  const firstFile = files[0] ?? "(none)";
   const answer = `${MOCK_DESCRIPTION_PREFIX}I looked at the changed files; the first one is \`${firstFile}\`.`;
-  const content = ["```json", JSON.stringify({ answer }), "```"].join("\n");
-  return { content, note: "pr-chat answer" };
+  return {
+    content: json({
+      answer,
+      ...(files[0] ? { point_to: [{ kind: "file", name: files[0] }] } : {}),
+      ...(files[1] ? { next: { kind: "file", name: files[1], why: `${MOCK_DESCRIPTION_PREFIX}the second changed file` } } : {}),
+    }),
+    note: "pr-chat answer",
+  };
 }
 
 /** Repo-wide chat. First turn: list the components. After the result: answer, naming the first one. */

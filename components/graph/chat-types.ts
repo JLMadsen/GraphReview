@@ -20,11 +20,16 @@ export interface ChatSuggestionDTO {
   findingId?: string;
 }
 
-/** Something an answer did to the view (`show`, `highlight`, `filter_findings`) — applied on arrival, redone from its chip. */
-export type ChatActionDTO =
+/**
+ * Something an answer did to the view (`show`, `highlight`, `filter_findings`,
+ * `switch_view`, `open_diff`) — applied on arrival, redone from its chip — or
+ * only offered (`offer`: the answer's `point_to` / `next` stops, a Before /
+ * after preview), applied only from its chip.
+ */
+export type ChatActionDTO = (
   | {
       kind: "show";
-      target: "component" | "file" | "endpoint" | "table" | "env" | "infra" | "area" | "function";
+      target: "component" | "file" | "endpoint" | "table" | "env" | "infra" | "area" | "function" | "finding";
       id: string;
       label: string;
       line?: number;
@@ -36,7 +41,33 @@ export type ChatActionDTO =
       category?: string;
       componentId?: string;
       label: string;
-    };
+    }
+  | {
+      kind: "view";
+      view: "pr" | "app" | "api" | "infra" | "data" | "env" | "files";
+      level?: "architecture" | "features" | "modules";
+      mode?: string;
+      changedOnly?: boolean;
+      label: string;
+    }
+  | { kind: "file"; path: string; tab: "diff" | "file" | "base" | "preview"; lines?: string; symbol?: string; label: string }
+) & {
+  offer?: boolean;
+  /** The suggested next stop: why go there. */
+  next?: string;
+};
+
+/** The chat's verdict on a finding already in the review; the reviewer applies or dismisses it. */
+export interface ChatTriageDTO {
+  id: string;
+  findingId: string;
+  findingSummary: string;
+  from: "defect" | "concern" | "unknown" | "ok";
+  verdict: "holds" | "wrong" | "rerate";
+  assessment?: "defect" | "concern" | "unknown" | "ok";
+  reason: string;
+  status: "pending" | "applied" | "dismissed";
+}
 
 export interface ChatMessageDTO {
   id: string;
@@ -51,6 +82,11 @@ export interface ChatMessageDTO {
   error?: boolean;
   suggestions?: ChatSuggestionDTO[];
   actions?: ChatActionDTO[];
+  triage?: ChatTriageDTO[];
+  /** User messages: the finding asked about. */
+  findingId?: string;
+  /** User messages: what was on screen, as sent. */
+  screen?: string;
   createdAt: string;
 }
 
@@ -67,6 +103,13 @@ export interface ChatSuggestionActionDTO {
   messageId: string;
   suggestionId: string;
   action: "add" | "dismiss";
+}
+
+/** `PATCH /api/repos/[repoId]/chat` — the reviewer's answer to a verdict on a finding. */
+export interface ChatTriageActionDTO {
+  messageId: string;
+  triageId: string;
+  action: "apply" | "dismiss";
 }
 
 /** One line of the `POST /api/repos/[repoId]/chat` NDJSON stream. */

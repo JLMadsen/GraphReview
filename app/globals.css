@@ -397,56 +397,56 @@ html[data-middle-scroll] * {
 }
 
 /*
- * Layout prototype (2026-10-14), toggled by "Panels" in the top nav inside a
- * repo (app/main-nav.tsx sets `data-layout="panels"` on <html>). Instead of one flat surface cut
- * by hairlines, each region — the diff column, the map, the review dock, the
- * inspector, the chat — is its own panel on a darker gutter, so the gaps do
- * the separating. Inside the panels: the left column's sections become soft
- * groups instead of ruled rows, and the canvas grid is quieter.
+ * The Graph tab as panels (2026-10-14; DESIGN.md §6.4): instead of one flat
+ * surface cut by hairlines, each region — the diff column, the map, the
+ * review dock, the inspector, the chat — is its own panel on a darker gutter
+ * (GraphView's `data-pane` / `data-pane-part`), so the gaps do the
+ * separating. Inside the panels: the left column's sections are soft groups
+ * instead of ruled rows, and the canvas grid is quieter.
  */
 @media (width >= 64rem) {
-  [data-layout="panels"] [data-wide-shell] {
+  [data-wide-shell] {
     --gutter: 8px;
     gap: var(--gutter);
     padding: var(--gutter);
     background: color-mix(in oklch, var(--canvas) 60%, black);
   }
-  [data-layout="panels"] [data-wide-shell] [data-pane="center"],
-  [data-layout="panels"] [data-wide-shell] [data-pane="right"] {
+  [data-wide-shell] [data-pane="center"],
+  [data-wide-shell] [data-pane="right"] {
     gap: var(--gutter);
     background: transparent;
     border: 0;
   }
-  [data-layout="panels"] [data-wide-shell] [data-pane="left"],
-  [data-layout="panels"] [data-wide-shell] [data-pane-part="map"],
-  [data-layout="panels"] [data-wide-shell] [data-pane-part="inspector"],
-  [data-layout="panels"] [data-wide-shell] [data-pane-part="chat"],
-  [data-layout="panels"] [data-wide-shell] #review {
+  [data-wide-shell] [data-pane="left"],
+  [data-wide-shell] [data-pane-part="map"],
+  [data-wide-shell] [data-pane-part="inspector"],
+  [data-wide-shell] [data-pane-part="chat"],
+  [data-wide-shell] #review {
     border: 1px solid oklch(1 0 0 / 13%);
     border-radius: 6px;
     background: var(--card);
     box-shadow: 0 1px 2px rgb(0 0 0 / 35%);
   }
-  [data-layout="panels"] [data-wide-shell] [data-pane-part="map"],
-  [data-layout="panels"] [data-wide-shell] [data-pane-part="chat"],
-  [data-layout="panels"] [data-wide-shell] #review {
+  [data-wide-shell] [data-pane-part="map"],
+  [data-wide-shell] [data-pane-part="chat"],
+  [data-wide-shell] #review {
     overflow: hidden;
   }
   /* The map's full-tab height would overflow the gutter; let it give way. */
-  [data-layout="panels"] [data-wide-shell] [data-pane-part="map"] {
+  [data-wide-shell] [data-pane-part="map"] {
     flex-shrink: 1;
     min-height: 0;
   }
-  [data-layout="panels"] [data-wide-shell] [data-pane-part="map"][style*="height: 0"] {
+  [data-wide-shell] [data-pane-part="map"][style*="height: 0"] {
     border-width: 0;
   }
   /* The dock's own heading row is the separator now. */
-  [data-layout="panels"] [data-wide-shell] #review {
+  [data-wide-shell] #review {
     border-top-width: 1px;
   }
 
   /* Left column: each section is a soft group, not a ruled row. */
-  [data-layout="panels"] [data-wide-shell] [data-pane="left"] section {
+  [data-wide-shell] [data-pane="left"] section {
     margin-top: 8px;
     border: 0;
     border-radius: 4px;
@@ -455,11 +455,57 @@ html[data-middle-scroll] * {
   }
 
   /* A quieter dot grid, so the cards and wires carry the canvas. */
-  [data-layout="panels"] [data-wide-shell] .bp-grid {
+  [data-wide-shell] .bp-grid {
     background-image: radial-gradient(
       color-mix(in oklch, var(--foreground) 6%, transparent) 1px,
       transparent 1.2px
     );
     background-size: 20px 20px;
   }
+}
+
+/*
+ * A view's toolbar (components/graph/view-chrome.ts, VIEW_TOOLBAR): every
+ * control runs the bar's full height as a square cell with side borders —
+ * still a button (border, fill on hover, the pressed one filled), just
+ * without the padding around it. Wrappers holding controls stretch with
+ * them; text beside them stays centred. Controls positioned inside another
+ * (a field's clear button) are left alone.
+ */
+.view-toolbar :where(div, label, form):has(button, input, select) {
+  align-self: stretch;
+  align-items: stretch;
+}
+.view-toolbar :where(div, label, form):has(button, input, select) > :not(button, input, select, div, label, form, [role="group"]),
+.view-toolbar > :not(button, input, select, div, label, form, [role="group"]),
+.view-toolbar :where(div, label, form):not(:has(button, input, select)) {
+  align-self: center;
+}
+.view-toolbar :is(button, input, select, [role="group"]):not(.absolute) {
+  align-self: stretch;
+  height: auto;
+  border-radius: 0;
+  border-block-width: 0;
+}
+.view-toolbar :is(button, select):not(.absolute) {
+  border-inline: 1px solid var(--border);
+  padding-inline: 0.75rem;
+}
+.view-toolbar :is(button, select):not(.absolute, [aria-pressed="true"], [aria-selected="true"]):hover {
+  background: var(--secondary);
+}
+.view-toolbar input:not(.absolute) {
+  border-inline: 1px solid var(--border);
+  background: color-mix(in oklch, var(--background) 50%, transparent);
+}
+/* A search box drawn by its <label> (a bordered label around a bare input): the label is the cell. */
+.view-toolbar label:has(> input) {
+  /* 100%, not auto: a wrapper that is not itself flex (Files' search) would otherwise shrink it to its text. */
+  height: 100%;
+  border-radius: 0;
+  border-block-width: 0;
+}
+.view-toolbar label.border > input {
+  border-inline-width: 0;
+  background: transparent;
 }

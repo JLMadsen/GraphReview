@@ -9,8 +9,16 @@
 //   focus (a dismissable chip above the input);
 // - every component an answer's lookups touched becomes a chip that selects
 //   it in the graph, and file paths in an answer open that file's diff;
-// - what an answer put on screen (show, highlight, filter_findings) is applied
-//   when it arrives (GraphView) and stays as a chip that does it again.
+// - what an answer put on screen (show, highlight, filter_findings,
+//   switch_view, open_diff) is applied when it arrives (GraphView) and stays
+//   as a chip that does it again — unless the reviewer has been using the
+//   screen since asking, when it is only a chip ("left your screen as it was");
+// - what an answer is about (`point_to`) and where to look next (`next`) are
+//   chips that move nothing until clicked;
+// - what is on screen is sent with each question, and a finding's Ask puts
+//   the finding above the input, so the question is about it;
+// - a verdict on an existing finding (triage_finding) is a card with Apply /
+//   Dismiss, like a suggested finding.
 //
 // It reads as a chat: questions are bubbles on the right, answers bubbles on
 // the left (bold in an answer is dropped — models love bold lead-ins), file
@@ -23,24 +31,38 @@
 
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  ArrowRight,
   Check,
   ChevronDown,
   ChevronRight,
   CircleStop,
   Crosshair,
+  FileDiff,
   FileText,
   Highlighter,
+  LayoutGrid,
   Lightbulb,
   ListFilter,
   LoaderCircle,
+  MapPin,
+  MessageSquare,
   Plus,
+  Scale,
   SendHorizontal,
   Trash2,
   TriangleAlert,
   X,
 } from "lucide-react";
 import { cn } from "cn";
-import type { ChatActionDTO, ChatMessageDTO, ChatStepDTO, ChatSuggestionActionDTO, ChatSuggestionDTO } from "./chat-types";
+import type {
+  ChatActionDTO,
+  ChatMessageDTO,
+  ChatStepDTO,
+  ChatSuggestionActionDTO,
+  ChatSuggestionDTO,
+  ChatTriageActionDTO,
+  ChatTriageDTO,
+} from "./chat-types";
 import { AssessmentGlyph } from "./PrMapNode";
 import { highlightLines, languageForFence } from "./highlight";
 import { startMiddleScroll } from "./middle-scroll";
@@ -68,9 +90,16 @@ export interface ChatPanelProps {
   changedFiles: ReadonlySet<string>;
   onSelectComponent: (id: string) => void;
   onOpenFile?: (path: string, lines?: string) => void;
-  /** Does again what an answer did to the view. */
+  /** Does again what an answer did to the view (or does what it offered). */
   onApplyAction?: (action: ChatActionDTO) => void;
+  /** What is on the screen, sent with each question so answers can start from it. */
+  screen?: string;
+  /** A finding whose Ask was clicked: shown above the input and sent with the question. A new object each time. */
+  finding?: { id: string; summary: string; nonce: number } | null;
 }
+
+/** The question a finding's Ask starts with. */
+const FINDING_QUESTION = "Does this finding hold up?";
 
 export function ChatPanel({
   chat,
@@ -82,15 +111,32 @@ export function ChatPanel({
   onSelectComponent,
   onOpenFile,
   onApplyAction,
+  screen,
+  finding,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState("");
   const [useFocus, setUseFocus] = useState(true);
+  /** The finding the next question is about, until it is sent or dismissed. */
+  const [aboutFinding, setAboutFinding] = useState<{ id: string; summary: string } | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const busy = chat.pending !== null;
 
   // A new selection is sent along again, even if the last one was dismissed.
   useEffect(() => setUseFocus(true), [focus?.id]);
+
+  // A finding's Ask: it goes above the input, with a question to start from.
+  useEffect(() => {
+    if (!finding) return;
+    setAboutFinding({ id: finding.id, summary: finding.summary });
+    setDraft((d) => (d.trim() ? d : FINDING_QUESTION));
+    const el = inputRef.current;
+    if (el) {
+      el.focus();
+      el.select();
+    }
+  }, [finding]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -107,7 +153,12 @@ export function ChatPanel({
     const question = text.trim();
     if (!question || busy) return;
     setDraft("");
-    void chat.send(question, useFocus && focus ? focus.id : undefined);
+    setAboutFinding(null);
+    void chat.send(question, {
+      ...(useFocus && focus ? { focusComponentId: focus.id } : {}),
+      ...(aboutFinding ? { findingId: aboutFinding.id } : {}),
+      ...(screen ? { screen } : {}),
+    });
   };
 
   const inlineRenderer = (text: string) => renderInline(text, changedFiles, onOpenFile);
@@ -224,8 +275,10 @@ export function ChatPanel({
                     onSelectComponent={onSelectComponent}
                     renderInline={inlineRenderer}
                     onAnswerSuggestion={(id, action) => chat.answerSuggestion(message.id, id, action)}
+                    onAnswerTriage={(id, action) => chat.answerTriage(message.id, id, action)}
                     onOpenFile={onOpenFile}
                     onApplyAction={onApplyAction}
+                    held={chat.held.has(message.id)}
                   />
                 </Fragment>
               );
@@ -257,6 +310,25 @@ export function ChatPanel({
           submit(draft);
         }}
       >
+        {aboutFinding && (
+          <p className="mb-1.5 flex items-center gap-1">
+            <span className="inline-flex max-w-full items-center gap-1 rounded-sm border border-brand/50 px-1.5 py-0.5 text-[11px] text-foreground">
+              <MessageSquare className="size-3 shrink-0 text-brand" aria-hidden />
+              <span className="shrink-0 text-muted-foreground">Finding</span>
+              <span className="truncate font-medium" title={aboutFinding.summary}>
+                {aboutFinding.summary}
+              </span>
+              <button
+                type="button"
+                onClick={() => setAboutFinding(null)}
+                className="rounded-full text-muted-foreground hover:text-foreground"
+                aria-label="Don't ask about this finding"
+              >
+                <X className="size-2.5" />
+              </button>
+            </span>
+          </p>
+        )}
         {focus && useFocus && (
           <p className="mb-1.5 flex items-center gap-1">
             <span className="inline-flex max-w-full items-center gap-1 rounded-sm border border-border px-1.5 py-0.5 text-[11px] text-foreground">
@@ -275,6 +347,7 @@ export function ChatPanel({
         )}
         <div className="flex items-end gap-1.5">
           <textarea
+            ref={inputRef}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -371,16 +444,21 @@ function Message({
   onSelectComponent,
   renderInline: inline,
   onAnswerSuggestion,
+  onAnswerTriage,
   onOpenFile,
   onApplyAction,
+  held,
 }: {
   message: ChatMessageDTO;
   componentName: (id: string) => string | undefined;
   onSelectComponent: (id: string) => void;
   renderInline: (text: string) => ReactNode;
   onAnswerSuggestion: (suggestionId: string, action: ChatSuggestionActionDTO["action"]) => Promise<void>;
+  onAnswerTriage: (triageId: string, action: ChatTriageActionDTO["action"]) => Promise<void>;
   onOpenFile?: (path: string, lines?: string) => void;
   onApplyAction?: (action: ChatActionDTO) => void;
+  /** Its view changes weren't applied: the reviewer had moved on. */
+  held?: boolean;
 }) {
   if (message.role === "user") return <UserBubble text={message.content} />;
   if (message.error) {
@@ -393,6 +471,10 @@ function Message({
   const chips = message.componentIds
     .map((id) => ({ id, name: componentName(id) }))
     .filter((c): c is { id: string; name: string } => Boolean(c.name));
+  const actions = message.actions ?? [];
+  const done = actions.filter((a) => !a.offer);
+  const offers = actions.filter((a) => a.offer && a.next === undefined);
+  const next = actions.find((a) => a.offer && a.next !== undefined);
   return (
     <AssistantBubble
       footer={
@@ -417,13 +499,36 @@ function Message({
       }
     >
       <div className="space-y-1.5 text-xs leading-relaxed text-foreground/90">{renderMarkdown(message.content, inline)}</div>
-      {onApplyAction && message.actions && message.actions.length > 0 && (
+      {onApplyAction && held && done.length > 0 && (
+        <p className="text-[10px] text-muted-foreground">Left your screen as it was, since you had moved on. The chips below do it.</p>
+      )}
+      {onApplyAction && (done.length > 0 || offers.length > 0) && (
         <div className="flex flex-wrap gap-1">
-          {message.actions.map((action, i) => (
-            <ActionChip key={i} action={action} onApply={() => onApplyAction(action)} />
+          {done.map((action, i) => (
+            <ActionChip key={`d${i}`} action={action} onApply={() => onApplyAction(action)} />
+          ))}
+          {offers.map((action, i) => (
+            <ActionChip key={`o${i}`} action={action} onApply={() => onApplyAction(action)} />
           ))}
         </div>
       )}
+      {onApplyAction && next && (
+        <button
+          type="button"
+          onClick={() => onApplyAction(next)}
+          className="flex w-full items-start gap-1.5 rounded-md border border-brand/40 bg-brand/5 px-2 py-1 text-left text-[11px] hover:bg-brand/10"
+          title="Go there"
+        >
+          <ArrowRight className="mt-px size-3 shrink-0 text-brand" aria-hidden />
+          <span className="min-w-0">
+            <span className="font-medium text-foreground">Next: {next.label}</span>
+            {next.next && <span className="text-muted-foreground"> — {next.next}</span>}
+          </span>
+        </button>
+      )}
+      {message.triage?.map((triage) => (
+        <TriageCard key={triage.id} triage={triage} onAnswer={(action) => onAnswerTriage(triage.id, action)} />
+      ))}
       {message.suggestions?.map((suggestion) => (
         <SuggestionCard
           key={suggestion.id}
@@ -436,23 +541,101 @@ function Message({
   );
 }
 
-const ACTION_VERB: Record<ChatActionDTO["kind"], string> = { show: "Show", highlight: "Highlight", filter: "List" };
-const ACTION_ICON = { show: Crosshair, highlight: Highlighter, filter: ListFilter } as const;
+const ACTION_VERB: Record<ChatActionDTO["kind"], string> = { show: "Show", highlight: "Highlight", filter: "List", view: "Open", file: "Open" };
+const ACTION_ICON = { show: Crosshair, highlight: Highlighter, filter: ListFilter, view: LayoutGrid, file: FileDiff } as const;
 
-/** What an answer put on screen; a click puts it there again. */
+/** What an answer put on screen (a click puts it there again), or only offered, dashed (a click goes there). */
 function ActionChip({ action, onApply }: { action: ChatActionDTO; onApply: () => void }) {
-  const Icon = ACTION_ICON[action.kind];
+  const Icon = action.offer && action.kind === "show" ? MapPin : ACTION_ICON[action.kind];
   return (
     <button
       type="button"
       onClick={onApply}
-      className="inline-flex max-w-full items-center gap-1 rounded-sm border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-secondary hover:text-foreground"
-      title="Do this again"
+      className={cn(
+        "inline-flex max-w-full items-center gap-1 rounded-sm border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-secondary hover:text-foreground",
+        action.offer && "border-dashed"
+      )}
+      title={action.offer ? "Go there" : "Do this again"}
     >
       <Icon className="size-3 shrink-0" aria-hidden />
-      <span className="shrink-0">{ACTION_VERB[action.kind]}</span>
+      {!action.offer && <span className="shrink-0">{ACTION_VERB[action.kind]}</span>}
       <span className="truncate text-foreground/90">{action.label}</span>
     </button>
+  );
+}
+
+const TRIAGE_TITLE: Record<ChatTriageDTO["verdict"], string> = { holds: "Finding holds", wrong: "Finding doesn't hold", rerate: "Re-rate finding" };
+const TRIAGE_APPLY: Record<ChatTriageDTO["verdict"], string> = { holds: "Note on finding", wrong: "Resolve finding", rerate: "Change verdict" };
+
+/**
+ * The chat's verdict on a finding already in the review. Nothing changes
+ * until Apply: a confirming reply, a resolving one, or the new verdict.
+ */
+function TriageCard({ triage, onAnswer }: { triage: ChatTriageDTO; onAnswer: (action: ChatTriageActionDTO["action"]) => Promise<void> }) {
+  const [working, setWorking] = useState<ChatTriageActionDTO["action"] | null>(null);
+  const answer = (action: ChatTriageActionDTO["action"]) => {
+    setWorking(action);
+    void onAnswer(action).finally(() => setWorking(null));
+  };
+  return (
+    <div className={cn("rounded-md border border-dashed border-border px-2.5 py-2", triage.status === "dismissed" && "opacity-60")}>
+      <p className="flex items-center gap-1.5 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+        <Scale className="size-3" aria-hidden />
+        {TRIAGE_TITLE[triage.verdict]}
+        <span className="ml-auto flex items-center gap-1 normal-case tracking-normal">
+          <AssessmentGlyph intent={triage.from} />
+          {triage.from}
+          {triage.verdict === "rerate" && triage.assessment && (
+            <>
+              <ArrowRight className="size-3" aria-hidden />
+              <AssessmentGlyph intent={triage.assessment} />
+              {triage.assessment}
+            </>
+          )}
+        </span>
+      </p>
+      <p className="mt-1 text-xs leading-snug font-medium">{triage.findingSummary}</p>
+      <p className="mt-0.5 text-[11px] leading-snug whitespace-pre-line text-muted-foreground">{triage.reason}</p>
+      <div className="mt-1.5 flex items-center gap-1.5 text-[11px]">
+        {triage.status === "pending" ? (
+          <>
+            <button
+              type="button"
+              onClick={() => answer("apply")}
+              disabled={working !== null}
+              className="flex items-center gap-1 rounded-sm bg-primary px-2 py-0.5 font-medium text-primary-foreground disabled:opacity-50"
+            >
+              {working === "apply" ? <LoaderCircle className="size-3 animate-spin" /> : <Check className="size-3" />}
+              {TRIAGE_APPLY[triage.verdict]}
+            </button>
+            <button
+              type="button"
+              onClick={() => answer("dismiss")}
+              disabled={working !== null}
+              className="rounded-sm px-2 py-0.5 text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-50"
+            >
+              Dismiss
+            </button>
+          </>
+        ) : triage.status === "applied" ? (
+          <span className="flex items-center gap-1 text-success">
+            <Check className="size-3" /> Applied to the finding
+          </span>
+        ) : (
+          <>
+            <span className="text-muted-foreground">Dismissed</span>
+            <button
+              type="button"
+              onClick={() => answer("apply")}
+              disabled={working !== null}
+              className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+            >
+              apply anyway
+            </button>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 

@@ -73,11 +73,19 @@ export interface PrChatInput {
   question: string;
   /** The component the user has selected in the graph, if any. */
   focus?: string;
+  /** What is on the reviewer's screen right now, in a line or two (the view, the selection, an open file). */
+  screen?: string;
+  /** The finding the question is about (a finding's Ask chat), described for the model. */
+  finding?: string;
   tools: PrChatTool[];
 }
 
 export interface PrChatResult {
   answer: string;
+  /** The answer's `point_to`: things it is about, offered as chips (resolved by the caller). */
+  stops: Record<string, unknown>[];
+  /** The answer's `next`: the one place to look next, with `why`. */
+  next?: Record<string, unknown>;
   steps: PrChatStep[];
   componentIds: string[];
   files: string[];
@@ -88,6 +96,8 @@ export interface PrChatResult {
 export function buildPrChatSystemPrompt(input: Pick<PrChatInput, "context" | "tools" | "scope">): string {
   const toolLines = input.tools.map((t) => `- ${t.name} ${t.args} — ${t.description}`);
   const repo = input.scope === "repo";
+  const navigates = input.tools.some((t) => t.name === "show");
+  const kinds = input.tools.find((t) => t.name === "show")?.args.match(/"kind":"([^"]+)"/)?.[1] ?? "";
   return [
     PR_CHAT_TASK_MARKER,
     ...(repo
@@ -111,7 +121,9 @@ export function buildPrChatSystemPrompt(input: Pick<PrChatInput, "context" | "to
     FENCE,
     "or give your final answer:",
     `${FENCE}json`,
-    '{"answer":"<markdown answer for the reviewer>"}',
+    navigates
+      ? '{"answer":"<markdown answer for the reviewer>","point_to":[{"kind":"file","name":"lib/x.ts","line":12}],"next":{"kind":"function","name":"Cart.total","why":"<a few words>"}}'
+      : '{"answer":"<markdown answer for the reviewer>"}',
     FENCE,
     "",
     "Tools:",
@@ -141,12 +153,24 @@ export function buildPrChatSystemPrompt(input: Pick<PrChatInput, "context" | "to
           "  and the evidence; never for style, guesses or things the question has nothing to do with. At most 3.",
         ]
       : []),
-    ...(input.tools.some((t) => t.name === "show")
+    ...(navigates
       ? [
-          "- show, highlight and filter_findings change only what is on the reviewer's screen. Use show when pointing at",
-          "  one thing helps the answer (the code you explain, the endpoint or table it is about) or when asked to",
-          "  show, open or go to something; highlight for a path or set of components; filter_findings when asked to",
-          "  narrow the findings list. One or two per answer at most, and say in the answer what you put on screen.",
+          "- point_to and next in the final answer move nothing: they become chips under it that take the reviewer there",
+          `  (kind is one of ${kinds.replaceAll("|", ", ")}). Add point_to (up to 4) whenever the answer is about specific`,
+          "  things the reviewer may want to look at, and next when there is one obvious place they should look next and",
+          "  haven't: a caller the change missed, the test that covers it, the migration behind a model. Not what is",
+          "  already on their screen, and nothing when the answer is general.",
+          `- ${input.tools.filter((t) => MOVING_TOOLS.has(t.name)).map((t) => t.name).join(", ")} MOVE the reviewer's screen. Use them`,
+          "  when asked to show, open, go to, list or compare something, or when the whole answer is about one place the",
+          "  reviewer isn't looking at; otherwise prefer point_to. One per answer unless asked for more, and say in the",
+          "  answer what you put on screen.",
+        ]
+      : []),
+    ...(input.tools.some((t) => t.name === "triage_finding")
+      ? [
+          "- triage_finding needs no request: when you checked an existing finding's code (because you were asked about it,",
+          "  or while answering) and it clearly holds, is wrong, or has the wrong verdict, give your verdict with the",
+          "  evidence. The reviewer decides whether it is applied. At most 3, never on a hunch.",
         ]
       : []),
     ...(input.tools.some((t) => t.name === "get_callers")
@@ -162,7 +186,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-type Parsed = { kind: "tool"; tool: string; args: Record<string, unknown> } | { kind: "answer"; answer: string };
+type Parsed =
+  | { kind: "tool"; tool: string; args: Record<string, unknown> }
+  | { kind: "answer"; answer: string; stops?: Record<string, unknown>[]; next?: Record<string, unknown> };
+
+/** The tools that move the reviewer's screen (the rest only read, or offer). */
+const MOVING_TOOLS = new Set(["show", "highlight", "filter_findings", "switch_view", "open_diff"]);
+
+/** The question as the model gets it, after a note on what is on screen and what it is about. */
+function questionWithContext(input: PrChatInput): string {
+  const notes = [
+    input.screen ? `On the reviewer's screen: ${input.screen}` : "",
+    input.focus ? `The reviewer has the component "${input.focus}" selected in the graph.` : "",
+    input.finding ? `The question is about this finding of the review:\n${input.finding}` : "",
+  ].filter(Boolean);
+  return notes.length ? `(${notes.join("\n")})\n\n${input.question}` : input.question;
+}
 
 /**
  * The arguments of a tool call, wherever the model put them. Models vary:
@@ -193,7 +232,15 @@ export function parsePrChatReply(content: string): Parsed {
     if (tool.trim()) {
       return { kind: "tool", tool: tool.trim(), args: toolArgs(parsed) };
     }
-    if (typeof parsed.answer === "string") return { kind: "answer", answer: parsed.answer.trim() };
+    if (typeof parsed.answer === "string") {
+      const stops = Array.isArray(parsed.point_to) ? parsed.point_to.filter(isRecord) : isRecord(parsed.point_to) ? [parsed.point_to] : [];
+      return {
+        kind: "answer",
+        answer: parsed.answer.trim(),
+        ...(stops.length ? { stops } : {}),
+        ...(isRecord(parsed.next) ? { next: parsed.next } : {}),
+      };
+    }
   }
   // No usable json: strip a stray fence and take the text as the answer.
   return { kind: "answer", answer: content.replace(/^```\w*\n?|```$/g, "").trim() };
@@ -217,12 +264,7 @@ export async function runPrChat(
   const messages: ChatMessage[] = [
     { role: "system", content: buildPrChatSystemPrompt(input) },
     ...input.history.map((turn) => ({ role: turn.role, content: turn.content })),
-    {
-      role: "user",
-      content: input.focus
-        ? `(The reviewer has the component "${input.focus}" selected in the graph.)\n\n${input.question}`
-        : input.question,
-    },
+    { role: "user", content: questionWithContext(input) },
   ];
 
   const steps: PrChatStep[] = [];
@@ -230,6 +272,17 @@ export async function runPrChat(
   const files = new Set<string>();
   const usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   let calls = 0;
+
+  const done = (answer: string, extras: { stops?: Record<string, unknown>[]; next?: Record<string, unknown> } = {}): PrChatResult => ({
+    answer,
+    stops: extras.stops ?? [],
+    ...(extras.next ? { next: extras.next } : {}),
+    steps,
+    componentIds: [...componentIds],
+    files: [...files],
+    usage,
+    calls,
+  });
 
   for (let round = 0; round <= PR_CHAT_MAX_STEPS; round++) {
     const mustAnswer = round === PR_CHAT_MAX_STEPS;
@@ -251,10 +304,8 @@ export async function runPrChat(
     }
 
     const reply = parsePrChatReply(result.content);
-    if (reply.kind === "answer" || mustAnswer) {
-      const answer = reply.kind === "answer" ? reply.answer : "I ran out of lookups before I could answer.";
-      return { answer, steps, componentIds: [...componentIds], files: [...files], usage, calls };
-    }
+    if (reply.kind === "answer") return done(reply.answer, reply);
+    if (mustAnswer) return done("I ran out of lookups before I could answer.");
 
     messages.push({ role: "assistant", content: result.content });
     let output: PrChatToolOutput;
@@ -281,5 +332,5 @@ export async function runPrChat(
   }
 
   // Unreachable: the last round always answers.
-  return { answer: "", steps, componentIds: [...componentIds], files: [...files], usage, calls };
+  return done("");
 }

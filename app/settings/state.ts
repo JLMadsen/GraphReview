@@ -100,3 +100,23 @@ export interface SetActiveAiProviderState {
 export const initialSetActiveAiProviderState: SetActiveAiProviderState = {
   status: "idle",
 };
+
+// ---------------------------------------------------------------------------
+// "Use local config" — providers found in local harness configs
+// ---------------------------------------------------------------------------
+
+export type { PublicLocalProviderCandidate } from "@/lib/ai/local-configs";
+
+export interface LocalProviderSelection {
+  candidateId: string;
+  name: string;
+  model: string;
+  /** Typed in the import list, for a candidate whose config had no usable key. */
+  apiKey?: string;
+}
+
+export interface ImportLocalProvidersState {
+  status: "idle" | "success" | "error";
+  imported?: number;
+  error?: string;
+}
