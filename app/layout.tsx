@@ -3,6 +3,8 @@ import Link from "next/link";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { CommandPalette } from "@/components/palette/CommandPalette";
+import { PaletteTrigger } from "@/components/palette/PaletteTrigger";
 import { MainNav } from "./main-nav";
 import "./globals.css";
 
@@ -117,11 +119,14 @@ export default function RootLayout({
                   aria-hidden
                 />
                 <MainNav />
+                <PaletteTrigger />
                 <div className="ml-auto flex min-w-0 items-center">{nav}</div>
               </div>
             </header>
             <main className="flex-1">{children}</main>
           </div>
+          {/* Ctrl+Space / Ctrl+K on every page (DESIGN.md §6.18). */}
+          <CommandPalette />
         </TooltipProvider>
       </body>
     </html>

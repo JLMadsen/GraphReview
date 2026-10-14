@@ -6,7 +6,7 @@
 // can render the "not linked to GitHub" state.
 
 import { NextResponse } from "next/server";
-import { getRepoBranches } from "@/lib/jobs";
+import { getRepoBranches, rememberListing } from "@/lib/jobs";
 import { errorMessage, loadRepo } from "../../_shared";
 
 export const dynamic = "force-dynamic";
@@ -29,5 +29,7 @@ export async function GET(
 
   // A GitHub-side failure keeps the same body shape (so the UI has one
   // thing to render) but is not reported as a success.
+  // Kept for the command palette, which never goes to the network (DESIGN.md §6.18).
+  rememberListing(repoId, { branches: result });
   return NextResponse.json(result, { status: result.error ? 502 : 200 });
 }

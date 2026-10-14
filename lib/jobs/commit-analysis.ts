@@ -13,7 +13,7 @@
 
 import path from "node:path";
 import { analyzeCommit, DEFAULT_MODULE_DEPTH, type AnalysisResult, type CachedParse, type ParseCache } from "@/lib/analysis";
-import { readParseCache, writeParseCache } from "@/lib/db";
+import { readParseCache, writeParseCache, writeSymbolIndex } from "@/lib/db";
 
 export const dbParseCache: ParseCache = {
   async getMany(keys) {
@@ -56,4 +56,21 @@ export function analyzeRepoCommit(
   pending.catch(() => results.delete(key));
   while (results.size > MEMO_SIZE) results.delete(results.keys().next().value!);
   return pending;
+}
+
+/** Stores the declarations of an analysed commit for the command palette's symbol search (DESIGN.md §6.18). */
+export function writeCommitSymbols(repoId: string, sha: string, role: "tip" | "head", result: AnalysisResult): void {
+  writeSymbolIndex(
+    repoId,
+    sha,
+    role,
+    result.symbols.decls.map((d) => ({
+      name: d.name,
+      qualified: d.qualified,
+      kind: d.kind,
+      file: d.file,
+      line: d.startLine,
+      exported: d.exported !== null,
+    }))
+  );
 }

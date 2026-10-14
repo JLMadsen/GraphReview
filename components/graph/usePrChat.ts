@@ -45,6 +45,8 @@ export interface UsePrChatResult {
   headSha?: string;
   aiConfigured: boolean;
   loading: boolean;
+  /** The thread has loaded once — a question sent before would be lost to the load. */
+  ready: boolean;
   error: string | null;
   pending: PendingTurn | null;
   send(question: string, context?: ChatSendContext): Promise<void>;
@@ -219,6 +221,7 @@ export function usePrChat(
     headSha: thread?.headSha,
     aiConfigured: thread?.aiConfigured ?? false,
     loading,
+    ready: thread !== null,
     error,
     pending,
     send,

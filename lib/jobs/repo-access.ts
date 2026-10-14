@@ -11,7 +11,7 @@
 import { listBranches as listGitHubBranches, listCommits as listGitHubCommits, listPullRequests } from "@/lib/github";
 import type { Branch, CommitSummary, PullRequestListState, PullRequestSummary, RateLimitInfo } from "@/lib/github";
 import { listBranches as listGitLabBranches, listCommits as listGitLabCommits, listMergeRequests } from "@/lib/gitlab";
-import type { RepoRecord } from "@/lib/db";
+import { rememberRemote, type RepoRecord } from "@/lib/db";
 import { describeGitHubError, resolveGitHubAccess, type GitHubUnavailableReason } from "./github-access";
 import { describeGitLabError, resolveGitLabAccess, type GitLabUnavailableReason } from "./gitlab-access";
 import { listLocalBranches, listLocalCommits } from "./local-git";
@@ -174,4 +174,39 @@ export async function getRepoPullRequests(
   } catch (err) {
     return { linked: true, error: describeGitHubError(err), state, pullRequests: [], rateLimit: null };
   }
+}
+
+/**
+ * Keeps a successful listing for the command palette, which never goes to
+ * the network while typing (DESIGN.md §6.18). PRs merge into what was kept;
+ * branches and the default branch's commits replace it. Failed or unlinked
+ * listings are ignored.
+ */
+export function rememberListing(
+  repoId: string,
+  listing: { pullRequests?: PullRequestsResponse; branches?: BranchesResponse; commits?: CommitsResponse }
+): void {
+  const ok = (r: RepoListResponse | undefined) => Boolean(r?.linked && !r.error);
+  const { pullRequests, branches, commits } = listing;
+  rememberRemote(repoId, {
+    ...(pullRequests && ok(pullRequests)
+      ? {
+          prs: pullRequests.pullRequests.map((p) => ({
+            number: p.number,
+            title: p.title,
+            state: p.state,
+            draft: p.draft,
+            author: p.author,
+            headRef: p.headRef,
+            baseRef: p.baseRef,
+            url: p.url,
+            updatedAt: p.updatedAt,
+          })),
+        }
+      : {}),
+    ...(branches && ok(branches) ? { branches: branches.branches.map((b) => ({ name: b.name, commitSha: b.commitSha })) } : {}),
+    ...(commits && ok(commits)
+      ? { commits: commits.commits.map((c) => ({ sha: c.sha, subject: c.subject, author: c.author, date: c.date, ...(c.parents[0] ? { parent: c.parents[0] } : {}) })) }
+      : {}),
+  });
 }

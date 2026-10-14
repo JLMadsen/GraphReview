@@ -1,6 +1,10 @@
-// Resolve / reopen one AI review finding.
+// Resolve / reopen one AI review finding, or reply to it.
 //
 //   PATCH /api/repos/[repoId]/review/findings/[findingId]   { resolved: boolean }
+//   POST  /api/repos/[repoId]/review/findings/[findingId]   { kind: "fixing", body? }
+//
+// The POST is the command palette's "Mark fixing" (DESIGN.md §6.18): the
+// same `fixing` reply a coding agent leaves over MCP, written by the reviewer.
 //
 // Only findings below `match` (mismatch, partial, unknown) can be resolved —
 // a match has nothing to resolve. Resolving stamps `resolvedAt`; reopening
@@ -9,7 +13,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getFindingById, setFindingResolved } from "@/lib/db";
+import { addFindingResponse, getFindingById, setFindingResolved } from "@/lib/db";
 import { apiError, errorMessage } from "../../../../_shared";
 
 export const dynamic = "force-dynamic";
@@ -55,5 +59,31 @@ export async function PATCH(
   } catch (error) {
     console.error(`PATCH /api/repos/${repoId}/review/findings/${findingId} failed:`, error);
     return apiError(`Could not update the finding: ${errorMessage(error)}`, 503);
+  }
+}
+
+const replySchema = z.object({ kind: z.literal("fixing"), body: z.string().max(2000).optional() });
+
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ repoId: string; findingId: string }> }
+) {
+  const { repoId, findingId } = await params;
+  const parsed = replySchema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) return apiError('Body must be { "kind": "fixing", "body"?: string }.', 400);
+  try {
+    const existing = await getFindingById(findingId);
+    if (!existing || existing.repoId !== repoId) return apiError(`No finding with id "${findingId}" in this repo.`, 404);
+    if (existing.assessment === "ok") return apiError("An OK finding has nothing to fix.", 400);
+    const updated = await addFindingResponse(repoId, findingId, {
+      kind: "fixing",
+      author: "reviewer",
+      body: parsed.data.body?.trim() || "Marked as fixing.",
+    });
+    if (!updated) return apiError(`No finding with id "${findingId}" in this repo.`, 404);
+    return NextResponse.json({ id: updated.id, responses: updated.responses ?? [] });
+  } catch (error) {
+    console.error(`POST /api/repos/${repoId}/review/findings/${findingId} failed:`, error);
+    return apiError(`Could not reply to the finding: ${errorMessage(error)}`, 503);
   }
 }

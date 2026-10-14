@@ -11,7 +11,7 @@
 // `linked: false` rather than an error.
 
 import { NextResponse } from "next/server";
-import { getRepoPullRequests } from "@/lib/jobs";
+import { getRepoPullRequests, rememberListing } from "@/lib/jobs";
 import type { PullRequestListState } from "@/lib/github";
 import { apiError, errorMessage, loadRepo } from "../../_shared";
 
@@ -56,6 +56,9 @@ export async function GET(
       rateLimit: null,
     })
   );
+
+  // Kept for the command palette, which never goes to the network (DESIGN.md §6.18).
+  rememberListing(repoId, { pullRequests: result });
 
   return NextResponse.json(result, { status: result.error ? 502 : 200 });
 }

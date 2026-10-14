@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { GitBranch, GitCompare, Shield, Star } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { getRepoBranches } from "@/lib/jobs";
+import { getRepoBranches, rememberListing } from "@/lib/jobs";
 import { getRepoById } from "@/lib/db";
 import {
   DatabaseErrorNotice,
@@ -41,6 +41,8 @@ export default async function BranchesPage({
   if (!dbError && !repo) notFound();
 
   const result = repo ? await getRepoBranches(repo) : null;
+  // Kept for the command palette (DESIGN.md §6.18).
+  if (repo && result) rememberListing(repo.id, { branches: result });
 
   return (
     <div className="space-y-4">

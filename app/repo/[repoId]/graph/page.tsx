@@ -1,4 +1,4 @@
-import { GraphView } from "@/components/graph";
+import { GraphHost } from "./graph-host";
 
 /**
  * Graph tab.
@@ -10,7 +10,8 @@ import { GraphView } from "@/components/graph";
  * this tab (`DiffPanel`, rendered by `GraphView`), not a separate screen.
  *
  * All data fetching (repo context, graph, diff-impact) happens client-side
- * in `GraphView` — see that file's comment for why.
+ * in `GraphView` — see that file's comment for why. `GraphHost` lets the
+ * command palette switch the target without a navigation (DESIGN.md §6.18).
  */
 export default async function GraphPage({
   params,
@@ -29,8 +30,10 @@ export default async function GraphPage({
   const initialBaseRef = base?.trim() || undefined;
   const initialHeadRef = head?.trim() || undefined;
 
+  // Keyed on the params: a navigation to another target starts over on it.
   return (
-    <GraphView
+    <GraphHost
+      key={`${initialPrNumber ?? ""}|${initialBaseRef ?? ""}|${initialHeadRef ?? ""}`}
       repoId={repoId}
       initialPrNumber={initialPrNumber}
       initialBaseRef={initialPrNumber ? undefined : initialBaseRef}

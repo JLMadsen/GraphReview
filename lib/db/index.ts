@@ -26,3 +26,4 @@ export * from "./infra-catalog";
 export * from "./db-schema";
 export * from "./env-catalog";
 export * from "./db-source";
+export * from "./search";

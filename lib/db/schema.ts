@@ -265,6 +265,39 @@ const MIGRATIONS: string[] = [
     data        TEXT NOT NULL
   );
   `,
+  // 7 — the command palette (DESIGN.md §6.18): declarations per analysed
+  // commit for symbol search, which commits have them, and what was picked.
+  `
+  CREATE TABLE symbol_index (
+    repo_id   TEXT NOT NULL,
+    sha       TEXT NOT NULL,
+    name      TEXT NOT NULL,
+    qualified TEXT NOT NULL,
+    kind      TEXT NOT NULL,
+    file      TEXT NOT NULL,
+    line      INTEGER NOT NULL,
+    exported  INTEGER NOT NULL
+  );
+  CREATE INDEX symbol_index_set ON symbol_index (repo_id, sha);
+
+  CREATE TABLE symbol_index_sets (
+    repo_id  TEXT NOT NULL,
+    sha      TEXT NOT NULL,
+    role     TEXT NOT NULL,
+    built_at INTEGER NOT NULL,
+    PRIMARY KEY (repo_id, sha)
+  );
+
+  CREATE TABLE palette_history (
+    repo_id   TEXT NOT NULL,
+    key       TEXT NOT NULL,
+    item      TEXT NOT NULL,
+    uses      INTEGER NOT NULL,
+    last_used INTEGER NOT NULL,
+    PRIMARY KEY (repo_id, key)
+  );
+  CREATE INDEX palette_history_recent ON palette_history (repo_id, last_used);
+  `,
 ];
 
 /** Brings the database up to the latest schema version. */

@@ -91,6 +91,7 @@ import { EnvView } from "./EnvView";
 import { EnvChangesSection } from "./EnvChangesSection";
 import { FilesView } from "./FilesView";
 import { useRepoTree } from "./useRepoTree";
+import { registerGraphHandler, setGraphContext, takePendingGraphRequest, type GraphRequest } from "@/components/palette/bus";
 import { useRepoContext, useTabHeight } from "./graph-view/useRepoContext";
 import { useLazyMount, useStoredState } from "./graph-view/view-state";
 import { usePrAreaSelection, usePrFunctions } from "./graph-view/usePrMapSelection";
@@ -673,6 +674,41 @@ export function GraphView({
     if (reviewTarget && mapFolded) parts.push("the findings list expanded");
     return parts.join("; ");
   }, [view, appLevel, appSelection, appMap.map, prMode, selectedFn, selectedPrArea, dataMode, selectedDbRow, openFile, reviewTarget, mapFolded]);
+
+  // --- The command palette (DESIGN.md §6.18) ---------------------------------
+  // It ranks by what is open here and shows things here through the same
+  // actions the chat uses; a question it hands over goes to this chat.
+  useEffect(() => {
+    setGraphContext({
+      repoId,
+      target: reviewTarget,
+      ...(reviewTarget
+        ? { targetKey: "prNumber" in reviewTarget ? `pr:${reviewTarget.prNumber}` : `refs:${reviewTarget.baseRef}...${reviewTarget.headRef}` }
+        : {}),
+      touched: changedFiles ? [...changedFiles] : [],
+    });
+  }, [repoId, reviewTarget, changedFiles]);
+  useEffect(() => () => setGraphContext(null), []);
+  const runPaletteRequest = useCallback(
+    (request: GraphRequest) => {
+      if (request.kind === "ask") {
+        // About the open review, or the whole repo with none open — as the chat itself.
+        void chat.send(request.question, { screen: chatScreen });
+        return;
+      }
+      noteInteraction();
+      setChatHighlight(null);
+      applyChatAction(request.action);
+    },
+    [chat, chatScreen, noteInteraction, applyChatAction]
+  );
+  useEffect(() => registerGraphHandler(repoId, runPaletteRequest), [repoId, runPaletteRequest]);
+  // A request left by the palette on another page: applied once it can be —
+  // those about the change wait for it and its map.
+  useEffect(() => {
+    const request = takePendingGraphRequest(repoId, Boolean(reviewTarget && prMap.map), chat.ready && !chat.loading);
+    if (request) runPaletteRequest(request);
+  }, [repoId, reviewTarget, prMap.map, chat.ready, chat.loading, runPaletteRequest]);
 
   // The view switch is a row of tabs across the column; the active view's
   // own toolbar sits directly under it (view-chrome.ts), so a view's

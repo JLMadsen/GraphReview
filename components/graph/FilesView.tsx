@@ -4,8 +4,8 @@
 // it — a folder tree on the left; on the right a folder's listing with the
 // latest commit above it and its README rendered under it, or a file with
 // line numbers (each a link that marks the line) and, for Markdown, a
-// rendered preview. "Go to file" (press `t`) finds a file by a fuzzy match
-// on its path.
+// rendered preview. "Go to file" finds a file by a fuzzy match on its path;
+// `t` opens the command palette's file search instead (DESIGN.md §6.18).
 //
 // Everything is the last analysed commit, like the other views: the tree
 // from `/tree`, each file from `/file`. With a diff selected the files it
@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "cn";
+import { openPalette } from "@/components/palette/bus";
 import { Segmented } from "./Segmented";
 import { VIEW_TOOLBAR } from "./view-chrome";
 import type { RepoTreeResponseDTO } from "./files-types";
@@ -159,7 +160,8 @@ export function FilesView({ repoId, repoName, tree, loading, error, changedFiles
       const target = e.target as HTMLElement | null;
       if (target && (target.isContentEditable || /^(input|textarea|select)$/i.test(target.tagName))) return;
       e.preventDefault();
-      searchRef.current?.focus();
+      // The command palette's file search (DESIGN.md §6.18) — the change's added files included.
+      openPalette({ scope: "files" });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

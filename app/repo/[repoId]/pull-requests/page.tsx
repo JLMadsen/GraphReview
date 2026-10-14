@@ -10,7 +10,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { cn } from "cn";
 import type { PullRequestListState, PullRequestSummary } from "@/lib/github";
-import { getRepoPullRequests } from "@/lib/jobs";
+import { getRepoPullRequests, rememberListing } from "@/lib/jobs";
 import { getRepoById } from "@/lib/db";
 import {
   DatabaseErrorNotice,
@@ -110,6 +110,8 @@ export default async function PullRequestsPage({
   if (!dbError && !repo) notFound();
 
   const result = repo ? await getRepoPullRequests(repo, state) : null;
+  // Kept for the command palette (DESIGN.md §6.18).
+  if (repo && result) rememberListing(repo.id, { pullRequests: result });
   const provider = repo?.provider === "gitlab" ? "gitlab" : "github";
   const hostLabel = provider === "gitlab" ? "GitLab" : "GitHub";
 

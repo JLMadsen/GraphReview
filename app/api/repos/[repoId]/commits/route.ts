@@ -8,7 +8,7 @@
 // `linked: false` rather than an error.
 
 import { NextResponse } from "next/server";
-import { getRepoCommits } from "@/lib/jobs";
+import { getRepoCommits, rememberListing } from "@/lib/jobs";
 import { isSafeGitRef } from "@/lib/jobs/git-ref";
 import { apiError, errorMessage, loadRepo } from "../../_shared";
 
@@ -43,6 +43,9 @@ export async function GET(
     commits: [],
     rateLimit: null,
   }));
+
+  // The default branch's history is kept for the command palette (DESIGN.md §6.18).
+  if (ref === undefined) rememberListing(repoId, { commits: result });
 
   return NextResponse.json(result, { status: result.error ? 502 : 200 });
 }
