@@ -84,7 +84,6 @@ export interface ChatPanelProps {
   chat: UsePrChatResult;
   /** `null` when nothing reviewable is selected (no PR / refs) — the chat is then about the repo. */
   targetLabel: string | null;
-  repoName?: string;
   focus: { id: string; name: string } | null;
   componentName: (id: string) => string | undefined;
   changedFiles: ReadonlySet<string>;
@@ -104,7 +103,6 @@ const FINDING_QUESTION = "Does this finding hold up?";
 export function ChatPanel({
   chat,
   targetLabel,
-  repoName,
   focus,
   componentName,
   changedFiles,
@@ -169,9 +167,7 @@ export function ChatPanel({
       <header className="flex items-center gap-2 border-b border-border px-4 py-2">
         <p className="min-w-0 flex-1 truncate">
           <span className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">Chat</span>
-          <span className="ml-2 text-[11px] text-muted-foreground">
-            {aboutRepo ? `about ${repoName ?? "this repo"}` : "about this change"}
-          </span>
+          {!aboutRepo && <span className="ml-2 text-[11px] text-muted-foreground">about this change</span>}
         </p>
         <p className="shrink-0 truncate font-mono text-[11px] text-muted-foreground">
           {chat.messages.length > 0
@@ -229,11 +225,7 @@ export function ChatPanel({
               <div className="space-y-1.5">
                 <p className="text-[11px] text-muted-foreground">
                   {aboutRepo ? (
-                    <>
-                      No diff selected, so this is about the repo: the assistant can read its files, search the code,
-                      follow calls and imports, read the history and look up the component graph before it answers
-                      — and point at what it means on screen. Pick a PR on the left to ask about a change. Try:
-                    </>
+                    <>Ask anything about the repo. Pick a PR on the left to ask about a change. Try:</>
                   ) : (
                     <>
                       The assistant can read the diff, files at the PR&apos;s head, calls and imports, the history,

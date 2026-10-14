@@ -1089,7 +1089,6 @@ export function GraphView({
               <ChatPanel
                 chat={chat}
                 targetLabel={reviewTarget ? reviewTargetLabel(reviewTarget) : null}
-                repoName={repo?.name}
                 focus={chatFocus}
                 componentName={componentNameById}
                 changedFiles={chatChangedFiles}

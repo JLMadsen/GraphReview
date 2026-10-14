@@ -28,6 +28,7 @@ import type {
 } from "./types";
 import { CommitPicker } from "./diff/CommitPicker";
 import { DiffSummary } from "./diff/DiffSummary";
+import { GlyphField } from "./diff/GlyphField";
 import { useLazyList, type BranchesApiResponse, type PullRequestsApiResponse, type CommitsApiResponse, sameCommit } from "./diff/options";
 
 /** What GraphView needs to know about a result beyond the target itself. */
@@ -439,7 +440,7 @@ export function DiffPanel({
   }
 
   return (
-    <div className="space-y-3">
+    <div className="relative isolate min-h-72 space-y-3 lg:min-h-full">
       <div className="flex items-baseline justify-between gap-2">
         <h2 className="text-sm font-medium">Pick a diff</h2>
         {result && checked && (
@@ -652,7 +653,8 @@ export function DiffPanel({
           <span>{error}</span>
         </p>
       )}
-
+      {/* Last child, so `space-y-3` doesn't count it. */}
+      <GlyphField />
     </div>
   );
 }
