@@ -4,15 +4,15 @@
 // (a PR map card) selected, what it is — its description and how it connects
 // to the other areas — then its size, the components it spans (a chip
 // filters the review dock to that component) and its most-changed files.
-// With nothing selected, the list of areas, worst first, each with the same
-// badge as its card. Everything comes from `buildPrAreas`, the object the
-// canvas and the dock read too.
+// With nothing selected it is not shown and the chat has the column (the
+// cards already name every area). Everything comes from `buildPrAreas`, the
+// object the canvas and the dock read too.
 
 import { useMemo } from "react";
 import { LayoutGrid, X } from "lucide-react";
 import { cn } from "cn";
 import { FindingCounts, LIFECYCLE_STYLES, OpenBadge, STATUS_BADGES } from "./PrMapNode";
-import { areaLifecycle, type PrArea, type PrAreas } from "./pr-areas";
+import { areaLifecycle, type PrArea } from "./pr-areas";
 
 const NUMBER = new Intl.NumberFormat("en-US");
 
@@ -197,65 +197,6 @@ export function PrAreaPanel({
           )}
         </>
       )}
-    </section>
-  );
-}
-
-export interface PrAreaListProps {
-  areas: PrAreas;
-  onSelect: (cardId: string) => void;
-}
-
-/** Every area of the PR, the ones that need a look first. */
-export function PrAreaList({ areas, onSelect }: PrAreaListProps) {
-  const list = useMemo(
-    () =>
-      [...areas.areas.values()]
-        .filter((a) => a.node.role !== "context" || a.open > 0)
-        .sort(
-          (a, b) =>
-            b.counts.defect - a.counts.defect ||
-            b.open - a.open ||
-            b.node.files.length - a.node.files.length ||
-            a.node.name.localeCompare(b.node.name)
-        ),
-    [areas]
-  );
-  if (list.length === 0) return null;
-  return (
-    <section className="px-4 py-3 text-xs" aria-label="Areas of this change">
-      <p className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">Areas</p>
-      <ul className="mt-1">
-        {list.map((area) => (
-          <li key={area.node.id}>
-            <button
-              type="button"
-              onClick={() => onSelect(area.node.id)}
-              className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-2.5 rounded-sm px-1.5 py-1.5 text-left transition-colors hover:bg-secondary"
-            >
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px]">{area.node.name}</span>
-                <span className="mt-0.5 flex items-center gap-2">
-                  <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
-                    {area.node.role === "context"
-                      ? "not changed"
-                      : `${area.node.files.length} file${area.node.files.length === 1 ? "" : "s"}`}
-                    {(() => {
-                      const lifecycle = areaLifecycle(area.node);
-                      return lifecycle ? (
-                        <span className={cn("ml-1.5 font-sans", LIFECYCLE_STYLES[lifecycle].text)}>
-                          {LIFECYCLE_STYLES[lifecycle].word}
-                        </span>
-                      ) : null;
-                    })()}
-                  </span>
-                </span>
-              </span>
-              <FindingCounts counts={area.counts} className="shrink-0" />
-            </button>
-          </li>
-        ))}
-      </ul>
     </section>
   );
 }

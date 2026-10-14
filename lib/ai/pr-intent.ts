@@ -46,6 +46,8 @@ export interface PrIntentInput {
   infra?: string[];
   /** What the change does to the database schema (DESIGN.md §6.13), one line each. */
   schema?: string[];
+  /** What the change does to the env vars (DESIGN.md §6.15), one line each, secret values masked. */
+  env?: string[];
 }
 
 /**
@@ -145,6 +147,10 @@ function renderUserMessage(input: PrIntentInput, patchBudgetTokens: number): str
   if (input.schema && input.schema.length > 0) {
     lines.push("", "## What this change does to the database schema (static analysis of the migrations, schema files and models)");
     for (const line of input.schema) lines.push(`- ${oneLine(line)}`);
+  }
+  if (input.env && input.env.length > 0) {
+    lines.push("", "## What this change does to the env vars (static analysis of code, .env files, CI, Compose and framework config; secret values masked)");
+    for (const line of input.env) lines.push(`- ${oneLine(line)}`);
   }
   if (input.findings.length > 0) {
     lines.push("", "## Review findings (one line per change)");

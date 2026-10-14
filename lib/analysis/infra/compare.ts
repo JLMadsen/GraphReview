@@ -238,6 +238,7 @@ export function compareInfra(base: InfraCatalog, head: InfraCatalog): InfraChang
         key,
         rule: "env-unset",
         resource: l.resource,
+        name: miss.name,
         file: removedSetting ? w.file : miss.file,
         line: removedSetting ? w.line : miss.line,
         summary: removedSetting ? `${w.address} no longer sets ${miss.name}, which ${miss.file} reads` : `${miss.file} now reads ${miss.name}, which ${w.address} doesn't set`,

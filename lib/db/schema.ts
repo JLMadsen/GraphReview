@@ -255,6 +255,16 @@ const MIGRATIONS: string[] = [
     data        TEXT NOT NULL
   );
   `,
+  // 6 — the env catalog of each repo's analysed commit (lib/analysis/env/,
+  // DESIGN.md §6.15). A review target's env change rides in target_graphs.
+  `
+  CREATE TABLE env_catalogs (
+    repo_id     TEXT PRIMARY KEY,
+    sha         TEXT NOT NULL,
+    computed_at TEXT NOT NULL,
+    data        TEXT NOT NULL
+  );
+  `,
 ];
 
 /** Brings the database up to the latest schema version. */

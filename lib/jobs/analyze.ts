@@ -25,6 +25,7 @@ import {
   writeApiCatalog,
   writeInfraCatalog,
   writeDbSchema,
+  writeEnvCatalog,
   readDbSource,
 } from "@/lib/db";
 import { writeModuleTier } from "./module-tier";
@@ -216,6 +217,11 @@ export async function runAnalysisJob(
       (result.db.databases.length ? ` (${[...new Set(result.db.databases.flatMap((d) => d.tools))].join(", ")})` : "") +
       `, ${result.db.databases.reduce((n, d) => n + d.migrations.length, 0)} migration(s), ${result.db.uses.length} use(s) in code` +
       (result.db.databases.some((d) => d.orderProblems.length) ? `; order problems: ${result.db.databases.flatMap((d) => d.orderProblems).slice(0, 3).join(" | ")}` : "")
+  );
+  writeEnvCatalog(repo.id, sha, result.env);
+  log(
+    `env catalog: ${result.env.vars.length} name(s), ${result.env.targets.length} environment(s)/target(s) from ${result.env.files} env source file(s)` +
+      (result.env.vars.some((v) => v.tags.includes("undeclared")) ? `, ${result.env.vars.filter((v) => v.tags.includes("undeclared")).length} undeclared` : "")
   );
   await markRepoAnalyzed(repo.id, sha, ANALYSIS_VERSION);
 

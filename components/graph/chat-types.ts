@@ -24,7 +24,7 @@ export interface ChatSuggestionDTO {
 export type ChatActionDTO =
   | {
       kind: "show";
-      target: "component" | "file" | "endpoint" | "table" | "infra" | "area" | "function";
+      target: "component" | "file" | "endpoint" | "table" | "env" | "infra" | "area" | "function";
       id: string;
       label: string;
       line?: number;

@@ -9,12 +9,26 @@
  * as reliably as a tree. Comment lines are skipped. Names built at runtime
  * (`process.env[name]`) are never guessed.
  */
+import { scanEnvDecls, type EnvDeclFact } from "../env/declare";
+
+/** How a read is written (DESIGN.md §6.15 §1): `f` its fallback (the literal, or `…`), `r` required, `m` through `import.meta.env`. */
+export interface EnvReadFlags {
+  f?: string;
+  r?: 1;
+  m?: 1;
+}
 
 export interface CodeFacts {
-  /** `[name, line]` per read. */
-  env?: Array<[string, number]>;
+  /** `[name, line, flags?]` per read. */
+  env?: Array<[string, number, EnvReadFlags?]>;
   /** `[port, line]` per literal listen port. */
   ports?: Array<[number, number]>;
+  /** The file starts with a `"use client"` directive. */
+  client?: true;
+  /** A `"use server"` file or one that imports `server-only`: importing it never puts its code in the browser. */
+  server?: true;
+  /** Typed env schema entries (../env/declare.ts): `[name, line, decl]`. */
+  decl?: Array<[string, number, EnvDeclFact]>;
 }
 
 const ENV_NAME = "[A-Za-z_][A-Za-z0-9_]*";
@@ -69,17 +83,66 @@ function familyOf(language: string): keyof typeof PATTERNS | undefined {
 
 const COMMENT_LINE = /^\s*(?:\/\/|#|\*|\/\*)/;
 
+/** A literal at the start of `text`: a quoted string, a number, `true`/`false`/`None`; `…` for anything else. */
+function literalAt(text: string): string {
+  const t = text.trimStart();
+  const str = /^(["'`])((?:\\.|(?!\1).)*)\1/.exec(t);
+  if (str) return str[2];
+  const word = /^(-?\d+(?:\.\d+)?|true|false|True|False|None|null)\b/.exec(t);
+  return word ? word[1] : "…";
+}
+
+const GUARD = /\b(throw|panic|raise|sys\.exit|process\.exit|log\.Fatal|os\.Exit)\b/;
+
+/**
+ * How the read at `rest` (the line after the match; `before` is the line up
+ * to it) is written. A fallback `f` is the literal, or `…` when the code
+ * handles a missing value some other way: optional chaining, a comparison
+ * (`!== "1"`), a ternary, `&&`, a bare `if (…)`.
+ */
+function readFlags(family: string, matched: string, rest: string, line: string, before = ""): EnvReadFlags | undefined {
+  const flags: EnvReadFlags = {};
+  if (matched.startsWith("import.meta")) flags.m = 1;
+  if (family === "js") {
+    // `X ?? d`, `X || d`, `X?.trim() || d`, `Number(X) || d`
+    const fb = /^\s*\]?\s*(?:\?\.\s*\w+\s*\([^()]*\)\s*)*\)?\s*(\?\?|\|\|)\s*/.exec(rest);
+    if (fb) flags.f = literalAt(rest.slice(fb[0].length));
+    else if (/^\s*!(?!=)/.test(rest)) flags.r = 1;
+    else if (!GUARD.test(line) && (/^\s*\]?\s*(?:\?\.|!==?|===?|&&|\?(?![?.]))/.test(rest) || /\bif\s*\(\s*!?\s*$/.test(before))) flags.f = "…";
+  } else if (family === "python") {
+    if (/^\s*,/.test(rest) && /(?:getenv|\.get|setdefault)\(/.test(matched)) flags.f = literalAt(rest.replace(/^\s*,\s*(?:default\s*=\s*)?/, ""));
+    else if (/environ\[/.test(matched)) flags.r = 1;
+  } else if (family === "jvm") {
+    const spring = /:([^}]*)\}/.exec(matched);
+    if (spring) flags.f = spring[1];
+  }
+  if (!flags.f && GUARD.test(line)) flags.r = 1;
+  return flags.f !== undefined || flags.r || flags.m ? flags : undefined;
+}
+
+const USE_CLIENT = /^(?:\s*(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/))*\s*["']use client["']/;
+const USE_SERVER = /^(?:\s*(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/))*\s*["']use server["']|^\s*import\s+["']server-only["']/m;
+
 /** The env reads and literal listen ports of one file, or `undefined` when there are none. */
 export function scanCodeFacts(language: string, source: string): CodeFacts | undefined {
   const family = familyOf(language);
   if (!family) return undefined;
+  const client = family === "js" && USE_CLIENT.test(source.slice(0, 2000));
+  const server = family === "js" && !client && USE_SERVER.test(source.slice(0, 4000));
+  const marks = { ...(client ? { client: true as const } : {}), ...(server ? { server: true as const } : {}) };
   // Cheap pre-checks: most files read no env and listen on nothing.
-  const mayEnv = /env|getenv|environ|\$\{/i.test(source);
+  const mayEnv = /env|getenv|environ|Settings|\$\{/i.test(source);
   const mayPort = /listen|port|serve|Run\(|Start\(/i.test(source);
-  if (!mayEnv && !mayPort) return undefined;
-  const env: Array<[string, number]> = [];
+  if (!mayEnv && !mayPort) return client || server ? marks : undefined;
+  const env: Array<[string, number, EnvReadFlags?]> = [];
   const ports: Array<[number, number]> = [];
   const seenEnv = new Set<string>();
+  const push = (name: string, line: number, flags?: EnvReadFlags) => {
+    const key = `${name}:${line}`;
+    if (seenEnv.has(key)) return;
+    seenEnv.add(key);
+    env.push(flags ? [name, line, flags] : [name, line]);
+  };
   const lines = source.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const text = lines[i];
@@ -88,22 +151,23 @@ export function scanCodeFacts(language: string, source: string): CodeFacts | und
       for (const pattern of PATTERNS[family]) {
         pattern.lastIndex = 0;
         for (const m of text.matchAll(pattern)) {
-          const key = `${m[1]}:${i + 1}`;
-          if (seenEnv.has(key)) continue;
-          seenEnv.add(key);
-          env.push([m[1], i + 1]);
+          const at = m.index ?? 0;
+          const rest = text.slice(at + m[0].length);
+          // A write (`process.env.X = "0"`, `os.environ["X"] = …`, `delete process.env.X`) isn't a read;
+          // `??=` / `||=` gives later reads a default.
+          if (/^\s*\]?\s*=(?!=)/.test(rest) || /\bdelete\s+$/.test(text.slice(0, at))) continue;
+          const assignDefault = /^\s*(?:\?\?|\|\|)=\s*/.exec(rest);
+          push(m[1], i + 1, assignDefault ? { f: literalAt(rest.slice(assignDefault[0].length)) } : readFlags(family, m[0], rest, text, text.slice(0, at)));
         }
       }
-      // `const { A, B: b } = process.env`
+      // `const { A, B: b = "x" } = process.env`
       if (family === "js") {
         const d = /\{([^}]*)\}\s*=\s*process\.env\b/.exec(text);
         if (d) {
           for (const part of d[1].split(",")) {
             const name = part.split(":")[0].split("=")[0].trim();
-            if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !seenEnv.has(`${name}:${i + 1}`)) {
-              seenEnv.add(`${name}:${i + 1}`);
-              env.push([name, i + 1]);
-            }
+            const def = part.includes("=") ? literalAt(part.slice(part.indexOf("=") + 1)) : undefined;
+            if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) push(name, i + 1, def !== undefined ? { f: def } : undefined);
           }
         }
       }
@@ -119,20 +183,26 @@ export function scanCodeFacts(language: string, source: string): CodeFacts | und
     }
     if (env.length > 400) break;
   }
-  if (env.length === 0 && ports.length === 0) return undefined;
-  return { ...(env.length ? { env } : {}), ...(ports.length ? { ports } : {}) };
+  const decl = mayEnv ? scanEnvDecls(family, source) : undefined;
+  if (env.length === 0 && ports.length === 0 && !decl?.length && !client && !server) return undefined;
+  return {
+    ...(env.length ? { env } : {}),
+    ...(ports.length ? { ports } : {}),
+    ...marks,
+    ...(decl?.length ? { decl } : {}),
+  };
 }
 
 /** `${NAME}` / `${NAME:default}` placeholders and `server.port` in a Spring `application.properties` / `.yml`. */
 export function scanSpringConfig(source: string): CodeFacts | undefined {
-  const env: Array<[string, number]> = [];
+  const env: Array<[string, number, EnvReadFlags?]> = [];
   const ports: Array<[number, number]> = [];
   const lines = source.split("\n");
   let yamlServer = false;
   for (let i = 0; i < lines.length; i++) {
     const text = lines[i];
     if (/^\s*#/.test(text)) continue;
-    for (const m of text.matchAll(/\$\{([A-Z][A-Z0-9_]*)(?::([^}]*))?\}/g)) env.push([m[1], i + 1]);
+    for (const m of text.matchAll(/\$\{([A-Z][A-Z0-9_]*)(?::([^}]*))?\}/g)) env.push(m[2] !== undefined ? [m[1], i + 1, { f: m[2] }] : [m[1], i + 1]);
     const prop = /^\s*server\.port\s*[=:]\s*(?:\$\{[A-Z_]+:)?(\d{2,5})/.exec(text);
     if (prop) ports.push([Number(prop[1]), i + 1]);
     // yaml: `server:` then an indented `port: 8080`

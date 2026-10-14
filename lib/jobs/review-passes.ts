@@ -158,6 +158,8 @@ export async function runIntentPass(args: {
   infraLines?: string[];
   /** The change to the database schema, one line each (DESIGN.md §6.13). */
   schemaLines?: string[];
+  /** The change to the env vars, one line each, secret values masked (DESIGN.md §6.15). */
+  envLines?: string[];
   aiConfig: AiProviderConfig;
   tokenBudget: number;
   prId?: string;
@@ -189,6 +191,7 @@ export async function runIntentPass(args: {
         ...(args.apiLines ? { api: args.apiLines } : {}),
         ...(args.infraLines ? { infra: args.infraLines } : {}),
         ...(args.schemaLines ? { schema: args.schemaLines } : {}),
+        ...(args.envLines ? { env: args.envLines } : {}),
       },
       { tokenBudget: args.tokenBudget, signal: args.signal }
     );

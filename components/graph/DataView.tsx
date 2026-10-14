@@ -351,8 +351,8 @@ export function DataView({
   }, [canvasRows, rowById]);
   // Boxes only for owning components / Postgres schemas, and only when there
   // are two or more: a box per name prefix (or one box around everything)
-  // says little, and boxes switch ELK to hierarchical layout, which stops it
-  // packing unconnected tables side by side.
+  // says little. With boxes, FKs between them get no ELK route (CardFlow
+  // lays each box out on its own and packs them, linked boxes side by side).
   const groups = useMemo(() => {
     if (showChanges) return undefined;
     const boxes = [...groupTables(canvasRows.map((r) => r.table))].filter(([id]) => !id.startsWith("p:"));
@@ -366,6 +366,17 @@ export function DataView({
     [rowById, selectedId, context],
   );
   const highlighted = useMemo(() => new Set(selectedId && rowById.has(selectedId) ? [selectedId] : []), [selectedId, rowById]);
+  // Tables that all reference one hub (`users`) share a layer — a column as
+  // tall as their count. Coffman-Graham caps a layer's size, spreading them
+  // over several columns left of the hub. `layoutKey` covers the count.
+  const elkOptions = useMemo(
+    () => ({
+      ...ELK_OPTIONS,
+      "elk.layered.layering.strategy": "COFFMAN_GRAHAM",
+      "elk.layered.layering.coffmanGraham.layerBound": String(Math.max(4, Math.ceil(Math.sqrt(canvasRows.length)))),
+    }),
+    [canvasRows.length],
+  );
   const layoutKey = `${activeDb?.id}|${showChanges}|${canvasRows.map((r) => `${r.table.id}:${r.table.columns.length}:${r.change?.status ?? ""}:${r.change?.columns.length ?? 0}`).join(",")}|${links.length}`;
 
   // --- List: All tables grouped like the canvas boxes; Changed only flat ----------
@@ -577,7 +588,7 @@ export function DataView({
           onPaneClick={() => onSelect(null)}
           alwaysLabelEdges={0}
           ports
-          elkOptions={ELK_OPTIONS}
+          elkOptions={elkOptions}
           groups={groups}
         >
           {visible.length > MAX_CANVAS && (

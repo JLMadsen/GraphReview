@@ -41,7 +41,7 @@ import { Segmented } from "./Segmented";
 import { parseLineRange, parseUnifiedDiff } from "./diff-utils";
 import type { FileContentResponseDTO, FileDiffResponseDTO, FindingDTO, ReviewTargetDTO } from "./types";
 
-function diffQuery(target: ReviewTargetDTO, filePath: string, sha?: string, view?: "file"): string {
+export function diffQuery(target: ReviewTargetDTO, filePath: string, sha?: string, view?: "file"): string {
   const params = new URLSearchParams({ path: filePath });
   if (sha) params.set("sha", sha);
   if (view) params.set("view", view);

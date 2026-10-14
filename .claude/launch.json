@@ -14,6 +14,12 @@
       "port": 3100
     },
     {
+      "name": "graphreview-dev-isolated-3300",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "set GRAPHREVIEW_HOME=C:\\Users\\Jakob\\AppData\\Local\\Temp\\claude\\C--Users-Jakob-Documents-GitHub-GraphReview\\e36dd20c-1718-481d-b411-6b0122e442c6\\scratchpad\\gr-home&& set GRAPHREVIEW_DIST_DIR=.next-isolated&& npx next dev -p 3300"],
+      "port": 3300
+    },
+    {
       "name": "graphreview-dev-3200",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--", "-p", "3200"],

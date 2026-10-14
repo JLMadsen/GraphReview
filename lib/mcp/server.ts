@@ -18,6 +18,7 @@ import {
   listFindingsByTargetKey,
   listRepos,
   readInfraCatalog,
+  readEnvCatalog,
   readDbSchema,
   readTargetGraph,
   STATIC_FINDING_CATEGORIES,
@@ -44,6 +45,7 @@ import { readServedApiCatalog } from "@/lib/jobs/api-catalog";
 import { apiChangeSummary } from "@/lib/analysis/api/describe";
 import type { ApiShape, Endpoint } from "@/lib/analysis/api/types";
 import { describeInfraResource, filterInfra, infraChangeSummary, infraResourceLabel } from "@/lib/analysis/infra/describe";
+import { describeEnvChangeEntry, describeEnvVar, envChangeSummary, filterEnv } from "@/lib/analysis/env/describe";
 import type { InfraCatalog, InfraResource } from "@/lib/analysis/infra/types";
 import { dbTableLabel, describeDbFinding, describeTableChange, filterTables, schemaChangeSummary } from "@/lib/analysis/db/describe";
 import { emitFindingsChanged } from "./events";
@@ -56,13 +58,15 @@ Typical flow:
 3. get_component_diff / get_file_diff to read the code a finding is about.
 4. respond_to_finding for each finding: "answered" when the concern does not hold (explain why — this resolves it), "fixing" when it is correct and you are fixing it, "comment" for anything else.
 
-Findings come in categories: "change" (the AI review of one component's diff), "impact" (callers the change left behind — an import of a name that no longer exists is certain, the rest are model-judged), "intent" (does the PR deliver what it says) "structure" (an import cycle the change creates, found by static analysis — no model; fix it by breaking the loop, or answer it if the cycle is deliberate), "infra" (certain infrastructure problems found by static analysis — no model: a Terraform resource renamed without a moved block, a stateful resource destroyed or prevent_destroy removed, an env var the deployed code reads that its workload no longer sets), "schema" (hazards in the migrations the change adds, found by static analysis — no model; see Database schema below) and "chat" (added by the reviewer through GraphReview's chat).
+Findings come in categories: "change" (the AI review of one component's diff), "impact" (callers the change left behind — an import of a name that no longer exists is certain, the rest are model-judged), "intent" (does the PR deliver what it says) "structure" (an import cycle the change creates, found by static analysis — no model; fix it by breaking the loop, or answer it if the cycle is deliberate), "infra" (certain infrastructure problems found by static analysis — no model: a Terraform resource renamed without a moved block, a stateful resource destroyed or prevent_destroy removed, an env var the deployed code reads that its workload no longer sets), "schema" (hazards in the migrations the change adds, found by static analysis — no model; see Database schema below), "env" (certain env var problems found by static analysis — no model: a new read nothing declares or sets, a secret-looking name exposed to the browser, a committed secret value, a declaration removed while code still reads it) and "chat" (added by the reviewer through GraphReview's chat).
 
 Reviews are advisory and can be wrong — check the code before agreeing with a finding.
 
 The API: list_endpoints lists every endpoint the repo's analysed commit exposes (HTTP routes, Next.js server actions — internal, made for the app's own pages —, tRPC procedures, GraphQL fields), with the handler, middleware/auth and request/response shapes static analysis could read. get_api_changes says what a review target does to them: endpoints added, removed or changed (path, method, params, shapes, auth — marked breaking when a client can fail), and separately (logicChanged) endpoints whose contract stayed the same but whose handler code, or code it calls, changed. Static analysis only, never findings.
 
 Infrastructure: list_infra lists what the repo's infrastructure as code declares (Terraform/OpenTofu, Nomad, Kubernetes manifests and Kustomize, Helm charts, Dockerfiles) — read statically, nothing evaluated — with which workload ships which code, env vars read but not set, routes and ports. get_infra_changes says what a review target does to it, plan-style: create / destroy / update / moved / version per resource, link deltas, and the certain "infra" findings.
+
+Env vars: list_env lists every env var name the code reads (with fallbacks, required, client code), declares (typed env schemas, .env.example) and sets (.env files per environment, CI workflows, Compose services, framework config, Nomad/Kubernetes workloads, Dockerfile ENV), with gaps such as read but undeclared. Secret-looking values are masked. get_env_changes says what a review target does to them, and the certain "env" findings.
 
 Database schema: list_tables lists the tables the repo's migrations (Prisma, Drizzle, TypeORM, Django, Alembic, plain SQL folders), schema files and ORM models declare — each column labelled with its source — with keys, FKs, the models that map them, the endpoints that read or write them (a link found only in SQL text is marked) and drift between models and migrations. get_schema_changes says what a review target does to it: tables and columns added, dropped, retyped or renamed, indexes, FKs, enums, the migrations it adds, drift it introduces, and the certain "schema" findings — from the migrations the change adds only: a dropped table or column, a NOT NULL column without a default on an existing table, a narrowed type, a column or table rename, and on Postgres CREATE INDEX without CONCURRENTLY on an existing table or an FK no index covers. Drift is never a finding.`;
 
@@ -620,6 +624,64 @@ export function createGraphReviewMcpServer(): McpServer {
           })),
           links: infra.links.map((l) => `${l.kind}: ${l.text}`),
           findings: infra.findings.map((f) => ({ rule: f.rule, summary: f.summary, file: f.file, ...(f.line ? { line: f.line } : {}) })),
+          ...(state !== "completed" ? { note: "A newer comparison is running; this is the last stored one." } : {}),
+        };
+      })
+  );
+
+  server.registerTool(
+    "list_env",
+    {
+      title: "List env vars",
+      description:
+        "Every env var name the repo's analysed commit reads, declares or sets: reads in code (fallback, required, client code), typed schemas and .env.example, and the value each environment or target gives it (.env files, CI, Compose, next.config / Vite, workloads, Dockerfile ENV), with tags (undeclared, not-set, set-not-read, maybe-set, secret, client, undefined-in-client, platform). Secret-looking values are masked. Filter by text, tag or environment.",
+      inputSchema: { repoId: z.string(), query: z.string().max(200).optional(), tag: z.string().max(40).optional(), environment: z.string().max(120).optional() },
+      annotations: { readOnlyHint: true },
+    },
+    ({ repoId, query, tag, environment }) =>
+      json(async () => {
+        await loadRepo(repoId);
+        const stored = readEnvCatalog(repoId);
+        if (!stored) throw new ToolError("This repo hasn't been analysed by a version that reads env vars yet — open it in GraphReview to re-analyse.");
+        const list = filterEnv(stored.catalog, { query, tag, environment });
+        return {
+          analysedCommit: stored.sha,
+          environments: stored.catalog.targets.map((t) => ({ id: t.id, kind: t.kind, files: t.files })),
+          total: list.length,
+          vars: list.slice(0, 300).map((v) => describeEnvVar(v, 6, 12)),
+          ...(list.length > 300 ? { truncated: "Showing 300 — narrow it with query, tag or environment." } : {}),
+        };
+      })
+  );
+
+  server.registerTool(
+    "get_env_changes",
+    {
+      title: "Get env var changes",
+      description:
+        "What a review target does to the env vars: per name, reads, declarations and values per environment added, removed or changed (secret values masked), tags it gains, and the certain env findings. Computed by comparing the target's base and head; started on first call.",
+      inputSchema: { repoId: z.string(), target: targetSchema },
+      annotations: { readOnlyHint: true },
+    },
+    ({ repoId, target }) =>
+      json(async () => {
+        const repo = await loadRepo(repoId);
+        const parsed = parseTarget(target);
+        if (repo.provider === "local" && parsed.kind === "pr") throw new ToolError("This repo has no git-host link, so it has no PRs — use a refs target.");
+        const stored = readTargetGraph<TargetGraphData>(repoId, reviewTargetKey(parsed));
+        const job = await ensureTargetGraph(repoId, parsed);
+        const state = await job.getState();
+        if (!stored?.data.env) {
+          if (state === "failed") throw new ToolError(`The comparison failed: ${job.failedReason ?? "unknown error"}`);
+          return { state: "computing", message: "Comparing base and head — call again in a few seconds." };
+        }
+        const env = stored.data.env;
+        return {
+          baseSha: stored.baseSha,
+          headSha: stored.headSha,
+          summary: envChangeSummary(env),
+          changes: env.changes.map((c) => describeEnvChangeEntry(c, 12)),
+          findings: env.findings.map((f) => ({ rule: f.rule, assessment: f.assessment, summary: f.summary, file: f.file, ...(f.line ? { line: f.line } : {}) })),
           ...(state !== "completed" ? { note: "A newer comparison is running; this is the last stored one." } : {}),
         };
       })

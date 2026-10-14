@@ -41,6 +41,13 @@ const IGNORED_FILE_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
+ * The one dot-folder read: GitHub Actions workflows, for the env vars CI sets
+ * and the images it builds (DESIGN.md §6.15 §1). Only the workflow files,
+ * never the rest of `.github`.
+ */
+const WORKFLOW_FILE = /^\.github\/workflows\/[^/]+\.ya?ml$/;
+
+/**
  * The walk's skip rules applied to a file list that came from somewhere else
  * (a commit's tree): dot-directories, {@link DEFAULT_IGNORED_DIRS} (plus
  * `extraIgnored`), `*.egg-info`, Cargo's `target/` next to a `Cargo.toml`,
@@ -54,6 +61,7 @@ export function isWalkIgnored(
   const segments = relPath.split("/");
   const name = segments[segments.length - 1];
   if (IGNORED_FILE_PATTERNS.some((pattern) => pattern.test(name))) return true;
+  if (WORKFLOW_FILE.test(relPath)) return false;
   for (let i = 0; i < segments.length - 1; i++) {
     const dir = segments[i];
     if (dir.startsWith(".") || DEFAULT_IGNORED_DIRS.includes(dir) || extraIgnored.includes(dir) || dir.endsWith(".egg-info")) {
@@ -118,7 +126,8 @@ export async function walkRepo(
       }
 
       if (isDirectory) {
-        if (name.startsWith(".") || ignored.has(name) || name.endsWith(".egg-info")) continue;
+        const workflows = rel === ".github" || rel === ".github/workflows";
+        if ((name.startsWith(".") && !workflows) || ignored.has(name) || name.endsWith(".egg-info")) continue;
         const evidenceFile = CONDITIONALLY_IGNORED_DIRS.get(name);
         if (evidenceFile && entries.some((e) => e.name === evidenceFile)) continue;
         if (seenDirs.has(abs)) continue;
@@ -126,6 +135,7 @@ export async function walkRepo(
         await walk(abs, rel);
       } else if (isFile) {
         if (IGNORED_FILE_PATTERNS.some((pattern) => pattern.test(name))) continue;
+        if (rel.startsWith(".github/") && !WORKFLOW_FILE.test(rel)) continue;
         results.push(rel);
       }
     }

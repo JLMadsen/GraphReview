@@ -26,7 +26,7 @@
 // Kept out of lib/jobs' barrel: it pulls in lib/analysis.
 
 import { createHash } from "node:crypto";
-import { buildCallGraph, compareApis, compareInfra, compareSchemas, compareStructure, parseChangedLines, type DbFinding, type InfraFinding, type NewCycle } from "@/lib/analysis";
+import { buildCallGraph, compareApis, compareEnv, compareInfra, compareSchemas, compareStructure, parseChangedLines, type DbFinding, type EnvFinding, type InfraFinding, type NewCycle } from "@/lib/analysis";
 import { getFileOwnerMap, getRepoById, listComponentsByRepoId, readDbSource, syncFindingsForTargetCategory, writeTargetGraph } from "@/lib/db";
 import type { RepoRecord, TargetFindingInput } from "@/lib/db";
 import { emitFindingsChanged } from "@/lib/mcp/events";
@@ -156,6 +156,24 @@ function infraFinding(f: InfraFinding, targetKey: string, componentId: string, r
   };
 }
 
+/** One of the env comparison's certain findings (DESIGN.md §6.15 §4) — `defect` or `concern`, no model. */
+function envFinding(f: EnvFinding, targetKey: string, componentId: string, revision: Revision, prId?: string): TargetFindingInput & { componentId: string } {
+  return {
+    id: stableFindingId(`env|${targetKey}|${f.key}`),
+    componentId,
+    ...(prId ? { prId } : {}),
+    filePath: f.file,
+    ...(f.line ? { lineRange: String(f.line) } : {}),
+    summary: f.summary,
+    assessment: f.assessment,
+    confidence: 1,
+    rationale: f.rationale,
+    model: "static analysis",
+    createdAt: new Date().toISOString(),
+    ...revision,
+  };
+}
+
 export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger): Promise<TargetGraphJobResult> {
   const startedAt = Date.now();
   const repo: RepoRecord | null = await getRepoById(data.repoId);
@@ -176,12 +194,14 @@ export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger
   const structure = compareStructure(base, head, [...changed.keys()]);
   const callGraph = buildCallGraph(base, head, changed);
   // The catalogs, base against head — stored beside each other in the result.
+  const infraChange = compareInfra(base.infra, head.infra);
   const compareCatalogs = {
     api: compareApis(base, head, changed),
-    infra: compareInfra(base.infra, head.infra),
+    infra: infraChange,
     db: compareSchemas(base.db, head.db),
+    env: compareEnv(base.env, head.env, changed, infraChange.findings),
   };
-  const { api, infra, db } = compareCatalogs;
+  const { api, infra, db, env } = compareCatalogs;
 
   const [owners, components] = await Promise.all([getFileOwnerMap(repo.id), listComponentsByRepoId(repo.id)]);
   const ownerOf = ownerLookup(owners);
@@ -260,7 +280,8 @@ export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger
   // whole (stable ids keep replies), and an open review dock refetches.
   const revision: Revision = { reviewedBaseSha: baseSha, reviewedHeadSha: headSha, reviewedAt: new Date().toISOString() };
   const prId = target.kind === "pr" ? `${repo.id}:pr:${target.prNumber}` : undefined;
-  const staticFindings: Array<{ category: "structure" | "infra" | "schema"; findings: Array<TargetFindingInput & { componentId: string }> }> = [
+  const staticFindings: Array<{ category: "structure" | "infra" | "schema" | "env"; findings: Array<TargetFindingInput & { componentId: string }> }> = [
+    { category: "env", findings: env.findings.map((f) => envFinding(f, targetKey, ownerOf(f.file) ?? "", revision, prId)) },
     { category: "structure", findings: structure.newCycles.map((cycle) => cycleFinding(cycle, targetKey, ownerOf(cycle.closingEdge.from) ?? "", revision, prId)) },
     { category: "infra", findings: infra.findings.map((f) => infraFinding(f, targetKey, ownerOf(f.file) ?? "", revision, prId)) },
     { category: "schema", findings: db.findings.map((f) => schemaFinding(f, targetKey, ownerOf(f.file) ?? "", revision, prId)) },
@@ -277,7 +298,8 @@ export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger
       `${structure.dependents.count} dependent file(s); call graph: ${callGraph.functions.length} function(s), ${callGraph.edges.length} call(s); ` +
       `API: +${api.counts.added} −${api.counts.removed} ~${api.counts.changed} changed (${api.counts.breaking} breaking); logic changed behind ${api.counts.logic}; ` +
       `infra: +${infra.counts.create} −${infra.counts.destroy} ~${infra.counts.update} (${infra.counts.moved} moved, ${infra.counts.version} version), ${infra.findings.length} finding(s); ` +
-      `schema: +${db.counts.added} −${db.counts.removed} ~${db.counts.changed} (${db.counts.renamed} renamed), ${db.counts.migrations} new migration(s), ${db.findings.length} finding(s)`
+      `schema: +${db.counts.added} −${db.counts.removed} ~${db.counts.changed} (${db.counts.renamed} renamed), ${db.counts.migrations} new migration(s), ${db.findings.length} finding(s); ` +
+      `env: +${env.counts.new} −${env.counts.gone} ~${env.counts.changed}, ${env.findings.length} finding(s)`
   );
   return { baseSha, headSha, cycles: structure.newCycles.length, functions: callGraph.functions.length };
 }

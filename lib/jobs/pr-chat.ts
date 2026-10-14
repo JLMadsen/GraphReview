@@ -52,6 +52,7 @@ import {
   getComponentOverview,
   readInfraCatalog,
   readDbSchema,
+  readEnvCatalog,
   readTargetGraph,
   updateChatSuggestion,
   upsertFinding,
@@ -60,6 +61,8 @@ import type { ApiChange } from "@/lib/analysis/api/types";
 import { describeApiChange, endpointLabel } from "@/lib/analysis/api/describe";
 import type { InfraChange } from "@/lib/analysis/infra/types";
 import type { DbChange } from "@/lib/analysis/db/types";
+import type { EnvChange } from "@/lib/analysis/env/types";
+import { describeEnvChange, describeEnvFinding, describeEnvVar, filterEnv } from "@/lib/analysis/env/describe";
 import { describeDbFinding, describeSchemaChange, describeTable, filterTables } from "@/lib/analysis/db/describe";
 import { describeInfraChange, describeInfraFinding, describeInfraResource, filterInfra } from "@/lib/analysis/infra/describe";
 import { readServedApiCatalog } from "./api-catalog";
@@ -153,6 +156,17 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
     description: "what this change does to the infrastructure, plan-style (create/destroy/update/moved/version), its link deltas and the certain infra findings",
   },
   {
+    name: "list_env",
+    args: '{"query":"<optional text in the name, a file or a value>","tag":"<optional: undeclared, not-set, set-not-read, maybe-set, secret, client, undefined-in-client>","environment":"<optional: example, default, production, compose:web, ci:deploy, …>"}',
+    description:
+      "the env vars the code reads, declares (typed schemas, .env.example) and sets (.env files, CI, Compose, framework config, workloads), per environment, with gaps such as read but undeclared; secret values masked",
+  },
+  {
+    name: "get_env_changes",
+    args: "{}",
+    description: "what this change does to the env vars — reads, declarations and values per environment added, removed or changed — and the certain env findings",
+  },
+  {
     name: "list_tables",
     args: '{"query":"<optional text in the table, column, model or file>"}',
     description:
@@ -185,9 +199,9 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
   },
   {
     name: "show",
-    args: '{"kind":"component|file|endpoint|table|infra|area|function","name":"<its name, path or id>","line":12}',
+    args: '{"kind":"component|file|endpoint|table|env|infra|area|function","name":"<its name, path or id>","line":12}',
     description:
-      "moves the reviewer's screen to one thing: a component's card on the App map, a file (at a line), an endpoint, a table, an infra resource, an area of the PR map or a function of the change — changes nothing else",
+      "moves the reviewer's screen to one thing: a component's card on the App map, a file (at a line), an endpoint, a table (on the Data view), an env var (on the Env view), an infra resource, an area of the PR map or a function of the change — changes nothing else",
   },
   {
     name: "highlight",
@@ -227,6 +241,7 @@ const REPO_TOOL_NAMES = new Set([
   "blame",
   "list_endpoints",
   "list_infra",
+  "list_env",
   "list_tables",
   "show",
   "highlight",
@@ -276,6 +291,8 @@ interface ToolContext {
   infra?: InfraChange;
   /** What the change does to the database schema, likewise (DESIGN.md §6.13). */
   db?: DbChange;
+  /** What the change does to the env vars, likewise (DESIGN.md §6.15). */
+  env?: EnvChange;
   /** The change's call graph (functions it touches and their neighbours), for `show` a function. */
   callGraph?: CallGraph;
   /** suggest_finding's offers in this turn, stored on the answer. */
@@ -374,6 +391,7 @@ const CHANGE_TOOL_NAMES = new Set([
   "add_finding",
   "suggest_finding",
   "get_infra_changes",
+  "get_env_changes",
   "get_schema_changes",
   "get_pr_map",
   "get_checklist",
@@ -534,6 +552,27 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
       const lines = describeInfraChange(tc.infra, 40);
       if (tc.infra.findings.length) lines.push("Certain findings (already in the review as `infra`):", ...tc.infra.findings.map((f) => `- ${describeInfraFinding(f)}`));
       return { text: lines.join("\n"), summary: `read the infra change (${tc.infra.changes.length} resource change(s))`, files: [...new Set(tc.infra.changes.slice(0, 8).map((c) => c.resource.file))] };
+    }
+
+    case "list_env": {
+      const stored = readEnvCatalog(tc.repo.id);
+      if (!stored) return { text: "The env catalog isn't built yet — the repo needs a re-analysis.", summary: "no env catalog yet" };
+      const list = filterEnv(stored.catalog, { query: typeof args.query === "string" ? args.query : undefined, tag: typeof args.tag === "string" ? args.tag : undefined, environment: typeof args.environment === "string" ? args.environment : undefined });
+      const lines = list.slice(0, 60).map((v) => `- ${describeEnvVar(v)}`);
+      if (list.length > 60) lines.push(`… ${list.length - 60} more — narrow it with a query`);
+      if (stored.catalog.targets.length) lines.unshift(`Environments/targets: ${stored.catalog.targets.map((t) => t.id).join(", ")}`);
+      return {
+        text: lines.join("\n") || (stored.catalog.vars.length ? "(no env vars match)" : "(no env var reads or settings found in this repo)"),
+        summary: `listed ${Math.min(list.length, 60)} env var(s)`,
+        files: [...new Set(list.slice(0, 8).flatMap((v) => (v.reads[0] ? [v.reads[0].file] : [])))],
+      };
+    }
+
+    case "get_env_changes": {
+      if (!tc.env) return { text: "The base/head comparison hasn't run yet (or doesn't cover env vars) — try again shortly.", summary: "no env comparison yet" };
+      const lines = describeEnvChange(tc.env, 40);
+      if (tc.env.findings.length) lines.push("Certain findings (already in the review as `env`):", ...tc.env.findings.map((f) => `- ${describeEnvFinding(f)}`));
+      return { text: lines.join("\n"), summary: `read the env change (${tc.env.changes.length} name(s))`, files: [...new Set(tc.env.findings.slice(0, 8).map((f) => f.file))] };
     }
 
     case "list_tables": {
@@ -842,7 +881,7 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
   }
 }
 
-const SHOW_KINDS = new Set<ChatShowKind>(["component", "file", "endpoint", "table", "infra", "area", "function"]);
+const SHOW_KINDS = new Set<ChatShowKind>(["component", "file", "endpoint", "table", "env", "infra", "area", "function"]);
 
 /** Exact (case-insensitive) first, then the first that contains the query. */
 function bestMatch<T>(items: readonly T[], query: string, keys: (item: T) => string[]): T | undefined {
@@ -856,7 +895,9 @@ function bestMatch<T>(items: readonly T[], query: string, keys: (item: T) => str
 /** `show`'s target, resolved to the id the UI opens; a string says why nothing matched. */
 async function resolveShow(tc: ToolContext, args: Record<string, unknown>): Promise<ChatActionRecord | string> {
   const rawKind = arg(args, "kind", "type").toLowerCase().replace(/s$/, "");
-  const kind = (rawKind === "module" ? "component" : rawKind === "resource" ? "infra" : rawKind) as ChatShowKind;
+  const kind = (
+    rawKind === "module" ? "component" : rawKind === "resource" ? "infra" : /^(env[ _-]?var|variable|environment)$/.test(rawKind) ? "env" : rawKind === "model" ? "table" : rawKind
+  ) as ChatShowKind;
   const query = arg(args, "name", "id", "target", ...PATH_KEYS, "query");
   if (!SHOW_KINDS.has(kind) || !query) return `show needs a kind (${[...SHOW_KINDS].join(", ")}) and a name, e.g. {"kind":"file","name":"app/page.tsx","line":12}.`;
   const line = num(args.line) ?? num(args.start);
@@ -882,6 +923,11 @@ async function resolveShow(tc: ToolContext, args: Record<string, unknown>): Prom
       const stored = readDbSchema(tc.repo.id);
       const hit = stored && bestMatch(filterTables(stored.schema), query, ({ table }) => [table.name, table.id, `${table.schema ?? ""}.${table.name}`]);
       return hit ? { kind: "show", target: "table", id: hit.table.id, label: `table ${hit.table.name}` } : `No table matches "${query}" — list_tables first.`;
+    }
+    case "env": {
+      const stored = readEnvCatalog(tc.repo.id);
+      const v = stored && bestMatch(stored.catalog.vars, query.replace(/^\$\{?|\}$/g, ""), (x) => [x.name]);
+      return v ? { kind: "show", target: "env", id: v.name, label: `env var ${v.name}` } : `No env var matches "${query}" — list_env first.`;
     }
     case "infra": {
       const stored = readInfraCatalog(tc.repo.id);
@@ -924,7 +970,7 @@ function resolveHighlight(tc: ToolContext, args: Record<string, unknown>): ChatA
 }
 
 const BUCKETS = ["defect", "concern", "unknown", "fine"] as const;
-const STATIC_CATEGORIES = new Set(["structure", "infra", "schema"]);
+const STATIC_CATEGORIES = new Set(["structure", "infra", "schema", "env"]);
 
 function resolveFilter(tc: ToolContext, args: Record<string, unknown>): ChatActionRecord | string {
   const raw = args.assessment ?? args.assessments ?? args.verdict ?? args.severity;
@@ -980,6 +1026,10 @@ function renderRepoContext(tc: ToolContext): string {
   if (infra && infra.catalog.resources.length > 0) {
     lines.push(`Infrastructure: ${infra.catalog.resources.length} resource(s) in ${infra.catalog.stacks.length} stack(s) (${infra.catalog.tools.join(", ")}) — use list_infra.`);
   }
+  const envCatalog = readEnvCatalog(repo.id);
+  if (envCatalog && envCatalog.catalog.vars.length > 0) {
+    lines.push(`Env vars: ${envCatalog.catalog.vars.length} name(s) across ${envCatalog.catalog.targets.length} environment(s)/target(s) — use list_env.`);
+  }
   const db = readDbSchema(repo.id);
   const tableCount = db?.schema.databases.reduce((n, d) => n + d.tables.length, 0) ?? 0;
   if (db && tableCount > 0) {
@@ -1024,6 +1074,10 @@ function renderContext(tc: ToolContext): string {
   if (tc.infra && (tc.infra.changes.length > 0 || tc.infra.links.length > 0)) {
     lines.push("", "What the change does to the infrastructure (static analysis, plan-style; get_infra_changes for all of it, list_infra for the whole inventory):");
     for (const line of describeInfraChange(tc.infra, 15)) lines.push(`- ${line}`);
+  }
+  if (tc.env && tc.env.changes.length > 0) {
+    lines.push("", "What the change does to the env vars (static analysis, secret values masked; get_env_changes for all of it, list_env for every name):");
+    for (const line of describeEnvChange(tc.env, 15)) lines.push(`- ${line}`);
   }
   if (tc.db && (tc.db.tables.length > 0 || tc.db.migrations.length > 0 || tc.db.enums.length > 0)) {
     lines.push("", "What the change does to the database schema (static analysis; get_schema_changes for all of it, list_tables for the whole schema):");
@@ -1076,7 +1130,7 @@ export async function runChatTurn(args: {
     model: config.model,
     ...(target ? (() => {
       const stored = readTargetGraph<TargetGraphData>(repo.id, targetKey)?.data;
-      return { api: stored?.api, infra: stored?.infra, db: stored?.db, callGraph: stored?.callGraph };
+      return { api: stored?.api, infra: stored?.infra, db: stored?.db, env: stored?.env, callGraph: stored?.callGraph };
     })() : {}),
     suggestions: [],
     actions: [],

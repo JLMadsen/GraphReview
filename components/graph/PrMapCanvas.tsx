@@ -23,20 +23,20 @@
 // drawn row to row (`FunctionCard`, `buildFunctionView`).
 
 import { useCallback, useMemo, useState } from "react";
-import { Eye, EyeOff, LoaderCircle, TriangleAlert } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Eye, EyeOff, Info, LoaderCircle, TriangleAlert } from "lucide-react";
 import { cn } from "cn";
 import { CardFlow, type CardFlowLink } from "./CardFlow";
 import { activeLinksFor, type FunctionView } from "./call-graph-view";
 import { FUNCTION_CARD_WIDTH, FUNCTION_STATUS, FunctionCard } from "./FunctionCard";
 import { PR_CARD_WIDTH, PrMapCard } from "./PrMapNode";
 import { Segmented } from "./Segmented";
-import { Spark } from "./Spark";
 import { ASSESSMENT_VISUALS } from "./review-visuals";
 import { areaLifecycle, type AreaLifecycle, type PrAreas } from "./pr-areas";
 import type { PrMapNodeDTO, PrMapResponseDTO } from "./pr-map-types";
 import type { TargetGraphData } from "./target-graph-types";
 import type { UseTargetGraphResult } from "./useTargetGraph";
-import { VIEW_CANVAS, VIEW_TOOLBAR } from "./view-chrome";
+import { VIEW_CANVAS } from "./view-chrome";
 
 export type PrMapMode = "files" | "functions";
 
@@ -70,6 +70,8 @@ export interface PrMapCanvasProps {
   onShowHidden?: () => void;
   /** Table names per file (DESIGN.md §6.13 §7): each area card gets a ⛁N badge for the tables its files touch. */
   tablesByFile?: ReadonlyMap<string, readonly string[]>;
+  /** Where the map's controls go — the right end of GraphView's view tabs, while this view is the active one. `null`: not drawn. */
+  toolbarSlot?: HTMLElement | null;
 }
 
 export function PrMapCanvas({
@@ -93,6 +95,7 @@ export function PrMapCanvas({
   onHideFunction,
   onHideCard,
   onShowHidden,
+  toolbarSlot = null,
 }: PrMapCanvasProps) {
   const [showContext, setShowContext] = useState(true);
   const structure = targetGraph?.graph?.data;
@@ -163,34 +166,36 @@ export function PrMapCanvas({
   }, [links, cards]);
 
   // File and line totals live in the diff summary (left column) — the
-  // toolbar only says how the map is grouped and what the colours mean.
+  // notes only say how the map is grouped and what the comparison found.
   const groups = map?.nodes.filter((n) => n.role !== "context").length ?? 0;
 
   return (
     <div className={className}>
-      <div className={VIEW_TOOLBAR}>
-        <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-          {map && mode === "files" && (
-            <span className="font-mono text-[11px]">
-              {groups} area{groups === 1 ? "" : "s"} · {map.edges.length} link{map.edges.length === 1 ? "" : "s"}
-            </span>
+      {/* No toolbar row of its own: the controls sit at the right end of the
+          view tabs, and what the row used to say (counts, how the cards were
+          grouped, what the comparison found) is the info icon's hover. */}
+      {toolbarSlot &&
+        createPortal(
+        <div className="flex items-center gap-2">
+          {(loading || targetGraph?.pending) && (
+            <LoaderCircle className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />
           )}
-          {map && mode === "functions" && functionView && (
-            <span className="font-mono text-[11px]">
-              {functionView.shownCount} function{functionView.shownCount === 1 ? "" : "s"} · {functionView.edges.length} call
-              {functionView.edges.length === 1 ? "" : "s"}
-            </span>
+          {map && (
+            <MapNotes
+              lines={[
+                mode === "functions" && functionView
+                  ? { text: `${functionView.shownCount} function${functionView.shownCount === 1 ? "" : "s"} · ${functionView.edges.length} call${functionView.edges.length === 1 ? "" : "s"}` }
+                  : { text: `${groups} area${groups === 1 ? "" : "s"} · ${map.edges.length} link${map.edges.length === 1 ? "" : "s"}` },
+                ...(mode === "files" ? [sourceNote(map, reviewPending)] : []),
+                ...(targetGraph ? structureNotes(targetGraph) : []),
+              ]}
+            />
           )}
-          {map && mode === "files" && <SourceNote map={map} reviewPending={reviewPending} />}
-          {loading && <LoaderCircle className="size-3.5 animate-spin" aria-label="Loading" />}
-          {targetGraph && <StructureNote targetGraph={targetGraph} />}
-        </div>
-        <div className="ml-auto flex flex-wrap items-center gap-3">
           {mode === "functions" && functionView && functionView.hiddenItems.length > 0 && onShowHidden && (
             <button
               type="button"
               onClick={onShowHidden}
-              className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+              className="flex items-center gap-1.5 rounded-md border border-border px-2 py-0.5 text-xs font-medium whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground"
               title={
                 `Hidden: ${functionView.hiddenItems.map((item) => (item.kind === "card" ? `${item.label} (card)` : item.label)).join(", ")}` +
                 (functionView.prunedCount > 0
@@ -211,7 +216,7 @@ export function PrMapCanvas({
               onClick={() => setShowContext((v) => !v)}
               aria-pressed={showContext}
               className={cn(
-                "flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+                "flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-colors",
                 showContext
                   ? "border-foreground/25 bg-secondary text-foreground"
                   : "border-border text-muted-foreground hover:text-foreground"
@@ -238,8 +243,9 @@ export function PrMapCanvas({
               ]}
             />
           )}
-        </div>
-      </div>
+        </div>,
+        toolbarSlot
+      )}
 
       {mode === "functions" ? (
         <FunctionCanvas
@@ -345,76 +351,62 @@ function withStructureLinks(links: CardFlowLink[], cards: PrMapNodeDTO[], data: 
 }
 
 /** "1 new import cycle · +3 dependencies · 74 files depend on it" — the structure change in one line. */
-function StructureNote({ targetGraph }: { targetGraph: UseTargetGraphResult }) {
+interface MapNote {
+  text: string;
+  /** Worth the reviewer's attention — turns the info icon amber. */
+  warn?: boolean;
+}
+
+/** The map's notes behind one icon: its size, how its cards were grouped and what the base/head comparison found. */
+function MapNotes({ lines }: { lines: MapNote[] }) {
+  const warn = lines.some((l) => l.warn);
+  const Icon = warn ? TriangleAlert : Info;
+  return (
+    <span
+      tabIndex={0}
+      className={cn("flex cursor-help items-center rounded p-0.5 outline-none focus-visible:ring-1 focus-visible:ring-ring", warn ? "text-warning" : "text-muted-foreground hover:text-foreground")}
+      title={lines.map((l) => l.text).join("\n")}
+      aria-label={lines.map((l) => l.text).join(". ")}
+    >
+      <Icon className="size-3.5" aria-hidden />
+    </span>
+  );
+}
+
+function structureNotes(targetGraph: UseTargetGraphResult): MapNote[] {
   const data = targetGraph.graph?.data;
   if (!data) {
-    if (targetGraph.error) {
-      return (
-        <span className="text-[11px] text-warning" title={targetGraph.error}>
-          Couldn&apos;t compare base and head
-        </span>
-      );
-    }
-    return targetGraph.pending ? (
-      <span className="flex items-center gap-1 text-[11px]">
-        <LoaderCircle className="size-3 animate-spin" aria-hidden /> Comparing base and head…
-      </span>
-    ) : null;
+    if (targetGraph.error) return [{ text: `Couldn't compare base and head: ${targetGraph.error}`, warn: true }];
+    return targetGraph.pending ? [{ text: "Comparing base and head…" }] : [];
   }
   const s = data.structure;
   const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
-  const parts: Array<{ key: string; text: string; title: string; style?: React.CSSProperties; className?: string }> = [];
+  const notes: MapNote[] = [];
   if (s.newCycles.length > 0) {
-    parts.push({
-      key: "cycles",
-      text: `${s.newCycles.length} new import ${plural(s.newCycles.length, "cycle", "cycles")}`,
-      title: s.newCycles.map((c) => c.files.join(" → ")).join("\n"),
-      style: { color: ASSESSMENT_VISUALS.concern.text },
+    notes.push({
+      text: `${s.newCycles.length} new import ${plural(s.newCycles.length, "cycle", "cycles")}: ${s.newCycles.map((c) => c.files.join(" → ")).join("; ")}`,
+      warn: true,
     });
   }
   if (s.components.added.length > 0) {
-    parts.push({
-      key: "added",
-      text: `+${s.components.added.length} ${plural(s.components.added.length, "dependency", "dependencies")}`,
-      title: `Module dependencies this change adds:\n${s.components.added.map((c) => `${c.fromName} → ${c.toName}`).join("\n")}`,
-      className: "text-[#d8703a]",
+    notes.push({
+      text: `+${s.components.added.length} ${plural(s.components.added.length, "dependency", "dependencies")}: ${s.components.added.map((c) => `${c.fromName} → ${c.toName}`).join(", ")}`,
     });
   }
   if (s.components.removed.length > 0) {
-    parts.push({
-      key: "removed",
-      text: `−${s.components.removed.length} ${plural(s.components.removed.length, "dependency", "dependencies")}`,
-      title: `Module dependencies this change removes:\n${s.components.removed.map((c) => `${c.fromName} → ${c.toName}`).join("\n")}`,
+    notes.push({
+      text: `−${s.components.removed.length} ${plural(s.components.removed.length, "dependency", "dependencies")}: ${s.components.removed.map((c) => `${c.fromName} → ${c.toName}`).join(", ")}`,
     });
   }
   if (s.orphaned.length > 0) {
-    parts.push({
-      key: "orphaned",
-      text: `${s.orphaned.length} ${plural(s.orphaned.length, "file", "files")} no longer imported`,
-      title: `Imported by something at the base, by nothing now:\n${s.orphaned.join("\n")}`,
-    });
+    notes.push({ text: `${s.orphaned.length} ${plural(s.orphaned.length, "file", "files")} no longer imported: ${s.orphaned.join(", ")}` });
   }
   if (s.dependents.count > 0) {
-    parts.push({
-      key: "dependents",
-      text: `${s.dependents.count} ${plural(s.dependents.count, "file depends", "files depend")} on it`,
-      title: `Files that import the changed files, directly or through others, in ${s.dependentComponents} ${plural(s.dependentComponents, "module", "modules")}`,
+    notes.push({
+      text: `${s.dependents.count} ${plural(s.dependents.count, "file depends", "files depend")} on it, in ${s.dependentComponents} ${plural(s.dependentComponents, "module", "modules")}`,
     });
   }
-  if (parts.length === 0) return <span className="text-[11px]">No structural change</span>;
-  return (
-    <span className="flex flex-wrap items-center gap-x-2 font-mono text-[11px]">
-      {parts.map((part, i) => (
-        <span key={part.key} className="flex items-center gap-2">
-          {i > 0 && <span className="text-muted-foreground/50">·</span>}
-          <span className={part.className} style={part.style} title={part.title}>
-            {part.text}
-          </span>
-        </span>
-      ))}
-      {targetGraph.pending && <LoaderCircle className="size-3 animate-spin" aria-label="Updating" />}
-    </span>
-  );
+  return notes.length > 0 ? notes : [{ text: "No structural change" }];
 }
 
 /** The Functions mode canvas: function cards, calls drawn row to row. */
@@ -600,26 +592,9 @@ function Legend({ lifecycles, tones }: { lifecycles: ReadonlySet<AreaLifecycle>;
   );
 }
 
-function SourceNote({ map, reviewPending }: { map: PrMapResponseDTO; reviewPending?: boolean }) {
-  if (map.source === "ai") {
-    return (
-      <span
-        className="flex items-center gap-1 text-[11px]"
-        title={map.model ? `Grouped and named by ${map.model}` : "Grouped and named by the review"}
-      >
-        <Spark /> grouped by review
-      </span>
-    );
-  }
-  if (reviewPending) {
-    return <span className="text-[11px]">Grouped by module — names arrive when the review finishes</span>;
-  }
-  if (map.aiOutdated) {
-    return (
-      <span className="text-[11px] text-warning">
-        Files changed since the review grouped them — re-run the review to refresh it
-      </span>
-    );
-  }
-  return <span className="text-[11px]">Grouped by module</span>;
+function sourceNote(map: PrMapResponseDTO, reviewPending?: boolean): MapNote {
+  if (map.source === "ai") return { text: map.model ? `Grouped and named by ${map.model}` : "Grouped and named by the review" };
+  if (reviewPending) return { text: "Grouped by module — names arrive when the review finishes" };
+  if (map.aiOutdated) return { text: "Files changed since the review grouped them — re-run the review to refresh it", warn: true };
+  return { text: "Grouped by module" };
 }

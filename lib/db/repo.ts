@@ -135,6 +135,7 @@ export async function deleteRepo(id: string): Promise<void> {
     run(`DELETE FROM api_catalogs WHERE repo_id = ?`, id);
     run(`DELETE FROM infra_catalogs WHERE repo_id = ?`, id);
     run(`DELETE FROM db_schemas WHERE repo_id = ?`, id);
+    run(`DELETE FROM env_catalogs WHERE repo_id = ?`, id);
     run(`DELETE FROM kv WHERE key LIKE ?`, `kv:api-shape:${id}:%`);
     run(`DELETE FROM kv WHERE key = ?`, `kv:db-source:${id}`);
     run(`DELETE FROM kv WHERE key = ?`, `kv:preview:mocks:${id}`);

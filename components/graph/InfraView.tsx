@@ -1,11 +1,16 @@
 "use client";
 
-// The Graph tab's Infra view (DESIGN.md §6.12): the infrastructure the
+// The Graph tab's Infra view (DESIGN.md §6.12, §6.16): the infrastructure the
 // analysed commit declares — Terraform / OpenTofu, Nomad, Kubernetes
-// (manifests, Kustomize), Helm and Dockerfiles — as a list whose rows open in
-// place (`InfraResourceDetail`), like the API view. No canvas.
+// (manifests, Kustomize), Helm and Dockerfiles — in four sub-views:
+//   Diagram   ways in → programs → data, platform stacks below (`InfraDiagram`)
+//   Files     the files themselves with plain-English margin notes (`InfraFiles`)
+//   Requests  one route followed hop by hop (`InfraRequests`)
+//   List      every resource as a row that opens in place (`InfraResourceDetail`)
+// Outside List, a clicked resource opens its detail in a panel on the right.
+// A resource opened from elsewhere (the left column) switches to List.
 //
-// With a diff selected the view opens on "Infra changes": the plan, findings
+// In List, with a diff selected the view opens on "Infra changes": the plan, findings
 // first, then destroy → moved → update → version → create, the changed rows
 // already open (up to 8). "All resources" groups the whole catalog by stack →
 // module / job / chart, with the changes marked. Tool and environment
@@ -13,6 +18,12 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Anchor, Blocks, ChevronRight, Container, LoaderCircle, Search, Server, Ship, TriangleAlert, X } from "lucide-react";
+import { InfraDiagram } from "./infra/InfraDiagram";
+import { InfraFiles } from "./infra/InfraFiles";
+import { InfraRequests, type RouteRef } from "./infra/InfraRequests";
+import { buildInfraTopology, deploySets, type JourneyEndpoint } from "./infra-topology";
+import { useStoredState } from "./graph-view/view-state";
+import type { ReviewTargetDTO } from "./types";
 import { cn } from "cn";
 import { Segmented } from "./Segmented";
 import { VIEW_TOOLBAR } from "./view-chrome";
@@ -23,6 +34,17 @@ import type { InfraCatalogResponseDTO, InfraChange, InfraResource, InfraStack, I
 
 /** In "Infra changes", changed rows open on their plan — up to this many. */
 const AUTO_OPEN = 8;
+
+export type InfraMode = "diagram" | "files" | "requests" | "list";
+const INFRA_MODES: InfraMode[] = ["diagram", "files", "requests", "list"];
+const INFRA_MODE_STORAGE_KEY = "graphreview.infra.mode";
+const parseInfraMode = (raw: string | null): InfraMode | undefined => INFRA_MODES.find((m) => m === raw);
+const MODE_OPTIONS = [
+  { value: "diagram" as const, label: "Diagram", title: "What talks to what: ways in, programs, data, with the diff painted on" },
+  { value: "files" as const, label: "Files", title: "The infrastructure files with plain-English notes beside each resource" },
+  { value: "requests" as const, label: "Requests", title: "Follow one route from the outside to the code and its data" },
+  { value: "list" as const, label: "List", title: "Every resource, plan-style" },
+];
 
 const TOOL_ICONS: Record<InfraTool, React.ComponentType<{ className?: string }>> = {
   terraform: Blocks,
@@ -42,6 +64,11 @@ export function ToolIcon({ tool, className }: { tool: InfraTool; className?: str
 }
 
 export interface InfraViewProps {
+  repoId: string;
+  /** The selected diff, for the Files view's changed files. */
+  diffTarget: ReviewTargetDTO | null;
+  /** The API catalog's endpoints, for the Requests view's code hop. */
+  endpoints: JourneyEndpoint[];
   catalog: InfraCatalogResponseDTO | null;
   rows: InfraRow[];
   loading: boolean;
@@ -62,6 +89,9 @@ export interface InfraViewProps {
 }
 
 export function InfraView({
+  repoId,
+  diffTarget,
+  endpoints,
   catalog,
   rows,
   loading,
@@ -77,6 +107,16 @@ export function InfraView({
   className,
 }: InfraViewProps) {
   const [query, setQuery] = useState("");
+  const [mode, setMode] = useStoredState<InfraMode>(INFRA_MODE_STORAGE_KEY, "diagram", parseInfraMode);
+  /** The resource whose detail shows in the side panel (outside List). */
+  const [selected, setSelected] = useState<string | null>(null);
+  const [route, setRoute] = useState<RouteRef | null>(null);
+  const [file, setFile] = useState<string | null>(null);
+  /** Which stack's programs the Diagram and Requests show: a stack id, "*" for all, null for the default (the first of `deploySets`). */
+  const [deploySet, setDeploySet] = useState<string | null>(null);
+  const sets = useMemo(() => deploySets(rows), [rows]);
+  const activeSet = deploySet === "*" ? null : deploySet && sets.some((x) => x.stack === deploySet) ? deploySet : (sets[0]?.stack ?? null);
+  const topo = useMemo(() => buildInfraTopology(catalog, rows, activeSet), [catalog, rows, activeSet]);
   const [tool, setTool] = useState<"all" | InfraTool>("all");
   const [environment, setEnvironment] = useState<string | null>(null);
   const showChanges = Boolean(change) && changedOnly;
@@ -151,6 +191,9 @@ export function InfraView({
   const target = localFocus ?? focus;
   useEffect(() => setLocalFocus(null), [focus]);
   useEffect(() => {
+    if (focus) setMode("list");
+  }, [focus, setMode]);
+  useEffect(() => {
     if (!target) return;
     setOpen((s) => new Set(s).add(target.id));
     requestAnimationFrame(() => {
@@ -169,11 +212,13 @@ export function InfraView({
   };
 
   const total = catalog?.resources.length ?? 0;
+  const selectedRow = selected ? rows.find((r) => r.resource.id === selected) : undefined;
   const changeCount = rows.filter((r) => r.change || r.findings.length > 0).length;
 
   return (
     <div className={className}>
       <div className={VIEW_TOOLBAR}>
+        <Segmented label="Infra view" size="xs" value={mode} onChange={setMode} options={MODE_OPTIONS} />
         {change ? (
           <Segmented
             label="Show"
@@ -211,7 +256,24 @@ export function InfraView({
         )}
         <div className="ml-auto flex items-center gap-2">
           {loading && <LoaderCircle className="size-3.5 animate-spin text-muted-foreground" aria-label="Loading" />}
-          {tools.length > 1 && (
+          {(mode === "diagram" || mode === "requests") && sets.length > 1 && (
+            <select
+              value={activeSet ?? "*"}
+              onChange={(e) => setDeploySet(e.target.value)}
+              aria-label="Deploy set"
+              title="The repo declares its programs in several places — show one set at a time"
+              className="h-7 max-w-56 rounded-md border border-border bg-background px-1.5 text-[11px] text-foreground"
+            >
+              {sets.map((x) => (
+                <option key={x.stack} value={x.stack}>
+                  {stacksById.get(x.stack)?.path ?? x.stack.replace(/^[a-z0-9]+:/, "")} · {x.workloads}
+                  {x.touched ? " · changed" : ""}
+                </option>
+              ))}
+              <option value="*">All deploy sets</option>
+            </select>
+          )}
+          {mode === "list" && tools.length > 1 && (
             <Segmented
               label="Tool"
               size="xs"
@@ -220,7 +282,7 @@ export function InfraView({
               options={[{ value: "all" as const, label: "All" }, ...tools.map((t) => ({ value: t, label: TOOL_LABELS[t] }))]}
             />
           )}
-          {environments.length > 0 && (
+          {mode === "list" && environments.length > 0 && (
             <select
               value={environment ?? ""}
               onChange={(e) => setEnvironment(e.target.value || null)}
@@ -254,6 +316,79 @@ export function InfraView({
         </div>
       </div>
 
+      {mode !== "list" && catalog?.state === "ready" && (total > 0 || change) ? (
+        <div className="flex min-h-[220px] flex-1 overflow-hidden bg-background">
+          <div className={cn("flex min-w-0 flex-1 flex-col", mode === "diagram" && "overflow-y-auto")}>
+            {mode === "diagram" && (
+              <InfraDiagram
+                topo={topo}
+                changedOnly={showChanges}
+                query={query}
+                selected={selected}
+                onSelect={setSelected}
+                onOpenRoute={(host, path, workload) => {
+                  setRoute({ host, path, workload });
+                  setMode("requests");
+                }}
+              />
+            )}
+            {mode === "files" && (
+              <InfraFiles
+                repoId={repoId}
+                target={change ? diffTarget : null}
+                catalog={catalog}
+                rows={rows}
+                changedOnly={showChanges}
+                query={query}
+                file={file}
+                onFileChange={setFile}
+                selected={selected}
+                onSelect={setSelected}
+                onOpenFile={onOpenFile}
+              />
+            )}
+            {mode === "requests" && (
+              <InfraRequests
+                topo={topo}
+                catalog={catalog}
+                rows={rows}
+                endpoints={endpoints}
+                changedOnly={showChanges}
+                query={query}
+                route={route}
+                onRouteChange={setRoute}
+                selected={selected}
+                onSelect={setSelected}
+                onOpenFile={onOpenFile}
+              />
+            )}
+          </div>
+          {selectedRow && (
+            <aside aria-label="Resource detail" className="w-[400px] shrink-0 overflow-y-auto border-l border-border">
+              <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+                <ToolIcon tool={selectedRow.resource.tool} />
+                <span className="min-w-0 truncate font-mono text-xs" title={selectedRow.resource.address}>
+                  {selectedRow.resource.address}
+                </span>
+                <button type="button" onClick={() => setSelected(null)} aria-label="Close" className="ml-auto text-muted-foreground hover:text-foreground">
+                  <X className="size-3.5" />
+                </button>
+              </div>
+              <InfraResourceDetail
+                row={selectedRow}
+                catalog={catalog}
+                environment={environment}
+                resourcesById={resourcesById}
+                referencedBy={refBy.get(selectedRow.resource.id) ?? []}
+                endpointLabel={endpointLabel}
+                onFocus={setSelected}
+                onOpenFile={onOpenFile}
+                onOpenEndpoint={onOpenEndpoint}
+              />
+            </aside>
+          )}
+        </div>
+      ) : (
       <div ref={listRef} className="@container relative min-h-[220px] flex-1 overflow-y-auto bg-background">
         {error && !catalog && (
           <p className="flex items-start gap-2 px-6 py-8 text-sm text-destructive">
@@ -341,6 +476,7 @@ export function InfraView({
           </section>
         )}
       </div>
+      )}
     </div>
   );
 }

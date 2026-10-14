@@ -31,6 +31,8 @@ import type { HeadSource } from "./head-source";
 import type { compareApis } from "@/lib/analysis/api/compare";
 import type { compareInfra } from "@/lib/analysis/infra/compare";
 import type { compareSchemas } from "@/lib/analysis/db/compare";
+import type { compareEnv } from "@/lib/analysis/env/compare";
+import { describeEnvChangeEntry, describeEnvFinding, envChangesTouching, envVarsTouching } from "@/lib/analysis/env/describe";
 import { describeDbFinding, reviewTables, schemaFindingsTouching, tablesTouching } from "@/lib/analysis/db/describe";
 import { describeInfraChangeEntry, describeInfraFinding, infraChangesTouching } from "@/lib/analysis/infra/describe";
 import { changesTouching, describeEndpointChange, describeLogicChange, logicTouching } from "@/lib/analysis/api/describe";
@@ -300,6 +302,7 @@ export interface TargetChangeContext {
   infraChange: ReturnType<typeof compareInfra> | null;
   infraChanged: boolean;
   dbChange: ReturnType<typeof compareSchemas> | null;
+  envChange: ReturnType<typeof compareEnv> | null;
 }
 
 /**
@@ -326,7 +329,7 @@ export async function componentReviewContext({
   target: TargetChangeContext;
   log: JobLogger;
 }): Promise<ReviewRelatedContext | undefined> {
-  const { analyses, head, ownerNames, moved, apiChange, infraChange, infraChanged, dbChange } = target;
+  const { analyses, head, ownerNames, moved, apiChange, infraChange, infraChanged, dbChange, envChange } = target;
   const symbolFiles =
     analyses && head && ownerNames && (settings.signatures || settings.relatedSource)
       ? await symbolRelatedFiles(analyses, paths, ownerNames, (path) => head.read(path), {
@@ -358,16 +361,21 @@ export async function componentReviewContext({
   const infraLines = componentInfra ? [...componentInfra.entries.slice(0, 15).map((e) => describeInfraChangeEntry(e)), ...componentInfra.links.slice(0, 10)] : [];
   const tableIds = analyses ? tablesTouching(analyses.head.db, dbChange ?? undefined, pathSet) : [];
   const tables = tableIds.length ? reviewTables(tableIds, analyses?.head.db, dbChange ?? undefined, pathSet).slice(0, 30) : [];
+  // Env vars its files read, declare or set, then the change to them (DESIGN.md §6.15 §5).
+  const componentEnv = envChangesTouching(envChange ?? undefined, pathSet);
+  const envLines = [...envVarsTouching(analyses?.head.env, pathSet, 20), ...componentEnv.entries.slice(0, 15).map((e) => `change: ${describeEnvChangeEntry(e)}`)];
   const alreadyReported = [
     ...(componentInfra ? componentInfra.findings.map(describeInfraFinding) : []),
+    ...componentEnv.findings.map(describeEnvFinding),
     ...(dbChange ? schemaFindingsTouching(dbChange, tableIds, pathSet).map(describeDbFinding) : []),
   ];
-  return componentMoves.length > 0 || componentEndpoints.length > 0 || infraLines.length > 0 || alreadyReported.length > 0 || tables.length > 0
+  return componentMoves.length > 0 || componentEndpoints.length > 0 || infraLines.length > 0 || envLines.length > 0 || alreadyReported.length > 0 || tables.length > 0
     ? {
         ...(related ?? {}),
         ...(componentMoves.length ? { moves: componentMoves } : {}),
         ...(componentEndpoints.length ? { endpoints: componentEndpoints } : {}),
         ...(infraLines.length ? { infra: infraLines } : {}),
+        ...(envLines.length ? { env: envLines } : {}),
         ...(alreadyReported.length ? { alreadyReported } : {}),
         ...(tables.length ? { tables } : {}),
       }

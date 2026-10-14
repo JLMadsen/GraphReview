@@ -11,7 +11,7 @@
 // Server-only.
 
 import { createHash } from "node:crypto";
-import type { ApiChange, CallGraph, DbChange, InfraChange, StructureChange } from "@/lib/analysis";
+import type { ApiChange, CallGraph, DbChange, EnvChange, InfraChange, StructureChange } from "@/lib/analysis";
 import { Queue, type Job, type JobsOptions } from "./runner";
 import { isPendingJobState } from "./queue";
 import { reviewTargetKey, type ReviewTarget } from "./review-queue";
@@ -50,6 +50,8 @@ export interface TargetGraphData {
   infra?: InfraChange;
   /** What the change does to the database schema (lib/analysis/db/compare.ts); its certain findings are stored as `schema` findings. Absent in results stored before it existed. */
   db?: DbChange;
+  /** What the change does to the env vars (lib/analysis/env/compare.ts); its certain findings are stored as `env` findings. Absent in results stored before it existed. */
+  env?: EnvChange;
   /** Owning component of each file the call graph and the edge changes mention. */
   fileComponents: Record<string, { id: string; name: string }>;
   stats: {

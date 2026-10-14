@@ -83,7 +83,9 @@ function gitOptions(
     // trusted too — as one bundle with the public roots and the OS store's
     // extras, since git replaces its own bundle with it (and with
     // schannelUseSSLCAInfo, Git for Windows' schannel backend uses it as well).
-    config: ["credential.helper=", ...gitCaConfig(), ...config],
+    // On Windows, paths past 260 characters (a deep data folder plus a long
+    // migration name) fail the checkout unless git uses long paths.
+    config: ["credential.helper=", ...(process.platform === "win32" ? ["core.longpaths=true"] : []), ...gitCaConfig(), ...config],
     allowEnvironment: GIT_ENVIRONMENT,
     unsafe: { allowUnsafeCredentialHelper: true },
   };

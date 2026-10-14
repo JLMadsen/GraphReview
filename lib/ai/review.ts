@@ -111,6 +111,12 @@ export interface ReviewRelatedContext {
    */
   infra?: string[];
   /**
+   * Env vars this component's changed files read, declare or set, as the
+   * head has them, then the change to them (DESIGN.md §6.15 §5). Secret
+   * values are masked before they get here.
+   */
+  env?: string[];
+  /**
    * Findings static analysis already reported about this component (the
    * infra comparison's certain ones) — the model is asked not to repeat them.
    */
@@ -413,6 +419,7 @@ function fitRelatedContext(
     ...(related.moves?.length ? { moves: related.moves } : {}),
     ...(related.endpoints?.length ? { endpoints: related.endpoints } : {}),
     ...(related.infra?.length ? { infra: related.infra } : {}),
+    ...(related.env?.length ? { env: related.env } : {}),
     ...(related.alreadyReported?.length ? { alreadyReported: related.alreadyReported } : {}),
     // Tables are trimmed, but after the surrounding code: unchanged tables
     // first, unchanged columns of the changed ones last (DESIGN.md §6.13 §6).

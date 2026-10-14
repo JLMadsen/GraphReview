@@ -19,7 +19,8 @@
 // job and for tests.
 
 import path from "node:path";
-import { getPrMapGrouping, listPrMapComponents, listPrMapImports, prMapFilesKey } from "@/lib/db";
+import { getFileOwnerMap, getPrMapGrouping, listPrMapComponents, listPrMapImports, prMapFilesKey } from "@/lib/db";
+import { envReaderFor } from "@/lib/analysis/env/read";
 import type {
   PrMapEdgeDTO,
   PrMapFileDTO,
@@ -28,6 +29,7 @@ import type {
   PrMapRole,
 } from "@/components/graph/pr-map-types";
 import { matchFilesToComponents } from "./diff-components";
+import { ownerLookup } from "./target-graph";
 
 /** A changed file as every diff source reports it (a `LocalFilePatch` fits). */
 export interface PrMapChangedFile extends PrMapFileDTO {
@@ -703,6 +705,19 @@ export async function loadPrMapInput(
     matchFilesToComponents(repoId, paths),
     listPrMapImports(repoId, paths),
   ]);
+  // An env file only the head has (a new `.env.example`) belongs to the
+  // component owning its nearest analysed folder — the one the review gives
+  // it (review.ts), so its findings land on a card that holds it.
+  const newEnv = match.unmatchedFiles.filter((p) => envReaderFor(p));
+  if (newEnv.length > 0) {
+    const ownerOf = ownerLookup(await getFileOwnerMap(repoId));
+    for (const p of newEnv) {
+      const id = ownerOf(p);
+      if (!id) continue;
+      match.componentIdByPath.set(p, id);
+      if (!match.touchedComponentIds.includes(id)) match.touchedComponentIds.push(id);
+    }
+  }
   const componentIds = new Set<string>(match.touchedComponentIds);
   for (const row of imports) {
     if (row.fromComponentId) componentIds.add(row.fromComponentId);

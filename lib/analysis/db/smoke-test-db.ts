@@ -277,6 +277,16 @@ const BASE: Record<string, string> = {
     "    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)",
     "    code = models.CharField(max_length=20)",
     "    paid = models.BooleanField(default=False)",
+    "",
+    "class Attachment(models.Model):",
+    "    pk = models.CompositePrimaryKey('type', 'id', 'filename')",
+    "    type = models.TextField()",
+    "    id = models.TextField()",
+    "    filename = models.TextField()",
+    "",
+    "    class Meta:",
+    "        db_table = 'attachment'",
+    "        managed = False",
   ),
   "shop/migrations/__init__.py": "",
   "shop/migrations/0001_initial.py": lines(
@@ -429,6 +439,12 @@ async function main(): Promise<void> {
     const dorder = findTable(db, "django", "shop_order");
     check("Django: migrations replayed into shop_customer / shop_order", Boolean(findTable(db, "django", "shop_customer")) && dorder?.source === "migration", JSON.stringify(django?.tables.map((t) => t.name)));
     check("Django: ForeignKey → customer_id with an FK", dorder?.columns.some((c) => c.name === "customer_id") === true && dorder?.fks[0]?.refTable === "django:shop_customer", JSON.stringify(dorder?.fks));
+    const attachment = findTable(db, "django", "attachment");
+    check(
+      "Django: CompositePrimaryKey keys the named fields, no implicit id",
+      attachment?.columns.filter((c) => c.name === "id").length === 1 && JSON.stringify(attachment.columns.filter((c) => c.primary).map((c) => c.name)) === '["type","id","filename"]',
+      JSON.stringify(attachment?.columns)
+    );
     check("Django: model field without a migration is drift", dorder?.drift.some((d) => d.kind === "field-no-column" && d.column === "paid") === true, JSON.stringify(dorder?.drift));
 
     // SQLAlchemy + Alembic

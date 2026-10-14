@@ -18,7 +18,8 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { encrypt } from "@/lib/crypto";
-import { createAiProvider, getChatMessage, upsertRepo, type RepoRecord } from "@/lib/db";
+import { createAiProvider, getChatMessage, upsertRepo, writeEnvCatalog, type RepoRecord } from "@/lib/db";
+import { EMPTY_ENV_CATALOG, type EnvVar } from "@/lib/analysis/env/types";
 import { runChatTurn } from "./pr-chat";
 
 let failures = 0;
@@ -159,6 +160,18 @@ async function main(): Promise<void> {
     const repoTurn = await runChatTurn({ repo, target: null, question: "filter", onEvent: () => undefined });
     check("the repo chat has no filter_findings", lastResult(prompts[start + 1]).includes('Unknown tool "filter_findings"'), lastResult(prompts[start + 1]));
     check("…and stores no actions", !repoTurn.actions);
+
+    // show env: the Env view at a name, matched like the other kinds.
+    writeEnvCatalog(repo.id, "0".repeat(40), { ...EMPTY_ENV_CATALOG, vars: [{ name: "DATABASE_URL", reads: [], decls: [], sets: [], tags: [] } as unknown as EnvVar] });
+    scripted.push(reply({ tool: "show", args: { kind: "env var", name: "${database_url}" } }), reply({ tool: "show", args: { kind: "env", name: "NOPE" } }), reply({ answer: "ok" }));
+    start = prompts.length;
+    const envTurn = await runChatTurn({ repo, target: null, question: "where is the db url", onEvent: () => undefined });
+    check(
+      "show env opens the variable",
+      envTurn.actions?.[0]?.kind === "show" && envTurn.actions[0].target === "env" && envTurn.actions[0].id === "DATABASE_URL",
+      JSON.stringify(envTurn.actions)
+    );
+    check("an unknown env var is refused with a hint", lastResult(prompts[start + 2]).includes('No env var matches "NOPE"'), lastResult(prompts[start + 2]));
   } finally {
     server.closeAllConnections();
     server.close();

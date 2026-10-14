@@ -34,7 +34,7 @@ export interface ChatSuggestionRecord {
 }
 
 /** Where `show` can take the reviewer. */
-export type ChatShowKind = "component" | "file" | "endpoint" | "table" | "infra" | "area" | "function";
+export type ChatShowKind = "component" | "file" | "endpoint" | "table" | "env" | "infra" | "area" | "function";
 
 /**
  * Something an answer does to the reviewer's view (`show`, `highlight`,

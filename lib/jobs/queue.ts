@@ -20,11 +20,15 @@ export const ANALYSIS_QUEUE_NAME = "analysis";
  * catalog; 4: infra files, env/port code facts and the infra catalog;
  * 5: schema files, table facts and the schema catalog; 6: payloads,
  * params and proxies read from handler code, wrapped Next.js handlers unwrapped;
- * 7: DDL read from code literals, re-parsed under PARSE_VERSION 6; 8: .sql files read by content — schema files and their change logs —, and a pinned schema source file);
+ * 7: DDL read from code literals, re-parsed under PARSE_VERSION 6; 8: .sql files read by content — schema files and their change logs —, and a pinned schema source file;
+ * 9: env source files, env read flags and schemas, and the env catalog;
+ * 10: env writes, "use server" and test files told apart from reads;
+ * 11: reads that handle a missing value (`?.`, `Number(X) ||`, comparisons, ternaries) count as having a fallback;
+ * 12: Django `CompositePrimaryKey`, and no implicit `id` beside a model's own `id` field; `PUBLIC_` is a client prefix only beside SvelteKit/Astro; env sources (`.env*`, CI workflows, Compose) are graph files);
  * a repo analysed by an older version is
  * re-analysed on its next view, like one whose branch moved.
  */
-export const ANALYSIS_VERSION = 8;
+export const ANALYSIS_VERSION = 12;
 
 /** Job name inside the analysis queue. One job type for now (v1 has no AI jobs yet). */
 export const ANALYSIS_JOB_NAME = "analyze-repo";

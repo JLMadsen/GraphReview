@@ -277,6 +277,8 @@ export interface InfraFinding {
   key: string;
   rule: InfraFindingRule;
   resource: string;
+  /** The env var, for `env-unset` (the env comparison skips its own duplicate, DESIGN.md §6.15 §4). */
+  name?: string;
   file: string;
   line?: number;
   summary: string;

@@ -44,6 +44,8 @@ import { runImpactPass } from "./impact";
 import { loadTargetAnalyses, movedCodeChanges } from "./symbol-context";
 import { compareApis } from "@/lib/analysis/api/compare";
 import { compareInfra } from "@/lib/analysis/infra/compare";
+import { compareEnv } from "@/lib/analysis/env/compare";
+import { describeEnvChange, envChangeSummary } from "@/lib/analysis/env/describe";
 import { compareSchemas, schemaChanged } from "@/lib/analysis/db/compare";
 import { describeSchemaChange, schemaChangeSummary } from "@/lib/analysis/db/describe";
 import { describeInfraChange, infraChangeSummary } from "@/lib/analysis/infra/describe";
@@ -214,7 +216,14 @@ export async function runReviewJob(
   const dbChange = analyses ? compareSchemas(analyses.base.db, analyses.head.db) : null;
   const dbChanged = schemaChanged(dbChange ?? undefined);
   if (dbChange && dbChanged) log(`schema: ${schemaChangeSummary(dbChange)}`);
-  const targetChanges: TargetChangeContext = { analyses, head, ownerNames, moved, apiChange, infraChange, infraChanged, dbChange };
+  // What it does to the env vars: each component's review sees the names its
+  // files read, declare or set (secret values masked), with the certain env
+  // findings as already reported; the intent check sees the whole change
+  // (DESIGN.md §6.15 §5).
+  const envChange = analyses ? compareEnv(analyses.base.env, analyses.head.env, analyses.changed, infraChange?.findings ?? []) : null;
+  const envChanged = Boolean(envChange && envChange.changes.length > 0);
+  if (envChange && envChanged) log(`env: ${envChangeSummary(envChange)}`);
+  const targetChanges: TargetChangeContext = { analyses, head, ownerNames, moved, apiChange, infraChange, infraChanged, dbChange, envChange };
 
   // --- Map the diff onto the component graph -----------------------------
   const filesByPath = new Map(resolved.files.map((file) => [file.path, file]));
@@ -222,11 +231,13 @@ export async function runReviewJob(
   // A migration or schema file only the head has (a new migration) isn't in
   // the analysed graph: it joins the component owning its nearest analysed
   // folder, so a change that only adds a migration is still reviewed, with
-  // its tables as context (DESIGN.md §6.13 §6). Other new files keep the
-  // existing behaviour.
-  const headSchemaFiles = new Set(
-    (analyses?.head.db.databases ?? []).flatMap((d) => [...d.migrations.map((m) => m.file), ...d.tables.map((t) => t.definedAt.file)])
-  );
+  // its tables as context (DESIGN.md §6.13 §6). A new env source (an
+  // `.env.example`, a workflow) does the same, with its env names as context
+  // (§6.15 §5). Other new files keep the existing behaviour.
+  const headSchemaFiles = new Set([
+    ...(analyses?.head.db.databases ?? []).flatMap((d) => [...d.migrations.map((m) => m.file), ...d.tables.map((t) => t.definedAt.file)]),
+    ...(analyses?.head.env.vars ?? []).flatMap((v) => [...v.sets.map((x) => x.file), ...v.decls.map((x) => x.file)]),
+  ]);
   if (match.unmatchedFiles.some((path) => headSchemaFiles.has(path))) {
     const ownerOf = ownerLookup(await getFileOwnerMap(repoId));
     const still: string[] = [];
@@ -485,6 +496,7 @@ export async function runReviewJob(
         ...(apiChange && (apiChange.changes.length || apiChange.logic.length) ? { apiLines: describeApiChange(apiChange) } : {}),
         ...(infraChange && infraChanged ? { infraLines: describeInfraChange(infraChange) } : {}),
         ...(dbChange && dbChanged ? { schemaLines: describeSchemaChange(dbChange) } : {}),
+        ...(envChange && envChanged ? { envLines: describeEnvChange(envChange) } : {}),
         aiConfig,
         tokenBudget: effortSettings.tokenBudget,
         prId: resolved.prId,
@@ -541,6 +553,7 @@ export async function runReviewJob(
       ...(apiChange && (apiChange.changes.length || apiChange.logic.length) ? { apiLines: describeApiChange(apiChange) } : {}),
       ...(infraChange && infraChanged ? { infraLines: describeInfraChange(infraChange) } : {}),
       ...(dbChange && dbChanged ? { schemaLines: describeSchemaChange(dbChange) } : {}),
+      ...(envChange && envChanged ? { envLines: describeEnvChange(envChange) } : {}),
       aiConfig,
       tokenBudget: effortSettings.tokenBudget,
       prId: resolved.prId,

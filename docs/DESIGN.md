@@ -48,6 +48,8 @@ The rest of the design is split into one file per section, so a task reads only 
 | §6.12 | [design/6.12-infra.md](design/6.12-infra.md) | Infrastructure as code: an infra catalog and what a change does to it (decided 2026-10-08, built 2026-10-10) |
 | §6.13 | [design/6.13-db-schema.md](design/6.13-db-schema.md) | Database schema: a schema catalog, its diff and the review context (decided 2026-10-10, built 2026-10-10) |
 | §6.14 | [design/6.14-files.md](design/6.14-files.md) | Files: the repo as files (built 2026-10-11) |
+| §6.15 | [design/6.15-env.md](design/6.15-env.md) | Env variables: a variable catalog, its diff and four certain findings (decided and built 2026-10-13) |
+| §6.16 | [design/6.16-infra-views.md](design/6.16-infra-views.md) | Infra sub-views: Diagram, Files with plain-English notes, Requests (built 2026-10-13) |
 | §7–8 | [design/data-model.md](design/data-model.md) | Data model, GitHub integration surface |
 | §9–10 | [design/ai-pipeline.md](design/ai-pipeline.md) | AI integration flow, the review pipeline, labeling, analysis lifecycle & AI cost |
 | §11–14 | [design/runtime.md](design/runtime.md) | Secrets, distribution & runtime layout, module/folder structure, local repo access |

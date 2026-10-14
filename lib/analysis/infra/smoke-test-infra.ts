@@ -467,7 +467,7 @@ async function main(): Promise<void> {
     const langs = new Map(base.files.map((f) => [f.file, f.language]));
     check("infra files join the graph with their tool as language", langs.get("infra/prod/main.tf") === "terraform" && langs.get("jobs/api.nomad") === "nomad" && langs.get("api/Dockerfile") === "dockerfile" && langs.get("deploy/base/deployment.yaml") === "kubernetes" && langs.get("charts/web/Chart.yaml") === "helm");
     check("…and form modules of their folder", base.modules.some((m) => m.filePaths.includes("jobs/api.nomad")));
-    check("scripts and env files are read, not graph files", !langs.has("Makefile") && !langs.has("api/.env.example"));
+    check("scripts are read, not graph files; env files are graph files (DESIGN.md §6.15)", !langs.has("Makefile") && langs.get("api/.env.example") === "dotenv");
 
     console.log("comparison");
     writeTree(headDir, headTree());

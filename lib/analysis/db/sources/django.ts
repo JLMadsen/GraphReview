@@ -247,7 +247,14 @@ export function resolveDjango(code: ReadonlyArray<{ file: string; facts: DbCodeF
         decl.fks.push({ columns: [ptr], refTable: lookup(parentKey).table, refColumns: ["id"], inferred: true });
       }
     }
+    /** `pk = models.CompositePrimaryKey("type", "id", …)` (Django 5.2): the fields it names. */
+    let composite: string[] | undefined;
     for (const a of attrs) {
+      const call = a.name === "pk" ? asCall(a.value) : undefined;
+      if (call && last(call.name) === "CompositePrimaryKey") {
+        composite = call.args.map((v) => str(v)).filter((v): v is string => Boolean(v));
+        continue;
+      }
       const r = readField(a.name, a.value, m.app, m.cls.name, m.table, lookup, "model");
       if (!r) continue;
       if (r.m2m) {
@@ -266,7 +273,15 @@ export function resolveDjango(code: ReadonlyArray<{ file: string; facts: DbCodeF
       if (r.fk) decl.fks.push(r.fk);
       if (r.index) decl.indexes.push(r.index);
     }
-    if (decl.pk.length === 0) {
+    if (composite?.length) {
+      decl.pk = composite.map((f) => decl.fields!.find((x) => x.field === f)?.column ?? f);
+      for (const c of decl.columns) if (decl.pk.includes(c.name)) Object.assign(c, { primary: true, nullable: false });
+    } else if (decl.pk.length === 0 && decl.columns.some((c) => c.name === "id")) {
+      // A field of its own named `id` without primary_key: Django refuses
+      // that unless something else is the key, so don't add a second `id`.
+      decl.pk = ["id"];
+      Object.assign(decl.columns.find((c) => c.name === "id")!, { primary: true, nullable: false });
+    } else if (decl.pk.length === 0) {
       decl.columns.unshift(column("id", "bigint", false, "model", { primary: true, generated: "identity" }));
       decl.fields!.unshift({ field: "id", column: "id" });
       decl.pk = ["id"];
@@ -383,10 +398,16 @@ function operationOps(v: DV, app: string, state: Map<ModelKey, ModelInfo>, looku
       const fks: DbFk[] = [];
       const indexes: DbIndex[] = [];
       const extra: DbOp[] = [];
+      let composite: string[] | undefined;
       for (const f of list(arg(1, "fields"))) {
         const pair = list(f);
         const fname = str(pair[0]);
         if (!fname) continue;
+        const cpk = asCall(pair[1]);
+        if (cpk && last(cpk.name) === "CompositePrimaryKey") {
+          composite = cpk.args.map((x) => str(x)).filter((x): x is string => Boolean(x));
+          continue;
+        }
         const r = readField(fname, pair[1], app, model, t, lookup, "migration");
         if (!r) continue;
         if (r.m2m) {
@@ -400,6 +421,10 @@ function operationOps(v: DV, app: string, state: Map<ModelKey, ModelInfo>, looku
         if (r.column.primary) m.pkType = r.column.type;
         if (r.fk) fks.push(r.fk);
         if (r.index) indexes.push(r.index);
+      }
+      if (composite?.length) {
+        const keys = new Set(composite.map((x) => m.columns.get(x) ?? x));
+        for (const col of columns) if (keys.has(col.name)) Object.assign(col, { primary: true, nullable: false });
       }
       for (const u of list(options.unique_together)) {
         const cols = (list(u).length && "list" in list(u)[0] ? list(list(u)[0]) : list(u)).map((x) => str(x)).filter((x): x is string => Boolean(x));

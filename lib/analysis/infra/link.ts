@@ -16,6 +16,7 @@
  * - Ports: the workload's target port against the code's literal listen port.
  */
 import type { ApiCatalog } from "../api/types";
+import { RUNTIME_ENV } from "../env/platform";
 import type { CodeFacts } from "./code-facts";
 import { basename, dirname } from "./common";
 import type { DockerImageBuild } from "./docker";
@@ -32,9 +33,6 @@ export interface LinkInput {
   api: ApiCatalog;
   allFiles: ReadonlySet<string>;
 }
-
-/** Names the platform provides at runtime — never "not set". */
-const RUNTIME_ENV = /^(NODE_ENV|HOME|PATH|PWD|HOSTNAME|HOST|USER|SHELL|TMPDIR|TEMP|TMP|CI|TZ|LANG|LC_ALL|TERM|DEBUG|NOMAD_[A-Z0-9_]+|KUBERNETES_[A-Z0-9_]+|npm_[A-Za-z0-9_]+|VERCEL[A-Z0-9_]*|NEXT_RUNTIME|NEXT_PHASE|JAVA_HOME|PYTHONPATH|GOPATH)$/;
 
 export const isUnder = (file: string, folder: string) => folder === "" || file === folder || file.startsWith(`${folder}/`);
 

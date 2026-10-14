@@ -32,6 +32,7 @@ export const STATIC_CATEGORIES: ReadonlyArray<{ category: FindingCategory; label
   { category: "structure", label: "Structure", what: "what static analysis found in the change's structure — import cycles it creates" },
   { category: "infra", label: "Infra", what: "what static analysis found in the change's infrastructure — renames without a moved block, destroyed stateful resources, env vars no longer set" },
   { category: "schema", label: "Schema", what: "what static analysis found in the migrations this change adds — dropped tables or columns, NOT NULL without a default, narrowed types, renames, Postgres index locks" },
+  { category: "env", label: "Env", what: "what static analysis found in the change's env vars — new reads nothing declares, secrets exposed to the browser or committed, declarations removed while still read" },
 ];
 
 export const STATIC_CATEGORY_LABEL: Partial<Record<FindingCategory, string>> = Object.fromEntries(STATIC_CATEGORIES.map((c) => [c.category, c.label]));

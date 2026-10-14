@@ -114,18 +114,19 @@ export type FindingKind = "fix" | "feature" | "refactor" | "test" | "docs" | "co
  * the change creates — static analysis, no model), `infra` (a certain
  * infrastructure problem — static analysis, no model, DESIGN.md §6.12),
  * `schema` (a hazard in a migration the change adds — static analysis, no
- * model, DESIGN.md §6.13),
+ * model, DESIGN.md §6.13), `env` (a certain env var problem — static
+ * analysis, no model, DESIGN.md §6.15),
  * `chat` (recorded by the PR chat when the reviewer asked it to; no review
  * pass replaces it).
  */
-export type FindingCategory = "change" | "impact" | "intent" | "structure" | "infra" | "schema" | "chat";
+export type FindingCategory = "change" | "impact" | "intent" | "structure" | "infra" | "schema" | "env" | "chat";
 
 /**
  * Categories the target-graph job writes from static analysis, before and
  * independently of any AI review — their presence doesn't mean the target
  * was reviewed.
  */
-export const STATIC_FINDING_CATEGORIES: ReadonlySet<FindingCategory> = new Set<FindingCategory>(["structure", "infra", "schema"]);
+export const STATIC_FINDING_CATEGORIES: ReadonlySet<FindingCategory> = new Set<FindingCategory>(["structure", "infra", "schema", "env"]);
 
 export interface FindingRecord {
   id: string;

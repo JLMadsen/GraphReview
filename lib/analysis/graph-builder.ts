@@ -19,6 +19,9 @@ import { buildInfraCatalog } from "./infra/catalog";
 import { scanCodeFacts, type CodeFacts } from "./infra/code-facts";
 import { GRAPH_FILE_KINDS, infraCacheTag, infraReaderFor, readInfraFile, type InfraFileFacts, type InfraReader } from "./infra/read";
 import { EMPTY_INFRA_CATALOG, type InfraCatalog } from "./infra/types";
+import { buildEnvCatalog } from "./env/catalog";
+import { envReaderFor, readEnvFile, type EnvFileFacts, type EnvReader } from "./env/read";
+import { EMPTY_ENV_CATALOG, type EnvCatalog } from "./env/types";
 import { buildDbSchema } from "./db/catalog";
 import { dbReaderFor, readDbFile, scanSqlLiterals, type DbFileFacts, type DbReader } from "./db/read";
 import { EMPTY_DB_SCHEMA, type DbCodeFacts, type DbSchema } from "./db/types";
@@ -83,6 +86,8 @@ export interface AnalysisResult {
   infra: InfraCatalog;
   /** Tables the tree's migrations, schema files and models declare, and the code's links to them (./db/, DESIGN.md §6.13). */
   db: DbSchema;
+  /** Env vars the tree reads, declares and sets (./env/, DESIGN.md §6.15). */
+  env: EnvCatalog;
   /** Files counted but not parsed. */
   skipped: { binary: number; large: number; failed: number };
   /** Files whose parse came from the cache. */
@@ -101,11 +106,14 @@ const DEFAULT_MAX_FILE_BYTES = 1_500_000;
 /** How many files to look up in the parse cache at once. */
 const READ_CONCURRENCY = 24;
 
+/** The graph language of an env source file that is neither code nor infra; framework configs and Prisma schemas are code or schema files already. */
+const ENV_FILE_LANGUAGES: Partial<Record<string, string>> = { dotenv: "dotenv", example: "dotenv", ci: "ci", compose: "compose" };
+
 /**
  * Bumped whenever what a parse produces changes (queries, extractors, the
  * cached shape), so stale cache entries are never read back.
  */
-export const PARSE_VERSION = 8;
+export const PARSE_VERSION = 11;
 
 /** What a file's own syntax says — the cached unit. */
 export interface CachedParse {
@@ -116,6 +124,8 @@ export interface CachedParse {
   code?: CodeFacts;
   /** What an infra file says (./infra/read.ts) — infra files only. */
   infra?: InfraFileFacts;
+  /** What an env source file says (./env/read.ts): `.env*`, CI, Compose, framework config, Prisma. */
+  env?: EnvFileFacts;
   /** What a schema file says (./db/read.ts) — `.sql`, `.prisma`, Drizzle journals. */
   db?: DbFileFacts;
   /** SQL literals of a Go / Java / Kotlin / Rust file (./db/read.ts). */
@@ -539,6 +549,43 @@ export async function analyzeTree(tree: SourceTree, options: AnalyzeRepoOptions 
     if (options.cache && fresh.length > 0) await options.cache.setMany(fresh);
   }
 
+  // Env source files (DESIGN.md §6.15 §1): `.env*`, CI workflows, Compose,
+  // framework config and Prisma schemas — read in-process and cached by blob.
+  // A file can be an env source and code or infra too (`next.config.js`,
+  // `.gitlab-ci.yml`): this is a separate read with its own cache key.
+  const envTargets = allFiles
+    .map((file) => ({ file, reader: envReaderFor(file) }))
+    .filter((t): t is { file: string; reader: EnvReader } => t.reader !== undefined);
+  const envFiles: Array<{ file: string; facts: EnvFileFacts; loc?: number }> = [];
+  for (let i = 0; i < envTargets.length; i += READ_CONCURRENCY) {
+    const batch = envTargets.slice(i, i + READ_CONCURRENCY);
+    const keys = batch.map(({ file, reader }) => {
+      const blob = tree.blobOf(file);
+      // The target a `.env*` file fills, and a workflow's name, come from its path.
+      return blob ? `${PARSE_VERSION}:env-${reader}:${reader === "dotenv" || reader === "gha" || reader === "framework" ? `${file}:` : ""}${blob}` : undefined;
+    });
+    const hits = options.cache
+      ? await options.cache.getMany(keys.filter((k): k is string => Boolean(k)))
+      : new Map<string, CachedParse>();
+    const fresh: Array<[string, CachedParse]> = [];
+    for (let j = 0; j < batch.length; j++) {
+      const { file, reader } = batch[j];
+      const key = keys[j];
+      const hit = key ? hits.get(key) : undefined;
+      if (hit?.env) {
+        envFiles.push({ file, facts: hit.env, loc: hit.loc });
+        continue;
+      }
+      const source = await tree.read(file, Math.min(maxFileBytes, 1_000_000));
+      if (source === null) continue;
+      const facts = readEnvFile(reader, file, source);
+      const loc = countLines(source);
+      if (key) fresh.push([key, { raws: [], loc, env: facts }]);
+      envFiles.push({ file, facts, loc });
+    }
+    if (options.cache && fresh.length > 0) await options.cache.setMany(fresh);
+  }
+
   // Schema files (DESIGN.md §6.13 §2): `.sql`, `.prisma`, Drizzle journals,
   // Prisma lock files — read in-process like infra files and cached by blob.
   const dbTargets = allFiles
@@ -673,6 +720,22 @@ export async function analyzeTree(tree: SourceTree, options: AnalyzeRepoOptions 
       return { ...EMPTY_DB_SCHEMA };
     }
   })();
+  const env = (() => {
+    try {
+      return buildEnvCatalog({
+        code: [
+          ...files.filter((f) => f.code).map((f) => ({ file: f.file, facts: f.code! })),
+          ...infraFiles.flatMap((f) => (f.facts.kind === "spring" ? [{ file: f.file, facts: f.facts.code }] : [])),
+        ],
+        edges,
+        envFiles,
+        infra,
+      });
+    } catch (error) {
+      console.warn(`[analysis] env catalog failed: ${(error as Error).message}`);
+      return { ...EMPTY_ENV_CATALOG };
+    }
+  })();
   // Schema files a database is built from (migrations, `.prisma`, schema.sql)
   // are graph files too, like infra files: a change to a migration alone
   // still has a component to review (DESIGN.md §6.13 §6).
@@ -687,6 +750,17 @@ export async function analyzeTree(tree: SourceTree, options: AnalyzeRepoOptions 
   for (const f of infraFiles) {
     const language = GRAPH_FILE_KINDS[f.facts.kind];
     if (language) files.push({ file: f.file, language, imports: [], loc: f.loc });
+  }
+  // Env sources that aren't code or infra already (`.env*` files, CI
+  // workflows, Compose) are graph files too: a change to them alone still
+  // has a component to review, with its env names as context (DESIGN.md §6.15 §5).
+  const inGraph = new Set(files.map((f) => f.file));
+  for (const f of envFiles) {
+    if (f.facts.kind !== "env-source" || inGraph.has(f.file)) continue;
+    const language = ENV_FILE_LANGUAGES[f.facts.source];
+    if (!language) continue;
+    inGraph.add(f.file);
+    files.push({ file: f.file, language, imports: [], loc: f.loc ?? 0 });
   }
 
   edges.sort(
@@ -709,6 +783,7 @@ export async function analyzeTree(tree: SourceTree, options: AnalyzeRepoOptions 
     api,
     infra,
     db,
+    env,
     skipped: { ...tree.skipped, failed },
     cached,
   };

@@ -62,6 +62,10 @@ export type * from "./infra/types";
 export { buildDbSchema } from "./db/catalog";
 export { compareSchemas, schemaChanged } from "./db/compare";
 export type * from "./db/types";
+export { buildEnvCatalog } from "./env/catalog";
+export { compareEnv } from "./env/compare";
+export { valueForModel } from "./env/secret";
+export type * from "./env/types";
 export { disposeTreeSitter, initTreeSitter, withSyntaxTree } from "./tree-sitter";
 export { dirOf, extensionOf, joinPosix, repoRelative, toPosix } from "./paths";
 export {

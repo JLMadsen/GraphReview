@@ -251,6 +251,16 @@ export function renderRelatedSections(related: ReviewRelatedContext): string {
     for (const line of infra) lines.push(`- ${oneLine(line)}`);
   }
 
+  const env = related.env ?? [];
+  if (env.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("## Configuration this change touches (env vars, from static analysis of base and head)");
+    lines.push(
+      "Each env var this code reads, declares or sets: where it is read (required, fallback, client code), its schema declaration, and the value each environment gives it (`.env` files, Compose, CI, framework config, workloads; `↗` is a reference such as a CI secret). Secret values are masked. Then what this change does to them (`+` added, `−` removed). Check the code against them: a new read needs a value in every environment that runs it, a type the schema declares must match how the code uses it, a server-only name read in client code is undefined there."
+    );
+    for (const line of env) lines.push(`- ${oneLine(line)}`);
+  }
+
   const tables = related.tables ?? [];
   if (tables.length > 0) {
     if (lines.length > 0) lines.push("");

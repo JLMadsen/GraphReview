@@ -42,6 +42,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { cn } from "cn";
+import { packBoxes } from "./pack-boxes";
 import { routeLinks } from "./orthogonal-route";
 
 /** Below this zoom a card's small text is unreadable, so cards switch to their far-zoom look. */
@@ -82,12 +83,16 @@ const MIN_ZOOM = 0.1;
 
 type Point = { x: number; y: number };
 type ElkSection = { startPoint: Point; endPoint: Point; bendPoints?: Point[] };
-type ElkApi = {
-  layout: (graph: unknown) => Promise<{
-    children?: Array<{ id: string; x?: number; y?: number }>;
-    edges?: Array<{ id: string; sections?: ElkSection[] }>;
-  }>;
+type ElkLaid = {
+  id: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  children?: ElkLaid[];
+  edges?: Array<{ id: string; sections?: ElkSection[] }>;
 };
+type ElkApi = { layout: (graph: unknown) => Promise<ElkLaid> };
 let elkPromise: Promise<ElkApi> | null = null;
 /** elkjs is ~1.5 MB — loaded on first layout, not with the Graph tab. */
 function getElk(): Promise<ElkApi> {
@@ -305,9 +310,9 @@ export interface CardFlowProps {
   activeLinks?: Set<string>;
   elkOptions?: Record<string, string>;
   /**
-   * Boxes that hold cards (the Data view's tables by component): laid out by
-   * ELK as compound nodes, drawn behind their cards with a label. A card in
-   * no group sits outside the boxes.
+   * Boxes that hold cards (the Data view's tables by component): each laid
+   * out by ELK on its own, then packed with linked boxes side by side, drawn behind their cards
+   * with a label. A card in no group sits outside the boxes.
    */
   groups?: ReadonlyArray<{ id: string; label: string; cardIds: readonly string[] }>;
   /** Classes for the canvas pane (size, rounding, ring). */
@@ -396,70 +401,108 @@ function CardFlowInner({
     });
     const hasPort = (card: string, key: string | undefined) => Boolean(key && portRows.get(card)?.has(key));
     const laidOut = links.map(linkId);
-    // Groups become compound nodes; coordinates come back absolute (ROOT), edges routed across them.
+    const elkEdges = links.map((e, i) => ({
+      id: `e${i}`,
+      sources: [hasPort(e.source, e.sourcePort) ? portId(e.source, e.sourcePort!, "out") : e.source],
+      targets: [hasPort(e.target, e.targetPort) ? portId(e.target, e.targetPort!, "in") : e.target],
+    }));
     const present = new Set(cardIds);
     const usedGroups = (groups ?? []).map((g) => ({ ...g, cardIds: g.cardIds.filter((id) => present.has(id)) })).filter((g) => g.cardIds.length > 0);
-    const inGroup = new Set(usedGroups.flatMap((g) => g.cardIds));
     const byId = new Map(children.map((c) => [c.id, c]));
-    const graph = {
-      id: "root",
-      layoutOptions: usedGroups.length
-        ? { ...elkOptions, "elk.hierarchyHandling": "INCLUDE_CHILDREN", "elk.json.shapeCoords": "ROOT", "elk.json.edgeCoords": "ROOT" }
-        : elkOptions,
-      children: usedGroups.length
-        ? [
-            ...usedGroups.map((g) => ({
-              id: `group::${g.id}`,
-              layoutOptions: { ...elkOptions, "elk.padding": `[top=${GROUP_LABEL_SPACE},left=16,bottom=16,right=16]` },
-              children: g.cardIds.map((id) => byId.get(id)!),
-            })),
-            ...children.filter((c) => !inGroup.has(c.id)),
-          ]
-        : children,
-      edges: links.map((e, i) => ({
-        id: `e${i}`,
-        sources: [hasPort(e.source, e.sourcePort) ? portId(e.source, e.sourcePort!, "out") : e.source],
-        targets: [hasPort(e.target, e.targetPort) ? portId(e.target, e.targetPort!, "in") : e.target],
-      })),
+
+    /** One laid-out flat graph's cards and routes, moved by (dx, dy). */
+    type Placed = { nodes: Array<{ id: string; x: number; y: number }>; routes: Array<[number, Point[]]> };
+    const place = (result: ElkLaid, dx: number, dy: number): Placed => ({
+      nodes: (result.children ?? []).map((c) => ({ id: c.id, x: (c.x ?? 0) + dx, y: (c.y ?? 0) + dy })),
+      routes: (result.edges ?? []).flatMap((edge) => {
+        const section = edge.sections?.[0];
+        const index = Number(edge.id.slice(1));
+        if (!section || !Number.isInteger(index) || !laidOut[index]) return [];
+        const points = [section.startPoint, ...(section.bendPoints ?? []), section.endPoint].map((p) => ({ x: p.x + dx, y: p.y + dy }));
+        return [[index, points] as [number, Point[]]];
+      }),
+    });
+
+    // Without groups: one flat layered graph, unconnected parts packed side by side.
+    // With groups: each box (and the cards in none) is laid out on its own as a
+    // flat graph, then the boxes are packed, linked ones side by side. One hierarchical ELK run
+    // (INCLUDE_CHILDREN) can't separate connected components, so it stacked every
+    // unlinked box — and every unlinked card inside a box — in one tall column.
+    const layout = async (elk: ElkApi): Promise<{ placed: Placed[]; boxes: typeof boxes }> => {
+      if (usedGroups.length === 0) {
+        return { placed: [place(await elk.layout({ id: "root", layoutOptions: elkOptions, children, edges: elkEdges }), 0, 0)], boxes: [] };
+      }
+      const inGroup = new Set(usedGroups.flatMap((g) => g.cardIds));
+      const loose = cardIds.filter((id) => !inGroup.has(id));
+      const units = [
+        ...usedGroups.map((g) => ({ group: g as (typeof usedGroups)[number] | null, ids: g.cardIds })),
+        ...(loose.length ? [{ group: null, ids: loose }] : []),
+      ];
+      const unitOf = new Map(units.flatMap((u, k) => u.ids.map((id) => [id, k] as const)));
+      const laid = await Promise.all(
+        units.map((u, k) =>
+          elk.layout({
+            id: `unit${k}`,
+            layoutOptions: { ...elkOptions, "elk.padding": u.group ? `[top=${GROUP_LABEL_SPACE},left=16,bottom=16,right=16]` : "[top=0,left=0,bottom=0,right=0]" },
+            children: u.ids.map((id) => byId.get(id)!),
+            edges: elkEdges.filter((_, i) => unitOf.get(links[i].source) === k && unitOf.get(links[i].target) === k),
+          })
+        )
+      );
+      // Boxes joined by links go side by side (./pack-boxes.ts), each link
+      // measured between its two cards where they sit inside their boxes.
+      const local = laid.map((r) => new Map((r.children ?? []).map((c) => [c.id, { x: (c.x ?? 0) + cardWidth / 2, y: (c.y ?? 0) + (c.height ?? 0) / 2 }])));
+      const crossLinks = links.flatMap((e) => {
+        const a = unitOf.get(e.source);
+        const b = unitOf.get(e.target);
+        const pa = a === undefined ? undefined : local[a].get(e.source);
+        const pb = b === undefined ? undefined : local[b].get(e.target);
+        return a !== undefined && b !== undefined && a !== b && pa && pb ? [{ a, b, pa, pb }] : [];
+      });
+      const packed = packBoxes(
+        laid.map((r) => ({ width: r.width ?? 0, height: r.height ?? 0 })),
+        crossLinks,
+        { aspect: Number(elkOptions["elk.aspectRatio"] ?? "1.8"), gap: Number(elkOptions["elk.spacing.componentComponent"] ?? "56") }
+      );
+      const at = new Map(packed.map((p, k) => [`unit${k}`, p]));
+      const placed = laid.map((r, k) => place(r, at.get(`unit${k}`)?.x ?? 0, at.get(`unit${k}`)?.y ?? 0));
+      const nextBoxes = units.flatMap((u, k) => {
+        const p = at.get(`unit${k}`);
+        return u.group && p ? [{ id: u.group.id, label: u.group.label, x: p.x, y: p.y, width: laid[k].width ?? 0, height: laid[k].height ?? 0 }] : [];
+      });
+      return { placed, boxes: nextBoxes };
     };
+
     getElk()
-      .then((elk) => elk.layout(graph))
-      .then((result) => {
+      .then(layout)
+      .then(({ placed, boxes: nextBoxes }) => {
         if (run !== layoutRun.current) return;
         const size = new Map(children.map((c) => [c.id, c]));
+        const nextPositions = new Map(
+          placed.flatMap((p) => p.nodes).filter((c) => size.has(c.id)).map((c) => [
+            c.id,
+            { x: c.x, y: c.y, width: cardWidth, height: size.get(c.id)?.height ?? 120 },
+          ])
+        );
         const nextRoutes = new Map<string, Point[]>();
-        // With groups the laid-out nodes and edges are nested; flatten them (coordinates are absolute).
-        type Laid = { id: string; x?: number; y?: number; width?: number; height?: number; children?: Laid[]; edges?: Array<{ id: string; sections?: ElkSection[] }> };
-        const flatNodes: Laid[] = [];
-        const flatEdges: Array<{ id: string; sections?: ElkSection[] }> = [];
-        const walk = (n: Laid) => {
-          for (const c of n.children ?? []) {
-            flatNodes.push(c);
-            walk(c);
-          }
-          flatEdges.push(...(n.edges ?? []));
-        };
-        walk(result as Laid);
-        const nextBoxes = usedGroups.flatMap((g) => {
-          const n = flatNodes.find((x) => x.id === `group::${g.id}`);
-          return n ? [{ id: g.id, label: g.label, x: n.x ?? 0, y: n.y ?? 0, width: n.width ?? 0, height: n.height ?? 0 }] : [];
+        for (const [index, points] of placed.flatMap((p) => p.routes)) nextRoutes.set(laidOut[index], points);
+        // Links between boxes weren't part of any layout: run them row to row
+        // when the target lies to the right; otherwise RoutedEdge's fallback
+        // joins the card sides.
+        if (nextBoxes.length) links.forEach((e, i) => {
+          if (nextRoutes.has(laidOut[i])) return;
+          const s = nextPositions.get(e.source);
+          const t = nextPositions.get(e.target);
+          if (!s || !t) return;
+          const start = { x: s.x + cardWidth, y: s.y + (hasPort(e.source, e.sourcePort) ? portRows.get(e.source)!.get(e.sourcePort!)! : s.height / 2) };
+          const end = { x: t.x, y: t.y + (hasPort(e.target, e.targetPort) ? portRows.get(e.target)!.get(e.targetPort!)! : t.height / 2) };
+          if (end.x - start.x < 48) return;
+          const midX = (start.x + end.x) / 2;
+          nextRoutes.set(laidOut[i], [start, { x: midX, y: start.y }, { x: midX, y: end.y }, end]);
         });
         setBoxes(nextBoxes);
-        for (const edge of flatEdges) {
-          const section = edge.sections?.[0];
-          const index = Number(edge.id.slice(1));
-          if (!section || !Number.isInteger(index) || !laidOut[index]) continue;
-          nextRoutes.set(laidOut[index], [section.startPoint, ...(section.bendPoints ?? []), section.endPoint]);
-        }
         setRoutes(nextRoutes);
-        setPositions(
-          new Map(
-            flatNodes.filter((c) => size.has(c.id)).map((c) => [
-              c.id,
-              { x: c.x ?? 0, y: c.y ?? 0, width: cardWidth, height: size.get(c.id)?.height ?? 120 },
-            ])
-          )
-        );
+        setPositions(nextPositions);
       })
       .catch((err: unknown) => {
         console.error("Card map layout failed:", err);

@@ -13,6 +13,7 @@ import { buildApiRows } from "../api-view-model";
 import { useInfraCatalog } from "../useInfraCatalog";
 import { buildInfraRows, gatewayAuth } from "../infra-view-model";
 import { useDbSchema } from "../useDbSchema";
+import { useEnvCatalog } from "../useEnvCatalog";
 import { buildDbRows, endpointTouches, tableLabel, tablesByFile } from "../db-view-model";
 import type { DataMode } from "../DataView";
 import type { TargetGraphData } from "../target-graph-types";
@@ -96,6 +97,17 @@ export function useInfraViewState(
   useEffect(() => setFocus(null), [repoId]);
   useEffect(() => setChangedOnly(true), [reviewTarget]);
   return { catalog, change, rows, endpointGatewayAuth, focus, setFocus, changedOnly, setChangedOnly };
+}
+
+/** The Env view (DESIGN.md §6.15): the catalog, the diff's change, a focused name, "Env changes" vs "All variables". */
+export function useEnvViewState(repoId: string, load: boolean, graphNonce: number, reviewTarget: ReviewTargetDTO | null, targetData: TargetGraphData | undefined) {
+  const catalog = useEnvCatalog(repoId, load, graphNonce);
+  const change = targetData?.env;
+  const [focus, setFocus] = useState<ViewFocus>(null);
+  const [changedOnly, setChangedOnly] = useState(true);
+  useEffect(() => setFocus(null), [repoId]);
+  useEffect(() => setChangedOnly(true), [reviewTarget]);
+  return { catalog, change, focus, setFocus, changedOnly, setChangedOnly };
 }
 
 /**

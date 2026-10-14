@@ -169,6 +169,8 @@ export function infraReaderFor(path: string, has: (p: string) => boolean): Infra
   if (name.endsWith(".hcl")) return "hcl";
   if (name === "dockerfile" || name === "containerfile" || name.endsWith(".dockerfile") || name.startsWith("dockerfile.")) return "dockerfile";
   if (name === ".gitlab-ci.yml" || name === "skaffold.yaml" || name === "skaffold.yml") return "ci";
+  // GitHub Actions `run: docker build …` steps (the one dot-folder the walk reads, DESIGN.md §6.15 §1).
+  if (/^\.github\/workflows\/[^/]+\.ya?ml$/.test(path)) return "ci";
   if (/^(application|bootstrap)([-.][\w-]+)?\.(properties|ya?ml)$/.test(name)) return "spring";
   if (name.endsWith(".yaml") || name.endsWith(".yml")) return "yaml";
   if (name === ".env" || /^\.env\.(example|sample|template|defaults|dist|local\.example)$/.test(name)) return "env";

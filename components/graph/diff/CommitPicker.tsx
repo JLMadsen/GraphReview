@@ -99,12 +99,12 @@ export function CommitPicker({
           const selected = isPicked(commit.sha);
           const parent = commit.parents[0];
           return (
-            <li key={commit.sha} className={cn("group flex items-stretch", selected && "bg-brand-muted")}>
+            <li key={commit.sha} className={cn("group relative", selected && "bg-brand-muted")}>
               <button
                 type="button"
                 onClick={() => onToggle(commit.sha)}
                 aria-pressed={selected}
-                className="flex min-w-0 flex-1 items-start gap-2 px-2.5 py-1.5 text-left"
+                className="flex w-full min-w-0 items-start gap-2 px-2.5 py-1.5 text-left"
                 title={commit.subject}
               >
                 <span
@@ -115,14 +115,20 @@ export function CommitPicker({
                   aria-hidden
                 />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-xs">{commit.subject || "(no message)"}</span>
-                  <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                    <span className="font-mono">{commit.sha.slice(0, 7)}</span>
-                    <span>{formatRelativeDate(commit.date)}</span>
-                    {commit.author && <span className="truncate">{commit.author}</span>}
+                  <span className="flex items-baseline gap-1.5">
+                    <span className="min-w-0 truncate text-xs">{commit.subject || "(no message)"}</span>
                     {index === analyzedIndex && (
-                      <span className="text-foreground">analyzed</span>
+                      <span className="shrink-0 text-[10px] text-brand" title="The commit the graph was analyzed at">
+                        analyzed
+                      </span>
                     )}
+                  </span>
+                  {/* One line however narrow the column: sha and age keep
+                      their size, only the author truncates. */}
+                  <span className="flex items-center gap-1.5 overflow-hidden text-[11px] whitespace-nowrap text-muted-foreground">
+                    <span className="shrink-0 font-mono">{commit.sha.slice(0, 7)}</span>
+                    <span className="shrink-0">{formatRelativeDate(commit.date)}</span>
+                    {commit.author && <span className="min-w-0 truncate">{commit.author}</span>}
                   </span>
                 </span>
               </button>
@@ -130,7 +136,9 @@ export function CommitPicker({
                 <button
                   type="button"
                   onClick={() => onCompare(parent, commit.sha)}
-                  className="shrink-0 px-2 text-[11px] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100"
+                  // Over the row's right end on hover, not a column of its own,
+                  // so the commit text keeps the full width.
+                  className="absolute inset-y-0 right-0 bg-linear-to-l from-card from-70% to-transparent pr-2.5 pl-6 text-[11px] text-muted-foreground opacity-0 pointer-events-none transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100"
                   title="What this commit changed (compare with its parent)"
                 >
                   Only this

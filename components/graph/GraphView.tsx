@@ -20,12 +20,15 @@
 //     the tables (its explainer in the right column) or a list whose rows
 //     open in place; with a diff selected, its schema change. Also the whole
 //     column.
+//   - **Env** (`EnvView`) — every env var name (§6.15) as a matrix of names
+//     by environment, the committed value in each cell; with a diff
+//     selected, its env changes. Also the whole column.
 //   - **Files** (`FilesView`) — the repo as files, like a code host shows
 //     it: a folder tree, folder listings with their README, files with line
 //     numbers; with a diff selected, the files it touches marked. Also the
 //     whole column.
 //   - **PR** (`PrMapCanvas`) — only what the diff touches, as area cards.
-// The full-column views (API, Infra, Data, Files) are `LIST_VIEWS`; a new
+// The full-column views (API, Infra, Data, Env, Files) are `LIST_VIEWS`; a new
 // catalog's view is one more entry there and in `VIEW_OPTIONS`.
 // Both stay mounted once opened, stacked in one grid cell with the inactive
 // one transparent and `inert`, so each keeps its layout and zoom. (Not
@@ -56,7 +59,7 @@ import { FileDiffModal } from "./FileDiffModal";
 import { PrMapCanvas, type PrMapMode } from "./PrMapCanvas";
 import { FunctionPanel } from "./FunctionPanel";
 import { useTargetGraph } from "./useTargetGraph";
-import { PrAreaList, PrAreaPanel } from "./PrAreaPanel";
+import { PrAreaPanel } from "./PrAreaPanel";
 import { buildPrAreas } from "./pr-areas";
 import { usePrMap } from "./usePrMap";
 import type { PrMapRequestDTO } from "./pr-map-types";
@@ -78,16 +81,20 @@ import { useReview } from "./useReview";
 import { ApiView } from "./ApiView";
 import { ApiChangesSection } from "./ApiChangesSection";
 import { InfraView } from "./InfraView";
+
+const NO_ENDPOINTS: never[] = [];
 import { InfraChangesSection } from "./InfraChangesSection";
 import { DataView } from "./DataView";
 import { DbTableDetail } from "./DbTableDetail";
 import { SchemaChangesSection } from "./SchemaChangesSection";
+import { EnvView } from "./EnvView";
+import { EnvChangesSection } from "./EnvChangesSection";
 import { FilesView } from "./FilesView";
 import { useRepoTree } from "./useRepoTree";
 import { useRepoContext, useTabHeight } from "./graph-view/useRepoContext";
 import { useLazyMount, useStoredState } from "./graph-view/view-state";
 import { usePrAreaSelection, usePrFunctions } from "./graph-view/usePrMapSelection";
-import { useApiViewState, useAppMapViewState, useDataViewState, useInfraViewState } from "./graph-view/useCatalogViews";
+import { useApiViewState, useAppMapViewState, useDataViewState, useEnvViewState, useInfraViewState } from "./graph-view/useCatalogViews";
 import {
   DEFAULT_REVIEW_EFFORT,
   reviewTargetLabel,
@@ -100,17 +107,18 @@ import type {
   ReviewTargetDTO,
 } from "./types";
 
-type GraphViewMode = "app" | "api" | "infra" | "data" | "files" | "pr";
+type GraphViewMode = "app" | "api" | "infra" | "data" | "env" | "files" | "pr";
 /** Views that are a list taking the whole column (no review dock under them). */
-const LIST_VIEWS: ReadonlySet<GraphViewMode> = new Set(["api", "infra", "data", "files"]);
+const LIST_VIEWS: ReadonlySet<GraphViewMode> = new Set(["api", "infra", "data", "env", "files"]);
 const isGraphViewMode = (v: unknown): v is GraphViewMode =>
-  v === "app" || v === "api" || v === "infra" || v === "data" || v === "files" || v === "pr";
+  v === "app" || v === "api" || v === "infra" || v === "data" || v === "env" || v === "files" || v === "pr";
 /** The view switch, in order. PR only shows with a diff selected. */
 const VIEW_OPTIONS: ReadonlyArray<{ value: GraphViewMode; label: string; title: string }> = [
   { value: "app", label: "App map", title: "The whole app as cards — by architecture, feature or module, with explanations" },
   { value: "api", label: "API", title: "Every endpoint the app exposes — with a diff selected, its changes to the API" },
   { value: "infra", label: "Infra", title: "The infrastructure as code — Terraform, Nomad, Kubernetes, Helm, Dockerfiles — with a diff selected, its plan" },
   { value: "data", label: "Data", title: "The database schema — tables from the migrations, schema files and ORM models, as an ER canvas or a list — with a diff selected, its schema change" },
+  { value: "env", label: "Env", title: "The env vars — every name the code reads, declares or sets, and its value per environment — with a diff selected, its env changes" },
   { value: "files", label: "Files", title: "The repo as files — folders, READMEs and code — with a diff selected, the files it touches marked" },
   { value: "pr", label: "PR", title: "Only what this diff touches" },
 ];
@@ -150,6 +158,8 @@ export function GraphView({
   const [reviewTarget, setReviewTarget] = useState<ReviewTargetDTO | null>(null);
 
   const [reviewEffort, setReviewEffort] = useState<ReviewEffort>(DEFAULT_REVIEW_EFFORT);
+  /** The right end of the view tabs, where the active view can put its controls (the PR map does). */
+  const [tabsSlot, setTabsSlot] = useState<HTMLDivElement | null>(null);
   /** Whether the selected target reviews itself — open PRs and branch comparisons only (see DiffPanel's `DiffTargetMeta`). */
   const [autoReview, setAutoReview] = useState(true);
   const review = useReview(repoId, reviewTarget, reviewEffort, autoReview);
@@ -244,6 +254,7 @@ export function GraphView({
   const [apiMounted, mountApi] = useLazyMount(view === "api");
   const [infraMounted, mountInfra] = useLazyMount(view === "infra");
   const [dataMounted, mountData] = useLazyMount(view === "data");
+  const [envMounted, mountEnv] = useLazyMount(view === "env");
   const [filesMounted] = useLazyMount(view === "files");
 
   // App map (DESIGN.md §6.5)
@@ -295,7 +306,7 @@ export function GraphView({
     changedOnly: apiChangedOnly,
     setChangedOnly: setApiChangedOnly,
     endpointLabel,
-  } = useApiViewState(repoId, apiMounted, graphNonce, reviewTarget, targetData);
+  } = useApiViewState(repoId, apiMounted || infraMounted, graphNonce, reviewTarget, targetData);
   /** Every endpoint link (the left column's API section) opens the API view at it. */
   const openEndpoint = useCallback(
     (endpointId: string) => {
@@ -355,6 +366,26 @@ export function GraphView({
     [mountData, setDataFocus, setPreferredView]
   );
   const showDataPanel = view === "data" && dataMode === "canvas" && selectedDbRow !== undefined;
+
+  // Env (DESIGN.md §6.15)
+  const {
+    catalog: envCatalog,
+    change: envChange,
+    focus: envFocus,
+    setFocus: setEnvFocus,
+    changedOnly: envChangedOnly,
+    setChangedOnly: setEnvChangedOnly,
+  } = useEnvViewState(repoId, envMounted, graphNonce, reviewTarget, targetData);
+  /** Every env link (the left column's Env section) opens the Env view at that name. */
+  const openEnvVar = useCallback(
+    (name: string) => {
+      mountEnv();
+      setEnvChangedOnly(false);
+      setEnvFocus({ id: name });
+      setPreferredView("env");
+    },
+    [mountEnv, setEnvChangedOnly, setEnvFocus, setPreferredView]
+  );
 
   // Files (DESIGN.md §6.14)
   const repoTree = useRepoTree(repoId, filesMounted, graphNonce);
@@ -470,6 +501,9 @@ export function GraphView({
           openTable(action.id);
           setDataSelected(action.id);
           break;
+        case "env":
+          openEnvVar(action.id);
+          break;
         case "infra":
           setInfraChangedOnly(false);
           openInfraResource(action.id);
@@ -499,6 +533,7 @@ export function GraphView({
       showComponent,
       openEndpoint,
       openTable,
+      openEnvVar,
       openInfraResource,
       selectPrArea,
       setPrAreaComponent,
@@ -536,11 +571,11 @@ export function GraphView({
     return map;
   }, [review.findings]);
 
-  /** On the PR view the inspector explains the selected area, or lists them all. */
-  const showPrPanel = view === "pr" && prMap.map !== null;
+  /** On the PR view the inspector explains the selected area or function; with nothing selected the chat has the column. */
   const selectedPrArea = prArea ? prAreas.areas.get(prArea) : undefined;
   const selectedFn =
     view === "pr" && prMode === "functions" && selectedFunction ? functionView?.functionById.get(selectedFunction) : undefined;
+  const showPrPanel = view === "pr" && prMap.map !== null && Boolean((selectedFn && functionView) || selectedPrArea);
   const hasInspector = showAppPanel || showPrPanel || showDataPanel;
   const chatFocus =
     showPrPanel && prAreaComponent
@@ -572,6 +607,7 @@ export function GraphView({
           </button>
         );
       })}
+      <div ref={setTabsSlot} className="ml-auto flex shrink-0 items-center self-center pl-3" />
     </div>
   );
 
@@ -580,6 +616,7 @@ export function GraphView({
     // cap — see app/repo/[repoId]/layout.tsx for the mechanism and why.
     <div ref={rootRef} data-wide-shell className="flex flex-col lg:h-(--tab-h) lg:flex-row lg:overflow-hidden">
       <aside
+        data-pane="left"
         className="relative w-full shrink-0 border-border bg-card lg:h-full lg:w-(--panel-w) lg:border-r"
         style={{ "--panel-w": `${leftWidth}px` } as React.CSSProperties}
       >
@@ -600,6 +637,7 @@ export function GraphView({
             {reviewTarget && <ApiChangesSection change={apiChange} onOpen={openEndpoint} />}
             {reviewTarget && <InfraChangesSection change={infraChange} onOpen={openInfraResource} />}
             {reviewTarget && <SchemaChangesSection change={dbChange} onOpen={openTable} />}
+            {reviewTarget && <EnvChangesSection change={envChange} onOpen={openEnvVar} />}
             {reviewTarget && (
               <LooksDifferentPanel
                 scan={previewScan}
@@ -610,7 +648,7 @@ export function GraphView({
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col lg:h-full lg:overflow-hidden">
+      <div data-pane="center" className="flex min-w-0 flex-1 flex-col lg:h-full lg:overflow-hidden">
         {/* The two views share this one fixed-height cell; each is a flex
             column whose canvas takes whatever its own toolbar leaves. With a
             review under it the map section gets half the tab (the dock has a
@@ -619,6 +657,7 @@ export function GraphView({
             folds it to nothing (the canvases skip a zero size and refit when
             it comes back), so the findings get the whole column. */}
         <div
+          data-pane-part="map"
           className={cn("flex shrink-0 flex-col transition-[height] duration-200", mapFolded && !apiFull && "overflow-hidden")}
           style={{
             height: apiFull
@@ -679,6 +718,9 @@ export function GraphView({
           <div className={viewLayerClass(view === "infra")} inert={view !== "infra"}>
             <InfraView
               className="flex h-full flex-col"
+              repoId={repoId}
+              diffTarget={reviewTarget}
+              endpoints={apiCatalog.catalog?.endpoints ?? NO_ENDPOINTS}
               catalog={infraCatalog.catalog}
               rows={infraRows}
               loading={infraCatalog.loading}
@@ -715,6 +757,24 @@ export function GraphView({
               onOpenEndpoint={openEndpoint}
               repoId={repoId}
               onReload={dbSchema.reload}
+            />
+          </div>
+        )}
+        {envMounted && (
+          <div className={viewLayerClass(view === "env")} inert={view !== "env"}>
+            <EnvView
+              className="flex h-full flex-col"
+              catalog={envCatalog.catalog}
+              loading={envCatalog.loading}
+              error={envCatalog.error}
+              change={envChange}
+              changePending={Boolean(reviewTarget) && targetGraph.pending}
+              changedOnly={envChangedOnly}
+              onChangedOnlyChange={setEnvChangedOnly}
+              focus={envFocus}
+              onOpenFile={openFileAtLine}
+              onOpenInfra={openInfraResource}
+              onOpenComponent={showComponent}
             />
           </div>
         )}
@@ -757,6 +817,7 @@ export function GraphView({
             onHideCard={hideFunctionCard}
             onShowHidden={showHiddenFunctions}
             tablesByFile={fileTableNames}
+            toolbarSlot={view === "pr" ? tabsSlot : null}
           />
           </div>
         )}
@@ -818,12 +879,13 @@ export function GraphView({
           always there — with no diff selected the chat answers questions
           about the repo itself. */}
       <aside
+          data-pane="right"
           className="relative flex w-full shrink-0 flex-col border-t border-border bg-card lg:h-full lg:w-(--panel-w) lg:border-t-0 lg:border-l"
           style={{ "--panel-w": `${chatWidth}px` } as React.CSSProperties}
         >
           <PanelResizeHandle edge="left" width={chatWidth} onResize={setChatWidth} label="Resize right column" />
           {hasInspector && (
-            <div className="max-h-[58%] min-h-0 shrink-0 space-y-3 overflow-y-auto border-b border-border">
+            <div data-pane-part="inspector" className="max-h-[58%] min-h-0 shrink-0 space-y-3 overflow-y-auto border-b border-border">
               {showAppPanel && (
                 <div className="px-3 py-3">
                   <AppMapPanel
@@ -869,7 +931,7 @@ export function GraphView({
                 />
               ) : (
               showPrPanel &&
-                (selectedPrArea ? (
+                selectedPrArea && (
                   <PrAreaPanel
                     key={selectedPrArea.node.id}
                     area={selectedPrArea}
@@ -880,13 +942,11 @@ export function GraphView({
                     onShowInAppMap={showInAppMap}
                     onClose={() => selectPrArea(null)}
                   />
-                ) : (
-                  <PrAreaList areas={prAreas} onSelect={selectPrArea} />
-                ))
+                )
               )}
             </div>
           )}
-          <div className="min-h-0 flex-1">
+          <div data-pane-part="chat" className="min-h-0 flex-1">
               <ChatPanel
                 chat={chat}
                 targetLabel={reviewTarget ? reviewTargetLabel(reviewTarget) : null}

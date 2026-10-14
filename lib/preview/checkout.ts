@@ -19,7 +19,8 @@ import type { PreviewRuntime } from "./types";
 
 export { runtimeForPath } from "./runtime";
 
-const GIT_CONFIG = ["safe.directory=*", "core.autocrlf=false", "core.symlinks=false"];
+// Long paths: on Windows a checkout past 260 characters fails without them.
+const GIT_CONFIG = ["safe.directory=*", "core.autocrlf=false", "core.symlinks=false", ...(process.platform === "win32" ? ["core.longpaths=true"] : [])];
 const GIT_TIMEOUT_MS = 5 * 60_000;
 
 function git(repoDir: string) {
