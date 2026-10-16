@@ -126,24 +126,24 @@ export async function searchCode(
   repo: RepoRecord,
   sha: string | undefined,
   query: string
-): Promise<{ hits: Array<{ path: string; line: number; text: string }>; source: "commit" | "default-branch" }> {
+): Promise<{ hits: Array<{ path: string; line: number; text: string }>; total: number; source: "commit" | "default-branch" }> {
   if (repo.provider === "local" && repo.localPath && sha) {
-    return { hits: await grepLocalAtRef(repo.localPath, sha, query), source: "commit" };
+    return { ...(await grepLocalAtRef(repo.localPath, sha, query)), source: "commit" };
   }
   const dir = await sourceDir(repo);
-  if (!dir) return { hits: [], source: "default-branch" };
+  if (!dir) return { hits: [], total: 0, source: "default-branch" };
   // `git grep` in the checkout itself: fast, respects .gitignore, no new dependency.
   let out = "";
   try {
     out = await gitIn(dir, undefined, ["safe.directory=*"]).raw(["grep", "-n", "-I", "-F", "--no-color", "-e", query]);
   } catch {
-    return { hits: [], source: "default-branch" };
+    return { hits: [], total: 0, source: "default-branch" };
   }
-  const hits = out
-    .split("\n")
+  // A Windows checkout (core.autocrlf) has CRLF lines; `.` stops at the \r.
+  const rows = out
+    .split(/\r?\n/)
     .map((row) => /^([^:]+):(\d+):(.*)$/.exec(row))
-    .filter((m): m is RegExpExecArray => m !== null)
-    .slice(0, 60)
-    .map((m) => ({ path: m[1], line: Number(m[2]), text: m[3].trim().slice(0, 200) }));
-  return { hits, source: "default-branch" };
+    .filter((m): m is RegExpExecArray => m !== null);
+  const hits = rows.slice(0, 60).map((m) => ({ path: m[1], line: Number(m[2]), text: m[3].trim().slice(0, 200) }));
+  return { hits, total: rows.length, source: "default-branch" };
 }

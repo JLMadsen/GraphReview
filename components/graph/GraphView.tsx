@@ -65,7 +65,7 @@ import { usePrMap } from "./usePrMap";
 import type { PrMapRequestDTO } from "./pr-map-types";
 import { AppMapView } from "./AppMapView";
 import { AppMapPanel } from "./AppMapPanel";
-import { PanelResizeHandle, usePanelWidth } from "./PanelResizeHandle";
+import { PanelFoldedRail, PanelResizeHandle, usePanelCollapsed, usePanelWidth } from "./PanelResizeHandle";
 import { ChatPanel } from "./ChatPanel";
 import type { ChatActionDTO } from "./chat-types";
 import { ChecklistPanel } from "./ChecklistPanel";
@@ -91,7 +91,7 @@ import { EnvView } from "./EnvView";
 import { EnvChangesSection } from "./EnvChangesSection";
 import { FilesView } from "./FilesView";
 import { useRepoTree } from "./useRepoTree";
-import { registerGraphHandler, setGraphContext, takePendingGraphRequest, type GraphRequest } from "@/components/palette/bus";
+import { registerGraphHandler, setGraphContext, takePendingGraphRequest, type DiffPickMode, type GraphRequest } from "@/components/palette/bus";
 import { useRepoContext, useTabHeight } from "./graph-view/useRepoContext";
 import { useLazyMount, useStoredState } from "./graph-view/view-state";
 import { usePrAreaSelection, usePrFunctions } from "./graph-view/usePrMapSelection";
@@ -143,7 +143,7 @@ export interface GraphViewProps {
   repoId: string;
   /** From the page's `?pr=<number>` query param. */
   initialPrNumber?: number;
-  /** From the page's `?base=<ref>&head=<ref>` query params (Branches tab's "Compare in graph" link). */
+  /** From the page's `?base=<ref>&head=<ref>` query params. */
   initialBaseRef?: string;
   initialHeadRef?: string;
 }
@@ -209,6 +209,12 @@ export function GraphView({
   const openFileDiff = useCallback((path: string) => setOpenFile({ path, tab: "diff" }), []);
   const [leftWidth, setLeftWidth] = usePanelWidth("graphreview.panel.diff", 236, 200, 480);
   const [chatWidth, setChatWidth] = usePanelWidth("graphreview.panel.chat", 380, 300, 720);
+  // Either side column folds to a slim rail so the map can have the room;
+  // chat starts folded on windows too narrow for three columns.
+  const [leftFolded, setLeftFolded] = usePanelCollapsed("graphreview.panel.diff.folded");
+  const [chatFolded, setChatFolded] = usePanelCollapsed("graphreview.panel.chat.folded", 1200);
+  /** The palette asked for the diff picker on a list (DiffPanel's `pickRequest`). */
+  const [pickRequest, setPickRequest] = useState<{ mode: DiffPickMode; nonce: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   useTabHeight(rootRef);
 
@@ -426,7 +432,13 @@ export function GraphView({
   const [findingFocus, setFindingFocus] = useState<{ findingId: string; nonce: number } | null>(null);
   /** A finding whose Ask was clicked, for the chat's input. */
   const [chatFinding, setChatFinding] = useState<{ id: string; summary: string; nonce: number } | null>(null);
-  const askChatAbout = useCallback((finding: FindingDTO) => setChatFinding({ id: finding.id, summary: finding.summary, nonce: Date.now() }), []);
+  const askChatAbout = useCallback(
+    (finding: FindingDTO) => {
+      setChatFinding({ id: finding.id, summary: finding.summary, nonce: Date.now() });
+      setChatFolded(false);
+    },
+    [setChatFolded]
+  );
   /** The PR map's area holding most of a component's changed files, if the change touches it. */
   const prAreaOfComponent = useCallback(
     (componentId: string) => {
@@ -696,11 +708,16 @@ export function GraphView({
         void chat.send(request.question, { screen: chatScreen });
         return;
       }
+      if (request.kind === "pick") {
+        setLeftFolded(false);
+        setPickRequest({ mode: request.mode, nonce: Date.now() });
+        return;
+      }
       noteInteraction();
       setChatHighlight(null);
       applyChatAction(request.action);
     },
-    [chat, chatScreen, noteInteraction, applyChatAction]
+    [chat, chatScreen, noteInteraction, applyChatAction, setLeftFolded]
   );
   useEffect(() => registerGraphHandler(repoId, runPaletteRequest), [repoId, runPaletteRequest]);
   // A request left by the palette on another page: applied once it can be —
@@ -748,10 +765,21 @@ export function GraphView({
         onPointerDownCapture={noteInteraction}
         onKeyDownCapture={noteInteraction}
         className="relative w-full shrink-0 border-border bg-card lg:h-full lg:w-(--panel-w) lg:border-r"
-        style={{ "--panel-w": `${leftWidth}px` } as React.CSSProperties}
+        style={{ "--panel-w": leftFolded ? "0.75rem" : `${leftWidth}px` } as React.CSSProperties}
       >
-        <PanelResizeHandle edge="right" width={leftWidth} onResize={setLeftWidth} label="Resize diff panel" />
-        <div className="px-4 pt-3 pb-4 lg:h-full lg:overflow-y-auto lg:pb-6">
+        {leftFolded ? (
+          <PanelFoldedRail edge="right" onUnfold={() => setLeftFolded(false)} label="the diff panel" />
+        ) : (
+          <PanelResizeHandle
+            edge="right"
+            width={leftWidth}
+            onResize={setLeftWidth}
+            label="Resize diff panel"
+            onFold={() => setLeftFolded(true)}
+            foldLabel="the diff panel"
+          />
+        )}
+        <div className={cn("px-4 pt-3 pb-4 lg:h-full lg:overflow-y-auto lg:pb-6", leftFolded && "lg:hidden")}>
           <DiffPanel
             repoId={repoId}
             defaultBranch={repo?.defaultBranch}
@@ -761,6 +789,7 @@ export function GraphView({
             initialHeadRef={initialHeadRef}
             onResult={handleDiffResult}
             lineStats={lineStats}
+            pickRequest={pickRequest}
           >
             {reviewTarget && <ChecklistPanel repoId={repoId} checklist={checklist} />}
             {/* What the diff does to each catalog — each section shows only when the diff changed it. */}
@@ -1020,11 +1049,22 @@ export function GraphView({
       <aside
           data-pane="right"
           className="relative flex w-full shrink-0 flex-col border-t border-border bg-card lg:h-full lg:w-(--panel-w) lg:border-t-0 lg:border-l"
-          style={{ "--panel-w": `${chatWidth}px` } as React.CSSProperties}
+          style={{ "--panel-w": chatFolded ? "0.75rem" : `${chatWidth}px` } as React.CSSProperties}
         >
-          <PanelResizeHandle edge="left" width={chatWidth} onResize={setChatWidth} label="Resize right column" />
+          {chatFolded ? (
+            <PanelFoldedRail edge="left" onUnfold={() => setChatFolded(false)} label="the chat column" />
+          ) : (
+            <PanelResizeHandle
+              edge="left"
+              width={chatWidth}
+              onResize={setChatWidth}
+              label="Resize right column"
+              onFold={() => setChatFolded(true)}
+              foldLabel="the chat column"
+            />
+          )}
           {hasInspector && (
-            <div data-pane-part="inspector" className="max-h-[58%] min-h-0 shrink-0 space-y-3 overflow-y-auto border-b border-border">
+            <div data-pane-part="inspector" className={cn("max-h-[58%] min-h-0 shrink-0 space-y-3 overflow-y-auto border-b border-border", chatFolded && "lg:hidden")}>
               {showAppPanel && (
                 <div className="px-3 py-3">
                   <AppMapPanel
@@ -1085,7 +1125,7 @@ export function GraphView({
               )}
             </div>
           )}
-          <div data-pane-part="chat" className="min-h-0 flex-1">
+          <div data-pane-part="chat" className={cn("min-h-0 flex-1", chatFolded && "lg:hidden")}>
               <ChatPanel
                 chat={chat}
                 targetLabel={reviewTarget ? reviewTargetLabel(reviewTarget) : null}

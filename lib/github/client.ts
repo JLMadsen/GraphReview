@@ -19,6 +19,7 @@ import { GitHubApiError, toGitHubApiError } from "./errors";
 import type {
   Branch,
   CiCheck,
+  CiRun,
   CiState,
   CiStatus,
   CommitSummary,
@@ -563,6 +564,47 @@ export async function getCommitCiStatus(
     })),
   ];
   return { data: { state: combineCiStates(checks), checks }, rateLimit: statuses.rateLimit ?? runs.rateLimit };
+}
+
+function workflowRunState(status: string | null, conclusion: string | null): CiRun["state"] {
+  if (status !== "completed") return "pending";
+  if (conclusion === "success" || conclusion === "neutral" || conclusion === "skipped") return "success";
+  if (conclusion === "cancelled") return "cancelled";
+  return "failure";
+}
+
+/** The newest `maxItems` GitHub Actions runs on `branch`, newest first (the Stats timeline). Legacy commit statuses have no history API, so they're not here. */
+export async function listWorkflowRuns(
+  token: string,
+  owner: string,
+  repo: string,
+  branch: string,
+  maxItems = 1000
+): Promise<GitHubResult<CiRun[]>> {
+  const octokit = createOctokit(token);
+  const endpoint = `GET /repos/${owner}/${repo}/actions/runs`;
+  try {
+    let rateLimit: RateLimitInfo | null = null;
+    const runs: CiRun[] = [];
+    for (let page = 1; runs.length < maxItems; page++) {
+      const response = await octokit.rest.actions.listWorkflowRunsForRepo({ owner, repo, branch, per_page: DEFAULT_PER_PAGE, page });
+      rateLimit = extractRateLimit(response.headers as unknown as Record<string, unknown>) ?? rateLimit;
+      for (const run of response.data.workflow_runs) {
+        runs.push({
+          id: String(run.id),
+          name: run.name ?? run.display_title ?? "workflow",
+          state: workflowRunState(run.status, run.conclusion),
+          date: run.created_at,
+          sha: run.head_sha,
+          url: run.html_url,
+        });
+      }
+      if (response.data.workflow_runs.length < DEFAULT_PER_PAGE) break;
+    }
+    return { data: runs.slice(0, maxItems), rateLimit };
+  } catch (err) {
+    throw toGitHubApiError(err, endpoint);
+  }
 }
 
 /** A file's text at a ref, or `null` when it doesn't exist there (or is a directory/binary). */

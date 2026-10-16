@@ -62,9 +62,8 @@ export function CommitPicker({
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[11px] font-medium text-muted-foreground">Commits on the default branch</span>
-        {analyzedIndex > 0 && (
+      {analyzedIndex > 0 && (
+        <div className="flex justify-end">
           <button
             type="button"
             onClick={() => onCompare(commits[analyzedIndex].sha, commits[0].sha)}
@@ -74,27 +73,27 @@ export function CommitPicker({
             <History className="size-3" aria-hidden />
             Since last analysis
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
-      <p className="min-h-4 text-[11px] text-muted-foreground">
-        {ordered ? (
-          <>
-            <span className="font-mono text-foreground">{shortRef(ordered[0])}</span> →{" "}
-            <span className="font-mono text-foreground">{shortRef(ordered[1])}</span>
-            {span !== null && ` · ${span} commit${span === 1 ? "" : "s"}`}
-            <button type="button" onClick={onClear} className="ml-2 underline-offset-2 hover:text-foreground hover:underline">
-              clear
-            </button>
-          </>
-        ) : picked.length === 1 ? (
-          "Pick one more commit."
-        ) : (
-          "Pick two commits — the older one is the base."
-        )}
-      </p>
+      {picked.length > 0 && (
+        <p className="text-[11px] text-muted-foreground">
+          {ordered ? (
+            <>
+              <span className="font-mono text-foreground">{shortRef(ordered[0])}</span> →{" "}
+              <span className="font-mono text-foreground">{shortRef(ordered[1])}</span>
+              {span !== null && ` · ${span} commit${span === 1 ? "" : "s"}`}
+              <button type="button" onClick={onClear} className="ml-2 underline-offset-2 hover:text-foreground hover:underline">
+                clear
+              </button>
+            </>
+          ) : (
+            "Pick one more commit."
+          )}
+        </p>
+      )}
 
-      <ul className="max-h-72 divide-y divide-border/60 overflow-y-auto border-y border-border">
+      <ul className="max-h-72 lg:max-h-[calc(100dvh-16rem)] divide-y divide-border/60 overflow-y-auto border-y border-border">
         {commits.map((commit, index) => {
           const selected = isPicked(commit.sha);
           const parent = commit.parents[0];

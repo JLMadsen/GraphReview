@@ -285,6 +285,13 @@ export function CommandPalette() {
         setPendingGraphRequest({ repoId, request: { kind: "action", action }, needsTarget: Boolean(options.needsTarget) });
         router.push(`/repo/${repoId}/graph`);
       },
+      pick(mode, otherRepoId) {
+        const id = otherRepoId ?? repoId;
+        if (!id) return;
+        if (sendToGraph(id, { kind: "pick", mode })) return;
+        setPendingGraphRequest({ repoId: id, request: { kind: "pick", mode }, needsTarget: false });
+        router.push(`/repo/${id}/graph`);
+      },
       openTarget(target, then) {
         if (!repoId) return;
         const key = target ? ("pr" in target ? `pr:${target.pr}` : `refs:${target.base}...${target.head}`) : undefined;

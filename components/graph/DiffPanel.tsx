@@ -20,7 +20,8 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, LoaderCircle, TriangleAlert } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "./Segmented";
-import { isShaLike } from "./types";
+import { formatRelativeDate, isShaLike } from "./types";
+import { cn } from "cn";
 import type {
   DiffImpactRequestDTO,
   DiffImpactResponseDTO,
@@ -28,7 +29,6 @@ import type {
 } from "./types";
 import { CommitPicker } from "./diff/CommitPicker";
 import { DiffSummary } from "./diff/DiffSummary";
-import { GlyphField } from "./diff/GlyphField";
 import { useLazyList, type BranchesApiResponse, type PullRequestsApiResponse, type CommitsApiResponse, sameCommit } from "./diff/options";
 
 /** What GraphView needs to know about a result beyond the target itself. */
@@ -160,6 +160,8 @@ export interface DiffPanelProps {
   headline?: React.ReactNode;
   /** Rendered inside the summary, right under the verdict (the checklist). */
   children?: React.ReactNode;
+  /** Opens the picker on this list — the palette's "Pick a pull request" / "Compare branches"; a new `nonce` opens it again. */
+  pickRequest?: { mode: "pr" | "refs"; nonce: number } | null;
 }
 
 const NO_META: DiffTargetMeta = { autoReview: false, historical: false };
@@ -175,6 +177,7 @@ export function DiffPanel({
   lineStats,
   headline,
   children,
+  pickRequest,
 }: DiffPanelProps) {
   const initialRefsMode = !initialPrNumber && Boolean(initialBaseRef && initialHeadRef);
   // Two shas in the URL are a commit comparison — open the picker for it.
@@ -382,6 +385,14 @@ export function DiffPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingInitialPr, prListState.status]);
 
+  // The current diff stays (Cancel goes back to it); only the picker opens.
+  useEffect(() => {
+    if (!pickRequest) return;
+    setMode(pickRequest.mode);
+    setError(null);
+    setPicking(true);
+  }, [pickRequest]);
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (mode === "pr") {
@@ -469,9 +480,6 @@ export function DiffPanel({
         {mode === "pr" &&
           (prListState.status === "loaded" ? (
             <div className="space-y-1.5">
-              <label htmlFor="pr-number" className="sr-only">
-                Pull request
-              </label>
               <Segmented
                 label="Pull request state"
                 size="xs"
@@ -480,31 +488,53 @@ export function DiffPanel({
                 onChange={setPrFilter}
                 options={PR_FILTERS}
               />
-              <SelectShell>
-                <select
+              {/* A list that fills the column, like the commit picker: one click loads a PR. */}
+              {visiblePrs.length === 0 ? (
+                <p className="py-2 text-xs text-muted-foreground">
+                  No {prFilter === "all" ? "" : `${prFilter} `}pull requests.
+                </p>
+              ) : (
+                <ul
                   id="pr-number"
-                  value={visiblePrs.some((pr) => String(pr.number) === prNumber) ? prNumber : ""}
-                  onChange={(e) => {
-                    // Picking is loading: no separate button to press.
-                    setPrNumber(e.target.value);
-                    if (e.target.value) void runCheck({ prNumber: Number(e.target.value) });
-                  }}
-                  disabled={visiblePrs.length === 0}
-                  className={SELECT_CLASSNAME}
+                  className="max-h-72 divide-y divide-border/60 overflow-y-auto border-y border-border lg:max-h-[calc(100dvh-13rem)]"
                 >
-                      <option value="" disabled>
-                        {visiblePrs.length > 0
-                          ? "Select a pull request…"
-                          : `No ${prFilter === "all" ? "" : `${prFilter} `}pull requests`}
-                      </option>
-                  {visiblePrs.map((pr) => (
-                    <option key={pr.number} value={String(pr.number)}>
-                      #{pr.number}
-                      {pr.state !== "open" ? ` · ${pr.state}` : ""} — {pr.title}
-                    </option>
-                  ))}
-                </select>
-              </SelectShell>
+                  {visiblePrs.map((pr) => {
+                    const selected = String(pr.number) === prNumber;
+                    return (
+                      <li key={pr.number} className={cn(selected && "bg-brand-muted")}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPrNumber(String(pr.number));
+                            void runCheck({ prNumber: pr.number });
+                          }}
+                          aria-pressed={selected}
+                          title={pr.title}
+                          className="flex w-full min-w-0 flex-col px-2.5 py-1.5 text-left hover:bg-secondary/60"
+                        >
+                          <span className="min-w-0 truncate text-xs">{pr.title}</span>
+                          <span className="flex items-center gap-1.5 overflow-hidden text-[11px] whitespace-nowrap text-muted-foreground">
+                            <span className="shrink-0 font-mono">#{pr.number}</span>
+                            {(pr.draft || pr.state !== "open") && (
+                              <span
+                                className={cn(
+                                  "shrink-0",
+                                  pr.state === "merged" && "text-brand",
+                                  pr.state === "closed" && "text-destructive/80"
+                                )}
+                              >
+                                {pr.state !== "open" ? pr.state : "draft"}
+                              </span>
+                            )}
+                            <span className="shrink-0">{formatRelativeDate(pr.updatedAt)}</span>
+                            {pr.author && <span className="min-w-0 truncate">{pr.author}</span>}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </div>
           ) : (
             <div className="space-y-1.5">
@@ -630,7 +660,6 @@ export function DiffPanel({
               onChange={(e) => setPathsText(e.target.value)}
               className="w-full rounded-lg border border-input bg-transparent px-2.5 py-2 font-mono text-xs leading-relaxed outline-none transition-colors placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
             />
-            <p className="text-[11px] text-muted-foreground">One per line.</p>
           </div>
         )}
 
@@ -653,8 +682,6 @@ export function DiffPanel({
           <span>{error}</span>
         </p>
       )}
-      {/* Last child, so `space-y-3` doesn't count it. */}
-      <GlyphField />
     </div>
   );
 }

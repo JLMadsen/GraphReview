@@ -9,7 +9,7 @@
 // purpose; they live in each file's dialog.
 
 import { useState } from "react";
-import { LoaderCircle, Play } from "lucide-react";
+import { LoaderCircle, Play, TriangleAlert } from "lucide-react";
 import { cn } from "cn";
 import type { PreviewScanFileDTO } from "@/lib/preview/types";
 import { Spark } from "./Spark";
@@ -39,6 +39,9 @@ export function LooksDifferentPanel({
 }) {
   const [showSame, setShowSame] = useState(false);
   const [showAllUnrun, setShowAllUnrun] = useState(false);
+  // Docker being off only matters to someone who wants a preview: the Preview
+  // button shows a warning icon, and the reason appears once it is pressed.
+  const [askedWhileDown, setAskedWhileDown] = useState(false);
   const rows: Row[] = (scan?.files ?? []).flatMap((f) =>
     f.components.map((c) => ({ ...c, filePath: f.filePath, pending: f.preview === "queued" || f.preview === "running" }))
   );
@@ -66,8 +69,8 @@ export function LooksDifferentPanel({
         </p>
         <button
           type="button"
-          onClick={() => void previewAll()}
-          disabled={pending || starting || sandboxDown}
+          onClick={() => (sandboxDown ? setAskedWhileDown(true) : void previewAll())}
+          disabled={pending || starting}
           title={
             sandboxDown
               ? scan.sandbox?.reason
@@ -75,7 +78,13 @@ export function LooksDifferentPanel({
           }
           className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
         >
-          {pending || starting ? <LoaderCircle className="size-3 animate-spin" aria-hidden /> : <Play className="size-3" aria-hidden />}
+          {pending || starting ? (
+            <LoaderCircle className="size-3 animate-spin" aria-hidden />
+          ) : sandboxDown ? (
+            <TriangleAlert className="size-3 text-warning" aria-hidden />
+          ) : (
+            <Play className="size-3" aria-hidden />
+          )}
           {anyRun ? "Again" : "Preview all"}
           <Spark title="Props are mocked up by the model" />
         </button>
@@ -97,7 +106,7 @@ export function LooksDifferentPanel({
       </p>
 
       {error && <p className="mt-1 text-destructive">{error}</p>}
-      {sandboxDown && !anyRun && <p className="mt-1 leading-snug text-muted-foreground">{scan.sandbox?.reason}</p>}
+      {sandboxDown && askedWhileDown && <p className="mt-1 leading-snug text-warning">{scan.sandbox?.reason}</p>}
 
       <ul className="mt-1.5 space-y-0.5">
         {listed.map((row) => (

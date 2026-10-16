@@ -16,7 +16,7 @@
 //     expands its reasoning, call sites and agent replies. A Structure
 //     chip narrows the list to what static analysis found in the change's
 //     shape — import cycles it creates (lib/jobs/target-graph.ts), no model.
-//   - **Files**, every changed file sorted by how much it changed, with the
+//   - **Changed files**, every changed file sorted by how much it changed, with the
 //     area it belongs to and how many open findings point at it.
 //
 // Both tabs follow the scope picked elsewhere: an area on the PR map (and,
@@ -36,6 +36,7 @@ import {
   History,
   Info,
   LoaderCircle,
+  Play,
   RefreshCw,
   RotateCcw,
   TriangleAlert,
@@ -112,7 +113,7 @@ export interface ReviewPanelProps {
   expanded?: boolean;
   /** Folds the map away (Expand) or brings it back (Show map). Absent: no button. */
   onToggleExpanded?: () => void;
-  /** The PR map — the Files tab lists its files. */
+  /** The PR map — the Changed files tab lists its files. */
   map: PrMapResponseDTO | null;
   /** The map's cards as areas — which area a finding belongs to. */
   areas: PrAreas;
@@ -122,7 +123,7 @@ export interface ReviewPanelProps {
   scopeComponentId: string | null;
   onClearScope: () => void;
   componentName: (id: string) => string | undefined;
-  /** Opens a changed file's diff (the Files tab). Absent when there is no diff to show. */
+  /** Opens a changed file's diff (the Changed files tab). Absent when there is no diff to show. */
   onOpenFile?: (path: string) => void;
   /** A filter the chat asked for (filter_findings); a new object (nonce) applies it again. */
   filterRequest?: { nonce: number; buckets?: FindingBucket[]; category?: FindingCategory } | null;
@@ -292,6 +293,11 @@ export function ReviewPanel({
       ? `Reviewed at ${shortSha(freshness.reviewedHeadSha)}${formatAgo(freshness.reviewedAt) ? `, ${formatAgo(freshness.reviewedAt)}` : ""}${costTitle ? ` · ${costTitle}` : ""}`
       : costTitle;
 
+  // Nothing reviewed yet: the empty dock becomes one big start button
+  // (and the header's small one steps aside).
+  const showStart =
+    status === "ready" && aiConfigured && state === "none" && !running && !rerunning && !cancelled && findings.length === 0;
+
   const scopeArea = scopeAreaId ? areas.areas.get(scopeAreaId) : undefined;
   const scopeParts = [
     ...(scopeArea ? [scopeArea.node.name] : []),
@@ -326,7 +332,7 @@ export function ReviewPanel({
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-b border-border">
           <div role="tablist" aria-label="Review" className="flex items-center gap-3">
             {tabButton("findings", "Findings", findingsCount)}
-            {tabButton("files", "Files", files.length)}
+            {tabButton("files", "Changed files", files.length)}
           </div>
           {tab === "findings" && findingsCount > 0 && (
             <div className="pb-1.5">
@@ -416,7 +422,7 @@ export function ReviewPanel({
                 {expanded ? <ChevronsDown aria-hidden /> : <ChevronsUp aria-hidden />}
               </Button>
             )}
-            {aiConfigured && (
+            {aiConfigured && !showStart && (
               <Button
                 type="button"
                 variant="outline"
@@ -608,6 +614,25 @@ export function ReviewPanel({
                 )}
                 {(!scopeAreaId || counts.defect > 0) && notes.map((note) => <ImpactNote key={note.id} note={note} />)}
               </>
+            ) : showStart ? (
+              <div className="flex h-full min-h-40 flex-col items-center justify-center gap-3 py-6 text-center">
+                <button
+                  type="button"
+                  onClick={onRerun}
+                  disabled={!canRerun}
+                  title={reviewedNote ?? "Run the review at the selected effort."}
+                  className="group flex size-16 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-primary transition-colors hover:bg-primary/20 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:opacity-50"
+                >
+                  <Play className="ml-1 size-7 fill-current" aria-hidden />
+                  <span className="sr-only">Review this diff</span>
+                </button>
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">Review this diff</p>
+                  <p className="max-w-sm text-xs text-muted-foreground">
+                    Reviews start on their own only for open pull requests and branch comparisons.
+                  </p>
+                </div>
+              </div>
             ) : (
               status === "ready" &&
               !notConfigured && (

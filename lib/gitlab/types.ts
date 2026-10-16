@@ -22,6 +22,7 @@ export type {
   CiState,
   CiCheck,
   CiStatus,
+  CiRun,
 } from "@/lib/github/types";
 
 import type { RateLimitInfo } from "@/lib/github/types";

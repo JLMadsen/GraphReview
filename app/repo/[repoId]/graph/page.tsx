@@ -4,8 +4,8 @@ import { GraphHost } from "./graph-host";
  * Graph tab.
  *
  * The main visualization. Opened directly with no filter, or pre-filtered
- * when arrived at from a PR row (`?pr=<number>`) or a branch's "Compare in
- * graph" link (`?base=<ref>&head=<ref>`, set by the Branches tab). The
+ * by a link to a PR (`?pr=<number>`) or a comparison
+ * (`?base=<ref>&head=<ref>`). The
  * diff-selection control (pick a PR, or two refs) lives as a panel inside
  * this tab (`DiffPanel`, rendered by `GraphView`), not a separate screen.
  *

@@ -35,6 +35,7 @@ import {
   type AppMapResponseDTO,
 } from "./app-map-types";
 import { formatAgo } from "./types";
+import { LegendToggle } from "./LegendToggle";
 
 // Cards are compact now, so a squarer layout fills the canvas instead of
 // leaving a thin strip across its middle.
@@ -373,12 +374,16 @@ export function AppMapView({
       </CardFlow>
 
       <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-border bg-card px-4 py-1.5 text-[11px] text-muted-foreground">
-        {presentLayers.map((layer) => (
-          <span key={layer} className="flex items-center gap-1" title={APP_LAYERS[layer].blurb}>
-            <span className="h-2.5 w-[3px] rounded-sm" style={{ backgroundColor: layerTint(layer) }} />
-            {APP_LAYERS[layer].name}
-          </span>
-        ))}
+        {presentLayers.length > 0 && (
+          <LegendToggle>
+            {presentLayers.map((layer) => (
+              <span key={layer} className="flex items-center gap-1.5" title={APP_LAYERS[layer].blurb}>
+                <span className="h-2.5 w-[3px] rounded-sm" style={{ backgroundColor: layerTint(layer) }} />
+                {APP_LAYERS[layer].name}
+              </span>
+            ))}
+          </LegendToggle>
+        )}
         {map && (
           <span className="ml-auto font-mono">
             {map.nodes.length} cards ·{" "}
@@ -490,7 +495,8 @@ function AiButton({ job, level }: { job: UseAppMapJobResult; level: AppMapLevel 
       }
     >
       <Spark className="text-[11px]" />
-      {generated ? "Redescribe" : level === "features" ? "Group features" : "Describe"}
+      {/* Icon only when the canvas column is narrow; the title says the rest. */}
+      <span className="hidden @xl:inline">{generated ? "Redescribe" : level === "features" ? "Group features" : "Describe"}</span>
     </button>
   );
 }

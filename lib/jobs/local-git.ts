@@ -1,4 +1,4 @@
-// Local-git branch listing for the Branches tab.
+// Local-git branch listing for the diff panel's branch picker.
 //
 // A `provider: "local"` repo's branches are sitting right there in its
 // `.git` directory — no GitHub API call (and no PAT) needed. This mirrors
@@ -356,14 +356,14 @@ export async function readLocalFileAtRef(
   }
 }
 
-/** `git grep` at a commit: `path:line:text` hits for a fixed string, capped. */
+/** `git grep` at a commit: `path:line:text` hits for a fixed string, capped; `total` counts them all. */
 export async function grepLocalAtRef(
   localPath: string,
   sha: string,
   query: string,
   maxHits = 60
-): Promise<Array<{ path: string; line: number; text: string }>> {
-  if (!/^[0-9a-f]{7,64}$/.test(sha) || !query.trim()) return [];
+): Promise<{ hits: Array<{ path: string; line: number; text: string }>; total: number }> {
+  if (!/^[0-9a-f]{7,64}$/.test(sha) || !query.trim()) return { hits: [], total: 0 };
   const dir = resolveLocalRepoPath(localPath);
   let out = "";
   try {
@@ -371,15 +371,17 @@ export async function grepLocalAtRef(
       "grep", "-n", "-I", "-F", "--no-color", "-e", query, sha,
     ]);
   } catch {
-    return []; // git grep exits non-zero when nothing matches
+    return { hits: [], total: 0 }; // git grep exits non-zero when nothing matches
   }
   const hits: Array<{ path: string; line: number; text: string }> = [];
-  for (const row of out.split("\n")) {
+  let total = 0;
+  // Files committed with CRLF keep their \r in the output; `.` stops at it.
+  for (const row of out.split(/\r?\n/)) {
     // <sha>:<path>:<line>:<text>
     const match = /^[0-9a-f]+:([^:]+):(\d+):(.*)$/.exec(row);
     if (!match) continue;
-    hits.push({ path: match[1], line: Number(match[2]), text: match[3].trim().slice(0, 200) });
-    if (hits.length >= maxHits) break;
+    total++;
+    if (hits.length < maxHits) hits.push({ path: match[1], line: Number(match[2]), text: match[3].trim().slice(0, 200) });
   }
-  return hits;
+  return { hits, total };
 }

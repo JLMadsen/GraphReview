@@ -166,6 +166,56 @@ export function describeImports(analysis: AnalysisResult, query: string, compone
 }
 
 // ---------------------------------------------------------------------------
+// Files by path
+// ---------------------------------------------------------------------------
+
+const MAX_FILE_ROWS = 60;
+
+/**
+ * The words of a path or URL query, lower-cased: `/repo/{repo-id}/pull-requests`
+ * → `repo`, `pull-requests`. Parameter segments (`{id}`, `:id`, `[id]`, `<id>`)
+ * are dropped — they name a folder like `[repoId]` that the URL never spells.
+ */
+function pathWords(query: string): string[] {
+  return query
+    .replace(/[?#].*$/, "")
+    .split(/[\\/]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s && !/^(\{.*\}|\[.*\]|<.*>|:.+)$/.test(s));
+}
+
+/** Files at `sha` whose path holds every word of `query`, in order — so a page URL finds `app/…/page.tsx`. */
+export async function findFiles(dir: string, sha: string, query: string): Promise<LookupResult> {
+  const words = pathWords(query);
+  if (!words.length) return { text: `"${query}" has no path words to look for.`, summary: "file search skipped", files: [] };
+  const out = await gitIn(dir, undefined, ["safe.directory=*"]).raw(["ls-tree", "-r", "--name-only", "--end-of-options", sha]);
+  const matches = out.split(/\r?\n/).filter((file) => {
+    const lower = file.toLowerCase();
+    let from = 0;
+    for (const word of words) {
+      const at = lower.indexOf(word, from);
+      if (at < 0) return false;
+      from = at + word.length;
+    }
+    return true;
+  });
+  // Shorter paths first: `app/x/page.tsx` before `app/x/deep/nested/thing.tsx`.
+  matches.sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b));
+  const shown = matches.slice(0, MAX_FILE_ROWS);
+  const label = words.join(" … ");
+  return {
+    text: matches.length
+      ? [
+          `${matches.length} file(s) whose path holds ${label}${matches.length > shown.length ? ` (first ${shown.length})` : ""}:`,
+          ...shown.map((f) => `- ${f}`),
+        ].join("\n")
+      : `No file path holds ${label} at this commit.`,
+    summary: `found files matching "${query}" (${matches.length})`,
+    files: shown.slice(0, 6),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // History
 // ---------------------------------------------------------------------------
 

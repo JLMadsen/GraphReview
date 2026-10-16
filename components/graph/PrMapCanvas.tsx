@@ -37,6 +37,7 @@ import type { PrMapNodeDTO, PrMapResponseDTO } from "./pr-map-types";
 import type { TargetGraphData } from "./target-graph-types";
 import type { UseTargetGraphResult } from "./useTargetGraph";
 import { VIEW_CANVAS } from "./view-chrome";
+import { LegendToggle } from "./LegendToggle";
 
 export type PrMapMode = "files" | "functions";
 
@@ -234,10 +235,10 @@ export function PrMapCanvas({
               value={mode}
               onChange={onModeChange}
               options={[
-                { value: "files" as const, label: "Files", title: "The areas of the change and how they connect" },
+                { value: "files" as const, label: "By file", title: "The areas of the change and how they connect" },
                 {
                   value: "functions" as const,
-                  label: "Functions",
+                  label: "By function",
                   title: "The functions the change touches, their callers and callees, and the calls between them",
                 },
               ]}
@@ -525,10 +526,7 @@ const TONE_LEGEND: Array<{ key: string; label: string; style: React.CSSPropertie
 function FunctionLegend({ statuses, tones }: { statuses: ReadonlySet<string>; tones: ReadonlySet<string> }) {
   const order = ["signature", "body", "added", "moved", "removed", "unchanged"] as const;
   return (
-    <span
-      className="pointer-events-none absolute top-2 right-3 z-10 flex max-w-[70%] flex-wrap items-center justify-end gap-x-3 gap-y-1 rounded-md bg-background/70 px-2 py-1 text-[11px] text-muted-foreground backdrop-blur-sm"
-      aria-hidden
-    >
+    <LegendToggle placement="down" className="absolute top-2 right-3 z-10">
       {order
         .filter((s) => statuses.has(s))
         .map((s) => (
@@ -543,7 +541,7 @@ function FunctionLegend({ statuses, tones }: { statuses: ReadonlySet<string>; to
           {t.label}
         </span>
       ))}
-    </span>
+    </LegendToggle>
   );
 }
 
@@ -562,10 +560,7 @@ function Legend({ lifecycles, tones }: { lifecycles: ReadonlySet<AreaLifecycle>;
     { key: "removed", label: "removed dependency", style: { borderTop: "2px dotted #8a909c" } },
   ];
   return (
-    <span
-      className="pointer-events-none absolute top-2 right-3 z-10 flex items-center gap-3 rounded-md bg-background/70 px-2 py-1 text-[11px] text-muted-foreground backdrop-blur-sm"
-      aria-hidden
-    >
+    <LegendToggle placement="down" className="absolute top-2 right-3 z-10">
       {items.map((item) => (
         <span key={item.label} className="flex items-center gap-1.5">
           <span className="size-2 rounded-full" style={item.style} />
@@ -588,7 +583,7 @@ function Legend({ lifecycles, tones }: { lifecycles: ReadonlySet<AreaLifecycle>;
             {l.label}
           </span>
         ))}
-    </span>
+    </LegendToggle>
   );
 }
 

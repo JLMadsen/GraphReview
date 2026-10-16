@@ -3,7 +3,7 @@
 // The open repo's name in the top bar (app/@nav), as a switcher: a click
 // opens the command palette scoped to repos (DESIGN.md §6.18), so switching
 // repos and finding anything else are one search with one ranking. Picking a
-// repo goes to its Graph tab; → on it offers its Pull requests or Branches.
+// repo goes to its Graph tab; → on it offers its Pull requests, Branches or Stats.
 
 import { ChevronDown } from "lucide-react";
 import { cn } from "cn";

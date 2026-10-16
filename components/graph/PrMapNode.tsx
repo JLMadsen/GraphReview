@@ -154,6 +154,12 @@ export interface PrMapCardProps {
   tables?: readonly string[];
 }
 
+/** The name's longest word, for globals.css to shrink a zoomed-out label that one word would overflow. */
+export function longestWordStyle(name: string): React.CSSProperties {
+  const longest = Math.max(1, ...name.split(/[\s/·]+/).map((w) => w.length));
+  return { "--amc-word": longest } as React.CSSProperties;
+}
+
 export function PrMapCard({ node, area, selected, dimmed, tables }: PrMapCardProps) {
   const context = node.role === "context";
   const tag = ROLE_TAGS[node.role];
@@ -165,7 +171,7 @@ export function PrMapCard({ node, area, selected, dimmed, tables }: PrMapCardPro
       style={{ width: PR_CARD_WIDTH }}
       title={look?.title}
       className={cn(
-        "relative rounded-md border px-3 pt-2.5 pb-2.5 text-left transition-[opacity,border-color,box-shadow]",
+        "@container relative rounded-md border px-3 pt-2.5 pb-2.5 text-left transition-[opacity,border-color,box-shadow]",
         context
           ? "border-dashed border-border bg-card/40"
           : look
@@ -179,7 +185,9 @@ export function PrMapCard({ node, area, selected, dimmed, tables }: PrMapCardPro
       )}
     >
       {tag && <p className="amc-desc mb-0.5 font-mono text-[10px] text-muted-foreground lowercase">{tag}</p>}
-      <p className="amc-name pr-4 text-[13px] leading-snug font-medium">{node.name}</p>
+      <p className="amc-name pr-4 text-[13px] leading-snug font-medium" style={longestWordStyle(node.name)}>
+        {node.name}
+      </p>
       {/* What the area does, clamped so a long one can't stretch the card; the
           inspector shows it whole. Hidden when zoomed far out, like the tag. */}
       {node.description && (

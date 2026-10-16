@@ -6,7 +6,7 @@
 // the snippets carry the port this instance actually runs on.
 
 import { useState } from "react";
-import { Cable, Check, ClipboardCopy } from "lucide-react";
+import { Cable, Check, ChevronRight, ClipboardCopy } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "cn";
@@ -38,7 +38,7 @@ const HARNESSES: Harness[] = [
     name: "Codex",
     where: "Run",
     snippet: (url) => `codex mcp add graphreview --url ${url}`,
-    note: "Or add [mcp_servers.graphreview] with url = \"…\" to ~/.codex/config.toml.",
+    note: 'Or add [mcp_servers.graphreview] with url = "…" to ~/.codex/config.toml.',
   },
   {
     id: "opencode",
@@ -75,7 +75,7 @@ const HARNESSES: Harness[] = [
     name: "Gemini CLI",
     where: "Run",
     snippet: (url) => `gemini mcp add --transport http graphreview ${url}`,
-    note: "Or add { \"httpUrl\": \"…\" } under mcpServers in ~/.gemini/settings.json.",
+    note: 'Or add { "httpUrl": "…" } under mcpServers in ~/.gemini/settings.json.',
   },
   {
     id: "windsurf",
@@ -125,42 +125,60 @@ export function McpCard({ url }: { url: string }) {
       <CardHeader>
         <SectionTitle icon={Cable}>Connect a coding agent</SectionTitle>
         <CardDescription className="text-[13px] leading-relaxed">
-          GraphReview runs an MCP server at <code className="font-mono text-foreground">{url}</code> while it is
-          open. A connected agent can read a review&apos;s open findings and the diff of each flagged component, and
-          answer each finding — explain why it doesn&apos;t hold (resolves it) or agree and fix it. Replies show under
-          the finding. Only reachable from this machine.
+          An agent connected to this MCP server can read a review&apos;s open findings and answer or fix each one. Only
+          reachable from this machine, while GraphReview is open.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <Tabs defaultValue={HARNESSES[0].id}>
-          <TabsList variant="line" className="w-full flex-wrap justify-start gap-y-2 group-data-horizontal/tabs:h-auto">
-            {HARNESSES.map((harness) => (
-              <TabsTrigger key={harness.id} value={harness.id} className="flex-none px-2 text-[13px]">
-                {harness.name}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-          {HARNESSES.map((harness) => (
-            <TabsContent key={harness.id} value={harness.id} className="space-y-2 pt-3">
+      <CardContent className="space-y-3">
+        <CopyBlock text={url} />
+        {/* The per-agent steps are long and needed once, so they start folded. */}
+        <details className="group">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[13px] text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+            <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" aria-hidden />
+            Setup steps for your agent
+          </summary>
+          <div className="mt-3 space-y-4">
+            <Tabs defaultValue={HARNESSES[0].id}>
+              <TabsList
+                variant="line"
+                className="w-full flex-wrap justify-start gap-y-2 group-data-horizontal/tabs:h-auto"
+              >
+                {HARNESSES.map((harness) => (
+                  <TabsTrigger key={harness.id} value={harness.id} className="flex-none px-2 text-[13px]">
+                    {harness.name}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+              {HARNESSES.map((harness) => (
+                <TabsContent key={harness.id} value={harness.id} className="space-y-2 pt-3">
+                  <p className="text-[13px] text-muted-foreground">
+                    {harness.where === "Run" ? (
+                      "Run in a terminal:"
+                    ) : (
+                      <>
+                        Add to <span className="font-mono">{harness.where}</span>:
+                      </>
+                    )}
+                  </p>
+                  <CopyBlock text={harness.snippet(url)} />
+                  {harness.note && <p className="text-xs text-muted-foreground">{harness.note}</p>}
+                </TabsContent>
+              ))}
+            </Tabs>
+            <div className="space-y-2 border-t border-border pt-4">
               <p className="text-[13px] text-muted-foreground">
-                {harness.where === "Run" ? "Run in a terminal:" : <>Add to <span className="font-mono">{harness.where}</span>:</>}
+                Then, from the repo&apos;s folder, run the server&apos;s <span className="font-mono">review</span>{" "}
+                prompt — in Claude Code <span className="font-mono text-foreground">/mcp__graphreview__review</span>, in
+                VS Code <span className="font-mono text-foreground">/mcp.graphreview.review</span>. It finds the review
+                for your branch and works through it. Where your agent has no MCP prompts, paste this instead:
               </p>
-              <CopyBlock text={harness.snippet(url)} />
-              {harness.note && <p className="text-xs text-muted-foreground">{harness.note}</p>}
-            </TabsContent>
-          ))}
-        </Tabs>
-        <div className="space-y-2 border-t border-border pt-4">
-          <p className="text-[13px] text-muted-foreground">
-            Then, from the repo&apos;s folder, run the server&apos;s <span className="font-mono">review</span> prompt — in
-            Claude Code <span className="font-mono text-foreground">/mcp__graphreview__review</span>, in VS Code{" "}
-            <span className="font-mono text-foreground">/mcp.graphreview.review</span>. It finds the review for your branch
-            and works through it. Where your agent has no MCP prompts, paste this instead:
-          </p>
-          <CopyBlock
-            wrap
-            text="Read the GraphReview review of this branch. For each open finding, check the code: if it's wrong, answer it with why; if it's right, fix it and reply that you're fixing it." />
-        </div>
+              <CopyBlock
+                wrap
+                text="Read the GraphReview review of this branch. For each open finding, check the code: if it's wrong, answer it with why; if it's right, fix it and reply that you're fixing it."
+              />
+            </div>
+          </div>
+        </details>
       </CardContent>
     </Card>
   );

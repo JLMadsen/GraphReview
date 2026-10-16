@@ -47,6 +47,7 @@ import {
   MapPin,
   MessageSquare,
   Plus,
+  RotateCcw,
   Scale,
   SendHorizontal,
   Trash2,
@@ -63,6 +64,7 @@ import type {
   ChatTriageActionDTO,
   ChatTriageDTO,
 } from "./chat-types";
+import { GlyphField } from "./diff/GlyphField";
 import { AssessmentGlyph } from "./PrMapNode";
 import { highlightLines, languageForFence } from "./highlight";
 import { startMiddleScroll } from "./middle-scroll";
@@ -118,6 +120,7 @@ export function ChatPanel({
   const [aboutFinding, setAboutFinding] = useState<{ id: string; summary: string } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [showOlder, setShowOlder] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const busy = chat.pending !== null;
 
@@ -160,6 +163,14 @@ export function ChatPanel({
   };
 
   const inlineRenderer = (text: string) => renderInline(text, changedFiles, onOpenFile);
+  // A failed model call is only worth showing while it is the latest reply
+  // (with "Ask again" beside it); once the thread moves on it is noise. A
+  // thread about older commits folds behind one line.
+  const isOlder = (m: (typeof chat.messages)[number]) => Boolean(chat.headSha && m.headSha && m.headSha !== chat.headSha);
+  const lastId = chat.messages[chat.messages.length - 1]?.id;
+  const kept = chat.messages.filter((m) => !m.error || (m.id === lastId && !isOlder(m)));
+  const olderCount = kept.filter(isOlder).length;
+  const visibleMessages = showOlder ? kept : kept.filter((m) => !isOlder(m));
   const aboutRepo = targetLabel === null;
 
   return (
@@ -199,10 +210,7 @@ export function ChatPanel({
         )}
       </header>
 
-      <div
-        ref={scrollRef}
-        className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3"
-      >
+      <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col space-y-3 overflow-y-auto px-4 py-3">
         {chat.loading ? (
           <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <LoaderCircle className="size-3.5 animate-spin" /> Loading the conversation…
@@ -249,16 +257,27 @@ export function ChatPanel({
                 </ul>
               </div>
             )}
-            {chat.messages.map((message, index) => {
-              const previous = chat.messages[index - 1];
+            {olderCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowOlder((v) => !v)}
+                aria-expanded={showOlder}
+                className="flex w-full items-center justify-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+              >
+                <ChevronRight className={cn("size-3 transition-transform", showOlder && "rotate-90")} aria-hidden />
+                {showOlder ? "Hide" : "Show"} {olderCount} earlier message{olderCount === 1 ? "" : "s"} about older commits
+              </button>
+            )}
+            {visibleMessages.map((message, index) => {
+              const previous = visibleMessages[index - 1];
               const olderCommit =
                 chat.headSha && message.headSha && message.headSha !== chat.headSha && previous?.headSha !== message.headSha;
+              const isLast = index === visibleMessages.length - 1;
               return (
                 <Fragment key={message.id}>
                   {olderCommit && (
                     <p className="text-center text-[10px] text-muted-foreground">
-                      — about an older commit <code className="font-mono">{message.headSha!.slice(0, 7)}</code>; the
-                      change has moved on —
+                      — about an older commit <code className="font-mono">{message.headSha!.slice(0, 7)}</code> —
                     </p>
                   )}
                   <Message
@@ -272,6 +291,16 @@ export function ChatPanel({
                     onApplyAction={onApplyAction}
                     held={chat.held.has(message.id)}
                   />
+                  {message.error && isLast && previous?.role === "user" && !busy && (
+                    <button
+                      type="button"
+                      onClick={() => submit(previous.content)}
+                      className="ml-auto flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-secondary hover:text-foreground"
+                    >
+                      <RotateCcw className="size-3" aria-hidden />
+                      Ask again
+                    </button>
+                  )}
                 </Fragment>
               );
             })}
@@ -290,6 +319,11 @@ export function ChatPanel({
             )}
             {chat.error && (
               <p className="text-[11px] text-destructive">{chat.error}</p>
+            )}
+            {/* An empty chat's leftover space below the suggestions; it shrinks
+                to nothing when they fill the column, never sits behind them. */}
+            {visibleMessages.length === 0 && !chat.pending && (
+              <GlyphField className="relative -mx-4 -mb-3 min-h-0 flex-1" />
             )}
           </>
         )}

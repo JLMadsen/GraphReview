@@ -7,7 +7,7 @@
 
 import type { ChatActionDTO } from "@/components/graph/chat-types";
 import type { SearchItem, SearchRepoInfo, SearchScope } from "@/lib/search/types";
-import type { PaletteGraphContext } from "./bus";
+import type { DiffPickMode, PaletteGraphContext } from "./bus";
 
 export interface PaletteEnv {
   repoId: string | null;
@@ -16,6 +16,8 @@ export interface PaletteEnv {
   graph: PaletteGraphContext | null;
   /** Shows something on the Graph tab — at once when it is open, else after navigating there. */
   show(action: ChatActionDTO, options?: { needsTarget?: boolean }): void;
+  /** Opens the Graph tab's diff picker on its PR or branch list. */
+  pick(mode: DiffPickMode, repoId?: string): void;
   /** Opens a review target on the Graph tab, then (optionally) shows something in it. */
   openTarget(target: { pr: number } | { base: string; head: string } | null, then?: ChatActionDTO): void;
   navigate(href: string): void;
@@ -118,7 +120,7 @@ export function targetsFor(item: SearchItem, env: PaletteEnv): PaletteTarget[] {
     case "branch": {
       const base = env.repo?.defaultBranch;
       if (base && base !== item.ref) add("compare", `Compare with ${base}`, (e) => e.openTarget({ base, head: item.ref! }));
-      add("branches", "Branches tab", (e) => e.navigate(`/repo/${e.repoId}/branches`));
+      add("branches", "Pick another branch", (e) => e.pick("refs"));
       add("copy", "Copy name", (e) => e.copy(item.ref!, "Branch name"));
       break;
     }
@@ -155,8 +157,9 @@ export function targetsFor(item: SearchItem, env: PaletteEnv): PaletteTarget[] {
       break;
     case "repo":
       add("graph", "Graph tab", (e) => e.navigate(`/repo/${item.id}/graph`));
-      add("prs", "Pull requests", (e) => e.navigate(`/repo/${item.id}/pull-requests`));
-      add("branches", "Branches", (e) => e.navigate(`/repo/${item.id}/branches`));
+      add("prs", "Pick a pull request", (e) => e.pick("pr", item.id));
+      add("branches", "Compare branches", (e) => e.pick("refs", item.id));
+      add("stats", "Stats", (e) => e.navigate(`/repo/${item.id}/stats`));
       break;
   }
   return out;
@@ -189,8 +192,9 @@ export const COMMANDS: readonly PaletteCommand[] = [
   { id: "go-repos", title: "Go to Repos", keywords: "home list", group: "Go to", run: (e) => e.navigate("/") },
   { id: "go-settings", title: "Go to Settings", keywords: "ai provider token", group: "Go to", run: (e) => e.navigate("/settings") },
   { id: "go-graph", title: "Go to the Graph tab", group: "Go to", when: inRepo, run: (e) => e.navigate(`/repo/${e.repoId}/graph`) },
-  { id: "go-prs", title: "Go to Pull requests", keywords: "merge requests", group: "Go to", when: inRepo, run: (e) => e.navigate(`/repo/${e.repoId}/pull-requests`) },
-  { id: "go-branches", title: "Go to Branches", group: "Go to", when: inRepo, run: (e) => e.navigate(`/repo/${e.repoId}/branches`) },
+  { id: "go-prs", title: "Pick a pull request", keywords: "go to pull requests merge requests diff open pr", group: "Go to", when: inRepo, run: (e) => e.pick("pr") },
+  { id: "go-branches", title: "Compare branches", keywords: "go to branches diff refs", group: "Go to", when: inRepo, run: (e) => e.pick("refs") },
+  { id: "go-stats", title: "Go to Stats", keywords: "lines of code languages contributors timeline ci", group: "Go to", when: inRepo, run: (e) => e.navigate(`/repo/${e.repoId}/stats`) },
 
   { id: "view-app", title: "Show the App map", keywords: "cards architecture", group: "View", when: inRepo, run: (e) => e.show(view("app")) },
   { id: "view-pr", title: "Show the PR map", keywords: "areas change", group: "View", when: hasTarget, run: (e) => e.show(view("pr"), { needsTarget: true }) },

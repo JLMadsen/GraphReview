@@ -65,9 +65,16 @@ export interface PanelResizeHandleProps {
   width: number;
   onResize: (width: number) => void;
   label: string;
+  /**
+   * Folds the panel to its rail. The fold button lives on the handle,
+   * halfway down, and only shows while the edge is hovered or focused, so
+   * it never covers the panels' header rows.
+   */
+  onFold?: () => void;
+  foldLabel?: string;
 }
 
-export function PanelResizeHandle({ edge, width, onResize, label }: PanelResizeHandleProps) {
+export function PanelResizeHandle({ edge, width, onResize, label, onFold, foldLabel }: PanelResizeHandleProps) {
   const drag = useRef<{ startX: number; startWidth: number } | null>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -126,6 +133,90 @@ export function PanelResizeHandle({ edge, width, onResize, label }: PanelResizeH
         )}
         aria-hidden
       />
+      {onFold && (
+        <button
+          type="button"
+          onClick={onFold}
+          // Not a drag: keep the press from reaching the separator.
+          onPointerDown={(event) => event.stopPropagation()}
+          aria-expanded
+          aria-label={`Hide ${foldLabel}`}
+          title={`Hide ${foldLabel}`}
+          className="absolute top-1/2 left-1/2 flex h-8 w-4 -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center rounded-sm border border-border bg-card text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100 group-focus-visible:opacity-100"
+        >
+          <FoldChevron pointsLeft={edge === "right"} />
+        </button>
+      )}
     </div>
+  );
+}
+
+function FoldChevron({ pointsLeft }: { pointsLeft: boolean }) {
+  return (
+    <svg viewBox="0 0 6 10" className={cn("size-2.5", pointsLeft ? "" : "rotate-180")} aria-hidden>
+      <path d="M5 1 1 5l4 4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/**
+ * Whether a side panel is folded to a slim rail (lg and up only), remembered
+ * like its width. With nothing stored it starts folded when the window is
+ * narrower than `foldBelow` px, so the map keeps the room on small screens.
+ */
+export function usePanelCollapsed(storageKey: string, foldBelow = 0): [boolean, (collapsed: boolean) => void] {
+  const [collapsed, setCollapsedState] = useState(false);
+
+  useEffect(() => {
+    let stored: string | null = null;
+    try {
+      stored = window.localStorage.getItem(storageKey);
+    } catch {
+      // Storage unavailable — fall back to the width rule.
+    }
+    setCollapsedState(stored === null ? window.innerWidth < foldBelow : stored === "1");
+  }, [storageKey, foldBelow]);
+
+  const setCollapsed = useCallback(
+    (next: boolean) => {
+      setCollapsedState(next);
+      try {
+        window.localStorage.setItem(storageKey, next ? "1" : "0");
+      } catch {
+        // Storage unavailable — the choice just won't persist.
+      }
+    },
+    [storageKey]
+  );
+
+  return [collapsed, setCollapsed];
+}
+
+/**
+ * A folded side panel's rail: the whole strip is the unfold button, so it
+ * takes no room beyond the rail itself. `edge` is the panel's inner edge,
+ * as for the resize handle.
+ */
+export function PanelFoldedRail({
+  edge,
+  onUnfold,
+  label,
+}: {
+  edge: "left" | "right";
+  onUnfold: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onUnfold}
+      aria-expanded={false}
+      aria-label={`Show ${label}`}
+      title={`Show ${label}`}
+      className="absolute inset-0 hidden cursor-pointer justify-center pt-3 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground lg:flex"
+    >
+      {/* A left panel (edge on its right) unfolds rightwards. */}
+      <FoldChevron pointsLeft={edge === "left"} />
+    </button>
   );
 }

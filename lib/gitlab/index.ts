@@ -9,6 +9,7 @@ export {
   getRefSha,
   getLinkedIssues,
   getCommitCiStatus,
+  listPipelines,
   getFileAtRef,
 } from "./client";
 
@@ -30,4 +31,5 @@ export type {
   CiState,
   CiCheck,
   CiStatus,
+  CiRun,
 } from "./types";

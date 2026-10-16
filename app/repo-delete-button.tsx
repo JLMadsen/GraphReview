@@ -1,7 +1,7 @@
 "use client";
 
-// "Remove" for a repo — on the repo card (landing page) and in the repo
-// header. Confirms first, then `DELETE /api/repos/[repoId]`, which drops the
+// "Remove" for a repo — on the repo card (landing page; the repo top bar
+// leaves it out, away from Re-analyze). Confirms first, then `DELETE /api/repos/[repoId]`, which drops the
 // repo's graph, reviews, chats and (for GitHub/GitLab repos) its clone. A
 // local checkout is only read, never deleted — the dialog says so.
 //

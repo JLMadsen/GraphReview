@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ChevronRight, Clock3, Plug, Waypoints } from "lucide-react";
+import { Clock3, Plug, Waypoints } from "lucide-react";
 import { listRepoDtos, type RepoDto } from "@/lib/jobs";
 import { AddRepoDialog } from "./add-repo-dialog";
 import { ProviderBadge, RepoStatusBadge, providerIcon } from "./repo-status-badge";
@@ -78,9 +78,12 @@ function RepoRow({ repo }: { repo: RepoDto }) {
             </p>
           ) : null}
           {isError && repo.lastError ? (
-            <pre className="mt-2.5 max-h-24 max-w-full overflow-auto rounded-lg bg-background/80 px-2.5 py-2 text-left font-mono text-[11px] leading-relaxed text-muted-foreground ring-1 ring-border">
-              {repo.lastError}
-            </pre>
+            <div className="mt-2 flex items-start gap-3">
+              <p className="min-w-0 flex-1 text-xs leading-relaxed [overflow-wrap:anywhere] text-destructive/90">{repo.lastError}</p>
+              <div className="pointer-events-auto -mt-1 shrink-0">
+                <RepoRetryButton repoId={repo.id} />
+              </div>
+            </div>
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -90,23 +93,12 @@ function RepoRow({ repo }: { repo: RepoDto }) {
             lastAnalyzedSha={repo.lastAnalyzedSha}
             repoId={repo.id}
           />
-        </div>
-      </div>
-
-      <div className="pointer-events-none relative z-10 flex items-center gap-1 border-t border-border/70 px-2 py-1.5">
-        <div className="pointer-events-auto">
-          <RepoDeleteButton repoId={repo.id} repoName={repo.name} local={repo.provider === "local"} compact />
-        </div>
-        {isError ? (
-          <div className="pointer-events-auto ml-auto pr-2">
-            <RepoRetryButton repoId={repo.id} />
+          {/* Remove only shows on hover (or keyboard focus), so a list of
+              repos isn't a column of trash cans. */}
+          <div className="pointer-events-auto opacity-0 transition-opacity group-hover/repo:opacity-100 focus-within:opacity-100">
+            <RepoDeleteButton repoId={repo.id} repoName={repo.name} local={repo.provider === "local"} compact />
           </div>
-        ) : (
-          <ChevronRight
-            className="ml-auto mr-2 size-4 shrink-0 text-muted-foreground/30 transition-all group-hover/repo:translate-x-0.5 group-hover/repo:text-muted-foreground/70"
-            aria-hidden
-          />
-        )}
+        </div>
       </div>
     </div>
   );

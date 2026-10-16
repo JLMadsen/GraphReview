@@ -25,7 +25,13 @@ export interface PaletteGraphContext {
   touched: string[];
 }
 
-export type GraphRequest = { kind: "action"; action: ChatActionDTO } | { kind: "ask"; question: string };
+/** Which list the diff panel's picker opens on. */
+export type DiffPickMode = "pr" | "refs";
+
+export type GraphRequest =
+  | { kind: "action"; action: ChatActionDTO }
+  | { kind: "ask"; question: string }
+  | { kind: "pick"; mode: DiffPickMode };
 
 interface Pending {
   repoId: string;

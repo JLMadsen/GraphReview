@@ -281,10 +281,12 @@
 }
 .cardflow[data-far] .react-flow .amc-name,
 .amc-measure-far .amc-name {
-  font-size: calc(13px * var(--label-scale, 1));
+  /* Scaled up for legibility, but never past the size at which the name's
+     longest word (--amc-word, set per card) still fits the card's width, so
+     a word is never cut mid-way ("Documentati / on"). The card is the
+     container (`@container`); ~0.62em is a wide-ish average glyph. */
+  font-size: min(calc(13px * var(--label-scale, 1)), calc(100cqi / (var(--amc-word, 1) * 0.62)));
   line-height: 1.15;
-  /* Break between words; a single word too long for the card is hyphenated
-     rather than cut at an arbitrary letter ("Documenta-tion", not "Documentati / on"). */
   overflow-wrap: break-word;
   hyphens: auto;
 }

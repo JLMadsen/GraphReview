@@ -7,6 +7,7 @@
 //   get_diff             one changed file's patch
 //   read_file            a file at the PR's head (or base), a line range at a time
 //   search_code          fixed-string search — "who calls X", "where is Y defined"
+//   find_files           files by path — a page URL to its app/…/page.tsx
 //   get_component        a component: description, files, what it depends on, what depends on it
 //   get_callers/_callees the call edges of a declaration (./chat-lookups.ts)
 //   get_imports          a file's imports, both ways
@@ -92,7 +93,7 @@ import type {
 } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import { loadAiConfigOrNull } from "./ai-config";
-import { describeCalls, describeImports, findDeclarations, gitBlame, gitLog, loadChatAnalysis, repoDirWithCommit } from "./chat-lookups";
+import { describeCalls, describeImports, findDeclarations, findFiles, gitBlame, gitLog, loadChatAnalysis, repoDirWithCommit } from "./chat-lookups";
 import { evaluateChecklist } from "./checklist";
 import { loadCiStatus, loadPrContext, readFileAtCommit, searchCode } from "./pr-context";
 import { buildPrMapFor } from "./pr-map";
@@ -122,6 +123,12 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
     name: "search_code",
     args: '{"query":"<exact text, e.g. a function name>"}',
     description: "fixed-string search across the code, to find where something is defined or used",
+  },
+  {
+    name: "find_files",
+    args: '{"query":"<path words or a URL, e.g. /repo/{id}/pull-requests or chat-lookups>"}',
+    description:
+      "files whose path holds every word of the query, in order — finds a page or route from its URL (parameter segments like {id} are skipped) or a file you only half know the name of",
   },
   {
     name: "get_component",
@@ -266,6 +273,7 @@ export const MAX_SUGGESTIONS_PER_ANSWER = 3;
 const REPO_TOOL_NAMES = new Set([
   "read_file",
   "search_code",
+  "find_files",
   "get_component",
   "get_callers",
   "get_callees",
@@ -731,7 +739,7 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
       const query = arg(args, "query", "q", "text", "symbol", "pattern", "term", "search");
       if (!query) return missing(name);
       if (query.length < 2) return { text: "Give a longer query.", summary: "search skipped" };
-      const { hits, source } = await searchCode(tc.repo, ctx ? ctx.reviewed.headSha : tc.repo.lastAnalyzedSha, query);
+      const { hits, total, source } = await searchCode(tc.repo, ctx ? ctx.reviewed.headSha : tc.repo.lastAnalyzedSha, query);
       const ids = new Set<string>();
       const lines = hits.map((h) => {
         const owner = tc.ownerByFile.get(h.path);
@@ -744,8 +752,10 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
           ? "at the PR's head"
           : "in the default branch (the PR's own changes are in the diffs)";
       return {
-        text: hits.length ? `${hits.length} hit(s) ${where}:\n${lines.join("\n")}` : `No hits for "${query}" ${where}.`,
-        summary: `searched for "${query}" (${hits.length} hit${hits.length === 1 ? "" : "s"})`,
+        text: hits.length
+          ? `${total} hit(s) ${where}${total > hits.length ? ` (first ${hits.length} shown — narrow the query)` : ""}:\n${lines.join("\n")}`
+          : `No hits for "${query}" ${where}.`,
+        summary: `searched for "${query}" (${total} hit${total === 1 ? "" : "s"})`,
         componentIds: [...ids],
       };
     }
@@ -845,6 +855,17 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
       if (!path) return missing(name);
       const result = describeImports(await analysisOf(tc), path, (p) => componentLabel(tc, p));
       return { ...result, componentIds: ownersOf(tc, result.files.slice(0, 1)) };
+    }
+
+    case "find_files": {
+      const query = arg(args, "query", "q", "path", "url", "name", "pattern");
+      if (!query) return missing(name);
+      const sha = chatSha(tc);
+      if (!sha) return { text: "No commit to list files at — the repo hasn't been analysed yet.", summary: "no commit" };
+      const dir = await repoDirWithCommit(tc.repo, sha, tc.target);
+      if (!dir) return { text: "The repo isn't on disk, so its files can't be listed.", summary: "no files" };
+      const result = await findFiles(dir, sha, query);
+      return { ...result, componentIds: ownersOf(tc, result.files) };
     }
 
     case "git_log":

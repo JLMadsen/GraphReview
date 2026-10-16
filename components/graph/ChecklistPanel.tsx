@@ -55,23 +55,30 @@ export function ChecklistPanel({ repoId, checklist }: ChecklistPanelProps) {
   const failed = counted.filter((i) => i.status === "fail").length;
   const aiWaiting = items.filter((i) => i.kind === "ai" && i.status === "pending").length;
   const pending = counted.filter((i) => i.status === "pending").length;
+  // Checks that can't apply here (CI, description, linked issue on a plain
+  // commit range) are left out of the list; a hover on the count names them.
+  const skipped = items.filter((i) => i.status === "not_applicable");
+  const skippedNote = skipped.length > 0 ? `
+Not shown — they don't apply here: ${skipped.map((i) => i.label).join(", ")}` : "";
 
   return (
     <section className="text-[11px]">
       <div className="flex items-center gap-1">
-        <p className="flex min-w-0 flex-1 items-baseline gap-2 whitespace-nowrap">
+        <p className="flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden whitespace-nowrap">
           <span className="font-semibold tracking-wide text-muted-foreground uppercase">Checks</span>
           {data ? (
             failed > 0 ? (
-              <span className="font-mono text-destructive">
-                {failed} of {counted.length} fail
+              <span className="truncate font-mono text-destructive" title={`${failed} of ${counted.length} checks fail${skippedNote}`}>
+                {failed}/{counted.length} ✕
               </span>
             ) : pending > 0 ? (
-              <span className="font-mono text-warning">
-                {passed} of {counted.length} pass
+              <span className="truncate font-mono text-warning" title={`${passed} of ${counted.length} checks pass${skippedNote}`}>
+                {passed}/{counted.length} ✓
               </span>
             ) : counted.length > 0 ? (
-              <span className="font-mono text-success">all {counted.length} pass</span>
+              <span className="truncate font-mono text-success" title={`All ${counted.length} checks pass${skippedNote}`}>
+                ✓ {counted.length}
+              </span>
             ) : (
               <span className="text-muted-foreground">none apply</span>
             )
@@ -134,7 +141,7 @@ export function ChecklistPanel({ repoId, checklist }: ChecklistPanelProps) {
       ) : (
         <>
           <ul className="mt-1.5 space-y-1.5">
-            {items.map((item) => {
+            {counted.map((item) => {
               const visual = STATUS_VISUALS[item.status];
               const Icon = item.kind === "ai" && item.status === "pending" && runningAi ? LoaderCircle : visual.icon;
               return (

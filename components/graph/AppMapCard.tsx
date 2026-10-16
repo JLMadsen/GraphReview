@@ -21,7 +21,7 @@
 import { LoaderCircle, Scissors } from "lucide-react";
 import { cn } from "cn";
 import { layerTint, type AppMapLevel, type AppMapNodeDTO } from "./app-map-types";
-import { CardMarkerBadge, type PrCardMarker } from "./PrMapNode";
+import { CardMarkerBadge, longestWordStyle, type PrCardMarker } from "./PrMapNode";
 import { Spark } from "./Spark";
 
 export const APP_CARD_WIDTH = 248;
@@ -71,7 +71,7 @@ export function AppMapCard({
     <div
       style={{ width: APP_CARD_WIDTH }}
       className={cn(
-        "relative rounded-lg border py-2 pr-2.5 pl-3.5 text-left transition-[opacity,border-color]",
+        "@container relative rounded-lg border py-2 pr-2.5 pl-3.5 text-left transition-[opacity,border-color]",
         diffMode && changed > 0 ? "border-warning/60 bg-[color-mix(in_oklab,var(--warning)_7%,var(--card))]" : "bg-card",
         selected
           ? "border-brand ring-1 ring-brand"
@@ -87,7 +87,7 @@ export function AppMapCard({
         aria-hidden
       />
       <div className="flex items-baseline gap-2">
-        <p className="amc-name min-w-0 flex-1 text-[13px] leading-snug font-medium">
+        <p className="amc-name min-w-0 flex-1 text-[13px] leading-snug font-medium" style={longestWordStyle(node.name)}>
           {node.name}
           {node.explanation && <Spark className="ml-1 align-[1px]" title="Described by the model — select to read it" />}
         </p>

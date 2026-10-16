@@ -168,3 +168,20 @@ export interface CiStatus {
   state: CiState;
   checks: CiCheck[];
 }
+
+/**
+ * One finished or running CI run on a branch — a GitHub Actions workflow
+ * run or a GitLab pipeline — for the Stats page's timeline (DESIGN.md
+ * §6.19). `cancelled` is kept apart from `failure`: a run someone stopped
+ * didn't fail.
+ */
+export interface CiRun {
+  id: string;
+  /** Workflow name (GitHub) or `pipeline` (GitLab). */
+  name: string;
+  state: "success" | "failure" | "cancelled" | "pending";
+  /** ISO time the run was created. */
+  date: string;
+  sha: string;
+  url?: string;
+}

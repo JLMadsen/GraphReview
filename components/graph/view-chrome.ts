@@ -9,7 +9,7 @@
 // the bar's top edge to its bottom as bordered cells (globals.css,
 // `.view-toolbar`), while plain text in it stays centred.
 export const VIEW_TOOLBAR =
-  "view-toolbar flex min-h-9 shrink-0 flex-wrap items-stretch gap-x-3 border-b border-border bg-secondary/40 px-4";
+  "view-toolbar @container flex min-h-9 shrink-0 flex-wrap items-stretch gap-x-3 border-b border-border bg-secondary/40 px-4";
 
 /** A card map's canvas pane (passed to `CardFlow`). */
 export const VIEW_CANVAS = "bp-grid relative min-h-[220px] flex-1 overflow-hidden";

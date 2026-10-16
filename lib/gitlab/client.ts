@@ -23,6 +23,7 @@ import { GitLabApiError, toGitLabApiError, toGitLabNetworkError } from "./errors
 import type {
   Branch,
   CiCheck,
+  CiRun,
   CiState,
   CiStatus,
   CommitSummary,
@@ -501,6 +502,44 @@ export async function getCommitCiStatus(
     data: { state: pipelineState(pipeline.status), checks },
     rateLimit: extractRateLimit(headers),
   };
+}
+
+interface GitLabPipelineListItem {
+  id: number;
+  status: string;
+  sha: string;
+  created_at: string;
+  web_url?: string;
+}
+
+function pipelineRunState(status: string): CiRun["state"] {
+  if (status === "canceled" || status === "canceling") return "cancelled";
+  const state = pipelineState(status);
+  return state === "none" ? "pending" : state;
+}
+
+/** The newest `maxItems` pipelines on `ref`, newest first (the Stats timeline). */
+export async function listPipelines(
+  token: string,
+  projectPath: string,
+  ref: string,
+  maxItems = 1000
+): Promise<GitLabResult<CiRun[]>> {
+  const url = `${projectApiBase(projectPath)}/pipelines?ref=${encodeURIComponent(ref)}&per_page=${DEFAULT_PER_PAGE}&order_by=id&sort=desc`;
+  return runPaginated<GitLabPipelineListItem, CiRun>(
+    "GET /projects/{id}/pipelines",
+    url,
+    token,
+    (pipeline) => ({
+      id: String(pipeline.id),
+      name: "pipeline",
+      state: pipelineRunState(pipeline.status),
+      date: pipeline.created_at,
+      sha: pipeline.sha,
+      url: pipeline.web_url,
+    }),
+    maxItems
+  );
 }
 
 /** A file's text at a ref, or `null` when it doesn't exist there. */

@@ -257,7 +257,6 @@ export function InfraDiagram({ topo, changedOnly, query, selected, onSelect, onO
         <span className="text-success">added</span>
         <span className="text-destructive">removed</span>
         <span className="text-warning">changed</span>
-        <span>Click a box for its detail</span>
       </p>
     </div>
   );

@@ -120,6 +120,13 @@ async function main(): Promise<void> {
     check("the steps say what each lookup did", first.steps.some((s) => s.summary.startsWith("found the callers of km")), JSON.stringify(first.steps.map((s) => s.summary)));
     check("a read-only turn has no actions", !first.actions, JSON.stringify(first.actions));
 
+    // A path lookup: a URL-like query, its {id} segment skipped.
+    scripted.push(reply({ tool: "find_files", args: { query: "/lib/{id}/geo" } }), reply({ answer: "Found." }));
+    start = prompts.length;
+    await runChatTurn({ repo, target, question: "where is /lib/{id}/geo?", onEvent: () => undefined });
+    const found = lastResult(prompts[start + 1]);
+    check("find_files skips the {id} segment and finds lib/geo.ts", /1 file\(s\)[^\n]*\n- lib\/geo\.ts/.test(found), found);
+
     // Turn 2: the view tools.
     scripted.push(
       reply({ tool: "show", args: { kind: "file", name: "lib/geo.ts", line: 2 } }),

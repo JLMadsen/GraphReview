@@ -52,6 +52,7 @@ The rest of the design is split into one file per section, so a task reads only 
 | §6.16 | [design/6.16-infra-views.md](design/6.16-infra-views.md) | Infra sub-views: Diagram, Files with plain-English notes, Requests (built 2026-10-13) |
 | §6.17 | [design/6.17-local-config.md](design/6.17-local-config.md) | Use local config: AI providers from OpenCode, Codex, Claude Code and other harness configs (built 2026-10-14) |
 | §6.18 | [design/6.18-command-palette.md](design/6.18-command-palette.md) | Command palette: Ctrl+Space search and commands over everything in a repo (built 2026-10-14) |
+| §6.19 | [design/6.19-stats.md](design/6.19-stats.md) | Stats: lines of code per language, contributors, and a timeline of commits, lines and CI runs (built 2026-10-16) |
 | §7–8 | [design/data-model.md](design/data-model.md) | Data model, GitHub integration surface |
 | §9–10 | [design/ai-pipeline.md](design/ai-pipeline.md) | AI integration flow, the review pipeline, labeling, analysis lifecycle & AI cost |
 | §11–14 | [design/runtime.md](design/runtime.md) | Secrets, distribution & runtime layout, module/folder structure, local repo access |

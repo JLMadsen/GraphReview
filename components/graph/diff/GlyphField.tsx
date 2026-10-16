@@ -1,11 +1,12 @@
 "use client";
 
-// The "Pick a diff" card's backdrop: a grid of monospace characters that keep
+// Fills an empty chat's leftover space: a grid of monospace characters that keep
 // changing, with the ones inside the GraphReview mark (app/icon.svg) lit in
 // the mark's own colours, plain ones around it fading out with distance,
 // and a soft glow following the pointer. Purely
-// decorative — a canvas behind the form, no pointer events of its own (it
-// listens on its parent), still under `prefers-reduced-motion`.
+// decorative — a canvas in the layout's flow, never behind other content, no
+// pointer events of its own (it listens on its parent), still under
+// `prefers-reduced-motion`.
 
 import { useEffect, useRef } from "react";
 
@@ -104,12 +105,11 @@ function buildCells(cols: number, rows: number): Cell[] {
   // A hidden or collapsed panel measures 0 — getImageData throws on that.
   if (octx && cols > 0 && rows > 0) {
     // Cells are taller than wide: squash x so the mark keeps its proportions.
-    // The form sits at the top, so the mark goes in the open space below it:
-    // as wide as the panel allows, centred at 60% of the height.
+    // As large as the space allows, centred in it.
     const w = cols * CELL_W;
     const h = rows * CELL_H;
     const sizePx = Math.min(w * 0.82, h * 0.55, 420);
-    const top = Math.min(Math.max(h * 0.6 - sizePx / 2, 0), h - sizePx);
+    const top = Math.min(Math.max(h * 0.5 - sizePx / 2, 0), h - sizePx);
     const sx = sizePx / CELL_W / 32;
     const sy = sizePx / CELL_H / 32;
     octx.translate((cols - 32 * sx) / 2, top / CELL_H);
@@ -137,12 +137,13 @@ function buildCells(cols: number, rows: number): Cell[] {
   return cells;
 }
 
-export function GlyphField() {
+/** `className` sizes it; it fills whatever box that gives it. */
+export function GlyphField({ className = "relative size-full" }: { className?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    // Pointer events come from the picker itself, around the wrapper.
+    // Pointer events come from the wrapper's parent, so the glow follows the pointer over the whole panel.
     const host = canvas?.parentElement?.parentElement;
     const ctx = canvas?.getContext("2d");
     if (!canvas || !host || !ctx) return;
@@ -245,12 +246,11 @@ export function GlyphField() {
     };
   }, []);
 
-  // The wrapper takes the insets (a canvas, being a replaced element, would
-  // keep its intrinsic 300×150 instead of stretching between them) and bleeds
-  // over the panel's padding to its edges.
+  // The wrapper takes the size; the canvas is absolute in it so its intrinsic
+  // 300×150 (it's a replaced element) never props the layout open.
   return (
-    <div aria-hidden className="pointer-events-none absolute -inset-x-4 -top-3 -bottom-4 -z-10">
-      <canvas ref={canvasRef} className="block size-full text-foreground" />
+    <div aria-hidden className={`pointer-events-none ${className}`}>
+      <canvas ref={canvasRef} className="absolute inset-0 block size-full text-foreground" />
     </div>
   );
 }
