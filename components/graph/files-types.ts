@@ -15,3 +15,15 @@ export interface RepoTreeResponseDTO {
   /** The listing was cut off at its cap. */
   truncated: boolean;
 }
+
+export interface LastCommitDTO {
+  sha: string;
+  subject: string;
+  author: string;
+  date: string;
+}
+
+/** Shape of `GET /api/repos/[repoId]/last-commits`: entry name → its newest commit (`null`: not found in time). */
+export interface LastCommitsResponseDTO {
+  commits: Record<string, LastCommitDTO | null>;
+}

@@ -8,7 +8,7 @@
 // `/raw` routes need it.
 
 import type { RepoRecord } from "@/lib/db";
-import { gitOutput } from "@/lib/analysis/source-tree";
+import { gitOutput, gitStream } from "@/lib/analysis/source-tree";
 import { sourceDir } from "./review-context";
 import { gitIn } from "./source";
 
@@ -68,6 +68,84 @@ export async function listRepoTree(repo: RepoRecord): Promise<RepoTree | null> {
   }
 
   return { sha, commit, entries, truncated };
+}
+
+export interface LastCommit {
+  sha: string;
+  subject: string;
+  author: string;
+  date: string;
+}
+
+/** History walked per folder before the rest is left blank — a giant repo's rarely touched folder. */
+const LAST_COMMITS_TIMEOUT_MS = 15_000;
+
+/** Folders already walked, per repo, commit and folder — a commit's history never changes. */
+const lastCommitCache = new Map<string, Record<string, LastCommit | null>>();
+const LAST_COMMITS_CACHED = 200;
+
+/**
+ * The newest commit (at or before `sha`) touching each entry directly inside
+ * `dir` ("" = the root): GitHub's per-row commit message. One `git log
+ * --name-only` down the folder's history, stopped once every entry is
+ * attributed. Entries still blank when the walk ends (or times out) are `null`.
+ */
+export async function lastCommitsIn(repo: RepoRecord, sha: string, dir: string): Promise<Record<string, LastCommit | null> | null> {
+  if (!/^[0-9a-f]{7,64}$/.test(sha) || dir.startsWith("-") || dir.split("/").includes("..")) return null;
+  const key = `${repo.id}\0${sha}\0${dir}`;
+  const cached = lastCommitCache.get(key);
+  if (cached) return cached;
+  const src = await sourceDir(repo);
+  if (!src) return null;
+
+  const prefix = dir ? `${dir}/` : "";
+  // `<sha>:<dir>` is the folder's own tree: its names, no pathspec to escape.
+  const names = (await gitOutput(src, ["ls-tree", "-z", "--name-only", dir ? `${sha}:${dir}` : sha]))
+    .toString("utf8")
+    .split("\0")
+    .filter(Boolean);
+  const result: Record<string, LastCommit | null> = {};
+  for (const name of names) result[name] = null;
+  let left = names.length;
+
+  // Each commit: \x1e<sha>\x1f<subject>\x1f<author>\x1f<date>\0\n<path>\0<path>\0…
+  let pending = "";
+  const take = (block: string): boolean => {
+    const parts = block.split("\0");
+    const [hash, subject = "", author = "", date = ""] = parts[0].split("\x1f");
+    const commit: LastCommit = { sha: hash, subject, author, date };
+    for (let i = 1; i < parts.length; i++) {
+      const path = parts[i].replace(/^\n/, "");
+      if (!path.startsWith(prefix)) continue;
+      const rest = path.slice(prefix.length);
+      const slash = rest.indexOf("/");
+      const name = slash === -1 ? rest : rest.slice(0, slash);
+      if (result[name] === null) {
+        result[name] = commit;
+        if (--left === 0) return false;
+      }
+    }
+    return true;
+  };
+  if (left > 0) {
+    await gitStream(
+      src,
+      ["log", "--format=%x1e%H%x1f%s%x1f%an%x1f%aI", "--name-only", "-z", sha, "--", ...(dir ? [`:(literal)${dir}`] : [])],
+      (chunk) => {
+        pending += chunk.toString("utf8");
+        const blocks = pending.split("\x1e");
+        // The last block may still be arriving.
+        pending = blocks.pop() ?? "";
+        for (const block of blocks) if (block && !take(block)) return false;
+      },
+      LAST_COMMITS_TIMEOUT_MS,
+    );
+    if (left > 0 && pending) take(pending);
+  }
+
+  if (lastCommitCache.size >= LAST_COMMITS_CACHED) lastCommitCache.delete(lastCommitCache.keys().next().value!);
+  lastCommitCache.set(key, result);
+  return result;
 }
 
 /** Images the Files view shows, by extension → content type. Nothing else is served raw. */

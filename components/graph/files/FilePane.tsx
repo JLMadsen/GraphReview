@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Copy,
   Check,
+  GitCommitHorizontal,
   GitCompare,
   LoaderCircle,
   X,
@@ -16,6 +17,8 @@ import { languageForPath } from "../highlight";
 import { MarkdownDoc } from "./MarkdownDoc";
 import { type FileEntry, type DirNode, isImage, isMarkdown, formatBytes, rawUrl, parentOf } from "./tree";
 import { useFileText } from "./useFileText";
+import { useLastCommits } from "./useLastCommits";
+import { formatRelativeDate } from "../types";
 
 export function FilePane({
   repoId,
@@ -56,9 +59,25 @@ export function FilePane({
   const content = state?.status === "ready" ? state.data.content : null;
   const lineCount = useMemo(() => (content === null ? 0 : content.replace(/\r?\n$/, "").split(/\r?\n/).length), [content]);
   const language = languageForPath(entry.path);
+  // The file's newest commit, from its folder's listing (usually already walked).
+  const commits = useLastCommits(repoId, cacheKey, entry.added ? null : parentOf(entry.path));
+  const commit = commits?.[entry.name];
 
   return (
     <section className="overflow-hidden rounded-lg border border-border bg-card">
+      {commit && (
+        <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-[12px]">
+          <GitCommitHorizontal className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+          <span className="shrink-0 font-medium text-foreground">{commit.author}</span>
+          <span className="min-w-0 truncate text-muted-foreground" title={commit.subject}>
+            {commit.subject}
+          </span>
+          <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-[11px] text-muted-foreground">
+            <span title={commit.sha}>{commit.sha.slice(0, 7)}</span>
+            {commit.date && <span title={new Date(commit.date).toLocaleString()}>· {formatRelativeDate(commit.date)}</span>}
+          </span>
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border bg-secondary/40 px-3 py-1.5">
         {(markdown || svg) && (
           <Segmented

@@ -113,6 +113,38 @@ export function gitOutput(cwd: string, args: string[]): Promise<Buffer> {
   });
 }
 
+/**
+ * Runs git and hands stdout to `onData` as it arrives; `onData` returning
+ * `false` stops git there. Resolves once git exits or is stopped (or after
+ * `timeoutMs`, stopping it) — a walk through history that can end early, like
+ * the Files view's last commit per entry (lib/jobs/repo-tree.ts).
+ */
+export function gitStream(cwd: string, args: string[], onData: (chunk: Buffer) => boolean | void, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", [...GIT_ARGS, ...args], { cwd, env: gitEnv(), windowsHide: true });
+    const err: Buffer[] = [];
+    let stopped = false;
+    const stop = () => {
+      stopped = true;
+      child.kill();
+    };
+    const timer = setTimeout(stop, timeoutMs);
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (!stopped && onData(chunk) === false) stop();
+    });
+    child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0 || stopped) resolve();
+      else reject(new Error(`git ${args[0]} failed: ${Buffer.concat(err).toString("utf8").trim() || `exit ${code}`}`));
+    });
+  });
+}
+
 /** One long-running `git cat-file --batch`, answering blob reads in order. */
 class BlobReader {
   private readonly child: ChildProcessWithoutNullStreams;

@@ -51,6 +51,15 @@
         "set GRAPHREVIEW_HOME=C:\\Users\\Jakob\\AppData\\Local\\Temp\\claude\\C--Users-Jakob-Documents-GitHub-GraphReview\\2e71fa41-a668-4393-9bc3-6f78f5b91b8d\\scratchpad\\home&& set GRAPHREVIEW_DIST_DIR=.next-stats&& npx next dev -p 3400"
       ],
       "port": 3400
+    },
+    {
+      "name": "graphreview-dev-files-3500",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": [
+        "/c",
+        "set GRAPHREVIEW_HOME=C:\\Users\\Jakob\\AppData\\Local\\Temp\\claude\\C--Users-Jakob-Documents-GitHub-GraphReview\\742278d9-d4a7-4349-a008-f36ba116e460\\scratchpad\\home&& set GRAPHREVIEW_DIST_DIR=.next-files&& npx next dev -p 3500"
+      ],
+      "port": 3500
     }
   ]
 }

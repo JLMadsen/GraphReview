@@ -10,12 +10,13 @@ import {
   LoaderCircle,
 } from "lucide-react";
 import { cn } from "cn";
-import type { RepoTreeResponseDTO } from "../files-types";
+import type { LastCommitDTO, RepoTreeResponseDTO } from "../files-types";
 import { formatRelativeDate } from "../types";
 import { MarkdownDoc } from "./MarkdownDoc";
 import { type DirNode, type FileEntry, README, parentOf, collapseChain, formatBytes, isMarkdown } from "./tree";
 import { EntryIcon, ChangeMark } from "./TreeLevel";
 import { useFileText } from "./useFileText";
+import { useLastCommits } from "./useLastCommits";
 
 export function DirectoryPane({
   repoId,
@@ -47,6 +48,10 @@ export function DirectoryPane({
     for (const [p, d] of dirs) if (p === dir || p.startsWith(`${dir}/`) || dir === "") n += d.files.length;
     return n;
   }, [dirs, dir]);
+  const commits = useLastCommits(repoId, tree.sha, dir);
+  // A folder's own latest commit is its row in the folder above.
+  const parentCommits = useLastCommits(repoId, tree.sha, dir ? parentOf(dir) : null);
+  const dirCommit = dir ? parentCommits?.[dir.slice(dir.lastIndexOf("/") + 1)] : tree.commit && { sha: tree.sha, ...tree.commit };
 
   return (
     <>
@@ -54,19 +59,19 @@ export function DirectoryPane({
         {showCommit && (
           <div className="flex items-center gap-2 border-b border-border bg-secondary/40 px-3 py-2 text-[12px]">
             <GitCommitHorizontal className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-            {tree.commit ? (
+            {dirCommit ? (
               <>
-                <span className="shrink-0 font-medium text-foreground">{tree.commit.author}</span>
-                <span className="min-w-0 truncate text-muted-foreground" title={tree.commit.subject}>
-                  {tree.commit.subject}
+                <span className="shrink-0 font-medium text-foreground">{dirCommit.author}</span>
+                <span className="min-w-0 truncate text-muted-foreground" title={dirCommit.subject}>
+                  {dirCommit.subject}
                 </span>
               </>
             ) : (
-              <span className="text-muted-foreground">Analysed commit</span>
+              <span className="text-muted-foreground">{dir && parentCommits === undefined ? "…" : "Analysed commit"}</span>
             )}
             <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-[11px] text-muted-foreground">
-              <span title={tree.sha}>{tree.sha.slice(0, 7)}</span>
-              {tree.commit?.date && <span title={new Date(tree.commit.date).toLocaleString()}>· {formatRelativeDate(tree.commit.date)}</span>}
+              <span title={dirCommit?.sha ?? tree.sha}>{(dirCommit?.sha ?? tree.sha).slice(0, 7)}</span>
+              {dirCommit?.date && <span title={new Date(dirCommit.date).toLocaleString()}>· {formatRelativeDate(dirCommit.date)}</span>}
               <span>· {fileCount.toLocaleString()} files</span>
             </span>
           </div>
@@ -75,7 +80,7 @@ export function DirectoryPane({
           <tbody className="divide-y divide-border">
             {dir && (
               <tr className="hover:bg-secondary/40">
-                <td colSpan={2}>
+                <td colSpan={4}>
                   <button type="button" onClick={() => onOpenDir(parentOf(dir))} className="flex w-full items-center gap-2 px-3 py-1.5 font-mono text-muted-foreground">
                     <Folder className="size-4 shrink-0 text-brand/70" aria-hidden />
                     ..
@@ -94,7 +99,8 @@ export function DirectoryPane({
                       {changedDirs.has(child) && <span className="size-1.5 shrink-0 rounded-full bg-warning" title="Something in here changed" />}
                     </button>
                   </td>
-                  <td className="w-24 px-3 text-right font-mono text-[11px] text-muted-foreground" />
+                  <CommitCells commit={commits === undefined ? undefined : (commits?.[child.slice(child.lastIndexOf("/") + 1)] ?? null)} />
+                  <td className="w-20 px-3 text-right font-mono text-[11px] text-muted-foreground" />
                 </tr>
               );
             })}
@@ -115,12 +121,13 @@ export function DirectoryPane({
                     <ChangeMark path={entry.path} entry={entry} changedFiles={changedFiles} />
                   </button>
                 </td>
-                <td className="w-24 px-3 text-right font-mono text-[11px] whitespace-nowrap text-muted-foreground">{formatBytes(entry.size)}</td>
+                <CommitCells commit={entry.added ? null : commits === undefined ? undefined : (commits?.[entry.name] ?? null)} />
+                <td className="w-20 px-3 text-right font-mono text-[11px] whitespace-nowrap text-muted-foreground">{formatBytes(entry.size)}</td>
               </tr>
             ))}
             {node.dirs.length === 0 && node.files.length === 0 && (
               <tr>
-                <td colSpan={2} className="px-3 py-6 text-center text-xs text-muted-foreground">
+                <td colSpan={4} className="px-3 py-6 text-center text-xs text-muted-foreground">
                   Nothing here.
                 </td>
               </tr>
@@ -129,6 +136,27 @@ export function DirectoryPane({
         </table>
       </div>
       {readme && <ReadmeCard repoId={repoId} entry={readme} cacheKey={tree.sha} dirs={dirs} filesByPath={filesByPath} onNavigate={onOpenDir} />}
+    </>
+  );
+}
+
+/** A row's newest commit: its subject, then how long ago. `undefined` while the folder's history loads. */
+function CommitCells({ commit }: { commit: LastCommitDTO | null | undefined }) {
+  return (
+    <>
+      <td className="hidden max-w-0 px-3 text-[12px] text-muted-foreground md:table-cell md:w-[45%]">
+        {commit === undefined ? (
+          <span className="block h-2.5 w-2/3 animate-pulse rounded bg-secondary" />
+        ) : commit ? (
+          <span className="block truncate" title={`${commit.subject}
+${commit.author} · ${commit.sha.slice(0, 7)}`}>
+            {commit.subject}
+          </span>
+        ) : null}
+      </td>
+      <td className="w-28 px-3 text-right text-[11px] whitespace-nowrap text-muted-foreground">
+        {commit?.date && <span title={new Date(commit.date).toLocaleString()}>{formatRelativeDate(commit.date)}</span>}
+      </td>
     </>
   );
 }
