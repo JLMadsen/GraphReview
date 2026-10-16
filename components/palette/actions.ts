@@ -7,6 +7,7 @@
 
 import type { ChatActionDTO } from "@/components/graph/chat-types";
 import type { SearchItem, SearchRepoInfo, SearchScope } from "@/lib/search/types";
+import { setJobsDrawerOpen } from "@/components/jobs/store";
 import type { DiffPickMode, PaletteGraphContext } from "./bus";
 
 export interface PaletteEnv {
@@ -271,6 +272,7 @@ export const COMMANDS: readonly PaletteCommand[] = [
   { id: "search-findings-all", title: "Search findings in all reviews", keywords: "every pr", group: "Search", when: inRepo, run: (e) => e.setScope("findings-all") },
   { id: "search-repos", title: "Switch repo", keywords: "repos change", group: "Search", run: (e) => e.setScope("repos") },
 
+  { id: "jobs", title: "Jobs", keywords: "background queue running queued failed logs analysis review preview", group: "App", run: () => setJobsDrawerOpen(true) },
   { id: "copy-link", title: "Copy a link to this page", keywords: "url share", group: "App", run: (e) => e.copy(window.location.href, "Link") },
   { id: "import-config", title: "Import AI providers from local config", keywords: "opencode codex claude code", group: "App", run: (e) => e.navigate("/settings") },
   { id: "shortcuts", title: "Keyboard shortcuts", keywords: "help keys", group: "App", run: (e) => e.showHelp() },

@@ -5,6 +5,7 @@ import { AddRepoDialog } from "./add-repo-dialog";
 import { ProviderBadge, RepoStatusBadge, providerIcon } from "./repo-status-badge";
 import { RepoDeleteButton } from "./repo-delete-button";
 import { RepoRetryButton } from "./repo-retry-button";
+import { AnalysisFailureInline } from "./analysis-job-inline";
 import { RefreshWhileWorking } from "./refresh-while-working";
 
 /**
@@ -78,12 +79,17 @@ function RepoRow({ repo }: { repo: RepoDto }) {
             </p>
           ) : null}
           {isError && repo.lastError ? (
-            <div className="mt-2 flex items-start gap-3">
-              <p className="min-w-0 flex-1 text-xs leading-relaxed [overflow-wrap:anywhere] text-destructive/90">{repo.lastError}</p>
-              <div className="pointer-events-auto -mt-1 shrink-0">
-                <RepoRetryButton repoId={repo.id} />
-              </div>
-            </div>
+            <AnalysisFailureInline
+              repoId={repo.id}
+              fallback={
+                <div className="mt-2 flex items-start gap-3">
+                  <p className="min-w-0 flex-1 text-xs leading-relaxed [overflow-wrap:anywhere] text-destructive/90">{repo.lastError}</p>
+                  <div className="pointer-events-auto -mt-1 shrink-0">
+                    <RepoRetryButton repoId={repo.id} />
+                  </div>
+                </div>
+              }
+            />
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">

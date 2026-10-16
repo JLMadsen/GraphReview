@@ -371,7 +371,7 @@ export function ChatPanel({
             </span>
           </p>
         )}
-        <div className="flex items-end gap-1.5">
+        <div className="flex items-stretch gap-1.5">
           <textarea
             ref={inputRef}
             value={draft}
@@ -396,7 +396,7 @@ export function ChatPanel({
             <button
               type="button"
               onClick={chat.stop}
-              className="rounded-md border border-border p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"
+              className="flex items-center justify-center rounded-md border border-border px-2.5 text-muted-foreground hover:bg-secondary hover:text-foreground"
               title="Stop"
               aria-label="Stop"
             >
@@ -406,7 +406,7 @@ export function ChatPanel({
             <button
               type="submit"
               disabled={!draft.trim() || !chat.aiConfigured}
-              className="rounded-md bg-primary p-2 text-primary-foreground disabled:opacity-30"
+              className="flex items-center justify-center rounded-md bg-primary px-2.5 text-primary-foreground disabled:opacity-30"
               title="Send"
               aria-label="Send"
             >

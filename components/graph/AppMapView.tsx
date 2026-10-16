@@ -36,6 +36,8 @@ import {
 } from "./app-map-types";
 import { formatAgo } from "./types";
 import { LegendToggle } from "./LegendToggle";
+import { JobFailureInline } from "@/components/jobs/JobParts";
+import { useJob } from "@/components/jobs/store";
 
 // Cards are compact now, so a squarer layout fills the canvas instead of
 // leaving a thin strip across its middle.
@@ -85,6 +87,10 @@ export function AppMapView({
   hoveredLink,
   className,
 }: AppMapViewProps) {
+  // The repo's app-map run, from the shared jobs poll: a failed (or
+  // cancelled) one shows inline with its logs and Run again (DESIGN.md §6.20 §4).
+  const appJob = useJob("app-map", (j) => j.repoId === job.repoId);
+  const failedJob = (job.status?.state === "failed" || job.status?.state === "cancelled") && (appJob?.state === "failed" || appJob?.state === "cancelled") ? appJob : undefined;
   const [query, setQuery] = useState("");
   const [allEdges, setAllEdges] = useState(false);
   // With a diff selected, changed cards stand out and the rest fade; this
@@ -307,11 +313,19 @@ export function AppMapView({
         </div>
       </div>
 
-      {(job.notice || cardActions?.notice || newFiles > 0) && (
+      {failedJob && (
+        <div className="border-b border-border px-4 py-1.5">
+          <JobFailureInline
+            job={failedJob}
+            runAgain={job.status?.level ? () => job.generate(job.status!.level!, job.status!.mode, job.status!.card) : undefined}
+          />
+        </div>
+      )}
+      {((job.notice && !failedJob) || cardActions?.notice || newFiles > 0) && (
         <div className="flex items-start gap-1.5 border-b border-border bg-warning/5 px-4 py-1.5 text-[11px] text-warning">
           <TriangleAlert className="mt-px size-3.5 shrink-0" aria-hidden />
           <span className="min-w-0 flex-1">
-            {job.notice ??
+            {(failedJob ? null : job.notice) ??
               cardActions?.notice ??
               `${newFiles} file${newFiles === 1 ? " isn't" : "s aren't"} in the model's grouping yet — ${newFiles === 1 ? "it's" : "they're"} on heuristic cards for now.`}
           </span>
@@ -442,6 +456,8 @@ function SourceNote({ map }: { map: AppMapResponseDTO }) {
 
 function AiButton({ job, level }: { job: UseAppMapJobResult; level: AppMapLevel }) {
   const status = job.status;
+  const appJob = useJob("app-map", (j) => j.repoId === job.repoId);
+  const queued = appJob?.state === "queued" ? appJob : undefined;
   if (!status) return null;
   if (!status.aiConfigured) {
     return (
@@ -453,7 +469,9 @@ function AiButton({ job, level }: { job: UseAppMapJobResult; level: AppMapLevel 
   if (job.running) {
     // The last run's progress stays in the status until the new run reports its own.
     const p = isAppMapJobPending(status.state) ? status.progress : undefined;
-    const phase = !p
+    const phase = status.state === "queued" && queued?.positionText
+      ? `Queued, ${queued.positionText}`
+      : !p
       ? "Starting"
       : p.phase === "grouping"
         ? p.level === "modules"

@@ -71,6 +71,7 @@ export function useAppMap(
 const POLL_INTERVAL_MS = 1200;
 
 export interface UseAppMapJobResult {
+  repoId: string;
   status: AppMapJobStatusDTO | null;
   /** Inline message: a POST refusal, a failed run, a fetch error. */
   notice: string | null;
@@ -172,7 +173,7 @@ export function useAppMapJob(repoId: string, enabled: boolean, onCompleted: () =
   }, [repoId]);
 
   const running = starting || (status ? isAppMapJobPending(status.state) : false);
-  return { status, notice, running, generate, cancel };
+  return { repoId, status, notice, running, generate, cancel };
 }
 
 export interface UseAppMapCardActionsResult {

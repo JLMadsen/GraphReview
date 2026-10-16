@@ -28,6 +28,7 @@ import { Badge } from "@/components/ui/badge";
 import type { RepoStatus } from "@/lib/jobs";
 import type { RepoProvider } from "@/lib/db";
 import { StatusLogHover } from "./status-log-hover";
+import { AnalysisQueuedNote } from "./analysis-job-inline";
 
 function shortSha(sha?: string): string | undefined {
   return sha ? sha.slice(0, 7) : undefined;
@@ -52,6 +53,7 @@ export function RepoStatusBadge({
         >
           <LoaderCircle className="animate-spin" aria-hidden />
           Analyzing
+          {repoId ? <AnalysisQueuedNote repoId={repoId} /> : null}
         </Badge>
       );
       if (!repoId) return badge;
@@ -69,6 +71,7 @@ export function RepoStatusBadge({
         >
           <RefreshCw className="animate-spin [animation-duration:2.5s]" aria-hidden />
           Refreshing
+          {repoId ? <AnalysisQueuedNote repoId={repoId} /> : null}
         </Badge>
       );
       if (!repoId) return badge;
@@ -134,6 +137,7 @@ export function RepoStatusText({
     <span className={`flex cursor-default items-center gap-1.5 text-xs ${text}`}>
       <span className={`size-1.5 rounded-full ${dot}`} aria-hidden />
       {label}
+      {working && repoId ? <AnalysisQueuedNote repoId={repoId} /> : null}
       {status === "up_to_date" && sha ? <span className="font-mono text-[11px]">{sha}</span> : null}
     </span>
   );

@@ -57,6 +57,7 @@ import {
   REVIEW_EFFORT_OPTIONS,
   formatAgo,
   reviewTargetLabel,
+  reviewTargetKeyOf,
   reviewTargetQuery,
   type FindingDTO,
   type ReviewEffort,
@@ -67,6 +68,8 @@ import {
   type FindingCategory,
 } from "./types";
 import { FindingRow } from "./review/FindingRow";
+import { JobFailureInline } from "@/components/jobs/JobParts";
+import { useJob } from "@/components/jobs/store";
 import { ImpactGroupRow } from "./review/ImpactGroupRow";
 import { STATIC_CATEGORIES, shortSha, BucketChips, Callout, Sha, FINDING_GRID, ImpactNote } from "./review/parts";
 import { ReviewMenu } from "./review/ReviewMenu";
@@ -180,6 +183,13 @@ export function ReviewPanel({
   /** Only one category of static-analysis findings (import cycles, infra), or every finding. */
   const [onlyCategory, setOnlyCategory] = useState<FindingCategory | null>(null);
 
+  // This target's review and comparison jobs, from the shared jobs poll
+  // (DESIGN.md §6.20 §4): the queue position while waiting, the failure inline.
+  const jobKey = target ? reviewTargetKeyOf(target) : null;
+  const reviewJob = useJob("review", (j) => j.repoId === repoId && j.targetKey === jobKey, Boolean(jobKey));
+  const compareJob = useJob("target-graph", (j) => j.repoId === repoId && j.targetKey === jobKey, Boolean(jobKey));
+  const comparingFirst = state === "queued" && compareJob?.state === "running";
+
   // A new target is a different review.
   const targetKey = target ? reviewTargetLabel(target) : null;
   useEffect(() => {
@@ -280,6 +290,8 @@ export function ReviewPanel({
   const isPullRequest = "prNumber" in target;
   const isQueueProblem = noticeCode === "queue_unavailable";
   const logsUrl = `/api/repos/${encodeURIComponent(repoId)}/review?${reviewTargetQuery(target)}&logs=1`;
+  // The failed run's reason, logs and Run again, inline (DESIGN.md §6.20 §4).
+  const failedJob = state === "failed" && !cancelled && reviewJob?.state === "failed" ? reviewJob : undefined;
   const costTitle = progress
     ? `${NUMBER.format(progress.calls)} model call${progress.calls === 1 ? "" : "s"} · ` +
       `${NUMBER.format(progress.promptTokens)} prompt + ${NUMBER.format(progress.completionTokens)} completion tokens` +
@@ -382,7 +394,7 @@ export function ReviewPanel({
               <JobLogHover logsUrl={logsUrl} label="Review job log">
                 <span className="flex cursor-default items-center gap-1.5 px-1 text-[11px] font-medium">
                   <LoaderCircle className="size-3 animate-spin" aria-hidden />
-                  {state === "queued" ? "Queued" : "Reviewing"}
+                  {state === "queued" ? (comparingFirst ? "Comparing refs first" : reviewJob?.positionText ? `Queued, ${reviewJob.positionText}` : "Queued") : "Reviewing"}
                 </span>
               </JobLogHover>
             )}
@@ -486,10 +498,19 @@ export function ReviewPanel({
         {/* ---- Scrolls under the pinned header: problems first, as banners,
              then the list ----------------------------------------------- */}
         <div className="min-h-0 flex-1 overflow-y-auto pb-2">
-          {notice && (
-            <Callout tone={isQueueProblem ? "warning" : "danger"} icon={TriangleAlert}>
-              {notice}
-            </Callout>
+          {failedJob ? (
+            <JobFailureInline
+              // Without a provider a re-run can only fail again: point at Settings instead.
+              job={aiConfigured ? failedJob : { ...failedJob, retryable: false, configIssue: { label: "Set up an AI provider", href: "/settings" } }}
+              className="mt-2"
+              runAgain={canRerun ? onRerun : undefined}
+            />
+          ) : (
+            notice && (
+              <Callout tone={isQueueProblem ? "warning" : "danger"} icon={TriangleAlert}>
+                {notice}
+              </Callout>
+            )
           )}
           {showCancelled && (
             <Callout tone="info" icon={Ban}>

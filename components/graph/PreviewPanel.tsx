@@ -25,8 +25,10 @@ import type {
 } from "@/lib/preview/types";
 import { Spark } from "./Spark";
 import { symbolStatus, type PreviewSymbolStatus } from "@/lib/preview/compare";
-import type { ReviewTargetDTO } from "./types";
+import { reviewTargetKeyOf, type ReviewTargetDTO } from "./types";
 import { usePreview } from "./usePreview";
+import { JobFailureInline } from "@/components/jobs/JobParts";
+import { useJob } from "@/components/jobs/store";
 import { plural, short } from "./preview/format";
 import { ErrorLine, SymbolView } from "./preview/SymbolView";
 
@@ -105,6 +107,11 @@ export function PreviewPanel({ repoId, target, filePath, initialSymbol }: Previe
   const current = symbols.find((s) => s.name === selected) ?? symbols[0];
   const hasEdits = Object.keys(edited).length > 0;
   const sandboxDown = status?.sandbox?.available === false;
+  // This file's preview job, from the shared jobs poll (DESIGN.md §6.20 §4).
+  const jobTargetKey = reviewTargetKeyOf(target);
+  const job = useJob("preview", (j) => j.repoId === repoId && j.targetKey === jobTargetKey && j.filePath === filePath);
+  const progressMessage =
+    status?.state === "queued" && job?.state === "queued" && job.positionText ? `Queued, ${job.positionText}` : status?.progress?.message;
 
   const start = () => {
     if (hasEdits && result) {
@@ -138,7 +145,7 @@ export function PreviewPanel({ repoId, target, filePath, initialSymbol }: Previe
     return (
       <div className="flex flex-col items-center gap-3 py-12 text-center text-xs">
         {pending ? (
-          <Progress message={status?.progress?.message} logs={logs} />
+          <Progress message={progressMessage} logs={logs} />
         ) : (
           <>
             <p className="max-w-md leading-relaxed text-muted-foreground">
@@ -150,7 +157,12 @@ export function PreviewPanel({ repoId, target, filePath, initialSymbol }: Previe
           </>
         )}
         {error && <ErrorLine text={error} />}
-        {status?.state === "failed" && status.error && <ErrorLine text={status.error} />}
+        {status?.state === "failed" &&
+          (job?.state === "failed" ? (
+            <JobFailureInline job={job} className="w-full max-w-md text-left" runAgain={start} />
+          ) : (
+            status.error && <ErrorLine text={status.error} />
+          ))}
       </div>
     );
   }
@@ -162,7 +174,7 @@ export function PreviewPanel({ repoId, target, filePath, initialSymbol }: Previe
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           {pending ? (
-            <Progress message={status?.progress?.message} logs={[]} inline />
+            <Progress message={progressMessage} logs={[]} inline />
           ) : (
             <p className={cn("text-[15px] leading-tight font-medium", summary.tone === "warn" ? "text-warning" : "text-muted-foreground")}>
               {summary.text}
@@ -188,7 +200,12 @@ export function PreviewPanel({ repoId, target, filePath, initialSymbol }: Previe
       </div>
 
       {error && <ErrorLine text={error} />}
-      {status?.state === "failed" && status.error && <ErrorLine text={status.error} />}
+      {status?.state === "failed" &&
+        (job?.state === "failed" ? (
+          <JobFailureInline job={job} runAgain={start} />
+        ) : (
+          status.error && <ErrorLine text={status.error} />
+        ))}
       {result.inputsNote && <p className="text-warning">{result.inputsNote}</p>}
       {result.before.fatal && <ErrorLine text={`Before: ${result.before.fatal}`} />}
       {result.after.fatal && <ErrorLine text={`After: ${result.after.fatal}`} />}
