@@ -1,6 +1,7 @@
 import { headers } from "next/headers";
 import { getActiveAiProviderId, getSettings, listAiProviders } from "@/lib/db";
 import { SettingsForm } from "./settings-form";
+import { getMcpToken } from "@/lib/mcp/token";
 import { McpCard } from "./mcp-card";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ChecklistEditor } from "@/components/graph/ChecklistEditor";
@@ -60,6 +61,8 @@ export default async function SettingsPage() {
   // The MCP snippets use the address this page was reached on, so they carry
   // this instance's real port (middleware.ts only lets loopback hosts through).
   const mcpUrl = `http://${(await headers()).get("host") ?? "127.0.0.1:3470"}/api/mcp`;
+  // Shown back (unlike the PATs): each agent's config needs it.
+  const mcpToken = await getMcpToken().catch(() => null);
 
   return (
     <div className="mx-auto max-w-[1800px] space-y-8 px-6 py-10">
@@ -104,7 +107,7 @@ export default async function SettingsPage() {
         </Card>
 
         <div className="min-w-0">
-          <McpCard url={mcpUrl} />
+          <McpCard url={mcpUrl} token={mcpToken} />
         </div>
       </div>
     </div>

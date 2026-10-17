@@ -1,9 +1,9 @@
 "use client";
 
-// The Stats tab (DESIGN.md §6.19): totals, lines of code per language, a
+// The Stats view (DESIGN.md §6.19): totals, lines of code per language, a
 // day-by-day timeline (lines of code, commits, CI runs) and — when more
 // than one person committed — who did what. Everything but the CI runs
-// arrives from the server page; the runs are fetched here, since they come
+// arrives from StatsGraphView; the runs are fetched here, since they come
 // from the host and may be slow or unavailable.
 
 import { useEffect, useMemo, useRef, useState } from "react";

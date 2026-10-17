@@ -26,6 +26,7 @@ import {
   writeInfraCatalog,
   writeDbSchema,
   writeEnvCatalog,
+  writeTestsCatalog,
   readDbSource,
 } from "@/lib/db";
 import { writeModuleTier } from "./module-tier";
@@ -219,10 +220,17 @@ export async function runAnalysisJob(
       (result.db.databases.some((d) => d.orderProblems.length) ? `; order problems: ${result.db.databases.flatMap((d) => d.orderProblems).slice(0, 3).join(" | ")}` : "")
   );
   writeEnvCatalog(repo.id, sha, result.env);
+  writeTestsCatalog(repo.id, sha, result.tests);
   writeCommitSymbols(repo.id, sha, "tip", result);
   log(
     `env catalog: ${result.env.vars.length} name(s), ${result.env.targets.length} environment(s)/target(s) from ${result.env.files} env source file(s)` +
       (result.env.vars.some((v) => v.tags.includes("undeclared")) ? `, ${result.env.vars.filter((v) => v.tags.includes("undeclared")).length} undeclared` : "")
+  );
+  log(
+    `test catalog: ${result.tests.tests.length} test file(s)` +
+      (result.tests.frameworks.length ? ` (${[...new Set(result.tests.frameworks.map((f) => f.framework))].join(", ")})` : "") +
+      `, ${result.tests.sources.filter((s) => s.testCount > 0).length}/${result.tests.sources.length} code file(s) reached` +
+      (result.tests.reports.length ? `, coverage from ${result.tests.reports.map((r) => r.file).join(", ")}` : "")
   );
   await markRepoAnalyzed(repo.id, sha, ANALYSIS_VERSION);
 

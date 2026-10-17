@@ -1,6 +1,6 @@
 // Resolve / reopen one AI review finding, or reply to it.
 //
-//   PATCH /api/repos/[repoId]/review/findings/[findingId]   { resolved: boolean }
+//   PATCH /api/repos/[repoId]/review/findings/[findingId]   { resolved: boolean, dismiss?: { reason?: string } }
 //   POST  /api/repos/[repoId]/review/findings/[findingId]   { kind: "fixing", body? }
 //
 // The POST is the command palette's "Mark fixing" (DESIGN.md §6.18): the
@@ -8,22 +8,32 @@
 //
 // Only findings below `match` (mismatch, partial, unknown) can be resolved —
 // a match has nothing to resolve. Resolving stamps `resolvedAt`; reopening
-// removes it. The state lives on the finding itself, so a re-review (which
-// replaces a target's findings) starts every finding unresolved again.
+// removes it. A re-review that produces the same finding again keeps it
+// (DESIGN.md §6.21).
+//
+// `dismiss` resolves it as "not a problem": the reason (optional) is added
+// as an answered reply, and the finding is remembered for the repo — later
+// reviews hide near-identical findings on the same file and tell the model
+// about it (lib/db/review-loop.ts). Reopening a dismissed finding forgets it.
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { addFindingResponse, getFindingById, setFindingResolved } from "@/lib/db";
+import { addFindingResponse, addFindingSuppression, deleteSuppressionsForFinding, getFindingById, setFindingResolved } from "@/lib/db";
 import { apiError, errorMessage } from "../../../../_shared";
 
 export const dynamic = "force-dynamic";
 
-const bodySchema = z.object({ resolved: z.boolean() });
+const bodySchema = z.object({
+  resolved: z.boolean(),
+  dismiss: z.object({ reason: z.string().max(1000).optional() }).optional(),
+});
 
 export interface ResolveFindingResponse {
   id: string;
   /** ISO-8601; absent when the finding is (now) open. */
   resolvedAt?: string;
+  /** `dismiss` only: the suppression it made. */
+  suppressionId?: string;
 }
 
 export async function PATCH(
@@ -34,7 +44,7 @@ export async function PATCH(
 
   const parsed = bodySchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
-    return apiError('Body must be { "resolved": true | false }.', 400);
+    return apiError('Body must be { "resolved": true | false, "dismiss"?: { "reason"?: string } }.', 400);
   }
 
   try {
@@ -46,14 +56,39 @@ export async function PATCH(
       return apiError("Only findings that need a look (not OK) can be resolved.", 400);
     }
 
-    const updated = await setFindingResolved(repoId, findingId, parsed.data.resolved);
+    const { resolved, dismiss } = parsed.data;
+    if (dismiss && !resolved) return apiError("Only resolving can dismiss a finding.", 400);
+    if (dismiss && (!existing.filePath || existing.category === "intent")) {
+      return apiError("Only findings about a file can be dismissed as not a problem.", 400);
+    }
+
+    const reason = dismiss?.reason?.trim();
+    const updated = dismiss
+      ? await addFindingResponse(repoId, findingId, {
+          kind: "answered",
+          author: "reviewer",
+          body: reason ? `Not a problem: ${reason}` : "Not a problem.",
+        })
+      : await setFindingResolved(repoId, findingId, resolved);
     if (!updated) {
       // Deleted between the read and the write — a re-review replaced it.
       return apiError(`No finding with id "${findingId}" in this repo.`, 404);
     }
+    const suppression = dismiss
+      ? addFindingSuppression({
+          repoId,
+          filePath: existing.filePath!,
+          summary: existing.summary,
+          ...(reason ? { reason } : {}),
+          findingId,
+          targetKey: existing.targetKey,
+        })
+      : undefined;
+    if (!resolved) deleteSuppressionsForFinding(repoId, findingId);
     const body: ResolveFindingResponse = {
       id: updated.id,
       ...(updated.resolvedAt ? { resolvedAt: updated.resolvedAt } : {}),
+      ...(suppression ? { suppressionId: suppression.id } : {}),
     };
     return NextResponse.json(body);
   } catch (error) {

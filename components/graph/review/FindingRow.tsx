@@ -7,6 +7,8 @@ import {
   Boxes,
   Check,
   ChevronRight,
+  Eye,
+  EyeOff,
   FileDiff,
   MessageSquare,
   RotateCcw,
@@ -33,7 +35,10 @@ import { type RowKeyboardProps, STATIC_CATEGORY_LABEL, useRowKeyboard, FINDING_G
  * only channel), the summary — which expands the model's reasoning — with its
  * facts as chips under it (component, kind, low confidence, fixing), the
  * file:line, and real Diff / Resolve buttons — and Ask, which puts the finding
- * in the chat's input. Open defects carry a faint tint.
+ * in the chat's input. Open defects carry a faint tint. "Not a problem"
+ * resolves it with an optional reason and remembers it for the repo; a
+ * finding hidden by such a memory (shown on request) offers Un-suppress
+ * (DESIGN.md §6.21).
  */
 export function FindingRow({
   finding,
@@ -42,6 +47,8 @@ export function FindingRow({
   onSetResolved,
   onRetry,
   onAskChat,
+  onDismiss,
+  onUnsuppress,
   ...keyboard
 }: RowKeyboardProps & {
   finding: FindingDTO;
@@ -52,13 +59,32 @@ export function FindingRow({
   onRetry?: () => void;
   /** Puts the finding in the chat's input, to ask about it. */
   onAskChat?: (finding: FindingDTO) => void;
+  /** Resolves it as not a problem, remembered for the repo. */
+  onDismiss?: (findingId: string, reason: string) => void;
+  /** Forgets the suppression hiding it. */
+  onUnsuppress?: (suppressionId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  /** The "why isn't it a problem" form's text; `null` while it is closed. */
+  const [dismissing, setDismissing] = useState<string | null>(null);
   const location = formatLocation(finding);
   const resolved = Boolean(finding.resolvedAt);
   const fixing = !resolved && Boolean(finding.responses?.some((reply) => reply.kind === "fixing"));
   const settled = resolved || finding.assessment === "ok";
   const impact = isImpactFinding(finding);
+  const canDismiss =
+    Boolean(onDismiss) &&
+    !finding.callFailed &&
+    !finding.suppressed &&
+    !resolved &&
+    Boolean(finding.filePath) &&
+    finding.category !== "intent" &&
+    isResolvable(finding);
+  const submitDismiss = () => {
+    if (dismissing === null) return;
+    onDismiss?.(finding.id, dismissing);
+    setDismissing(null);
+  };
   const tag = impact
     ? null
     : STATIC_CATEGORY_LABEL[finding.category]
@@ -130,6 +156,15 @@ export function FindingRow({
               {formatConfidence(finding.confidence)} sure
             </Chip>
           )}
+          {finding.suppressed && (
+            <Chip
+              className="border-muted-foreground/40 text-muted-foreground"
+              title={`Dismissed before as not a problem: “${finding.suppressed.summary}”${finding.suppressed.reason ? `\nReason: ${finding.suppressed.reason}` : ""}`}
+            >
+              <EyeOff className="size-3 shrink-0" aria-hidden />
+              <span className="truncate">Suppressed{finding.suppressed.reason ? `: ${finding.suppressed.reason}` : ""}</span>
+            </Chip>
+          )}
           {fixing && (
             <Chip className="border-brand/50 text-brand" title="An agent agreed with this finding and is fixing it">
               <Wrench className="size-3" aria-hidden /> Fixing
@@ -142,6 +177,34 @@ export function FindingRow({
           </p>
         )}
         <Replies finding={finding} />
+        {dismissing !== null && (
+          <form
+            className="mt-2 flex flex-wrap items-center gap-1.5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              submitDismiss();
+            }}
+          >
+            <input
+              autoFocus
+              value={dismissing}
+              onChange={(e) => setDismissing(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setDismissing(null);
+              }}
+              maxLength={1000}
+              placeholder="Why isn't it a problem? (optional)"
+              aria-label="Why isn't it a problem? (optional)"
+              className="h-7 min-w-0 flex-1 rounded-[2px] border border-border bg-background px-2 text-xs outline-none focus-visible:border-ring"
+            />
+            <Button type="submit" variant="outline" size="xs" title="Resolve it, and hide near-identical findings on this file in later reviews of this repo">
+              <EyeOff aria-hidden /> Dismiss
+            </Button>
+            <Button type="button" variant="ghost" size="xs" onClick={() => setDismissing(null)}>
+              Cancel
+            </Button>
+          </form>
+        )}
       </div>
       <div className="hidden min-w-0 pt-0.5 @3xl:block">
         {location && (
@@ -182,6 +245,30 @@ export function FindingRow({
           >
             <FileDiff aria-hidden />
             {impact ? "Open" : "Diff"}
+          </Button>
+        )}
+        {finding.suppressed && onUnsuppress && (
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            onClick={() => onUnsuppress(finding.suppressed!.id)}
+            title="Forget this dismissal — findings like it show again on every review of this repo"
+          >
+            <Eye aria-hidden /> Un-suppress
+          </Button>
+        )}
+        {canDismiss && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={() => setDismissing((v) => (v === null ? "" : null))}
+            aria-expanded={dismissing !== null}
+            title="Not a problem — resolve it with an optional reason; later reviews of this repo hide findings like it"
+            aria-label="Dismiss as not a problem"
+          >
+            <EyeOff aria-hidden />
           </Button>
         )}
         {finding.callFailed

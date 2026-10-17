@@ -130,6 +130,10 @@ export interface UseReviewResult extends ReviewSnapshot {
   canCancel: boolean;
   /** Marks a below-match finding resolved (or reopens it). Optimistic; reverts with a notice if the server refuses. */
   setResolved: (findingId: string, resolved: boolean) => void;
+  /** Resolves a finding as "not a problem" and remembers it for the repo (DESIGN.md §6.21); the reason is optional. */
+  dismiss: (findingId: string, reason: string) => void;
+  /** Forgets a suppression: the findings it hid show again. */
+  unsuppress: (suppressionId: string) => void;
 }
 
 function isPending(state: ReviewStateDTO): boolean {
@@ -495,6 +499,60 @@ export function useReview(
     [repoId]
   );
 
+  /** Sends one finding/suppression change, then refetches; a refusal becomes the notice. */
+  const sendChange = useCallback(
+    (url: string, init: RequestInit, fallback: string) => {
+      void (async () => {
+        try {
+          const res = await fetch(url, init);
+          if (!res.ok) {
+            const json = (await res.json().catch(() => null)) as { error?: string } | null;
+            throw new Error(json?.error ?? `${fallback} (${res.status}).`);
+          }
+          refreshSettled();
+        } catch (err) {
+          setSnapshot((prev) => ({ ...prev, notice: err instanceof Error ? err.message : `${fallback}.`, noticeCode: null }));
+        }
+      })();
+    },
+    [refreshSettled]
+  );
+
+  const dismiss = useCallback(
+    (findingId: string, reason: string) => {
+      // Shown resolved at once; the refetch brings the suppression with it.
+      setSnapshot((prev) => ({
+        ...prev,
+        findings: prev.findings.map((f) => (f.id === findingId ? { ...f, resolvedAt: f.resolvedAt ?? new Date().toISOString() } : f)),
+      }));
+      sendChange(
+        `/api/repos/${encodeURIComponent(repoId)}/review/findings/${encodeURIComponent(findingId)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ resolved: true, dismiss: reason.trim() ? { reason: reason.trim() } : {} }),
+        },
+        "Could not dismiss the finding"
+      );
+    },
+    [repoId, sendChange]
+  );
+
+  const unsuppress = useCallback(
+    (suppressionId: string) => {
+      setSnapshot((prev) => ({
+        ...prev,
+        findings: prev.findings.map((f) => (f.suppressed?.id === suppressionId ? { ...f, suppressed: undefined } : f)),
+      }));
+      sendChange(
+        `/api/repos/${encodeURIComponent(repoId)}/review/suppressions?id=${encodeURIComponent(suppressionId)}`,
+        { method: "DELETE" },
+        "Could not un-suppress"
+      );
+    },
+    [repoId, sendChange]
+  );
+
   const canRerun =
     snapshot.status === "ready" &&
     snapshot.aiConfigured &&
@@ -504,7 +562,7 @@ export function useReview(
   const canCancel = snapshot.status === "ready" && isPending(snapshot.state) && !snapshot.cancelling;
 
   return useMemo(
-    () => ({ ...snapshot, rerun, retryFailed, canRerun, cancel, canCancel, setResolved }),
-    [snapshot, rerun, retryFailed, canRerun, cancel, canCancel, setResolved]
+    () => ({ ...snapshot, rerun, retryFailed, canRerun, cancel, canCancel, setResolved, dismiss, unsuppress }),
+    [snapshot, rerun, retryFailed, canRerun, cancel, canCancel, setResolved, dismiss, unsuppress]
   );
 }

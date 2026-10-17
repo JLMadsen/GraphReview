@@ -37,7 +37,7 @@ export interface ChatSuggestionRecord {
 export type ChatShowKind = "component" | "file" | "endpoint" | "table" | "env" | "infra" | "area" | "function" | "finding";
 
 /** The Graph tab's views, as `switch_view` names them. */
-export type ChatViewName = "pr" | "app" | "api" | "infra" | "data" | "env" | "files";
+export type ChatViewName = "pr" | "app" | "api" | "infra" | "data" | "env" | "files" | "tests";
 
 /** The file viewer's tabs `open_diff` can open: the diff, the new file, the old file, the Before / after preview. */
 export type ChatFileTab = "diff" | "file" | "base" | "preview";

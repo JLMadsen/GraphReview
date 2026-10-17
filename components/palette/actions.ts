@@ -160,7 +160,7 @@ export function targetsFor(item: SearchItem, env: PaletteEnv): PaletteTarget[] {
       add("graph", "Graph tab", (e) => e.navigate(`/repo/${item.id}/graph`));
       add("prs", "Pick a pull request", (e) => e.pick("pr", item.id));
       add("branches", "Compare branches", (e) => e.pick("refs", item.id));
-      add("stats", "Stats", (e) => e.navigate(`/repo/${item.id}/stats`));
+      add("stats", "Stats", (e) => (item.id === e.repoId ? e.show(view("stats")) : e.navigate(`/repo/${item.id}/graph?view=stats`)));
       break;
   }
   return out;
@@ -195,7 +195,7 @@ export const COMMANDS: readonly PaletteCommand[] = [
   { id: "go-graph", title: "Go to the Graph tab", group: "Go to", when: inRepo, run: (e) => e.navigate(`/repo/${e.repoId}/graph`) },
   { id: "go-prs", title: "Pick a pull request", keywords: "go to pull requests merge requests diff open pr", group: "Go to", when: inRepo, run: (e) => e.pick("pr") },
   { id: "go-branches", title: "Compare branches", keywords: "go to branches diff refs", group: "Go to", when: inRepo, run: (e) => e.pick("refs") },
-  { id: "go-stats", title: "Go to Stats", keywords: "lines of code languages contributors timeline ci", group: "Go to", when: inRepo, run: (e) => e.navigate(`/repo/${e.repoId}/stats`) },
+  { id: "go-stats", title: "Go to Stats", keywords: "lines of code languages contributors timeline ci", group: "Go to", when: inRepo, run: (e) => e.show(view("stats")) },
 
   { id: "view-app", title: "Show the App map", keywords: "cards architecture", group: "View", when: inRepo, run: (e) => e.show(view("app")) },
   { id: "view-pr", title: "Show the PR map", keywords: "areas change", group: "View", when: hasTarget, run: (e) => e.show(view("pr"), { needsTarget: true }) },
@@ -204,6 +204,7 @@ export const COMMANDS: readonly PaletteCommand[] = [
   { id: "view-infra", title: "Show Infra", keywords: "terraform kubernetes nomad docker", group: "View", when: inRepo, run: (e) => e.show(view("infra")) },
   { id: "view-data", title: "Show Data", keywords: "schema tables database", group: "View", when: inRepo, run: (e) => e.show(view("data")) },
   { id: "view-env", title: "Show Env", keywords: "environment variables", group: "View", when: inRepo, run: (e) => e.show(view("env")) },
+  { id: "view-tests", title: "Show Tests", keywords: "coverage test plan jest vitest pytest", group: "View", when: inRepo, run: (e) => e.show(view("tests")) },
   { id: "level-architecture", title: "App map: Architecture level", group: "View", when: inRepo, run: (e) => e.show(view("app", { level: "architecture" })) },
   { id: "level-features", title: "App map: Features level", group: "View", when: inRepo, run: (e) => e.show(view("app", { level: "features" })) },
   { id: "level-modules", title: "App map: Modules level", group: "View", when: inRepo, run: (e) => e.show(view("app", { level: "modules" })) },
@@ -230,7 +231,7 @@ export const COMMANDS: readonly PaletteCommand[] = [
     run: async (e) => {
       const t = e.graph!.target!;
       const qs = "prNumber" in t ? `prNumber=${t.prNumber}` : `baseRef=${encodeURIComponent(t.baseRef)}&headRef=${encodeURIComponent(t.headRef)}`;
-      await e.get(`/api/repos/${e.repoId}/target-graph?${qs}`);
+      await e.post(`/api/repos/${e.repoId}/target-graph?${qs}`);
       e.notify("Comparing base and head — the head's symbols are searchable once it's done.");
     },
   },

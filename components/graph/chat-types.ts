@@ -44,7 +44,7 @@ export type ChatActionDTO = (
     }
   | {
       kind: "view";
-      view: "pr" | "app" | "api" | "infra" | "data" | "env" | "files";
+      view: "pr" | "app" | "api" | "infra" | "data" | "env" | "files" | "tests" | "stats";
       level?: "architecture" | "features" | "modules";
       mode?: string;
       changedOnly?: boolean;

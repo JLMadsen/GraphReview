@@ -97,11 +97,15 @@ export function gitIn(baseDir: string, timeoutMs = QUICK_GIT_TIMEOUT_MS, config:
 }
 
 /**
- * Per-invocation credential for a private clone/fetch, passed as `git -c
- * http.extraHeader=…` rather than being baked into the remote URL. Keeping
+ * Per-invocation credential for a private clone/fetch, passed as an
+ * `http.extraHeader` rather than being baked into the remote URL. Keeping
  * the PAT out of the remote means it is never written to `.git/config` inside
  * the persistent `repo_cache` volume — a plaintext-credential-at-rest leak
- * this deliberately avoids.
+ * this deliberately avoids. It travels in git's environment
+ * (`GIT_CONFIG_COUNT`/`_KEY_0`/`_VALUE_0`, git's env form of `-c`), not as a
+ * `-c` argument: a command line is readable by every local user (`ps`,
+ * `/proc/<pid>/cmdline`) and ends up in error messages; an environment isn't
+ * and doesn't.
  *
  * The Basic-auth username differs by host convention: GitHub accepts (and
  * its own docs recommend) `x-access-token` as the username for a PAT;
@@ -110,11 +114,45 @@ export function gitIn(baseDir: string, timeoutMs = QUICK_GIT_TIMEOUT_MS, config:
  * password is a valid token, but matching each host's own convention avoids
  * surprises.
  */
-function authConfig(token: string | null, provider: RemoteProvider): string[] {
-  if (!token) return [];
+function authEnv(token: string | null, provider: RemoteProvider): Record<string, string> | null {
+  if (!token) return null;
   const username = provider === "gitlab" ? "oauth2" : "x-access-token";
   const basic = Buffer.from(`${username}:${token}`).toString("base64");
-  return [`http.extraHeader=Authorization: Basic ${basic}`];
+  return {
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "http.extraHeader",
+    GIT_CONFIG_VALUE_0: `Authorization: Basic ${basic}`,
+  };
+}
+
+/** Names simple-git guards besides `GIT_*` (its environment guard and `unsafe` checks). */
+const GUARDED_ENV = new Set(["editor", "pager", "prefix", "visual", "ssh_askpass"]);
+const ALLOWED_ENV = new Set(GIT_ENVIRONMENT.map((name) => name.toLowerCase()));
+
+/**
+ * A simple-git instance whose git sees `auth` in its environment. An explicit
+ * environment replaces the inherited one, and simple-git rejects (rather
+ * than strips) a guarded variable passed that way, so the ambient guarded
+ * ones are dropped here just as simple-git drops them from the inherited
+ * environment.
+ */
+function remoteGit(baseDir: string, timeoutMs: number, auth: Record<string, string> | null): SimpleGit {
+  if (!auth) return simpleGit(gitOptions(baseDir, timeoutMs));
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    const key = name.toLowerCase();
+    if (value === undefined) continue;
+    if ((key.startsWith("git_") || GUARDED_ENV.has(key)) && !ALLOWED_ENV.has(key)) continue;
+    env[name] = value;
+  }
+  return simpleGit({
+    ...gitOptions(baseDir, timeoutMs),
+    allowEnvironment: [...GIT_ENVIRONMENT, ...Object.keys(auth)],
+    // The explicit environment carries the no-prompt GIT_ASKPASS/SSH_ASKPASS
+    // (`echo`, set at the top of this file), which simple-git checks only when
+    // they are passed this way rather than inherited.
+    unsafe: { allowUnsafeCredentialHelper: true, allowUnsafeConfigEnvCount: true, allowUnsafeAskPass: true },
+  }).env({ ...env, ...auth });
 }
 
 /** The token + host label for whichever remote provider a repo uses. */
@@ -309,7 +347,7 @@ export async function readRemoteHead(
   token: string | null,
   provider: RemoteProvider
 ): Promise<RemoteHead> {
-  const output = await gitIn(process.cwd(), QUICK_GIT_TIMEOUT_MS, authConfig(token, provider)).listRemote([
+  const output = await remoteGit(process.cwd(), QUICK_GIT_TIMEOUT_MS, authEnv(token, provider)).listRemote([
     "--symref",
     url,
     "HEAD",
@@ -384,7 +422,7 @@ export async function prepareRepoSource(
   const remote = remoteUrlForRepo(repo);
   const dir = repoCacheDir(repo.id);
   const token = await resolveRemoteToken(remoteProvider);
-  const config = authConfig(token, remoteProvider);
+  const auth = authEnv(token, remoteProvider);
 
   if (!existsSync(path.join(dir, ".git"))) {
     // A leftover directory without a .git (interrupted earlier clone) would
@@ -393,7 +431,7 @@ export async function prepareRepoSource(
     await mkdir(path.dirname(dir), { recursive: true });
     log(`cloning ${remote} into ${dir}`);
     await withFriendlyAuthError(
-      simpleGit(gitOptions(getRepoCacheRoot(), SLOW_GIT_TIMEOUT_MS, config)).clone(remote, dir),
+      remoteGit(getRepoCacheRoot(), SLOW_GIT_TIMEOUT_MS, auth).clone(remote, dir),
       remoteProvider,
       Boolean(token)
     );
@@ -401,7 +439,7 @@ export async function prepareRepoSource(
   }
 
   log(`fetching ${remote} into existing clone at ${dir}`);
-  const git = gitIn(dir, SLOW_GIT_TIMEOUT_MS, config);
+  const git = remoteGit(dir, SLOW_GIT_TIMEOUT_MS, auth);
   await git.remote(["set-url", "origin", remote]);
   await withFriendlyAuthError(git.fetch(["--prune", "origin"]), remoteProvider, Boolean(token));
 
@@ -444,7 +482,7 @@ export async function ensureCommitsInCache(
   if (!existsSync(path.join(dir, ".git"))) await prepareRepoSource(repo, log);
 
   const token = await resolveRemoteToken(remoteProvider);
-  const git = gitIn(dir, SLOW_GIT_TIMEOUT_MS, authConfig(token, remoteProvider));
+  const git = remoteGit(dir, SLOW_GIT_TIMEOUT_MS, authEnv(token, remoteProvider));
   const missing = async (): Promise<string[]> => {
     const out: string[] = [];
     for (const sha of shas) {

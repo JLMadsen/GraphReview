@@ -22,7 +22,7 @@ import { InfraDiagram } from "./infra/InfraDiagram";
 import { InfraFiles } from "./infra/InfraFiles";
 import { InfraRequests, type RouteRef } from "./infra/InfraRequests";
 import { buildInfraTopology, deploySets, type JourneyEndpoint } from "./infra-topology";
-import { useStoredState } from "./graph-view/view-state";
+import { useUrlState } from "./graph-view/view-state";
 import type { ReviewTargetDTO } from "./types";
 import { cn } from "cn";
 import { Segmented } from "./Segmented";
@@ -110,9 +110,11 @@ export function InfraView({
   className,
 }: InfraViewProps) {
   const [query, setQuery] = useState("");
-  const [mode, setMode] = useStoredState<InfraMode>(INFRA_MODE_STORAGE_KEY, "diagram", parseInfraMode);
+  // Also `?infra=` in the URL (DESIGN.md §6.25), so a sub-view can be linked.
+  const { value: mode, set: setMode } = useUrlState<InfraMode>("infra", INFRA_MODE_STORAGE_KEY, "diagram", parseInfraMode);
   useEffect(() => {
-    if (modeRequest) setMode(modeRequest.mode);
+    // It comes with a switch to this view, which has its own history entry.
+    if (modeRequest) setMode(modeRequest.mode, "replace");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modeRequest]);
   /** The resource whose detail shows in the side panel (outside List). */
@@ -198,7 +200,7 @@ export function InfraView({
   const target = localFocus ?? focus;
   useEffect(() => setLocalFocus(null), [focus]);
   useEffect(() => {
-    if (focus) setMode("list");
+    if (focus) setMode("list", "replace");
   }, [focus, setMode]);
   useEffect(() => {
     if (!target) return;

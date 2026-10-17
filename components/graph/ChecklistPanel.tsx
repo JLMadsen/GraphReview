@@ -6,10 +6,13 @@
 // and every item under it, always open. (The verdict above is the headline;
 // the two are separate results and each says its own.) Failing items are
 // only marks; nothing is blocked. The gear opens the per-repo editor in place.
+// When the PR states acceptance criteria, one expandable item lists them,
+// each with its verdict and evidence (DESIGN.md §6.27).
 
 import { useState } from "react";
 import {
   Check,
+  ChevronRight,
   Clock,
   Ellipsis,
   ExternalLink,
@@ -22,7 +25,7 @@ import {
 import { cn } from "cn";
 import { ChecklistEditor } from "./ChecklistEditor";
 import { Spark } from "./Spark";
-import type { ChecklistStatusDTO } from "./checklist-types";
+import type { AcceptanceCriterionRowDTO, ChecklistItemResultDTO, ChecklistStatusDTO } from "./checklist-types";
 import type { UseChecklistResult } from "./useChecklist";
 
 const STATUS_VISUALS: Record<ChecklistStatusDTO, { icon: typeof Check; className: string; label: string }> = {
@@ -41,12 +44,21 @@ const STATUS_VISUALS: Record<ChecklistStatusDTO, { icon: typeof Check; className
   },
 };
 
+const CRITERION_VISUALS: Record<AcceptanceCriterionRowDTO["verdict"], { status: ChecklistStatusDTO; label: string }> = {
+  pass: { status: "pass", label: "Met" },
+  fail: { status: "fail", label: "Not met" },
+  unknown: { status: "unknown", label: "Can't tell" },
+  pending: { status: "pending", label: "Not judged yet" },
+};
+
 export interface ChecklistPanelProps {
   repoId: string;
   checklist: UseChecklistResult;
+  /** Opens a changed file's diff, scrolled to `lines` ("12" or "12-18"). */
+  onOpenFile?: (path: string, lines?: string) => void;
 }
 
-export function ChecklistPanel({ repoId, checklist }: ChecklistPanelProps) {
+export function ChecklistPanel({ repoId, checklist, onOpenFile }: ChecklistPanelProps) {
   const [editing, setEditing] = useState(false);
   const { data, loading, error, runningAi, waitsForReview } = checklist;
   const items = data?.items ?? [];
@@ -142,6 +154,9 @@ Not shown — they don't apply here: ${skipped.map((i) => i.label).join(", ")}` 
         <>
           <ul className="mt-1.5 space-y-1.5">
             {counted.map((item) => {
+              if (item.kind === "acceptance-criteria") {
+                return <AcceptanceCriteriaItem key={item.itemId} item={item} onOpenFile={onOpenFile} />;
+              }
               const visual = STATUS_VISUALS[item.status];
               const Icon = item.kind === "ai" && item.status === "pending" && runningAi ? LoaderCircle : visual.icon;
               return (
@@ -195,5 +210,82 @@ Not shown — they don't apply here: ${skipped.map((i) => i.label).join(", ")}` 
         </>
       )}
     </section>
+  );
+}
+
+/** "Acceptance criteria 3/5", expandable to one row per criterion (DESIGN.md §6.27). */
+function AcceptanceCriteriaItem({
+  item,
+  onOpenFile,
+}: {
+  item: ChecklistItemResultDTO;
+  onOpenFile?: (path: string, lines?: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const visual = STATUS_VISUALS[item.status];
+  const Icon = visual.icon;
+  const rows = item.criteria ?? [];
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full gap-1.5 text-left"
+        title={`${visual.label}: ${item.detail}`}
+      >
+        <Icon className={cn("mt-px size-3 shrink-0", visual.className)} aria-label={visual.label} />
+        <span className="min-w-0 flex-1 text-xs">
+          {item.label}
+          <Spark className="ml-1" title="Judged by the model during the AI review" />
+        </span>
+        <ChevronRight className={cn("mt-px size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden />
+      </button>
+      {open && (
+        <ul className="mt-1 ml-[18px] space-y-1.5 border-l border-border pl-2">
+          {rows.map((row, index) => {
+            const rowVisual = CRITERION_VISUALS[row.verdict];
+            const RowIcon = STATUS_VISUALS[rowVisual.status].icon;
+            return (
+              <li key={index} className="flex gap-1.5">
+                <RowIcon className={cn("mt-px size-3 shrink-0", STATUS_VISUALS[rowVisual.status].className)} aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs whitespace-pre-line">{row.text}</p>
+                  <p className="mt-0.5 text-muted-foreground">
+                    <span className={cn("font-medium", STATUS_VISUALS[rowVisual.status].className)}>{rowVisual.label}</span>
+                    {" · "}
+                    {row.source === "description" ? "from the description" : `from issue ${row.source}`}
+                    {row.ticked && " (ticked there)"}
+                  </p>
+                  {row.reason && <p className="mt-0.5 text-muted-foreground">{row.reason}</p>}
+                  {row.evidence.length > 0 && (
+                    <p className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 font-mono">
+                      {row.evidence.map((e) => {
+                        const label = `${e.path.split("/").pop()}${e.lines ? `:${e.lines}` : ""}`;
+                        return onOpenFile ? (
+                          <button
+                            key={`${e.path}:${e.lines ?? ""}`}
+                            type="button"
+                            onClick={() => onOpenFile(e.path, e.lines)}
+                            className="underline-offset-2 hover:underline"
+                            title={`Open the diff of ${e.path}${e.lines ? ` at line ${e.lines}` : ""}`}
+                          >
+                            {label}
+                          </button>
+                        ) : (
+                          <span key={`${e.path}:${e.lines ?? ""}`} title={e.path}>
+                            {label}
+                          </span>
+                        );
+                      })}
+                    </p>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </li>
   );
 }

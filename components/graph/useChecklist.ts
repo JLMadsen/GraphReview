@@ -99,6 +99,14 @@ export function useChecklist(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base, targetKey]);
 
+  // A finished review stores the acceptance-criteria verdicts (DESIGN.md §6.27): read them again.
+  const prevReviewStateRef = useRef(reviewState);
+  useEffect(() => {
+    const prev = prevReviewStateRef.current;
+    prevReviewStateRef.current = reviewState;
+    if (reviewState === "completed" && prev !== undefined && prev !== "completed") refresh();
+  }, [reviewState, refresh]);
+
   // Auto-run the AI items once the review is done.
   useEffect(() => {
     if (!data || !targetKey || runningAi || !data.aiConfigured || data.aiPending === 0) return;

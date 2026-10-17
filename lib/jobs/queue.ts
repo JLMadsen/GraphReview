@@ -25,10 +25,11 @@ export const ANALYSIS_QUEUE_NAME = "analysis";
  * 10: env writes, "use server" and test files told apart from reads;
  * 11: reads that handle a missing value (`?.`, `Number(X) ||`, comparisons, ternaries) count as having a fallback;
  * 12: Django `CompositePrimaryKey`, and no implicit `id` beside a model's own `id` field; `PUBLIC_` is a client prefix only beside SvelteKit/Astro; env sources (`.env*`, CI workflows, Compose) are graph files);
+ * 13: test facts (cases, skip/focus markers) and the test catalog (DESIGN.md §6.22);
  * a repo analysed by an older version is
  * re-analysed on its next view, like one whose branch moved.
  */
-export const ANALYSIS_VERSION = 12;
+export const ANALYSIS_VERSION = 13;
 
 /** Job name inside the analysis queue. One job type for now (v1 has no AI jobs yet). */
 export const ANALYSIS_JOB_NAME = "analyze-repo";

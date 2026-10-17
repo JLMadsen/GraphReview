@@ -213,7 +213,7 @@ export interface PreviewScanFileDTO {
   preview: PreviewJobState;
 }
 
-/** `GET /api/repos/[repoId]/preview/scan` */
+/** `POST /api/repos/[repoId]/preview/scan` */
 export interface PreviewScanDTO {
   state: PreviewJobState;
   files: PreviewScanFileDTO[];

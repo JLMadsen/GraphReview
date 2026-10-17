@@ -42,7 +42,8 @@ interface LocalRepoCandidate {
   path: string;
 }
 
-export function AddRepoDialog() {
+/** `size="sm"` / `variant="outline"` for the smaller trigger in the landing page's setup checklist. */
+export function AddRepoDialog({ size, variant }: { size?: "sm"; variant?: "outline" } = {}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<Mode>("local");
@@ -134,7 +135,7 @@ export function AddRepoDialog() {
         if (!next) reset();
       }}
     >
-      <DialogTrigger render={<Button />}>
+      <DialogTrigger render={<Button size={size} variant={variant} />}>
         <Plus aria-hidden />
         Add repo
       </DialogTrigger>

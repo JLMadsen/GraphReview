@@ -1,7 +1,8 @@
 "use client";
 
 // The review dock — advisory annotations only; it never blocks a review and
-// never auto-posts to GitHub.
+// never auto-posts to GitHub. Posting picked findings is the user's own click
+// from the ⋯ menu, after a preview (DESIGN.md §6.23).
 //
 // It sits under the PR map at full width (a finding is a verdict, a sentence,
 // a file:line and a paragraph of reasoning — it doesn't survive a 320px
@@ -33,6 +34,8 @@ import {
   ChevronsUp,
   CircleHelp,
   ExternalLink,
+  Eye,
+  EyeOff,
   History,
   Info,
   LoaderCircle,
@@ -53,6 +56,7 @@ import {
 } from "./review-visuals";
 import { FINDING_BUCKETS, emptyCounts, findingBucket, isAreaFinding, type FindingBucket, type PrAreas } from "./pr-areas";
 import type { PrMapResponseDTO } from "./pr-map-types";
+import type { AcceptanceCriterionRowDTO } from "./checklist-types";
 import {
   REVIEW_EFFORT_OPTIONS,
   formatAgo,
@@ -73,6 +77,8 @@ import { useJob } from "@/components/jobs/store";
 import { ImpactGroupRow } from "./review/ImpactGroupRow";
 import { STATIC_CATEGORIES, shortSha, BucketChips, Callout, Sha, FINDING_GRID, ImpactNote } from "./review/parts";
 import { ReviewMenu } from "./review/ReviewMenu";
+import { ExportDialog } from "./review/ExportDialog";
+import { PostReviewDialog } from "./review/PostReviewDialog";
 import { buildRows } from "./review/rows";
 import { ReviewFilesTab, useChangedFiles } from "./review/ReviewFilesTab";
 import { useCopyText } from "./review/useCopyText";
@@ -109,6 +115,10 @@ export interface ReviewPanelProps {
   onSelectComponent: (componentId: string | null) => void;
   /** Resolve (or reopen) a below-match finding. */
   onSetResolved: (findingId: string, resolved: boolean) => void;
+  /** Resolve a finding as not a problem, remembered for the repo (DESIGN.md §6.21). */
+  onDismiss?: (findingId: string, reason: string) => void;
+  /** Forget a suppression: the findings it hid show again. */
+  onUnsuppress?: (suppressionId: string) => void;
   /** Effort level for the next run (automatic or re-run). Changing it does not start a run by itself. */
   effort: ReviewEffort;
   onEffortChange: (effort: ReviewEffort) => void;
@@ -118,6 +128,8 @@ export interface ReviewPanelProps {
   onToggleExpanded?: () => void;
   /** The PR map — the Changed files tab lists its files. */
   map: PrMapResponseDTO | null;
+  /** The checklist's acceptance-criteria rows (DESIGN.md §6.27) — part of Copy as Markdown. */
+  acceptanceCriteria?: AcceptanceCriterionRowDTO[];
   /** The map's cards as areas — which area a finding belongs to. */
   areas: PrAreas;
   /** The area (card id) the dock is scoped to, if any. */
@@ -128,6 +140,8 @@ export interface ReviewPanelProps {
   componentName: (id: string) => string | undefined;
   /** Opens a changed file's diff (the Changed files tab). Absent when there is no diff to show. */
   onOpenFile?: (path: string) => void;
+  /** Opens the all-files reader (DESIGN.md §6.24), at a file and a finding's lines when given. */
+  onOpenReader?: (path?: string, lineRange?: string) => void;
   /** A filter the chat asked for (filter_findings); a new object (nonce) applies it again. */
   filterRequest?: { nonce: number; buckets?: FindingBucket[]; category?: FindingCategory } | null;
   /** A finding the chat showed (show kind finding): listed, made the active row and scrolled to. A new object each time. */
@@ -146,7 +160,7 @@ export function ReviewPanel({
   status,
   state,
   progress,
-  findings,
+  findings: allFindings,
   freshness,
   aiConfigured,
   notice,
@@ -161,17 +175,21 @@ export function ReviewPanel({
   onCancel,
   onSelectComponent,
   onSetResolved,
+  onDismiss,
+  onUnsuppress,
   effort,
   onEffortChange,
   expanded = false,
   onToggleExpanded,
   map,
+  acceptanceCriteria,
   areas,
   scopeAreaId,
   scopeComponentId,
   onClearScope,
   componentName,
   onOpenFile,
+  onOpenReader,
   filterRequest,
   focusRequest,
   onAskChat,
@@ -182,6 +200,13 @@ export function ReviewPanel({
   const [shown, setShown] = useState<Record<FindingBucket, boolean>>(DEFAULT_SHOWN);
   /** Only one category of static-analysis findings (import cycles, infra), or every finding. */
   const [onlyCategory, setOnlyCategory] = useState<FindingCategory | null>(null);
+  /** List the findings hidden because one like them was dismissed before (DESIGN.md §6.21). */
+  const [showSuppressed, setShowSuppressed] = useState(false);
+  const unsuppressed = useMemo(() => allFindings.filter((f) => !f.suppressed), [allFindings]);
+  const suppressedCount = allFindings.length - unsuppressed.length;
+  const findings = showSuppressed ? allFindings : unsuppressed;
+  const [exportOpen, setExportOpen] = useState(false);
+  const [postOpen, setPostOpen] = useState(false);
 
   // This target's review and comparison jobs, from the shared jobs poll
   // (DESIGN.md §6.20 §4): the queue position while waiting, the failure inline.
@@ -196,6 +221,7 @@ export function ReviewPanel({
     setDiffFinding(null);
     setShown(DEFAULT_SHOWN);
     setOnlyCategory(null);
+    setShowSuppressed(false);
   }, [targetKey]);
 
   // A filter the chat set (filter_findings): verdicts and/or one category, on the findings tab.
@@ -255,14 +281,15 @@ export function ReviewPanel({
 
   const files = useChangedFiles(map, scopeAreaId, scopeComponentId);
 
-  const verdict = useMemo(() => computeVerdict(findings), [findings]);
+  // Suppressed findings never count toward the verdict, listed or not.
+  const verdict = useMemo(() => computeVerdict(unsuppressed), [unsuppressed]);
   const [copied, copyText] = useCopyText();
 
   if (!target) return null;
 
   const handleCopyMarkdown = () => {
     if (!verdict) return;
-    void copyText(reviewMarkdown(reviewTargetLabel(target), verdict, findings, freshness?.reviewedHeadSha));
+    void copyText(reviewMarkdown(reviewTargetLabel(target), verdict, unsuppressed, freshness?.reviewedHeadSha, acceptanceCriteria));
   };
 
   const running = state === "queued" || state === "running";
@@ -295,7 +322,8 @@ export function ReviewPanel({
   const costTitle = progress
     ? `${NUMBER.format(progress.calls)} model call${progress.calls === 1 ? "" : "s"} · ` +
       `${NUMBER.format(progress.promptTokens)} prompt + ${NUMBER.format(progress.completionTokens)} completion tokens` +
-      (progress.effort ? ` · ${REVIEW_EFFORT_OPTIONS.find((o) => o.value === progress.effort)?.label} effort` : "")
+      (progress.effort ? ` · ${REVIEW_EFFORT_OPTIONS.find((o) => o.value === progress.effort)?.label} effort` : "") +
+      (progress.reused ? ` · ${progress.reused} unchanged component${progress.reused === 1 ? "" : "s"} reused` : "")
     : undefined;
 
   // When the review ran (and what it cost) lives on the Re-run button's
@@ -368,6 +396,30 @@ export function ReviewPanel({
                 <span className="font-mono font-semibold">{c.count}</span>
               </button>
             ))}
+          {tab === "findings" && suppressedCount > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                // A dismissed finding is resolved, so it sits in OK/resolved: list that too.
+                if (!showSuppressed) setShown((s) => ({ ...s, fine: true }));
+                setShowSuppressed((v) => !v);
+              }}
+              aria-pressed={showSuppressed}
+              className={cn(
+                "mb-1.5 inline-flex h-6 items-center gap-1.5 rounded-[2px] border px-1.5 text-[11px] transition-colors",
+                showSuppressed ? "border-foreground/40 bg-secondary text-foreground" : "border-border text-muted-foreground hover:text-foreground"
+              )}
+              title={
+                showSuppressed
+                  ? "Hide the suppressed findings again."
+                  : "Findings hidden because one like them was dismissed as not a problem on this repo. Click to show them."
+              }
+            >
+              {showSuppressed ? <Eye className="size-3" aria-hidden /> : <EyeOff className="size-3" aria-hidden />}
+              {showSuppressed ? "Hide suppressed" : "Suppressed"}
+              <span className="font-mono font-semibold">{suppressedCount}</span>
+            </button>
+          )}
           {scopeParts.length > 0 && (
             <span className="mb-1.5 inline-flex h-6 items-center gap-1 rounded-[2px] bg-brand/12 pr-0.5 pl-2 text-[11px] text-foreground">
               In {scopeParts.join(" › ")}
@@ -446,7 +498,9 @@ export function ReviewPanel({
                     ? "A review of this target is already in flight."
                     : state === "none"
                       ? "Run the review at the selected effort."
-                      : "Run the review again at the selected effort — existing findings are overwritten.") +
+                      : freshness?.stale
+                        ? "Review the new commits — components whose diff they didn't change keep their findings, without a model call."
+                        : "Run the review again at the selected effort — every component is asked again; findings it says again keep their resolved state and replies.") +
                   (reviewedNote ? `\n${reviewedNote}` : "")
                 }
               >
@@ -461,6 +515,9 @@ export function ReviewPanel({
               canCopy={Boolean(verdict)}
               copied={copied}
               onCopy={handleCopyMarkdown}
+              onExport={() => setExportOpen(true)}
+              onPost={isPullRequest && findings.length > 0 ? () => setPostOpen(true) : undefined}
+              postLabel="Post review to the PR…"
             />
           </div>
         </div>
@@ -484,6 +541,14 @@ export function ReviewPanel({
                 {progress.failed > 0 && <span className="text-destructive"> · {progress.failed} failed</span>}
               </span>
             </div>
+            {(progress.reused ?? 0) > 0 && (
+              <p
+                className="mt-1 text-[11px] text-muted-foreground"
+                title="Their diff is the same as at the last reviewed commit, so their findings were kept without a model call."
+              >
+                {progress.reused} component{progress.reused === 1 ? "" : "s"} unchanged, reused
+              </p>
+            )}
             {progress.running.length > 0 && (
               <p className="mt-1 flex items-start gap-1.5 text-[11px] text-muted-foreground">
                 <LoaderCircle className="mt-px size-3 shrink-0 animate-spin" aria-hidden />
@@ -553,6 +618,12 @@ export function ReviewPanel({
               Reviewed at <Sha sha={freshness.reviewedHeadSha} /> — couldn&apos;t check whether that is still current.
             </Callout>
           )}
+          {state === "completed" && !running && !rerunning && (progress?.reused ?? 0) > 0 && (
+            <p className="mt-2 px-2 text-[11px] text-muted-foreground">
+              {progress!.reused} component{progress!.reused === 1 ? "" : "s"} unchanged, reused — the new commits didn&apos;t touch their
+              diff, so their findings were kept without a model call. Re-run to ask again.
+            </p>
+          )}
           {notConfigured && (
             <Callout tone="info" icon={Info}>
               Review is off — set up an OpenAI-compatible model provider to have each change explained and checked.{" "}
@@ -610,6 +681,8 @@ export function ReviewPanel({
                         onSetResolved={onSetResolved}
                         onRetry={retryFromRow}
                         onAskChat={onAskChat}
+                        onDismiss={onDismiss}
+                        onUnsuppress={onUnsuppress}
                       />
                     )
                   )}
@@ -680,11 +753,29 @@ export function ReviewPanel({
               scopeParts={scopeParts}
               componentName={componentName}
               onOpenFile={onOpenFile}
+              onReadAll={onOpenReader ? () => onOpenReader() : undefined}
             />
           )}
         </div>
       </section>
-      <FileDiffModal repoId={repoId} target={target} finding={diffFinding} onClose={() => setDiffFinding(null)} />
+      <FileDiffModal
+        repoId={repoId}
+        target={target}
+        finding={diffFinding}
+        onClose={() => setDiffFinding(null)}
+        onOpenReader={
+          onOpenReader
+            ? (path, lineRange) => {
+                setDiffFinding(null);
+                onOpenReader(path, lineRange);
+              }
+            : undefined
+        }
+      />
+      {exportOpen && <ExportDialog repoId={repoId} target={target} open={exportOpen} onClose={() => setExportOpen(false)} />}
+      {postOpen && "prNumber" in target && (
+        <PostReviewDialog repoId={repoId} prNumber={target.prNumber} open={postOpen} onClose={() => setPostOpen(false)} />
+      )}
     </>
   );
 }

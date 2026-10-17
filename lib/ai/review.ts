@@ -121,6 +121,12 @@ export interface ReviewRelatedContext {
    * infra comparison's certain ones) — the model is asked not to repeat them.
    */
   alreadyReported?: string[];
+  /**
+   * Findings on these files the reviewer dismissed as not a problem in an
+   * earlier review of the repo, with their reason (DESIGN.md §6.21) — the
+   * model is asked not to raise them again.
+   */
+  knownNonIssues?: Array<{ filePath: string; summary: string; reason?: string }>;
   /** Tables this component's code touches, changed ones first (DESIGN.md §6.13 §6). */
   tables?: ReviewTable[];
 }
@@ -421,6 +427,7 @@ function fitRelatedContext(
     ...(related.infra?.length ? { infra: related.infra } : {}),
     ...(related.env?.length ? { env: related.env } : {}),
     ...(related.alreadyReported?.length ? { alreadyReported: related.alreadyReported } : {}),
+    ...(related.knownNonIssues?.length ? { knownNonIssues: related.knownNonIssues } : {}),
     // Tables are trimmed, but after the surrounding code: unchanged tables
     // first, unchanged columns of the changed ones last (DESIGN.md §6.13 §6).
     ...(related.tables?.length ? { tables: related.tables.map((t) => ({ ...t, columns: [...t.columns], notes: [...t.notes] })) } : {}),

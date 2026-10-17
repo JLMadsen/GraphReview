@@ -511,3 +511,21 @@ html[data-middle-scroll] * {
   border-inline-width: 0;
   background: transparent;
 }
+
+/* Word-level marks inside a changed line pair (DiffViewer, DESIGN.md §6.24):
+   a stronger tint of the line's own colour plus an underline, so the mark
+   doesn't rest on colour alone. */
+mark.diff-word {
+  color: inherit;
+  border-radius: 2px;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.diff-add mark.diff-word {
+  background: color-mix(in oklch, var(--success) 32%, transparent);
+}
+.diff-remove mark.diff-word {
+  background: color-mix(in oklch, var(--destructive) 30%, transparent);
+  text-decoration-style: dotted;
+}

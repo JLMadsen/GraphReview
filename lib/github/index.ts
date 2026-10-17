@@ -13,7 +13,10 @@ export {
   listWorkflowRuns,
   getFileAtRef,
   combineCiStates,
+  getTokenScopes,
+  createPullRequestReview,
 } from "./client";
+export type { PullRequestReviewEvent, PullRequestReviewComment, PostedPullRequestReview } from "./client";
 
 export { GitHubApiError, toGitHubApiError } from "./errors";
 

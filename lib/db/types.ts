@@ -119,14 +119,14 @@ export type FindingKind = "fix" | "feature" | "refactor" | "test" | "docs" | "co
  * `chat` (recorded by the PR chat when the reviewer asked it to; no review
  * pass replaces it).
  */
-export type FindingCategory = "change" | "impact" | "intent" | "structure" | "infra" | "schema" | "env" | "chat";
+export type FindingCategory = "change" | "impact" | "intent" | "structure" | "infra" | "schema" | "env" | "security" | "tests" | "chat";
 
 /**
  * Categories the target-graph job writes from static analysis, before and
  * independently of any AI review — their presence doesn't mean the target
  * was reviewed.
  */
-export const STATIC_FINDING_CATEGORIES: ReadonlySet<FindingCategory> = new Set<FindingCategory>(["structure", "infra", "schema", "env"]);
+export const STATIC_FINDING_CATEGORIES: ReadonlySet<FindingCategory> = new Set<FindingCategory>(["structure", "infra", "schema", "env", "security", "tests"]);
 
 export interface FindingRecord {
   id: string;
@@ -172,10 +172,15 @@ export interface FindingRecord {
   /**
    * ISO-8601 time a reviewer marked this finding resolved; absent while it
    * is open. Only non-`ok` findings can be resolved. A resolved finding
-   * counts as OK in the overall verdict. Not carried over by a re-review:
-   * that replaces the findings, so fresh ones start unresolved.
+   * counts as OK in the overall verdict. Carried over by a re-review that
+   * produces the same finding again (same id, DESIGN.md §6.21).
    */
   resolvedAt?: string;
+  /**
+   * The verdict a reviewer (or the chat, on the reviewer's say-so) re-rated
+   * this finding to. A re-review that produces the finding again keeps it.
+   */
+  reratedTo?: FindingAssessment;
   /**
    * Set when the model call behind this finding never completed (provider
    * error, timeout, network) — the finding is a placeholder saying so, not
@@ -184,8 +189,8 @@ export interface FindingRecord {
   callFailed?: boolean;
   /**
    * Replies to the finding, oldest first — today written by coding agents
-   * over MCP (`lib/mcp/`). Like `resolvedAt`, not carried over by a
-   * re-review.
+   * over MCP (`lib/mcp/`). Like `resolvedAt`, carried over by a re-review
+   * that produces the same finding again.
    */
   responses?: FindingResponse[];
 }

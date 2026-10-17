@@ -1,16 +1,18 @@
 // Typed repository functions for review findings.
 //
 // Findings are overwritten, not versioned, when a review is re-run —
-// `replaceFindingsForTargetComponent` implements that overwrite-only
-// semantics for a given (repoId, targetKey, componentId) triple, where
-// `targetKey` identifies *what* was reviewed (`pr:<number>` or
-// `refs:<base>...<head>` — see `FindingRecord.targetKey`).
+// `syncFindingsForTargetComponent` rewrites a (repoId, targetKey,
+// componentId) slot, where `targetKey` identifies *what* was reviewed
+// (`pr:<number>` or `refs:<base>...<head>` — see `FindingRecord.targetKey`).
+// A finding the new run says again keeps its id and the reviewer's triage
+// (resolved, re-rated, replies — DESIGN.md §6.21); the rest are replaced.
 //
 // A finding refers to its component and PR by id only (the old ABOUT/FOR
 // edges): deleting a component never deletes its findings, and
 // `relinkFindings` (merge.ts) moves them when modules change.
 
 import { all, compareText, get, pack, placeholders, run, transaction, unpack } from "./client";
+import { CARRY_OVER_SIMILARITY, changeFindingId, normalizeFindingSummary, summarySimilarity } from "./review-loop";
 import type { FindingCategory, FindingRecord, FindingResponse, FindingResponseKind } from "./types";
 
 function toFindingRecord(props: Record<string, unknown>): FindingRecord {
@@ -35,6 +37,7 @@ function toFindingRecord(props: Record<string, unknown>): FindingRecord {
     reviewedHeadSha: (props.reviewedHeadSha as string | undefined) ?? undefined,
     reviewedAt: (props.reviewedAt as string | undefined) ?? undefined,
     resolvedAt: (props.resolvedAt as string | undefined) ?? undefined,
+    reratedTo: (props.reratedTo as FindingRecord["reratedTo"] | undefined) ?? undefined,
     callFailed: props.callFailed === true || isLegacyFailurePlaceholder(props) ? true : undefined,
     responses: Array.isArray(props.responses) && props.responses.length ? (props.responses as FindingResponse[]) : undefined,
   };
@@ -161,8 +164,9 @@ export async function addFindingResponse(
 
 /**
  * Changes one finding's verdict and records why as a `comment` reply (the
- * chat's re-rating, DESIGN.md §6.7). Like a reply, not carried over by a
- * re-review. Returns `null` when no such finding exists in that repo.
+ * chat's re-rating, DESIGN.md §6.7). Like a reply, carried over by a
+ * re-review that produces the finding again (`reratedTo`, DESIGN.md §6.21).
+ * Returns `null` when no such finding exists in that repo.
  */
 export async function rateFinding(
   repoId: string,
@@ -176,6 +180,7 @@ export async function rateFinding(
     const record = toFindingRecord(unpack(row.data));
     const now = new Date().toISOString();
     record.assessment = assessment;
+    record.reratedTo = assessment;
     // An OK finding has nothing left to resolve.
     if (assessment === "ok") record.resolvedAt = undefined;
     record.responses = [...(record.responses ?? []), { id: crypto.randomUUID(), kind: "comment", ...reply, createdAt: now }];
@@ -284,6 +289,128 @@ export async function replaceFindingsForTargetComponent(
     for (const record of records) writeFinding(record);
   });
   return records;
+}
+
+/**
+ * The review job's write for one (target, component) slot: like
+ * {@link replaceFindingsForTargetComponent}, but a finding the run says
+ * again is recognised and keeps the reviewer's triage (DESIGN.md §6.21).
+ *
+ * Each finding's id is derived from what it is about (`changeFindingId`);
+ * the incoming `id` is ignored. A finding whose id is new adopts the id of
+ * the closest unclaimed stored finding on the same file when their
+ * summaries are similar enough — the model rarely words a point the same
+ * way twice. A recognised finding keeps `createdAt`, `resolvedAt`,
+ * `responses` and a re-rating (`reratedTo`, which also overrides the
+ * model's new verdict); stored findings nobody claimed are deleted. Atomic.
+ */
+export async function syncFindingsForTargetComponent(
+  repoId: string,
+  targetKey: string,
+  componentId: string,
+  findings: readonly TargetFindingInput[]
+): Promise<FindingRecord[]> {
+  const now = new Date().toISOString();
+  const slot = { repoId, targetKey, componentId, category: "change" as const };
+  return transaction(() => {
+    const stored = findingRows(
+      all(
+        `SELECT data FROM findings WHERE repo_id = ? AND target_key = ? AND component_id = ? AND category = 'change'`,
+        repoId,
+        targetKey,
+        componentId
+      )
+    );
+    const byId = new Map(stored.map((f) => [f.id, f]));
+    const ids = new Set<string>();
+    // Exact ids first, so a fuzzy match never takes a finding another
+    // incoming one names exactly.
+    const planned = findings.map((finding) => {
+      const base = changeFindingId(repoId, targetKey, componentId, finding.filePath, finding.summary);
+      let id = base;
+      // Two findings saying the same thing about the same file: keep both, apart.
+      for (let n = 2; ids.has(id); n++) id = `${base}-${n}`;
+      ids.add(id);
+      return { finding, id, previous: byId.get(id) };
+    });
+    const claimed = new Set(planned.filter((p) => p.previous).map((p) => p.id));
+    for (const plan of planned) {
+      if (plan.previous || plan.finding.callFailed) continue;
+      const normalized = normalizeFindingSummary(plan.finding.summary);
+      let bestScore = 0;
+      for (const candidate of stored) {
+        if (claimed.has(candidate.id) || ids.has(candidate.id) || candidate.callFailed) continue;
+        if ((candidate.filePath ?? "") !== (plan.finding.filePath ?? "")) continue;
+        const score = summarySimilarity(normalized, normalizeFindingSummary(candidate.summary));
+        if (score >= CARRY_OVER_SIMILARITY && score > bestScore) {
+          plan.previous = candidate;
+          bestScore = score;
+        }
+      }
+      if (plan.previous) {
+        claimed.add(plan.previous.id);
+        plan.id = plan.previous.id;
+      }
+    }
+    const records = planned.map(({ finding, id, previous }) => {
+      const assessment = previous?.reratedTo ?? finding.assessment;
+      return toStoredFinding(
+        {
+          ...finding,
+          id,
+          assessment,
+          createdAt: previous?.createdAt ?? finding.createdAt,
+          // An OK finding has nothing left to resolve.
+          resolvedAt: assessment === "ok" ? undefined : previous?.resolvedAt,
+          reratedTo: previous?.reratedTo,
+          responses: previous?.responses,
+        },
+        slot,
+        now
+      );
+    });
+    const keep = records.map((r) => r.id);
+    run(
+      `DELETE FROM findings WHERE repo_id = ? AND target_key = ? AND component_id = ? AND category = 'change'
+         AND id NOT IN (${keep.length ? placeholders(keep.length) : "SELECT NULL WHERE 0"})`,
+      repoId,
+      targetKey,
+      componentId,
+      ...keep
+    );
+    for (const record of records) writeFinding(record);
+    return records;
+  });
+}
+
+/**
+ * Stamps a component's kept findings with the run that re-checked them: an
+ * incremental re-review found its patch unchanged at the new head, so they
+ * describe that head too (DESIGN.md §6.21). Returns the findings.
+ */
+export async function restampFindingsForTargetComponent(
+  repoId: string,
+  targetKey: string,
+  componentId: string,
+  revision: Pick<FindingRecord, "reviewedBaseSha" | "reviewedHeadSha" | "reviewedAt">
+): Promise<FindingRecord[]> {
+  return transaction(() => {
+    const stored = findingRows(
+      all(
+        `SELECT data FROM findings WHERE repo_id = ? AND target_key = ? AND component_id = ? AND category = 'change'`,
+        repoId,
+        targetKey,
+        componentId
+      )
+    );
+    for (const record of stored) {
+      if (revision.reviewedBaseSha) record.reviewedBaseSha = revision.reviewedBaseSha;
+      if (revision.reviewedHeadSha) record.reviewedHeadSha = revision.reviewedHeadSha;
+      if (revision.reviewedAt) record.reviewedAt = revision.reviewedAt;
+      writeFinding(record);
+    }
+    return stored;
+  });
 }
 
 /**

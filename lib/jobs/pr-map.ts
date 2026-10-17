@@ -21,6 +21,7 @@
 import path from "node:path";
 import { getFileOwnerMap, getPrMapGrouping, listPrMapComponents, listPrMapImports, prMapFilesKey } from "@/lib/db";
 import { envReaderFor } from "@/lib/analysis/env/read";
+import { isTestPath } from "@/lib/analysis/tests/classify";
 import type {
   PrMapEdgeDTO,
   PrMapFileDTO,
@@ -132,9 +133,6 @@ const DEPENDENCY_FILES = new Set([
   "pubspec.lock",
 ]);
 
-const TEST_DIR = /(^|\/)(__tests__|__mocks__|tests?|specs?|testdata|e2e)\//i;
-const TEST_FILE =
-  /(\.(test|spec|e2e)\.[^./]+$)|(_test\.(go|py|rb|exs?)$)|(^test_[^/]+\.py$)|((Test|Tests|Spec|IT)\.(java|kt|kts|cs|scala|swift)$)/;
 const DOC_EXT = /\.(md|mdx|markdown|rst|adoc|txt)$/i;
 const DOC_FILES = /^(license|licence|notice|authors|contributors|changelog|codeowners)(\.[^/]*)?$/i;
 const CONFIG_DIR = /(^|\/)(\.github|\.gitlab|\.circleci|\.husky|\.vscode|\.devcontainer|docker)\//;
@@ -146,7 +144,7 @@ export function classifyPath(filePath: string): PrMapFileRole {
   const base = path.posix.basename(filePath);
   const lower = base.toLowerCase();
   if (DEPENDENCY_FILES.has(lower) || lower.endsWith(".csproj")) return "dependency";
-  if (TEST_FILE.test(base) || TEST_DIR.test(filePath)) return "test";
+  if (isTestPath(filePath)) return "test";
   if (DOC_EXT.test(base) || DOC_FILES.test(base) || /(^|\/)docs?\//.test(filePath)) {
     // A `docs/` folder can hold a docs *site's* code — only prose counts.
     return DOC_EXT.test(base) || DOC_FILES.test(base) ? "docs" : "code";

@@ -631,3 +631,104 @@ export async function getFileAtRef(
     throw error;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Posting a review (DESIGN.md §6.23) — only ever called from the user's
+// "Post review" click, never automatically (locked decision #10).
+// ---------------------------------------------------------------------------
+
+/**
+ * The classic-PAT scopes GitHub reports in `x-oauth-scopes` on any
+ * authenticated call. `null` when the header is absent: a fine-grained PAT
+ * (or a GitHub App token), whose permissions can't be read up front.
+ */
+export async function getTokenScopes(token: string): Promise<GitHubResult<string[] | null>> {
+  const octokit = createOctokit(token);
+  const endpoint = "GET /user";
+  try {
+    const response = await octokit.request("GET /user");
+    const raw = (response.headers as Record<string, unknown>)["x-oauth-scopes"];
+    const scopes =
+      typeof raw === "string"
+        ? raw.split(",").map((s) => s.trim()).filter(Boolean)
+        : null;
+    return { data: scopes, rateLimit: extractRateLimit(response.headers as Record<string, unknown>) };
+  } catch (err) {
+    throw toGitHubApiError(err, endpoint);
+  }
+}
+
+export type PullRequestReviewEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
+
+export interface PullRequestReviewComment {
+  path: string;
+  /** The (last) line of the comment, on the head side of the diff. */
+  line: number;
+  /** First line of a multi-line comment; both lines must be in one hunk. */
+  startLine?: number;
+  body: string;
+}
+
+export interface PostedPullRequestReview {
+  id: number;
+  url: string;
+  /** Each inline comment's own URL, in the order they were sent (`null` when GitHub didn't list it back). */
+  commentUrls: Array<string | null>;
+}
+
+/**
+ * Submits one review with its inline comments in a single call
+ * (`POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews`), then reads the
+ * comments back for their URLs. `commitId` pins the comments' line numbers
+ * to the head the draft was built from.
+ */
+export async function createPullRequestReview(
+  token: string,
+  owner: string,
+  repo: string,
+  number: number,
+  review: { commitId?: string; event: PullRequestReviewEvent; body: string; comments: PullRequestReviewComment[] }
+): Promise<GitHubResult<PostedPullRequestReview>> {
+  const octokit = createOctokit(token);
+  const endpoint = `POST /repos/${owner}/${repo}/pulls/${number}/reviews`;
+  const { data, rateLimit } = await runRest(endpoint, () =>
+    octokit.rest.pulls.createReview({
+      owner,
+      repo,
+      pull_number: number,
+      ...(review.commitId ? { commit_id: review.commitId } : {}),
+      event: review.event,
+      body: review.body,
+      comments: review.comments.map((c) => ({
+        path: c.path,
+        line: c.line,
+        side: "RIGHT" as const,
+        ...(c.startLine !== undefined && c.startLine < c.line ? { start_line: c.startLine, start_side: "RIGHT" as const } : {}),
+        body: c.body,
+      })),
+    })
+  );
+
+  let commentUrls: Array<string | null> = review.comments.map(() => null);
+  if (review.comments.length > 0) {
+    try {
+      const listed = await octokit.rest.pulls.listCommentsForReview({
+        owner,
+        repo,
+        pull_number: number,
+        review_id: data.id,
+        per_page: DEFAULT_PER_PAGE,
+      });
+      const pool = [...listed.data];
+      commentUrls = review.comments.map((c) => {
+        const at = pool.findIndex((p) => p.path === c.path && p.body === c.body);
+        if (at < 0) return null;
+        const [hit] = pool.splice(at, 1);
+        return hit.html_url ?? null;
+      });
+    } catch {
+      // The review is posted; the comment links are only a convenience.
+    }
+  }
+  return { data: { id: data.id, url: data.html_url, commentUrls }, rateLimit };
+}

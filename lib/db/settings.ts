@@ -15,6 +15,8 @@ export interface SettingsRecord {
   gitlabPatEncrypted?: string;
   /** Which saved AI provider (lib/db/ai-provider.ts) is active, if any. */
   activeAiProviderId?: string;
+  /** The MCP bearer token (lib/mcp/token.ts); absent means none is required. */
+  mcpTokenEncrypted?: string;
 }
 
 function read(): SettingsRecord | null {
@@ -54,7 +56,7 @@ export async function upsertSettings(fields: Partial<SettingsRecord>): Promise<v
 /** The fields `clearSettingsFields` will act on. */
 export type SettingsField = keyof SettingsRecord;
 
-const CLEARABLE_FIELDS: readonly SettingsField[] = ["githubPatEncrypted", "gitlabPatEncrypted"];
+const CLEARABLE_FIELDS: readonly SettingsField[] = ["githubPatEncrypted", "gitlabPatEncrypted", "mcpTokenEncrypted"];
 
 /**
  * Removes the given fields from the global settings outright, so a cleared

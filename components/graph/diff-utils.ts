@@ -17,6 +17,17 @@ export interface DiffLine {
   /** 1-based new-file line number, or `null` for a removed/meta line. */
   newLine: number | null;
   content: string;
+  /** Changed character ranges `[start, end)` within `content`, against the line it is paired with (diff-model.ts `annotateIntraline`). */
+  ranges?: Array<[number, number]>;
+  /** The line is part of a block of code moved elsewhere in the diff (diff-model.ts `markMovedLines`). */
+  moved?: MovedMark;
+}
+
+/** Where a moved block went (on a removed line) or came from (on an added one); `start` on a block's first line only. */
+export interface MovedMark {
+  start: boolean;
+  path: string;
+  line: number;
 }
 
 export interface DiffHunk {

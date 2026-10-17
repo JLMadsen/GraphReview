@@ -7,6 +7,9 @@ import { RepoDeleteButton } from "./repo-delete-button";
 import { RepoRetryButton } from "./repo-retry-button";
 import { AnalysisFailureInline } from "./analysis-job-inline";
 import { RefreshWhileWorking } from "./refresh-while-working";
+import { SetupChecklist } from "./setup-checklist";
+import { loadSetupStatus } from "./setup-status";
+import { AiOffChip } from "./ai-off-chip";
 
 /**
  * Repo list (landing page).
@@ -41,7 +44,7 @@ function formatTimestamp(iso?: string): string | undefined {
   })} UTC`;
 }
 
-function RepoRow({ repo }: { repo: RepoDto }) {
+function RepoRow({ repo, aiOff }: { repo: RepoDto; aiOff: boolean }) {
   const source = repo.provider === "local" ? repo.localPath : repo.url;
   const analyzedAt = formatTimestamp(repo.lastAnalyzedAt);
   const SourceIcon = providerIcon(repo.provider);
@@ -93,6 +96,7 @@ function RepoRow({ repo }: { repo: RepoDto }) {
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {aiOff ? <AiOffChip className="pointer-events-auto" /> : null}
           <ProviderBadge provider={repo.provider} />
           <RepoStatusBadge
             status={repo.status}
@@ -159,6 +163,7 @@ export default async function RepoListPage() {
   } catch (error) {
     loadError = error instanceof Error ? error.message : String(error);
   }
+  const setup = loadError ? null : await loadSetupStatus();
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-10">
@@ -182,6 +187,8 @@ export default async function RepoListPage() {
         <AddRepoDialog />
       </div>
 
+      {setup ? <SetupChecklist hasRepo={repos.length > 0} status={setup} /> : null}
+
       {loadError ? (
         <EmptyState
           icon={Plug}
@@ -195,14 +202,15 @@ export default async function RepoListPage() {
           locked.
         </EmptyState>
       ) : repos.length === 0 ? (
-        <EmptyState icon={Waypoints} title="No repos yet" action={<AddRepoDialog />}>
+        // The setup checklist above already has the Add repo step.
+        <EmptyState icon={Waypoints} title="No repos yet" action={setup ? undefined : <AddRepoDialog />}>
           Add a repo to analyze it into a component graph. Analysis starts
           automatically and its status shows up here.
         </EmptyState>
       ) : (
         <div className="space-y-3">
           {repos.map((repo) => (
-            <RepoRow key={repo.id} repo={repo} />
+            <RepoRow key={repo.id} repo={repo} aiOff={setup !== null && !setup.aiConfigured} />
           ))}
         </div>
       )}

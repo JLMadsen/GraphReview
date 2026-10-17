@@ -26,7 +26,9 @@
 // Kept out of lib/jobs' barrel: it pulls in lib/analysis.
 
 import { createHash } from "node:crypto";
-import { buildCallGraph, compareApis, compareEnv, compareInfra, compareSchemas, compareStructure, parseChangedLines, type DbFinding, type EnvFinding, type InfraFinding, type NewCycle } from "@/lib/analysis";
+import { endpointAuthFindings, secretFindings, type SecurityFinding } from "@/lib/analysis/security/findings";
+import { scanDiffForSecrets } from "@/lib/analysis/security/secret-scan";
+import { buildCallGraph, compareApis, compareEnv, compareInfra, compareSchemas, compareStructure, compareTests, parseChangedLines, type DbFinding, type EnvFinding, type InfraFinding, type NewCycle, type TestsFinding } from "@/lib/analysis";
 import { getFileOwnerMap, getRepoById, listComponentsByRepoId, readDbSource, syncFindingsForTargetCategory, writeTargetGraph } from "@/lib/db";
 import type { RepoRecord, TargetFindingInput } from "@/lib/db";
 import { emitFindingsChanged } from "@/lib/mcp/events";
@@ -40,13 +42,17 @@ import type { ComponentDependencyChange, TargetGraphData, TargetGraphJobData, Ta
 
 const SHA = /^[0-9a-f]{7,64}$/;
 
-/** `git diff -U0 base head` in the repo: which lines each file's change touched. */
-export async function changedLinesBetween(repoDir: string, baseSha: string, headSha: string) {
+/** `git diff -U0 base head` in the repo, as text. */
+async function diffBetween(repoDir: string, baseSha: string, headSha: string): Promise<string> {
   if (!SHA.test(baseSha) || !SHA.test(headSha)) throw new Error("Not a commit sha.");
-  const diff = await gitIn(repoDir, undefined, ["safe.directory=*"]).raw([
+  return gitIn(repoDir, undefined, ["safe.directory=*"]).raw([
     "diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", baseSha, headSha, "--",
   ]);
-  return parseChangedLines(diff);
+}
+
+/** `git diff -U0 base head` in the repo: which lines each file's change touched. */
+export async function changedLinesBetween(repoDir: string, baseSha: string, headSha: string) {
+  return parseChangedLines(await diffBetween(repoDir, baseSha, headSha));
 }
 
 /** Each path's owning component; a file the stored graph doesn't know yet takes its folder's. */
@@ -174,6 +180,42 @@ function envFinding(f: EnvFinding, targetKey: string, componentId: string, revis
   };
 }
 
+/** One of the security findings (DESIGN.md §6.26) — `defect` or `concern`, no model, never a secret's value. */
+function securityFinding(f: SecurityFinding, targetKey: string, componentId: string, revision: Revision, prId?: string): TargetFindingInput & { componentId: string } {
+  return {
+    id: stableFindingId(`security|${targetKey}|${f.key}`),
+    componentId,
+    ...(prId ? { prId } : {}),
+    filePath: f.file,
+    ...(f.line ? { lineRange: String(f.line) } : {}),
+    summary: f.summary,
+    assessment: f.assessment,
+    confidence: 1,
+    rationale: f.rationale,
+    model: "static analysis",
+    createdAt: new Date().toISOString(),
+    ...revision,
+  };
+}
+
+/** One of the test comparison's certain findings (DESIGN.md §6.22 §4) — `defect` or `concern`, no model. */
+function testsFinding(f: TestsFinding, targetKey: string, componentId: string, revision: Revision, prId?: string): TargetFindingInput & { componentId: string } {
+  return {
+    id: stableFindingId(`tests|${targetKey}|${f.key}`),
+    componentId,
+    ...(prId ? { prId } : {}),
+    filePath: f.file,
+    ...(f.line ? { lineRange: String(f.line) } : {}),
+    summary: f.summary,
+    assessment: f.assessment,
+    confidence: 1,
+    rationale: f.rationale,
+    model: "static analysis",
+    createdAt: new Date().toISOString(),
+    ...revision,
+  };
+}
+
 export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger): Promise<TargetGraphJobResult> {
   const startedAt = Date.now();
   const repo: RepoRecord | null = await getRepoById(data.repoId);
@@ -191,7 +233,8 @@ export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger
   writeCommitSymbols(repo.id, headSha, "head", head);
   log(`analysed: base ${base.files.length} file(s), head ${head.files.length} file(s), ${base.cached + head.cached} from the cache`);
 
-  const changed = await changedLinesBetween(repoDir, baseSha, headSha);
+  const diff = await diffBetween(repoDir, baseSha, headSha);
+  const changed = parseChangedLines(diff);
   const structure = compareStructure(base, head, [...changed.keys()]);
   const callGraph = buildCallGraph(base, head, changed);
   // The catalogs, base against head — stored beside each other in the result.
@@ -201,8 +244,17 @@ export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger
     infra: infraChange,
     db: compareSchemas(base.db, head.db),
     env: compareEnv(base.env, head.env, changed, infraChange.findings),
+    tests: compareTests(base.tests, head.tests, changed),
   };
-  const { api, infra, db, env } = compareCatalogs;
+  const { api, infra, db, env, tests } = compareCatalogs;
+  // Security (DESIGN.md §6.26): secrets on any added line, and endpoint auth
+  // changes. A line the env comparison already reported stays its finding.
+  const secretScan = scanDiffForSecrets(diff);
+  const envSecretLines = new Set(env.findings.filter((f) => f.rule === "committed-secret").map((f) => `${f.file}:${f.line ?? ""}`));
+  const security = [
+    ...secretFindings(secretScan.hits, secretScan.capped, envSecretLines),
+    ...endpointAuthFindings(api, base.api.endpoints, head.infra, changed),
+  ];
 
   const [owners, components] = await Promise.all([getFileOwnerMap(repo.id), listComponentsByRepoId(repo.id)]);
   const ownerOf = ownerLookup(owners);
@@ -281,11 +333,13 @@ export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger
   // whole (stable ids keep replies), and an open review dock refetches.
   const revision: Revision = { reviewedBaseSha: baseSha, reviewedHeadSha: headSha, reviewedAt: new Date().toISOString() };
   const prId = target.kind === "pr" ? `${repo.id}:pr:${target.prNumber}` : undefined;
-  const staticFindings: Array<{ category: "structure" | "infra" | "schema" | "env"; findings: Array<TargetFindingInput & { componentId: string }> }> = [
+  const staticFindings: Array<{ category: "structure" | "infra" | "schema" | "env" | "security" | "tests"; findings: Array<TargetFindingInput & { componentId: string }> }> = [
     { category: "env", findings: env.findings.map((f) => envFinding(f, targetKey, ownerOf(f.file) ?? "", revision, prId)) },
     { category: "structure", findings: structure.newCycles.map((cycle) => cycleFinding(cycle, targetKey, ownerOf(cycle.closingEdge.from) ?? "", revision, prId)) },
     { category: "infra", findings: infra.findings.map((f) => infraFinding(f, targetKey, ownerOf(f.file) ?? "", revision, prId)) },
     { category: "schema", findings: db.findings.map((f) => schemaFinding(f, targetKey, ownerOf(f.file) ?? "", revision, prId)) },
+    { category: "security", findings: security.map((f) => securityFinding(f, targetKey, ownerOf(f.file) ?? "", revision, prId)) },
+    { category: "tests", findings: tests.findings.map((f) => testsFinding(f, targetKey, ownerOf(f.file) ?? "", revision, prId)) },
   ];
   for (const { category, findings } of staticFindings) {
     await syncFindingsForTargetCategory(repo.id, targetKey, category, findings);
@@ -300,7 +354,9 @@ export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger
       `API: +${api.counts.added} −${api.counts.removed} ~${api.counts.changed} changed (${api.counts.breaking} breaking); logic changed behind ${api.counts.logic}; ` +
       `infra: +${infra.counts.create} −${infra.counts.destroy} ~${infra.counts.update} (${infra.counts.moved} moved, ${infra.counts.version} version), ${infra.findings.length} finding(s); ` +
       `schema: +${db.counts.added} −${db.counts.removed} ~${db.counts.changed} (${db.counts.renamed} renamed), ${db.counts.migrations} new migration(s), ${db.findings.length} finding(s); ` +
-      `env: +${env.counts.new} −${env.counts.gone} ~${env.counts.changed}, ${env.findings.length} finding(s)`
+      `env: +${env.counts.new} −${env.counts.gone} ~${env.counts.changed}, ${env.findings.length} finding(s); ` +
+      `security: ${secretScan.hits.length} secret(s) on added lines, ${security.length} finding(s); ` +
+      `tests: ${tests.counts.untested}/${tests.counts.changedCode} changed code file(s) untested, ${tests.counts.deletedTests} deleted, ${tests.counts.skipped} skipped, ${tests.counts.focused} focused, ${tests.findings.length} finding(s)`
   );
   return { baseSha, headSha, cycles: structure.newCycles.length, functions: callGraph.functions.length };
 }

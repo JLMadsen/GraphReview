@@ -7,6 +7,8 @@ import {
   Check,
   ClipboardCopy,
   Ellipsis,
+  FileText,
+  Send,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,7 +16,7 @@ import {
   type ReviewEffort,
 } from "../types";
 
-/** Secondary review actions: effort for the next run, and copying the review. */
+/** Secondary review actions: effort for the next run, copying and exporting the review, and posting it to the PR (DESIGN.md §6.23). */
 export function ReviewMenu({
   effort,
   onEffortChange,
@@ -22,6 +24,9 @@ export function ReviewMenu({
   canCopy,
   copied,
   onCopy,
+  onExport,
+  onPost,
+  postLabel,
 }: {
   effort: ReviewEffort;
   onEffortChange: (effort: ReviewEffort) => void;
@@ -29,6 +34,11 @@ export function ReviewMenu({
   canCopy: boolean;
   copied: boolean;
   onCopy: () => void;
+  /** Opens the export dialog (full report, change brief). */
+  onExport?: () => void;
+  /** Opens the post dialog. Absent for a ref comparison — it has no PR to post to. */
+  onPost?: () => void;
+  postLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -45,7 +55,7 @@ export function ReviewMenu({
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
-  if (!aiConfigured && !canCopy) return null;
+  if (!aiConfigured && !canCopy && !onExport && !onPost) return null;
   return (
     <div ref={ref} className="relative">
       <Button
@@ -90,6 +100,34 @@ export function ReviewMenu({
             >
               {copied ? <Check className="size-3.5" aria-hidden /> : <ClipboardCopy className="size-3.5" aria-hidden />}
               {copied ? "Copied" : "Copy as Markdown"}
+            </button>
+          )}
+          {onExport && (
+            <button
+              type="button"
+              onClick={() => {
+                onExport();
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-secondary"
+              title="The full report — verdict, findings, checklist, catalog changes, previews — and the change brief, to copy or download"
+            >
+              <FileText className="size-3.5" aria-hidden />
+              Export report…
+            </button>
+          )}
+          {onPost && (
+            <button
+              type="button"
+              onClick={() => {
+                onPost();
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-secondary"
+              title="Pick findings and post them as a review — you see everything before it's sent"
+            >
+              <Send className="size-3.5" aria-hidden />
+              {postLabel ?? "Post review…"}
             </button>
           )}
         </div>

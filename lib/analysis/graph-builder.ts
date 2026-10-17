@@ -20,6 +20,10 @@ import { scanCodeFacts, type CodeFacts } from "./infra/code-facts";
 import { GRAPH_FILE_KINDS, infraCacheTag, infraReaderFor, readInfraFile, type InfraFileFacts, type InfraReader } from "./infra/read";
 import { EMPTY_INFRA_CATALOG, type InfraCatalog } from "./infra/types";
 import { buildEnvCatalog } from "./env/catalog";
+import { buildTestsCatalog } from "./tests/catalog";
+import { isTestPath } from "./tests/classify";
+import { scanTestFacts } from "./tests/facts";
+import { EMPTY_TESTS_CATALOG, type TestFileFacts, type TestsCatalog } from "./tests/types";
 import { envReaderFor, readEnvFile, type EnvFileFacts, type EnvReader } from "./env/read";
 import { EMPTY_ENV_CATALOG, type EnvCatalog } from "./env/types";
 import { buildDbSchema } from "./db/catalog";
@@ -88,6 +92,8 @@ export interface AnalysisResult {
   db: DbSchema;
   /** Env vars the tree reads, declares and sets (./env/, DESIGN.md §6.15). */
   env: EnvCatalog;
+  /** Test files by framework and kind, what they reach, committed coverage reports (./tests/, DESIGN.md §6.22). */
+  tests: TestsCatalog;
   /** Files counted but not parsed. */
   skipped: { binary: number; large: number; failed: number };
   /** Files whose parse came from the cache. */
@@ -113,7 +119,7 @@ const ENV_FILE_LANGUAGES: Partial<Record<string, string>> = { dotenv: "dotenv", 
  * Bumped whenever what a parse produces changes (queries, extractors, the
  * cached shape), so stale cache entries are never read back.
  */
-export const PARSE_VERSION = 11;
+export const PARSE_VERSION = 12;
 
 /** What a file's own syntax says — the cached unit. */
 export interface CachedParse {
@@ -130,6 +136,8 @@ export interface CachedParse {
   db?: DbFileFacts;
   /** SQL literals of a Go / Java / Kotlin / Rust file (./db/read.ts). */
   dbCode?: DbCodeFacts;
+  /** Test cases and skip/focus markers (./tests/facts.ts) — test files only. */
+  tests?: TestFileFacts;
   loc: number;
 }
 
@@ -185,7 +193,8 @@ async function parseFile(analyzer: LanguageAnalyzer, file: string, source: strin
   try {
     const code = scanCodeFacts(analyzer.languageId(ext), source);
     const sql = scanSqlLiterals(analyzer.languageId(ext), source);
-    const withCode = { ...(code ? { code } : {}), ...(sql ? { dbCode: sql } : {}) };
+    const tests = isTestPath(file) ? scanTestFacts(analyzer.languageId(ext), source) : null;
+    const withCode = { ...(code ? { code } : {}), ...(sql ? { dbCode: sql } : {}), ...(tests ? { tests } : {}) };
     if (analyzer.analyzeSource) {
       const facts = analyzer.analyzeSource({ file, source });
       const symbols = analyzer.analyzeSymbols?.({ file, source });
@@ -227,6 +236,7 @@ function toParsed(analyzer: LanguageAnalyzer, file: string, parse: CachedParse |
   if (parse?.symbols) analysis.symbols = parse.symbols;
   if (parse?.code) analysis.code = parse.code;
   if (parse?.dbCode) analysis.db = parse.dbCode;
+  if (parse?.tests) analysis.tests = parse.tests;
   return { analysis, analyzer, raws: parse?.raws ?? [] };
 }
 
@@ -736,6 +746,11 @@ export async function analyzeTree(tree: SourceTree, options: AnalyzeRepoOptions 
       return { ...EMPTY_ENV_CATALOG };
     }
   })();
+  // Before infra, schema and env files join `files`: only code is tested.
+  const tests = await buildTestsCatalog({ files, edges, symbols, allFiles, readText: (relPath) => tree.readConfig(relPath) }).catch((error: unknown) => {
+    console.warn(`[analysis] test catalog failed: ${(error as Error).message}`);
+    return { ...EMPTY_TESTS_CATALOG };
+  });
   // Schema files a database is built from (migrations, `.prisma`, schema.sql)
   // are graph files too, like infra files: a change to a migration alone
   // still has a component to review (DESIGN.md §6.13 §6).
@@ -784,6 +799,7 @@ export async function analyzeTree(tree: SourceTree, options: AnalyzeRepoOptions 
     infra,
     db,
     env,
+    tests,
     skipped: { ...tree.skipped, failed },
     cached,
   };

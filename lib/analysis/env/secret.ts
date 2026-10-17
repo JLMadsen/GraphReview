@@ -30,10 +30,27 @@ export function isPlaceholder(value: string): boolean {
   return false;
 }
 
-const TOKEN_PREFIX = /^(sk-[A-Za-z0-9_-]{16,}|sk_live_\w{8,}|rk_live_\w{8,}|ghp_\w{20,}|gho_\w{20,}|ghs_\w{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}|xox[abpr]-[\w-]{10,}|AKIA[A-Z0-9]{16}|ASIA[A-Z0-9]{16}|AIza[\w-]{30,}|SG\.[\w-]{16,}\.[\w-]{16,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)/;
+/**
+ * Known token shapes, each with what to call it. Anchored at a value's start
+ * for {@link isSecretValue}; the diff-wide scan (../security/secret-scan.ts,
+ * DESIGN.md §6.26) looks for them anywhere in a line.
+ */
+export const TOKEN_KINDS: ReadonlyArray<{ kind: string; pattern: string }> = [
+  { kind: "Stripe live key", pattern: String.raw`[sr]k_live_\w{8,}` },
+  { kind: "API key (sk-)", pattern: String.raw`sk-(?:proj-|ant-)?[A-Za-z0-9_-]{16,}` },
+  { kind: "GitHub token", pattern: String.raw`(?:gh[pousr]_\w{20,}|github_pat_\w{20,})` },
+  { kind: "GitLab token", pattern: String.raw`glpat-[\w-]{16,}` },
+  { kind: "Slack token", pattern: String.raw`xox[abpr]-[\w-]{10,}` },
+  { kind: "AWS access key", pattern: String.raw`(?:AKIA|ASIA)[A-Z0-9]{16}` },
+  { kind: "Google API key", pattern: String.raw`AIza[\w-]{30,}` },
+  { kind: "SendGrid key", pattern: String.raw`SG\.[\w-]{16,}\.[\w-]{16,}` },
+  { kind: "private key", pattern: String.raw`-----BEGIN [A-Z ]*PRIVATE KEY-----` },
+];
+
+const TOKEN_PREFIX = new RegExp(`^(${TOKEN_KINDS.map((t) => t.pattern).join("|")})`);
 
 /** Shannon entropy in bits per character. */
-function entropy(s: string): number {
+export function entropy(s: string): number {
   const counts = new Map<string, number>();
   for (const c of s) counts.set(c, (counts.get(c) ?? 0) + 1);
   let h = 0;

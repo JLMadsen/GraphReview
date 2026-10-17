@@ -4,14 +4,18 @@
 import { randomUUID } from "node:crypto";
 import {
   checkPrIntent,
+  criterionKey,
   groupPrMap,
+  parseAcceptanceCriteria,
 } from "@/lib/ai";
-import type { AiProviderConfig, PrIntentVerdict, PrMapAiInput, ReviewInput } from "@/lib/ai";
+import type { AcceptanceCriterion, AiProviderConfig, CriterionResult, PrIntentVerdict, PrMapAiInput, ReviewInput } from "@/lib/ai";
 import {
+  ACCEPTANCE_CRITERIA_ITEM_ID,
   prMapFilesKey,
+  saveChecklistAnswers,
   savePrMapGrouping,
 } from "@/lib/db";
-import type { FindingAssessment, TargetFindingInput } from "@/lib/db";
+import type { AcceptanceCriterionAnswer, FindingAssessment, TargetFindingInput } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import {
   assemblePrMap,
@@ -166,7 +170,14 @@ export async function runIntentPass(args: {
   revision: Pick<TargetFindingInput, "reviewedBaseSha" | "reviewedHeadSha" | "reviewedAt">;
   log: JobLogger;
   signal?: AbortSignal;
-}): Promise<PrMapPassResult & { finding: TargetFindingInput & { componentId: string } }> {
+}): Promise<
+  PrMapPassResult & {
+    finding: TargetFindingInput & { componentId: string };
+    /** One verdict per acceptance criterion the PR states (DESIGN.md §6.27); absent when it states none. */
+    criteria?: AcceptanceCriterionAnswer[];
+  }
+> {
+  const criteria = parseAcceptanceCriteria(args.intent);
   const base = {
     id: randomUUID(),
     prId: args.prId,
@@ -192,10 +203,15 @@ export async function runIntentPass(args: {
         ...(args.infraLines ? { infra: args.infraLines } : {}),
         ...(args.schemaLines ? { schema: args.schemaLines } : {}),
         ...(args.envLines ? { env: args.envLines } : {}),
+        ...(criteria.length > 0 ? { criteria } : {}),
       },
       { tokenBudget: args.tokenBudget, signal: args.signal }
     );
     args.log(`intent: ${result.verdict}${result.parseFailed ? " (model output could not be parsed)" : ""}`);
+    if (criteria.length > 0) {
+      const counts = (["pass", "fail", "unknown"] as const).map((v) => `${result.criteria?.filter((c) => c.verdict === v).length ?? 0} ${v}`);
+      args.log(`acceptance criteria: ${criteria.length} (${counts.join(", ")})`);
+    }
     return {
       calls: 1,
       promptTokens: result.usage.promptTokens,
@@ -207,6 +223,7 @@ export async function runIntentPass(args: {
         confidence: result.parseFailed ? 0 : 0.7,
         rationale: result.rationale,
       },
+      ...(criteria.length > 0 ? { criteria: criterionAnswers(criteria, result.criteria ?? []) } : {}),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -223,6 +240,55 @@ export async function runIntentPass(args: {
         rationale: `The AI intent-check call did not complete: ${message}`,
         callFailed: true,
       },
+      ...(criteria.length > 0
+        ? { criteria: criterionAnswers(criteria, criteria.map((c) => ({ id: c.id, verdict: "unknown" as const, reason: "The intent-check call did not complete, so this was not judged.", evidence: [] }))) }
+        : {}),
     };
   }
+}
+
+function criterionAnswers(criteria: AcceptanceCriterion[], results: CriterionResult[]): AcceptanceCriterionAnswer[] {
+  const byId = new Map(results.map((r) => [r.id, r]));
+  return criteria.map((c) => {
+    const r = byId.get(c.id);
+    return {
+      key: criterionKey(c.text),
+      text: c.text,
+      source: c.source,
+      verdict: r?.verdict ?? "unknown",
+      reason: r?.reason ?? "Not judged.",
+      evidence: r?.evidence ?? [],
+    };
+  });
+}
+
+/**
+ * Stores the intent pass's per-criterion verdicts as the checklist's
+ * acceptance-criteria answer (DESIGN.md §6.27), stamped with the reviewed
+ * head commit like any AI checklist answer. `criteria` undefined (the PR
+ * states none) clears an earlier answer.
+ */
+export async function saveAcceptanceCriteria(args: {
+  repoId: string;
+  targetKey: string;
+  headSha?: string;
+  model: string;
+  criteria: AcceptanceCriterionAnswer[] | undefined;
+}): Promise<void> {
+  const criteria = args.criteria ?? [];
+  const failed = criteria.filter((c) => c.verdict === "fail").length;
+  const passed = criteria.filter((c) => c.verdict === "pass").length;
+  await saveChecklistAnswers([
+    {
+      repoId: args.repoId,
+      targetKey: args.targetKey,
+      itemId: ACCEPTANCE_CRITERIA_ITEM_ID,
+      status: criteria.length === 0 ? "not_applicable" : failed > 0 ? "fail" : passed === criteria.length ? "pass" : "unknown",
+      detail: criteria.length === 0 ? "The PR states no acceptance criteria." : `${passed} of ${criteria.length} met${failed > 0 ? `, ${failed} not met` : ""}.`,
+      headSha: args.headSha,
+      model: args.model,
+      checkedAt: new Date().toISOString(),
+      criteria,
+    },
+  ]);
 }

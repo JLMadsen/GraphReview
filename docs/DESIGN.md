@@ -23,7 +23,7 @@ These were decided deliberately and should not be relitigated without a document
 | 7 | **GitHub auth** is a user-supplied Personal Access Token (PAT) entered in settings — no OAuth App or GitHub App registration. **As built:** GitLab support (gitlab.com or one self-hosted instance) mirrors this exactly — a separate user-supplied GitLab PAT, also entered in settings. |
 | 8 | **AI provider** is a generic OpenAI-compatible chat-completions endpoint (base URL + API key + model name), fully user-configurable. No hardcoded provider, and no reliance on provider-specific structured-output/tool-calling features. |
 | 9 | **Node purpose/description** lives only in GraphReview's database as a component property, edited in-app — never committed to the target repo. |
-| 10 | **Intent-check UX** is advisory annotations only in the graph UI. It never blocks a review and never auto-posts to GitHub or GitLab. |
+| 10 | **Intent-check UX** is advisory annotations only in the graph UI. It never blocks a review and never auto-posts to GitHub or GitLab. **As built (2026-10-17):** the user can post picked findings as a PR/MR review by hand, after a preview — §6.23. |
 | 11 | **Language scope** is polyglot as an *extension point* from day one (common IR + per-language plugin interface). Actual v1 language coverage is still phased — see §15. |
 | 12 | **Multi-repo**: one running instance tracks multiple repos simultaneously, each in its own namespace, switchable in the UI. |
 | 13 | **Frontend** is Next.js (App Router, TypeScript) with shadcn/ui as the base component library. |
@@ -54,6 +54,13 @@ The rest of the design is split into one file per section, so a task reads only 
 | §6.18 | [design/6.18-command-palette.md](design/6.18-command-palette.md) | Command palette: Ctrl+Space search and commands over everything in a repo (built 2026-10-14) |
 | §6.19 | [design/6.19-stats.md](design/6.19-stats.md) | Stats: lines of code per language, contributors, and a timeline of commits, lines and CI runs (built 2026-10-16) |
 | §6.20 | [design/6.20-jobs.md](design/6.20-jobs.md) | Jobs: a header indicator and drawer for background jobs across repos, plus inline status and failures in the views that start them (built 2026-10-16) |
+| §6.21 | [design/6.21-review-loop.md](design/6.21-review-loop.md) | Review loop: stable finding ids that keep triage across re-runs, incremental re-review after a push, per-repo suppression memory (built 2026-10-17) |
+| §6.22 | [design/6.22-tests-view.md](design/6.22-tests-view.md) | Tests: test inventory by framework and kind, static reach and committed coverage reports, a change's test signals as findings, and an AI test plan (built 2026-10-17) |
+| §6.23 | [design/6.23-post-and-report.md](design/6.23-post-and-report.md) | Post, report and change brief: picked findings posted to the PR/MR as a review (user-triggered only), the full Markdown report, and a change brief / release notes (built 2026-10-17) |
+| §6.24 | [design/6.24-diff-viewer.md](design/6.24-diff-viewer.md) | Diff viewer: split view, ignore whitespace, word marks, moved code, git-first patches and the all-files reader with Viewed marks (built 2026-10-17) |
+| §6.25 | [design/6.25-onboarding.md](design/6.25-onboarding.md) | Onboarding and Graph navigation: a setup checklist, the "AI off" chip, Stats as a Graph view, the view in the URL (built 2026-10-17) |
+| §6.26 | [design/6.26-security-findings.md](design/6.26-security-findings.md) | Security: diff-wide secret scan, endpoint auth findings, side-effect GETs → POST, remote README images on click, optional MCP token (built 2026-10-17) |
+| §6.27 | [design/6.27-acceptance-criteria.md](design/6.27-acceptance-criteria.md) | Acceptance criteria parsed from the PR and linked issues, each judged pass/fail/unknown with evidence in the checklist card (built 2026-10-17) |
 | §7–8 | [design/data-model.md](design/data-model.md) | Data model, GitHub integration surface |
 | §9–10 | [design/ai-pipeline.md](design/ai-pipeline.md) | AI integration flow, the review pipeline, labeling, analysis lifecycle & AI cost |
 | §11–14 | [design/runtime.md](design/runtime.md) | Secrets, distribution & runtime layout, module/folder structure, local repo access |

@@ -11,7 +11,14 @@ export {
   getCommitCiStatus,
   listPipelines,
   getFileAtRef,
+  getTokenScopes,
+  getMergeRequestDiffRefs,
+  createMergeRequestDiscussion,
+  createMergeRequestNote,
+  approveMergeRequest,
+  unapproveMergeRequest,
 } from "./client";
+export type { MergeRequestDiffRefs, MergeRequestDiffPosition, PostedNote } from "./client";
 
 export { GitLabApiError } from "./errors";
 

@@ -221,10 +221,15 @@ Most of this is automatic — GraphReview reuses the setup your machine already 
   like any other package.
 - **Previews install a repo's dependencies with your own package-manager
   config.** Your user-level `.npmrc`, `.yarnrc`, `.yarnrc.yml` and pip config
-  (registries, scopes, auth tokens) are copied into the install container.
+  (registries, scopes) are copied into the install container.
   `${VAR}` references in them are filled in from your environment, and
   settings that point at folders on your machine (cache, prefix) are left
-  out.
+  out. **Credentials are not passed on, and dependency install scripts don't
+  run.** An install runs a PR's own manifests while online, so a fork's
+  dependency could otherwise read your registry tokens. If your mirror needs
+  a login, and you trust the authors of the PRs you preview, add
+  `GRAPHREVIEW_PREVIEW_TRUSTED_INSTALLS=1` to `config.env`: installs then get
+  your auth tokens and run install scripts.
 - **Company certificates are trusted wherever your machine trusts them:** the
   Windows certificate store / macOS keychain (Node 22.15 or newer),
   `NODE_EXTRA_CA_CERTS`, and any `cafile` / `cert` set in your npm or pip

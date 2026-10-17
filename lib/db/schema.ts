@@ -298,6 +298,30 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX palette_history_recent ON palette_history (repo_id, last_used);
   `,
+  // 8 — the review loop (DESIGN.md §6.21): what each component's last review
+  // call saw (so a re-review after a push skips unchanged components), and
+  // the per-repo memory of findings dismissed as "not a problem".
+  `
+  CREATE TABLE review_slots (
+    repo_id      TEXT NOT NULL,
+    target_key   TEXT NOT NULL,
+    component_id TEXT NOT NULL,
+    patch_hash   TEXT NOT NULL,
+    head_sha     TEXT NOT NULL,
+    reviewed_at  TEXT NOT NULL,
+    PRIMARY KEY (repo_id, target_key, component_id)
+  );
+
+  CREATE TABLE finding_suppressions (
+    id         TEXT PRIMARY KEY,
+    repo_id    TEXT NOT NULL,
+    file_path  TEXT NOT NULL,
+    finding_id TEXT,
+    created_at TEXT NOT NULL,
+    data       TEXT NOT NULL
+  );
+  CREATE INDEX finding_suppressions_repo ON finding_suppressions (repo_id, file_path);
+  `,
 ];
 
 /** Brings the database up to the latest schema version. */

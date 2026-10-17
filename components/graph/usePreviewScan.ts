@@ -11,12 +11,6 @@ import type { ReviewTargetDTO } from "./types";
 
 const POLL_MS = 2500;
 
-function targetParams(target: ReviewTargetDTO): Record<string, string> {
-  return "prNumber" in target
-    ? { prNumber: String(target.prNumber) }
-    : { baseRef: target.baseRef, headRef: target.headRef };
-}
-
 function isPending(scan: PreviewScanDTO): boolean {
   if (scan.state === "queued" || scan.state === "running") return true;
   return scan.files.some((f) => f.preview === "queued" || f.preview === "running");
@@ -41,9 +35,12 @@ export function usePreviewScan(repoId: string, target: ReviewTargetDTO | null): 
     async (gen: number) => {
       if (!targetKey) return;
       if (timer.current) clearTimeout(timer.current);
-      const params = new URLSearchParams(targetParams(JSON.parse(targetKey)));
       try {
-        const res = await fetch(`/api/repos/${repoId}/preview/scan?${params.toString()}`);
+        const res = await fetch(`/api/repos/${repoId}/preview/scan`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: targetKey,
+        });
         const json = (await res.json().catch(() => null)) as (PreviewScanDTO & { error?: string }) | null;
         if (gen !== generation.current) return;
         if (!res.ok || !json) throw new Error(json?.error ?? `Request failed (${res.status}).`);
@@ -78,7 +75,7 @@ export function usePreviewScan(repoId: string, target: ReviewTargetDTO | null): 
       const res = await fetch(`/api/repos/${repoId}/preview/scan`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: targetKey,
+        body: JSON.stringify({ ...JSON.parse(targetKey), previewAll: true }),
       });
       const json = (await res.json().catch(() => null)) as { error?: string } | null;
       if (!res.ok) throw new Error(json?.error ?? `Request failed (${res.status}).`);

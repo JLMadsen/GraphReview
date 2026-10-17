@@ -22,6 +22,7 @@ import {
   publicCandidate,
 } from "@/lib/ai/local-configs";
 import { decrypt, encrypt } from "@/lib/crypto";
+import { clearMcpToken, createMcpToken } from "@/lib/mcp/token";
 import {
   clearSettingsFields,
   createAiProvider,
@@ -406,5 +407,30 @@ export async function importLocalProvidersAction(
       status: "error",
       error: err instanceof Error ? err.message : "Failed to load the providers.",
     };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MCP bearer token (DESIGN.md §6.26 §3) — off by default
+// ---------------------------------------------------------------------------
+
+/** Turns the token on, or replaces it; agents set up with the old one stop working. */
+export async function createMcpTokenAction(): Promise<{ status: "success" | "error"; error?: string }> {
+  try {
+    await createMcpToken();
+    revalidatePath("/settings");
+    return { status: "success" };
+  } catch (err) {
+    return { status: "error", error: err instanceof Error ? err.message : "Failed to create the MCP token." };
+  }
+}
+
+export async function clearMcpTokenAction(): Promise<{ status: "success" | "error"; error?: string }> {
+  try {
+    await clearMcpToken();
+    revalidatePath("/settings");
+    return { status: "success" };
+  } catch (err) {
+    return { status: "error", error: err instanceof Error ? err.message : "Failed to turn the MCP token off." };
   }
 }

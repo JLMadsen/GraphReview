@@ -165,6 +165,15 @@ export {
 } from "./pr-intent";
 export type { PrIntentFile, PrIntentInput, PrIntentResult, PrIntentVerdict } from "./pr-intent";
 
+export { MAX_CRITERIA, criterionKey, parseAcceptanceCriteria, parseCriteriaFromText } from "./acceptance-criteria";
+export type {
+  AcceptanceCriterion,
+  AcceptanceCriterionFormat,
+  CriterionEvidence,
+  CriterionResult,
+  CriterionVerdict,
+} from "./acceptance-criteria";
+
 export {
   PREVIEW_MOCKS_TASK_MARKER,
   buildPreviewMocksSystemPrompt,
@@ -172,3 +181,6 @@ export {
   normalizePreviewMocks,
 } from "./preview-mocks";
 export type { PreviewMockCall, PreviewMocksInput, PreviewMocksResult } from "./preview-mocks";
+
+export { TEST_PLAN_TASK_MARKER, buildTestPlanSystemPrompt, generateTestPlan, hasTestPlanEvidence, normalizeTestPlan, renderTestPlanUserMessage } from "./test-plan";
+export type { TestPlanEvidence, TestPlanInput, TestPlanItem, TestPlanItemType, TestPlanResult, TestPlanSourceKind } from "./test-plan";

@@ -561,3 +561,167 @@ export async function getFileAtRef(
   if (!response.ok) throw await toGitLabApiError(response, endpoint);
   return { data: await response.text(), rateLimit: extractRateLimit(response.headers) };
 }
+
+// ---------------------------------------------------------------------------
+// Posting a review (DESIGN.md §6.23) — only ever called from the user's
+// "Post review" click, never automatically (locked decision #10).
+// ---------------------------------------------------------------------------
+
+async function gitlabSend(
+  endpoint: string,
+  method: "POST" | "PUT",
+  url: string,
+  token: string,
+  body?: unknown
+): Promise<FetchResult> {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: { "PRIVATE-TOKEN": token, ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+  } catch (err) {
+    throw toGitLabNetworkError(err, endpoint);
+  }
+  if (!response.ok) {
+    throw await toGitLabApiError(response, endpoint);
+  }
+  const text = await response.text().catch(() => "");
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+  return { data, headers: response.headers };
+}
+
+/**
+ * The token's scopes from `GET /personal_access_tokens/self` (GitLab 15.5+).
+ * `null` when the instance doesn't have that endpoint (older GitLab, a
+ * project/group token on some versions), so the scopes can't be read up front.
+ */
+export async function getTokenScopes(token: string): Promise<GitLabResult<string[] | null>> {
+  const endpoint = "GET /personal_access_tokens/self";
+  try {
+    const { data, headers } = await gitlabFetch(endpoint, `${GITLAB_API_BASE_URL}/personal_access_tokens/self`, token);
+    const scopes = (data as { scopes?: unknown }).scopes;
+    return {
+      data: Array.isArray(scopes) ? scopes.filter((s): s is string => typeof s === "string") : null,
+      rateLimit: extractRateLimit(headers),
+    };
+  } catch (err) {
+    if (err instanceof GitLabApiError && err.status === 404) return { data: null, rateLimit: null };
+    throw err;
+  }
+}
+
+export interface MergeRequestDiffRefs {
+  baseSha: string;
+  startSha: string;
+  headSha: string;
+  webUrl: string;
+}
+
+/** The three shas a diff position needs (`diff_refs`), and the MR's page. */
+export async function getMergeRequestDiffRefs(
+  token: string,
+  projectPath: string,
+  iid: number
+): Promise<GitLabResult<MergeRequestDiffRefs>> {
+  const endpoint = "GET /projects/{id}/merge_requests/{iid}";
+  const { data, headers } = await gitlabFetch(endpoint, `${projectApiBase(projectPath)}/merge_requests/${iid}`, token);
+  const mr = data as { web_url: string; diff_refs?: { base_sha: string; start_sha: string; head_sha: string } | null };
+  if (!mr.diff_refs) {
+    throw new GitLabApiError(`GitLab merge request !${iid} has no diff_refs yet (still being processed).`, { status: 0, endpoint });
+  }
+  return {
+    data: { baseSha: mr.diff_refs.base_sha, startSha: mr.diff_refs.start_sha, headSha: mr.diff_refs.head_sha, webUrl: mr.web_url },
+    rateLimit: extractRateLimit(headers),
+  };
+}
+
+export interface MergeRequestDiffPosition {
+  diffRefs: MergeRequestDiffRefs;
+  oldPath: string;
+  newPath: string;
+  /** A line on the head side of the diff. */
+  newLine: number;
+  /** Its base-side line, for a context (unchanged) line — GitLab wants both there. */
+  oldLine?: number;
+}
+
+/** A note's id and its URL on the MR page (`<mr>#note_<id>`). */
+export interface PostedNote {
+  id: number;
+  url: string;
+}
+
+/** One thread on the MR — on a diff line when `position` is given (`POST …/discussions`). */
+export async function createMergeRequestDiscussion(
+  token: string,
+  projectPath: string,
+  iid: number,
+  body: string,
+  position?: MergeRequestDiffPosition
+): Promise<GitLabResult<PostedNote>> {
+  const endpoint = "POST /projects/{id}/merge_requests/{iid}/discussions";
+  const { data, headers } = await gitlabSend(endpoint, "POST", `${projectApiBase(projectPath)}/merge_requests/${iid}/discussions`, token, {
+    body,
+    ...(position
+      ? {
+          position: {
+            position_type: "text",
+            base_sha: position.diffRefs.baseSha,
+            start_sha: position.diffRefs.startSha,
+            head_sha: position.diffRefs.headSha,
+            old_path: position.oldPath,
+            new_path: position.newPath,
+            new_line: position.newLine,
+            ...(position.oldLine ? { old_line: position.oldLine } : {}),
+          },
+        }
+      : {}),
+  });
+  const noteId = (data as { notes?: Array<{ id: number }> }).notes?.[0]?.id ?? 0;
+  const webUrl = position?.diffRefs.webUrl ?? "";
+  return { data: { id: noteId, url: webUrl && noteId ? `${webUrl}#note_${noteId}` : webUrl }, rateLimit: extractRateLimit(headers) };
+}
+
+/** A plain comment on the MR (`POST …/notes`). */
+export async function createMergeRequestNote(
+  token: string,
+  projectPath: string,
+  iid: number,
+  body: string,
+  webUrl = ""
+): Promise<GitLabResult<PostedNote>> {
+  const endpoint = "POST /projects/{id}/merge_requests/{iid}/notes";
+  const { data, headers } = await gitlabSend(endpoint, "POST", `${projectApiBase(projectPath)}/merge_requests/${iid}/notes`, token, { body });
+  const id = (data as { id?: number }).id ?? 0;
+  return { data: { id, url: webUrl && id ? `${webUrl}#note_${id}` : webUrl }, rateLimit: extractRateLimit(headers) };
+}
+
+/** Approves the MR as the token's user (`POST …/approve`). */
+export async function approveMergeRequest(token: string, projectPath: string, iid: number): Promise<GitLabResult<null>> {
+  const endpoint = "POST /projects/{id}/merge_requests/{iid}/approve";
+  const { headers } = await gitlabSend(endpoint, "POST", `${projectApiBase(projectPath)}/merge_requests/${iid}/approve`, token);
+  return { data: null, rateLimit: extractRateLimit(headers) };
+}
+
+/**
+ * Revokes the token user's approval (`POST …/unapprove`) — GitLab's closest
+ * REST equivalent to "request changes". A 404 means there was no approval to
+ * revoke, which is the state wanted anyway.
+ */
+export async function unapproveMergeRequest(token: string, projectPath: string, iid: number): Promise<GitLabResult<null>> {
+  const endpoint = "POST /projects/{id}/merge_requests/{iid}/unapprove";
+  try {
+    const { headers } = await gitlabSend(endpoint, "POST", `${projectApiBase(projectPath)}/merge_requests/${iid}/unapprove`, token);
+    return { data: null, rateLimit: extractRateLimit(headers) };
+  } catch (err) {
+    if (err instanceof GitLabApiError && err.status === 404) return { data: null, rateLimit: null };
+    throw err;
+  }
+}

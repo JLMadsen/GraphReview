@@ -4,6 +4,7 @@
 // first, with their area (or component), churn and open findings.
 
 import { useMemo } from "react";
+import { BookOpen } from "lucide-react";
 import { cn } from "cn";
 import { STATUS_BADGES } from "../PrMapNode";
 import { ASSESSMENT_VISUALS } from "../review-visuals";
@@ -38,6 +39,7 @@ export function ReviewFilesTab({
   scopeParts,
   componentName,
   onOpenFile,
+  onReadAll,
 }: {
   files: ChangedFile[];
   findings: FindingDTO[];
@@ -47,6 +49,8 @@ export function ReviewFilesTab({
   scopeParts: string[];
   componentName: (id: string) => string | undefined;
   onOpenFile?: (path: string) => void;
+  /** Opens every file's diff in the all-files reader. */
+  onReadAll?: () => void;
 }) {
   const flagsByFile = useMemo(() => {
     const flags = new Map<string, { open: number; defect: boolean }>();
@@ -68,6 +72,22 @@ export function ReviewFilesTab({
   }
   return (
     <>
+      {onReadAll && (
+        <div className="flex items-center justify-between gap-2 px-2 py-1.5 text-[11px] text-muted-foreground">
+          <span>
+            {files.length} changed file{files.length === 1 ? "" : "s"}
+          </span>
+          <button
+            type="button"
+            onClick={onReadAll}
+            className="inline-flex h-6 items-center gap-1 rounded-sm border border-border px-2 text-[11px] text-foreground transition-colors hover:bg-secondary focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+            title="Every file's diff in one scrolling view, with a Viewed checkbox per file (J / K to move)"
+          >
+            <BookOpen className="size-3" aria-hidden />
+            Read all diffs
+          </button>
+        </div>
+      )}
       <div className="sticky top-0 z-10 grid grid-cols-[16px_minmax(0,1fr)_auto] gap-x-3 border-b border-border bg-card px-2 py-1.5 text-[10px] font-semibold tracking-wide text-muted-foreground uppercase @2xl:grid-cols-[16px_minmax(0,1fr)_140px_56px_56px_96px_32px]">
         <span />
         <span>Path</span>

@@ -171,7 +171,7 @@ export interface CiStatus {
 
 /**
  * One finished or running CI run on a branch — a GitHub Actions workflow
- * run or a GitLab pipeline — for the Stats page's timeline (DESIGN.md
+ * run or a GitLab pipeline — for the Stats view's timeline (DESIGN.md
  * §6.19). `cancelled` is kept apart from `failure`: a run someone stopped
  * didn't fail.
  */

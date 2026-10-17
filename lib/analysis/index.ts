@@ -66,6 +66,11 @@ export { buildEnvCatalog } from "./env/catalog";
 export { compareEnv } from "./env/compare";
 export { valueForModel } from "./env/secret";
 export type * from "./env/types";
+export { buildTestsCatalog, coverageOf } from "./tests/catalog";
+export { compareTests } from "./tests/compare";
+export { isTestPath, testRole } from "./tests/classify";
+export { EMPTY_TESTS_CATALOG } from "./tests/types";
+export type * from "./tests/types";
 export { disposeTreeSitter, initTreeSitter, withSyntaxTree } from "./tree-sitter";
 export { dirOf, extensionOf, joinPosix, repoRelative, toPosix } from "./paths";
 export {

@@ -21,7 +21,8 @@
  * The impact check (`TASK: impact-check`) answers every usage of a removed
  * declaration, and every other usage whose id hashes odd, `incompatible`;
  * the rest `compatible`. The PR intent check (`TASK: pr-intent`) answers
- * `delivers` unless the title contains MOCK_PARTIAL.
+ * `delivers` unless the title contains MOCK_PARTIAL. The test plan
+ * (`TASK: test-plan`) gets one item per evidence line (at most 12).
  *
  * The PR map call (lib/ai/pr-map.ts, `TASK: pr-map`) is answered from its
  * `File: <path> (...) card: <name>` lines: the same grouping as the current
@@ -49,7 +50,9 @@ import { APP_EXPLAIN_TASK_MARKER, APP_FEATURES_TASK_MARKER, APP_LAYERS_TASK_MARK
 import { PREVIEW_INPUTS_TASK_MARKER } from "./preview-inputs";
 import { IMPACT_TASK_MARKER } from "./impact";
 import { PR_INTENT_TASK_MARKER } from "./pr-intent";
+import { BRIEF_FACT_HEADINGS, CHANGE_BRIEF_TASK_MARKER } from "./change-brief";
 import { API_SHAPE_TASK_MARKER } from "./api-shape";
+import { TEST_PLAN_TASK_MARKER } from "./test-plan";
 
 export const DEFAULT_MOCK_PORT = 4010;
 export const DEFAULT_MOCK_DELAY_MS = 900;
@@ -227,8 +230,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
                     ? previewInputsContent(userText)
                     : prompt.includes(IMPACT_TASK_MARKER)
                     ? impactContent(userText)
+                    : prompt.includes(CHANGE_BRIEF_TASK_MARKER)
+                    ? changeBriefContent(userText)
                     : prompt.includes(PR_INTENT_TASK_MARKER)
                     ? prIntentContent(userText)
+                    : prompt.includes(TEST_PLAN_TASK_MARKER)
+                    ? testPlanContent(userText)
                     : prompt.includes(API_SHAPE_TASK_MARKER)
                     ? apiShapeContent(userText)
                     : prompt.includes(CHECKLIST_TASK_MARKER)
@@ -454,18 +461,93 @@ function impactContent(userText: string): { content: string; note: string } {
   return { content, note: `impact usages=${results.length}` };
 }
 
+/**
+ * Acceptance criteria (DESIGN.md §6.27), when listed: each passes, citing the
+ * first diff hunk (or the first changed file), unless its text says
+ * MOCK_CRITERION_FAIL or MOCK_CRITERION_UNKNOWN.
+ */
+function mockCriteria(userText: string): unknown[] | undefined {
+  // Anchored: the quoted description may have an "## Acceptance criteria" heading of its own.
+  const section = /^## Acceptance criteria \(judge each one\)\n([\s\S]*?)(?:\n## |(?![\s\S]))/m.exec(userText)?.[1];
+  if (!section) return undefined;
+  const file = /^File: (.+)$/m.exec(userText);
+  const hunk = file ? /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/m.exec(userText.slice(file.index)) : null;
+  const firstChanged = /## Changed files[^\n]*\n- (.+?) \(/.exec(userText)?.[1];
+  const evidence = file && hunk
+    ? [`${file[1]}:${hunk[1]}-${Number(hunk[1]) + Math.max(1, Number(hunk[2] ?? 1)) - 1}`]
+    : firstChanged ? [firstChanged] : [];
+  return [...section.matchAll(/^- (c\d+): (.*)$/gm)].map(([, id, text]) =>
+    /MOCK_CRITERION_FAIL/.test(text)
+      ? { id, verdict: "fail", reason: `${MOCK_DESCRIPTION_PREFIX}Nothing in the diff does this.`, evidence: [] }
+      : /MOCK_CRITERION_UNKNOWN/.test(text)
+        ? { id, verdict: "unknown", reason: `${MOCK_DESCRIPTION_PREFIX}No evidence either way in what I was shown.`, evidence: [] }
+        : { id, verdict: "pass", reason: `${MOCK_DESCRIPTION_PREFIX}Implemented in the changed code.`, evidence }
+  );
+}
+
+/** One item per evidence line: findings, impact and callers as regressions, the rest as new behaviour. */
+function testPlanContent(userText: string): { content: string; note: string } {
+  const items: Array<Record<string, unknown>> = [];
+  let kind = "";
+  for (const line of userText.split("\n")) {
+    const heading = /^## .* — kind (\w+)$/.exec(line);
+    if (heading) {
+      kind = heading[1];
+      continue;
+    }
+    if (line.startsWith("## ")) kind = "";
+    const evidence = /^\[([^\]]+)\] (.+)$/.exec(line);
+    if (!evidence || !kind || items.length >= 12) continue;
+    const regression = kind === "finding" || kind === "impact" || kind === "caller";
+    items.push({
+      title: `${MOCK_DESCRIPTION_PREFIX}${regression ? "Check it still works" : "Check the new behaviour"}: ${evidence[2].slice(0, 80)}`,
+      steps: ["Set up the case the evidence describes.", "Check the result matches the intent."],
+      type: regression ? "regression" : "new-behaviour",
+      source: { kind, ref: evidence[1] },
+    });
+  }
+  const content = ["```json", JSON.stringify({ items }, null, 2), "```"].join("\n");
+  return { content, note: `test-plan items=${items.length}` };
+}
+
 function prIntentContent(userText: string): { content: string; note: string } {
   const verdict = /MOCK_PARTIAL/.test(userText) ? "partial" : "delivers";
+  const criteria = mockCriteria(userText);
   const content = [
     "```json",
     JSON.stringify({
+      ...(criteria ? { criteria } : {}),
       verdict,
       summary: `${MOCK_DESCRIPTION_PREFIX}${verdict === "delivers" ? "Everything the description promises is in the diff." : "Part of what the description promises is missing."}`,
       rationale: `${MOCK_DESCRIPTION_PREFIX}Judged from the changed files and the review findings.`,
     }),
     "```",
   ].join("\n");
-  return { content, note: `pr-intent ${verdict}` };
+  return { content, note: `pr-intent ${verdict}${criteria ? ` criteria=${criteria.length}` : ""}` };
+}
+
+/** `TASK: change-brief`: each list is the facts given under its heading, prefixed; the summary counts the changed files. */
+function changeBriefContent(userText: string): { content: string; note: string } {
+  const section = (heading: string): string[] => {
+    const start = userText.indexOf(heading);
+    if (start < 0) return [];
+    const rest = userText.slice(start + heading.length).split("\n").map((l) => l.trimEnd()).slice(1);
+    const items: string[] = [];
+    for (const line of rest) {
+      if (!line.startsWith("- ")) break;
+      if (line !== "- (none)") items.push(`${MOCK_DESCRIPTION_PREFIX}${line.slice(2)}`);
+    }
+    return items;
+  };
+  const files = /^## Changed files \((\d+)\)$/m.exec(userText)?.[1] ?? "0";
+  const brief = {
+    summary: `${MOCK_DESCRIPTION_PREFIX}A change across ${files} file(s).`,
+    userVisible: section(BRIEF_FACT_HEADINGS.userVisible),
+    contracts: section(BRIEF_FACT_HEADINGS.contracts),
+    risks: section(BRIEF_FACT_HEADINGS.risks),
+    questions: section(BRIEF_FACT_HEADINGS.questions),
+  };
+  return { content: ["```json", JSON.stringify(brief), "```"].join("\n"), note: `change-brief files=${files}` };
 }
 
 /** Answers every checklist question: "pass" when the PR has a description, "unknown" otherwise. */

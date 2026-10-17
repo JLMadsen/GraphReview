@@ -55,15 +55,33 @@ export interface ChecklistItemsResponseDTO {
   items: ChecklistItemDTO[];
 }
 
+/** One acceptance criterion and its verdict (DESIGN.md §6.27). */
+export interface AcceptanceCriterionRowDTO {
+  text: string;
+  /** `"description"` or `"#<issue number>"`. */
+  source: string;
+  format: "checkbox" | "gherkin" | "heading";
+  /** Checkbox criteria: ticked in the description or issue (still checked against the code). */
+  ticked?: boolean;
+  /** `pending`: not judged for the current head commit yet. */
+  verdict: "pass" | "fail" | "unknown" | "pending";
+  reason: string;
+  /** Changed files (head-side lines) the verdict rests on. */
+  evidence: Array<{ path: string; lines?: string }>;
+}
+
 export interface ChecklistItemResultDTO {
   itemId: string;
-  kind: ChecklistItemKindDTO;
+  /** `acceptance-criteria`: the built-in item listing the PR's criteria — not an editable item kind. */
+  kind: ChecklistItemKindDTO | "acceptance-criteria";
   label: string;
   status: ChecklistStatusDTO;
   detail: string;
   links?: Array<{ label: string; url: string }>;
   checkedAt?: string;
   model?: string;
+  /** `acceptance-criteria` only: one row per criterion. */
+  criteria?: AcceptanceCriterionRowDTO[];
 }
 
 /** `GET|POST /api/repos/[repoId]/checklist`. */

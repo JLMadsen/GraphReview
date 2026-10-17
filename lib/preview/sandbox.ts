@@ -25,7 +25,14 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { CONTAINER_CA_FILE, CONTAINER_HOME, hostPackageConfig } from "./host-config";
+import {
+  CONTAINER_CA_FILE,
+  CONTAINER_HOME,
+  hostPackageConfig,
+  isCredentialEnv,
+  stripUrlCredentials,
+  TRUSTED_INSTALLS,
+} from "./host-config";
 import harnessPackages from "./harness/packages.json";
 import { DEFAULT_NODE_MAJOR } from "./node-version";
 import type { PreviewHarnessResult, PreviewRuntime } from "./types";
@@ -299,7 +306,11 @@ function forwardedEnv(): Record<string, string> {
   for (const [key, value] of Object.entries(process.env)) {
     // Not `value?.trim()`: `COREPACK_INTEGRITY_KEYS=""` is a documented "skip the check".
     if (FORWARDED_ENV.test(key) && !HOST_PATH_ENV.test(key) && value !== undefined) {
-      if (value.trim() || key === "COREPACK_INTEGRITY_KEYS") env[key] = value.trim();
+      // Proxies keep theirs: they are the way out, not a registry login.
+      const proxy = /proxy$/i.test(key);
+      if (!TRUSTED_INSTALLS && !proxy && isCredentialEnv(key)) continue;
+      const kept = TRUSTED_INSTALLS || proxy ? value.trim() : stripUrlCredentials(value.trim());
+      if (kept || key === "COREPACK_INTEGRITY_KEYS") env[key] = kept;
     }
   }
   // corepack fetches pnpm/yarn themselves from a registry of its own setting.
@@ -450,7 +461,20 @@ async function manifestHash(projectDir: string, files: readonly string[], image:
   return found ? hash.digest("hex").slice(0, 16) : null;
 }
 
+/**
+ * Dependency install scripts stay off unless `TRUSTED_INSTALLS`: they would
+ * run a PR's (possibly a fork's) chosen code while the container is online.
+ * npm and pnpm read `npm_config_*`, Yarn 1 `YARN_IGNORE_SCRIPTS`, Yarn 2+
+ * `YARN_ENABLE_SCRIPTS` (each ignores the others'). A package that only works
+ * after its postinstall fails at preview time, like any other missing import.
+ */
+const NO_INSTALL_SCRIPTS = "export npm_config_ignore_scripts=true YARN_IGNORE_SCRIPTS=true YARN_ENABLE_SCRIPTS=false; ";
+
 function nodeInstallCommand(projectDir: string): string {
+  return (TRUSTED_INSTALLS ? "" : NO_INSTALL_SCRIPTS) + nodeInstall(projectDir);
+}
+
+function nodeInstall(projectDir: string): string {
   const has = (name: string) => existsSync(path.join(projectDir, name));
   if (has("pnpm-lock.yaml")) {
     // Hoisted: a flat node_modules, so everything lives inside the one mounted volume.

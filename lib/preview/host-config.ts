@@ -18,9 +18,15 @@
 //   / `cert` the npm/pip config points at. Combined with the public roots into
 //   one bundle that replaces each tool's own.
 //
-// Only install containers get these (they are online anyway, running the
-// dependencies' install scripts); the containers that run the previewed code
-// are offline and get none of it.
+// Only install containers get these (they are online anyway); the containers
+// that run the previewed code are offline and get none of it.
+//
+// Credentials are left out unless `GRAPHREVIEW_PREVIEW_TRUSTED_INSTALLS=1`:
+// an install runs on a PR's own manifests, so a fork PR's dependency could
+// otherwise read the user's registry tokens while online. Auth keys
+// (`_authToken`, `npmAuthToken`, …) are dropped and `user:pass@` is stripped
+// from URLs, so an anonymous mirror still works; an authenticated one needs
+// the setting (and install scripts back on, see sandbox.ts).
 //
 // Server-only.
 
@@ -31,6 +37,29 @@ import path from "node:path";
 import tls from "node:tls";
 import { systemOnlyCertificates } from "@/lib/runtime/ca";
 import { getDataDir } from "@/lib/runtime/paths";
+
+/**
+ * `GRAPHREVIEW_PREVIEW_TRUSTED_INSTALLS=1` (config.env): installs get the
+ * user's registry credentials and run dependency install scripts, as before.
+ * For an authenticated private mirror, on repos whose PR authors are trusted.
+ */
+export const TRUSTED_INSTALLS = /^(1|true|yes)$/i.test(process.env.GRAPHREVIEW_PREVIEW_TRUSTED_INSTALLS?.trim() ?? "");
+
+/** A config key holding a credential: npm's `//host/:_authToken`, yarn's `npmAuthToken`, …. */
+function isCredentialConfigKey(key: string): boolean {
+  const last = key.toLowerCase().split(":").pop() ?? "";
+  return /^(_auth|_authtoken|_password|username|password|token|npmauthtoken|npmauthident)$/.test(last);
+}
+
+/** An environment variable holding a credential: `NPM_CONFIG__AUTHTOKEN`, `YARN_NPM_AUTH_TOKEN`, `COREPACK_NPM_PASSWORD`, …. */
+export function isCredentialEnv(name: string): boolean {
+  return /AUTH|TOKEN|PASSWORD|USERNAME|IDENT/i.test(name);
+}
+
+/** `scheme://user:pass@host/…` → `scheme://host/…`, wherever a URL appears in `text`. */
+export function stripUrlCredentials(text: string): string {
+  return text.replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@'"]+@/gi, "$1");
+}
 
 /** Where the CA bundle lands inside an install container. */
 export const CONTAINER_CA_FILE = "/tmp/graphreview-ca.crt";
@@ -105,11 +134,13 @@ function rewriteConfig(text: string, separator: "=" | ":"): Rewritten {
     const at = line.indexOf(separator);
     const trimmed = line.trim();
     if (at === -1 || trimmed.startsWith("#") || trimmed.startsWith(";") || trimmed.startsWith("[")) {
-      lines.push(line);
+      // pip continuation lines (`extra-index-url` lists) are bare URLs.
+      lines.push(TRUSTED_INSTALLS ? line : stripUrlCredentials(line));
       continue;
     }
     const key = line.slice(0, at).trim().toLowerCase().replace(/^["']|["']$/g, "");
-    const value = line.slice(at + 1).trim();
+    const value = TRUSTED_INSTALLS ? line.slice(at + 1).trim() : stripUrlCredentials(line.slice(at + 1).trim());
+    if (!TRUSTED_INSTALLS && isCredentialConfigKey(key)) continue;
     if (CA_KEYS.has(key)) {
       if (isHostPath(value)) caFiles.push(value.replace(/^["']|["']$/g, "").replace(/^~(?=[\\/])/, os.homedir()));
       lines.push(`${line.slice(0, at + 1)} ${separator === ":" ? JSON.stringify(CONTAINER_CA_FILE) : CONTAINER_CA_FILE}`);
@@ -117,7 +148,7 @@ function rewriteConfig(text: string, separator: "=" | ":"): Rewritten {
     }
     if (isHostPath(value)) continue;
     for (const m of value.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) envRefs.add(m[1]);
-    lines.push(line);
+    lines.push(TRUSTED_INSTALLS ? line : `${line.slice(0, at + 1)} ${value}`);
   }
   return { text: lines.join("\n"), caFiles, envRefs: [...envRefs] };
 }
@@ -197,7 +228,9 @@ async function stage(): Promise<HostPackageConfig> {
   const env: Record<string, string> = {};
   for (const name of envRefs) {
     const value = process.env[name];
-    if (value) env[name] = value;
+    if (!value) continue;
+    if (TRUSTED_INSTALLS) env[name] = value;
+    else if (!isCredentialEnv(name)) env[name] = stripUrlCredentials(value);
   }
 
   return { homeDir: copied > 0 ? homeDir : null, caBundle, env, summary };

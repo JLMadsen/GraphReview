@@ -28,7 +28,14 @@
 //     numbers; with a diff selected, the files it touches marked. Also the
 //     whole column.
 //   - **PR** (`PrMapCanvas`) — only what the diff touches, as area cards.
-// The full-column views (API, Infra, Data, Env, Files) are `LIST_VIEWS`; a new
+//   - **Tests** (`TestsView`) — the test inventory, what code a test reaches
+//     and committed coverage (§6.22); with a diff selected, what it does to
+//     its tests and the AI test plan. Also the whole column.
+//   - **Stats** (`StatsGraphView`) — numbers about the repo itself (§6.19):
+//     lines per language, contributors, a timeline. Also the whole column.
+// The selected view is mirrored into `?view=` (§6.25), so it can be linked
+// and Back/Forward switch views; the last choice is the default without it.
+// The full-column views (API, Infra, Data, Env, Files, Tests, Stats) are `LIST_VIEWS`; a new
 // catalog's view is one more entry there and in `VIEW_OPTIONS`.
 // Both stay mounted once opened, stacked in one grid cell with the inactive
 // one transparent and `inert`, so each keeps its layout and zoom. (Not
@@ -53,9 +60,10 @@
 // edge: the inspector for whatever is selected on top, the chat below —
 // about the diff when one is selected, about the repo otherwise.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { cn } from "cn";
 import { FileDiffModal } from "./FileDiffModal";
+import { AllFilesReader } from "./AllFilesReader";
 import { PrMapCanvas, type PrMapMode } from "./PrMapCanvas";
 import { FunctionPanel } from "./FunctionPanel";
 import { useTargetGraph } from "./useTargetGraph";
@@ -90,10 +98,13 @@ import { SchemaChangesSection } from "./SchemaChangesSection";
 import { EnvView } from "./EnvView";
 import { EnvChangesSection } from "./EnvChangesSection";
 import { FilesView } from "./FilesView";
+import { TestsView } from "./TestsView";
+import { useTestsView } from "./useTestsView";
 import { useRepoTree } from "./useRepoTree";
 import { registerGraphHandler, setGraphContext, takePendingGraphRequest, type DiffPickMode, type GraphRequest } from "@/components/palette/bus";
 import { useRepoContext, useTabHeight } from "./graph-view/useRepoContext";
-import { useLazyMount, useStoredState } from "./graph-view/view-state";
+import { useLazyMount, useStoredState, useUrlState } from "./graph-view/view-state";
+import { StatsGraphView } from "@/components/stats/StatsGraphView";
 import { usePrAreaSelection, usePrFunctions } from "./graph-view/usePrMapSelection";
 import { useApiViewState, useAppMapViewState, useDataViewState, useEnvViewState, useInfraViewState } from "./graph-view/useCatalogViews";
 import {
@@ -109,11 +120,11 @@ import type {
   ReviewTargetDTO,
 } from "./types";
 
-type GraphViewMode = "app" | "api" | "infra" | "data" | "env" | "files" | "pr";
+type GraphViewMode = "app" | "api" | "infra" | "data" | "env" | "files" | "pr" | "tests" | "stats";
 /** Views that are a list taking the whole column (no review dock under them). */
-const LIST_VIEWS: ReadonlySet<GraphViewMode> = new Set(["api", "infra", "data", "env", "files"]);
+const LIST_VIEWS: ReadonlySet<GraphViewMode> = new Set(["api", "infra", "data", "env", "files", "tests", "stats"]);
 const isGraphViewMode = (v: unknown): v is GraphViewMode =>
-  v === "app" || v === "api" || v === "infra" || v === "data" || v === "env" || v === "files" || v === "pr";
+  v === "app" || v === "api" || v === "infra" || v === "data" || v === "env" || v === "files" || v === "pr" || v === "tests" || v === "stats";
 /** The view switch, in order. PR only shows with a diff selected. */
 const VIEW_OPTIONS: ReadonlyArray<{ value: GraphViewMode; label: string; title: string }> = [
   { value: "app", label: "App map", title: "The whole app as cards — by architecture, feature or module, with explanations" },
@@ -123,6 +134,8 @@ const VIEW_OPTIONS: ReadonlyArray<{ value: GraphViewMode; label: string; title: 
   { value: "env", label: "Env", title: "The env vars — every name the code reads, declares or sets, and its value per environment — with a diff selected, its env changes" },
   { value: "files", label: "Files", title: "The repo as files — folders, READMEs and code — with a diff selected, the files it touches marked" },
   { value: "pr", label: "PR", title: "Only what this diff touches" },
+  { value: "tests", label: "Tests", title: "The tests — files by framework and kind, what code they reach, committed coverage — with a diff selected, what it does to its tests and the AI test plan" },
+  { value: "stats", label: "Stats", title: "Lines of code per language, contributors, and a timeline of commits, lines and CI runs" },
 ];
 
 /** The views share one grid cell; the inactive one stays laid out but can't be seen, clicked or focused. */
@@ -165,6 +178,8 @@ export function GraphView({
   /** Whether the selected target reviews itself — open PRs and branch comparisons only (see DiffPanel's `DiffTargetMeta`). */
   const [autoReview, setAutoReview] = useState(true);
   const review = useReview(repoId, reviewTarget, reviewEffort, autoReview);
+  /** Findings minus the suppressed ones (dismissed before as not a problem, DESIGN.md §6.21) — only the dock shows those, on request. */
+  const shownFindings = useMemo(() => review.findings.filter((f) => !f.suppressed), [review.findings]);
   // A cancelled review doesn't hand over to the checklist's automatic AI items.
   const checklist = useChecklist(repoId, reviewTarget, review.state, autoReview && !review.cancelled);
   /** Applies what a chat answer did to the view — set below, once the view's own callbacks exist. */
@@ -189,7 +204,13 @@ export function GraphView({
   const targetGraph = useTargetGraph(repoId, reviewTarget);
   const targetData = reviewTarget ? targetGraph.graph?.data : undefined;
   /** The view last chosen — remembered per browser, `pr` by default. With no diff selected, `pr` falls back to the App map. */
-  const [preferredView, setPreferredView] = useStoredState<GraphViewMode>(VIEW_STORAGE_KEY, "pr", parseView);
+  // Also `?view=` in the URL (DESIGN.md §6.25), which wins over the stored choice.
+  const { value: preferredView, set: setPreferredView, takeGivenAtLoad: viewGivenAtLoad } = useUrlState<GraphViewMode>(
+    "view",
+    VIEW_STORAGE_KEY,
+    "pr",
+    parseView
+  );
   /** The review dock took the whole column (map folded away) — remembered per browser. */
   const [reviewExpanded, setReviewExpanded] = useStoredState(REVIEW_EXPANDED_STORAGE_KEY, false, parseExpanded, serializeExpanded);
   /** The map is folded away only while there is a review to give the room to. */
@@ -207,6 +228,13 @@ export function GraphView({
   const openFileView = useCallback((path: string, lines?: string) => setOpenFile({ path, tab: "file", lines }), []);
   /** A changed file's diff, in the shared file viewer. */
   const openFileDiff = useCallback((path: string) => setOpenFile({ path, tab: "diff" }), []);
+  const openFileDiffAt = useCallback((path: string, lines?: string) => setOpenFile({ path, tab: "diff", lines }), []);
+  /** The all-files reader (DESIGN.md §6.24): where it starts, or `null` while closed. */
+  const [readerStart, setReaderStart] = useState<{ path?: string; lineRange?: string } | null>(null);
+  const openReader = useCallback((path?: string, lineRange?: string) => {
+    setOpenFile(null);
+    setReaderStart({ path, lineRange });
+  }, []);
   const [leftWidth, setLeftWidth] = usePanelWidth("graphreview.panel.diff", 236, 200, 480);
   const [chatWidth, setChatWidth] = usePanelWidth("graphreview.panel.chat", 380, 300, 720);
   // Either side column folds to a slim rail so the map can have the room;
@@ -216,6 +244,10 @@ export function GraphView({
   /** The palette asked for the diff picker on a list (DiffPanel's `pickRequest`). */
   const [pickRequest, setPickRequest] = useState<{ mode: DiffPickMode; nonce: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  /** The view tabs' ids and the one panel they control (the views' shared cell). */
+  const tabIdBase = useId();
+  const viewTabId = (v: GraphViewMode) => `${tabIdBase}-tab-${v}`;
+  const viewPanelId = `${tabIdBase}-panel`;
   useTabHeight(rootRef);
 
   const handleDiffResult = useCallback(
@@ -223,10 +255,11 @@ export function GraphView({
       setDiffResult(result);
       setReviewTarget(target);
       setAutoReview(meta.autoReview);
-      // Opening a PR or a comparison is about that change: show its map.
-      if (result) setPreferredView("pr");
+      // Opening a PR or a comparison is about that change: show its map —
+      // unless the page was opened on a view (`?view=`), on the first result.
+      if (result && !viewGivenAtLoad()) setPreferredView("pr", "replace");
     },
-    [setPreferredView]
+    [setPreferredView, viewGivenAtLoad]
   );
 
   // --- PR map (DESIGN.md §6.4) ----------------------------------------------
@@ -240,7 +273,7 @@ export function GraphView({
   }, [diffResult, reviewTarget]);
   const prMap = usePrMap(repoId, prRequest, review.state);
   /** The PR map's cards as areas, with their findings — one object for the canvas, the dock and the inspector. */
-  const prAreas = useMemo(() => buildPrAreas(prMap.map, review.findings), [prMap.map, review.findings]);
+  const prAreas = useMemo(() => buildPrAreas(prMap.map, shownFindings), [prMap.map, shownFindings]);
   const { prArea, prAreaComponent, setPrAreaComponent, selectPrArea } = usePrAreaSelection(prRequest, prMap.map);
   const { functionView, selectedFunction, setSelectedFunction, hideFunction, hideFunctionCard, showHiddenFunctions } =
     usePrFunctions(repoId, reviewTarget, prMap.map, targetGraph);
@@ -277,6 +310,8 @@ export function GraphView({
   const [dataMounted, mountData] = useLazyMount(view === "data");
   const [envMounted, mountEnv] = useLazyMount(view === "env");
   const [filesMounted] = useLazyMount(view === "files");
+  const [testsMounted] = useLazyMount(view === "tests");
+  const [statsMounted] = useLazyMount(view === "stats");
 
   // App map (DESIGN.md §6.5)
   const {
@@ -407,6 +442,9 @@ export function GraphView({
     },
     [mountEnv, setEnvChangedOnly, setEnvFocus, setPreferredView]
   );
+
+  // Tests (DESIGN.md §6.22)
+  const tests = useTestsView(repoId, testsMounted, graphNonce, reviewTarget, review.state);
 
   // Files (DESIGN.md §6.14)
   const repoTree = useRepoTree(repoId, filesMounted, graphNonce);
@@ -648,13 +686,13 @@ export function GraphView({
   /** Worst verdict per file, for the explainer's file list. */
   const fileMarkers = useMemo(() => {
     const map = new Map<string, Assessment>();
-    for (const f of review.findings) {
+    for (const f of shownFindings) {
       if (!f.filePath) continue;
       const prev = map.get(f.filePath);
       map.set(f.filePath, prev ? worstAssessment(prev, effectiveAssessment(f)) : effectiveAssessment(f));
     }
     return map;
-  }, [review.findings]);
+  }, [shownFindings]);
 
   /** On the PR view the inspector explains the selected area or function; with nothing selected the chat has the column. */
   const selectedPrArea = prArea ? prAreas.areas.get(prArea) : undefined;
@@ -731,16 +769,37 @@ export function GraphView({
   // own toolbar sits directly under it (view-chrome.ts), so a view's
   // controls always start at the same place, under the tabs rather than
   // after them. PR is only there while a diff is selected.
+  // A tablist with roving focus: Tab reaches the selected tab only, the
+  // arrow keys (and Home/End) move along the row and select as they go —
+  // rewriting the history entry, so arrowing across doesn't fill Back.
+  const visibleViews = VIEW_OPTIONS.filter((o) => o.value !== "pr" || prRequest);
+  const onViewTabKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const at = visibleViews.findIndex((o) => o.value === view);
+    const to =
+      event.key === "ArrowRight" ? (at + 1) % visibleViews.length
+      : event.key === "ArrowLeft" ? (at - 1 + visibleViews.length) % visibleViews.length
+      : event.key === "Home" ? 0
+      : event.key === "End" ? visibleViews.length - 1
+      : -1;
+    if (to < 0 || !(event.target instanceof HTMLElement) || event.target.getAttribute("role") !== "tab") return;
+    event.preventDefault();
+    const next = visibleViews[to].value;
+    setPreferredView(next, "replace");
+    document.getElementById(viewTabId(next))?.focus();
+  };
   const viewTabs = (
-    <div role="tablist" aria-label="Graph view" className="flex shrink-0 items-end gap-0.5 overflow-x-auto border-b border-border bg-card px-3">
-      {VIEW_OPTIONS.filter((o) => o.value !== "pr" || prRequest).map((o) => {
+    <div role="tablist" aria-label="Graph view" onKeyDown={onViewTabKeyDown} className="flex shrink-0 items-end gap-0.5 overflow-x-auto border-b border-border bg-card px-3">
+      {visibleViews.map((o) => {
         const active = o.value === view;
         return (
           <button
             key={o.value}
+            id={viewTabId(o.value)}
             type="button"
             role="tab"
             aria-selected={active}
+            aria-controls={viewPanelId}
+            tabIndex={active ? 0 : -1}
             title={o.title}
             onClick={() => setPreferredView(o.value)}
             className={cn(
@@ -791,7 +850,7 @@ export function GraphView({
             lineStats={lineStats}
             pickRequest={pickRequest}
           >
-            {reviewTarget && <ChecklistPanel repoId={repoId} checklist={checklist} />}
+            {reviewTarget && <ChecklistPanel repoId={repoId} checklist={checklist} onOpenFile={openFileDiffAt} />}
             {/* What the diff does to each catalog — each section shows only when the diff changed it. */}
             {reviewTarget && <ApiChangesSection change={apiChange} onOpen={openEndpoint} />}
             {reviewTarget && <InfraChangesSection change={infraChange} onOpen={openInfraResource} />}
@@ -836,7 +895,7 @@ export function GraphView({
           inert={mapFolded && !apiFull}
         >
         {viewTabs}
-        <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)]">
+        <div role="tabpanel" id={viewPanelId} aria-labelledby={viewTabId(view)} className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)]">
         {appMounted && (
           <div className={viewLayerClass(view === "app")} inert={view !== "app"}>
             <AppMapView
@@ -851,7 +910,7 @@ export function GraphView({
               selection={appSelection}
               onSelect={setAppSelection}
               changedFiles={changedFiles}
-              findings={review.findings}
+              findings={shownFindings}
               focusModuleId={prAreaComponent}
               highlightModuleIds={chatHighlight}
               hoveredLink={appHoveredLink}
@@ -960,6 +1019,27 @@ export function GraphView({
             />
           </div>
         )}
+        {testsMounted && (
+          <div className={viewLayerClass(view === "tests")} inert={view !== "tests"}>
+            <TestsView
+              className="flex h-full flex-col"
+              catalog={tests.catalog}
+              loading={tests.loading}
+              error={tests.error}
+              change={targetData?.tests}
+              changePending={Boolean(reviewTarget) && targetGraph.pending}
+              plan={tests.plan}
+              headSha={reviewTarget ? targetGraph.graph?.headSha : undefined}
+              hasTarget={Boolean(reviewTarget)}
+              onOpenFile={openFileAtLine}
+            />
+          </div>
+        )}
+        {statsMounted && (
+          <div className={viewLayerClass(view === "stats")} inert={view !== "stats"}>
+            <StatsGraphView className="flex h-full flex-col" repoId={repoId} refreshKey={graphNonce} />
+          </div>
+        )}
         {prRequest && (
           <div className={viewLayerClass(view === "pr")} inert={view !== "pr"}>
           <PrMapCanvas
@@ -997,7 +1077,9 @@ export function GraphView({
           initialComponent={openFile?.component}
           initialTab={openFile?.tab}
           onClose={() => setOpenFile(null)}
+          onOpenReader={reviewTarget ? openReader : undefined}
         />
+        {reviewTarget && <AllFilesReader repoId={repoId} target={reviewTarget} start={readerStart} onClose={() => setReaderStart(null)} />}
 
         {/* Under the graph, full width: the AI review, exceptions first —
             see ReviewPanel's header for why it lives here rather than in a
@@ -1006,6 +1088,7 @@ export function GraphView({
           <ReviewPanel
             repoId={repoId}
             target={reviewTarget}
+            onOpenReader={openReader}
             status={review.status}
             state={review.state}
             progress={review.progress}
@@ -1024,11 +1107,14 @@ export function GraphView({
             onCancel={review.cancel}
             onSelectComponent={selectComponentLink}
             onSetResolved={review.setResolved}
+            onDismiss={review.dismiss}
+            onUnsuppress={review.unsuppress}
             effort={reviewEffort}
             onEffortChange={setReviewEffort}
             expanded={reviewExpanded}
             onToggleExpanded={toggleReviewExpanded}
             map={prMap.map}
+            acceptanceCriteria={checklist.data?.items.find((i) => i.kind === "acceptance-criteria")?.criteria}
             areas={prAreas}
             scopeAreaId={prArea}
             scopeComponentId={prAreaComponent}

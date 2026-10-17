@@ -64,6 +64,26 @@ export interface ChecklistAnswerRecord {
   headSha?: string;
   model?: string;
   checkedAt: string;
+  /** The `acceptance-criteria` answer only: one verdict per criterion (DESIGN.md §6.27). */
+  criteria?: AcceptanceCriterionAnswer[];
+}
+
+/**
+ * The stored answers for a target's acceptance criteria (DESIGN.md §6.27)
+ * live under this item id, written by the review's intent pass. It is not
+ * a `ChecklistItemRecord` — it can't be edited or switched off, and shows
+ * only when the PR states criteria.
+ */
+export const ACCEPTANCE_CRITERIA_ITEM_ID = "acceptance-criteria";
+
+export interface AcceptanceCriterionAnswer {
+  /** `criterionKey(text)` — how a fresh parse finds its verdict again. */
+  key: string;
+  text: string;
+  source: string;
+  verdict: "pass" | "fail" | "unknown";
+  reason: string;
+  evidence: Array<{ path: string; lines?: string }>;
 }
 
 function toNumber(value: unknown): number | undefined {
@@ -260,6 +280,7 @@ export async function listChecklistAnswers(repoId: string, targetKey: string): P
       headSha: (p.headSha as string | null) ?? undefined,
       model: (p.model as string | null) ?? undefined,
       checkedAt: p.checkedAt as string,
+      ...(Array.isArray(p.criteria) ? { criteria: p.criteria as AcceptanceCriterionAnswer[] } : {}),
     };
   });
 }

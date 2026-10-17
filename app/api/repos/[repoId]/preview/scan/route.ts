@@ -1,14 +1,16 @@
 // Changed UI components of a target, for the Graph tab's "Looks different"
 // section (DESIGN.md §6.9).
 //
-//   GET  /api/repos/[repoId]/preview/scan?prNumber=N|baseRef=…&headRef=…
-//        the scan (started or refreshed by this read) joined with each file's
-//        last preview run: which components render differently
 //   POST /api/repos/[repoId]/preview/scan  { prNumber | baseRef+headRef }
+//        the scan (started or refreshed by this call) joined with each
+//        file's last preview run: which components render differently
+//   POST /api/repos/[repoId]/preview/scan  { …, previewAll: true }
 //        "Preview all": start a preview run for every scanned file
 //
-// The scan only parses code (no Docker, no model), so reading it is what
-// triggers it. Plain function changes are deliberately not listed here.
+// The scan only parses code (no Docker, no model), so asking for it starts
+// it — a POST, since a GET with side effects can be fired cross-origin
+// (DESIGN.md §6.26 §3). Plain function changes are deliberately not listed
+// here.
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -76,10 +78,7 @@ async function loadScan(repoId: string, target: ReviewTarget): Promise<{ state: 
   return { state };
 }
 
-async function loadTarget(request: Request, repoId: string, fromBody: boolean) {
-  const raw = fromBody
-    ? await request.json().catch(() => undefined)
-    : Object.fromEntries(new URL(request.url).searchParams);
+async function loadTarget(raw: unknown, repoId: string) {
   const parsed = targetSchema.safeParse(raw);
   const target = parsed.success ? toTarget(parsed.data) : null;
   if (!target) return { response: errorResponse("Pass prNumber, or baseRef and headRef.", 400) };
@@ -91,11 +90,8 @@ async function loadTarget(request: Request, repoId: string, fromBody: boolean) {
   return { target };
 }
 
-export async function GET(request: Request, { params }: { params: Promise<{ repoId: string }> }) {
-  const { repoId } = await params;
-  try {
-    const { target, response } = await loadTarget(request, repoId, false);
-    if (!target) return response;
+async function readScan(repoId: string, target: ReviewTarget) {
+  {
     const [{ state, scan, error }, sandbox] = await Promise.all([loadScan(repoId, target), getDockerStatus()]);
     const files: PreviewScanFileDTO[] = [];
     for (const file of scan?.files ?? []) {
@@ -109,17 +105,16 @@ export async function GET(request: Request, { params }: { params: Promise<{ repo
       });
     }
     return NextResponse.json({ state, files, sandbox, ...(error ? { error } : {}) } satisfies PreviewScanDTO);
-  } catch (err) {
-    console.error(`GET /api/repos/${repoId}/preview/scan failed:`, err);
-    return errorResponse(err instanceof Error ? err.message : "Failed to read the scan.", 500);
   }
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ repoId: string }> }) {
   const { repoId } = await params;
+  const raw = (await request.json().catch(() => undefined)) as Record<string, unknown> | undefined;
   try {
-    const { target, response } = await loadTarget(request, repoId, true);
+    const { target, response } = await loadTarget(raw, repoId);
     if (!target) return response;
+    if (raw?.previewAll !== true) return await readScan(repoId, target);
     const { scan } = await loadScan(repoId, target);
     if (!scan) return errorResponse("The scan hasn't finished yet.", 409);
     const sandbox = await getDockerStatus();

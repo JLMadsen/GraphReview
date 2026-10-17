@@ -54,6 +54,7 @@ import { emitFindingsChanged } from "@/lib/mcp/events";
 import {
   addChatMessage,
   addFindingResponse,
+  addFindingSuppression,
   getFileOwnerMap,
   listChatMessages,
   listComponentsByRepoId,
@@ -74,6 +75,8 @@ import type { InfraChange } from "@/lib/analysis/infra/types";
 import type { DbChange } from "@/lib/analysis/db/types";
 import type { EnvChange } from "@/lib/analysis/env/types";
 import { describeEnvChange, describeEnvFinding, describeEnvVar, filterEnv } from "@/lib/analysis/env/describe";
+import { describeTestsChange, describeTestsForFile, describeTestsForFiles } from "@/lib/analysis/tests/describe";
+import type { TestsChange } from "@/lib/analysis/tests/types";
 import { describeDbFinding, describeSchemaChange, describeTable, filterTables } from "@/lib/analysis/db/describe";
 import { describeInfraChange, describeInfraFinding, describeInfraResource, filterInfra } from "@/lib/analysis/infra/describe";
 import { readServedApiCatalog } from "./api-catalog";
@@ -189,6 +192,12 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
     description: "what this change does to the env vars — reads, declarations and values per environment added, removed or changed — and the certain env findings",
   },
   {
+    name: "get_tests_for",
+    args: '{"path":"<file>","component":"<or a component name>"}',
+    description:
+      "the tests that reach a file or component over imports and calls (nearest first, framework, unit/e2e), its line coverage from a committed coverage report, and in a change whether the change edits those tests — static, nothing is run",
+  },
+  {
     name: "list_tables",
     args: '{"query":"<optional text in the table, column, model or file>"}',
     description:
@@ -227,7 +236,7 @@ export const PR_CHAT_TOOLS: PrChatTool[] = [
   },
   {
     name: "switch_view",
-    args: '{"view":"pr|app|api|infra|data|env|files","level":"architecture|features|modules","mode":"<pr: files|functions; infra: diagram|files|requests|list; data: canvas|list>","changed_only":true}',
+    args: '{"view":"pr|app|api|infra|data|env|files|tests","level":"architecture|features|modules","mode":"<pr: files|functions; infra: diagram|files|requests|list; data: canvas|list>","changed_only":true}',
     description:
       "switches the Graph tab to a view, optionally with the App map's level, the view's mode or its \"changed only\" toggle — e.g. the infra diagram, the PR map's functions, the App map by feature",
   },
@@ -284,6 +293,7 @@ const REPO_TOOL_NAMES = new Set([
   "list_infra",
   "list_env",
   "list_tables",
+  "get_tests_for",
   "show",
   "highlight",
   "switch_view",
@@ -340,6 +350,8 @@ interface ToolContext {
   db?: DbChange;
   /** What the change does to the env vars, likewise (DESIGN.md §6.15). */
   env?: EnvChange;
+  /** What the change does to its tests, likewise (DESIGN.md §6.22). */
+  tests?: TestsChange;
   /** The change's call graph (functions it touches and their neighbours), for `show` a function. */
   callGraph?: CallGraph;
   /** suggest_finding's offers in this turn, stored on the answer. */
@@ -643,6 +655,23 @@ async function runTool(tc: ToolContext, name: string, args: Record<string, unkno
       const lines = describeEnvChange(tc.env, 40);
       if (tc.env.findings.length) lines.push("Certain findings (already in the review as `env`):", ...tc.env.findings.map((f) => `- ${describeEnvFinding(f)}`));
       return { text: lines.join("\n"), summary: `read the env change (${tc.env.changes.length} name(s))`, files: [...new Set(tc.env.findings.slice(0, 8).map((f) => f.file))] };
+    }
+
+    case "get_tests_for": {
+      const path = arg(args, ...PATH_KEYS);
+      const componentQuery = arg(args, "component", "name", "module", "query");
+      if (!path && !componentQuery) return missing(name);
+      const catalog = (await analysisOf(tc)).tests;
+      const changedFiles = tc.ctx ? new Set(tc.ctx.files.map((f) => f.path)) : undefined;
+      if (path) {
+        const lines = describeTestsForFile(catalog, path, changedFiles);
+        if (lines) return { text: lines.join("\n"), summary: `read the tests for ${path}`, files: [path, ...(catalog.sources.find((s) => s.file === path)?.tests.slice(0, 3).map((i) => catalog.tests[i].file) ?? [])], componentIds: ownersOf(tc, [path]) };
+        if (!componentQuery) return { text: `${path} isn't a code or test file of the analysed commit — check the path with find_files.`, summary: `no tests entry for ${path}` };
+      }
+      const component = findComponent(tc, componentQuery || path);
+      if (!component) return { text: `No file or component matches "${componentQuery || path}".`, summary: "nothing matched" };
+      const files = [...tc.ownerByFile].filter(([, owner]) => owner === component.id).map(([file]) => file);
+      return { text: describeTestsForFiles(catalog, component.name, files).join("\n"), summary: `read the tests for ${component.name}`, componentIds: [component.id] };
     }
 
     case "list_tables": {
@@ -1127,6 +1156,7 @@ const VIEW_LABELS: Record<ChatViewName, string> = {
   data: "the Data view",
   env: "the Env view",
   files: "the Files view",
+  tests: "the Tests view",
 };
 const VIEW_ALIASES: Record<string, ChatViewName> = {
   map: "app",
@@ -1142,6 +1172,8 @@ const VIEW_ALIASES: Record<string, ChatViewName> = {
   "env vars": "env",
   environment: "env",
   file: "files",
+  test: "tests",
+  coverage: "tests",
 };
 const VIEW_MODES: Partial<Record<ChatViewName, string[]>> = {
   pr: ["files", "functions"],
@@ -1269,12 +1301,24 @@ export async function applyChatTriage(
           body: triage.verdict === "wrong" ? `Doesn't hold: ${triage.reason}` : `Checked, holds: ${triage.reason}`,
         });
   if (!finding) return undefined;
+  // Applying "doesn't hold" is the reviewer dismissing it as not a problem:
+  // remembered for the repo, like the dock's dismiss (DESIGN.md §6.21).
+  if (triage.verdict === "wrong" && finding.filePath && finding.category !== "intent") {
+    addFindingSuppression({
+      repoId: message.repoId,
+      filePath: finding.filePath,
+      summary: finding.summary,
+      reason: triage.reason,
+      findingId: finding.id,
+      targetKey: finding.targetKey,
+    });
+  }
   emitFindingsChanged(message.repoId, message.targetKey, finding.id);
   return updateChatTriage(message.repoId, message.id, triageId, "applied");
 }
 
 const BUCKETS = ["defect", "concern", "unknown", "fine"] as const;
-const STATIC_CATEGORIES = new Set(["structure", "infra", "schema", "env"]);
+const STATIC_CATEGORIES = new Set(["structure", "infra", "schema", "env", "security"]);
 
 function resolveFilter(tc: ToolContext, args: Record<string, unknown>): ChatActionRecord | string {
   const raw = args.assessment ?? args.assessments ?? args.verdict ?? args.severity;
@@ -1379,6 +1423,10 @@ function renderContext(tc: ToolContext): string {
     lines.push("", "What the change does to the infrastructure (static analysis, plan-style; get_infra_changes for all of it, list_infra for the whole inventory):");
     for (const line of describeInfraChange(tc.infra, 15)) lines.push(`- ${line}`);
   }
+  if (tc.tests && (tc.tests.changedCode.length > 0 || tc.tests.deletedTests.length > 0)) {
+    lines.push("", "What the change does to its tests (static reach over imports and calls, committed coverage report; get_tests_for for one file or component):");
+    for (const line of describeTestsChange(tc.tests, 15)) lines.push(`- ${line}`);
+  }
   if (tc.env && tc.env.changes.length > 0) {
     lines.push("", "What the change does to the env vars (static analysis, secret values masked; get_env_changes for all of it, list_env for every name):");
     for (const line of describeEnvChange(tc.env, 15)) lines.push(`- ${line}`);
@@ -1439,7 +1487,7 @@ export async function runChatTurn(args: {
     model: config.model,
     ...(target ? (() => {
       const stored = readTargetGraph<TargetGraphData>(repo.id, targetKey)?.data;
-      return { api: stored?.api, infra: stored?.infra, db: stored?.db, env: stored?.env, callGraph: stored?.callGraph };
+      return { api: stored?.api, infra: stored?.infra, db: stored?.db, env: stored?.env, tests: stored?.tests, callGraph: stored?.callGraph };
     })() : {}),
     suggestions: [],
     actions: [],

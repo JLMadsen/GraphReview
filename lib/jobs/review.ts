@@ -5,7 +5,8 @@
 // files onto the component graph → one LLM call per touched component,
 // a few in flight at a time → persist each component's findings the
 // moment it completes (overwriting any previous run's findings for that
-// component), so they stream into the UI → prune findings for components
+// component, but keeping the triage of findings it says again), so they
+// stream into the UI → prune findings for components
 // the target no longer touches → the impact pass (usages of changed
 // signatures/types the PR left behind, ./impact.ts) → for a PR, the one
 // "does it deliver what it claims" call → one more call that groups and
@@ -17,7 +18,7 @@
 // lib/ai + lib/github, which the app bundle has no reason to carry just
 // because a route imported `@/lib/jobs` to enqueue something.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { UnrecoverableError } from "./runner";
 import {
   DEFAULT_REVIEW_EFFORT,
@@ -26,13 +27,19 @@ import {
 } from "@/lib/ai";
 import {
   deleteFindingsForTargetExceptComponents,
+  deleteReviewSlot,
+  deleteReviewSlotsExcept,
   getFileOwnerMap,
   getRepoById,
+  listFindingSuppressions,
   listFindingsByTargetKey,
+  listReviewSlots,
   replaceFindingsForTargetCategory,
-  replaceFindingsForTargetComponent,
+  restampFindingsForTargetComponent,
+  syncFindingsForTargetComponent,
+  writeReviewSlot,
 } from "@/lib/db";
-import type { TargetFindingInput } from "@/lib/db";
+import type { AcceptanceCriterionAnswer, TargetFindingInput } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import {
   getComponentReviewContexts,
@@ -63,7 +70,10 @@ import {
   type ReviewJobResult,
   type ReviewProgress,
 } from "./review-queue";
-import { runIntentPass, runPrMapPass } from "./review-passes";
+import { runIntentPass, runPrMapPass, saveAcceptanceCriteria } from "./review-passes";
+import { runTestPlanPass } from "./test-plan";
+import { compareTests } from "@/lib/analysis/tests/compare";
+import { buildCallGraph } from "@/lib/analysis/compare";
 import { loadAiConfig, resolveTarget, loadOwnerNames } from "./review-target";
 
 /**
@@ -77,6 +87,23 @@ import { loadAiConfig, resolveTarget, loadOwnerNames } from "./review-target";
  * second chance for.
  */
 const MODEL_CONCURRENCY = 3;
+
+/**
+ * What a component's review call is about, as one hash: its changed files'
+ * patches (hunk headers included, so a shifted line counts as a change),
+ * the model and the effort. Equal hashes at two heads mean the call would be
+ * sent the same diff, so an incremental re-review keeps its findings
+ * (DESIGN.md §6.21). Related-code context is deliberately not part of it.
+ */
+function componentPatchHash(files: readonly LocalFilePatch[], model: string, effort: string): string {
+  const hash = createHash("sha256").update(`${model}\0${effort}\0`);
+  for (const file of [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))) {
+    // A file without diff text (binary, or too big) can't be compared: the
+    // component is never reused, rather than risk keeping stale findings.
+    hash.update(`${file.path}\0${file.status}\0${file.patch ?? randomUUID()}\0`);
+  }
+  return hash.digest("hex");
+}
 
 // ---------------------------------------------------------------------------
 // AI provider settings
@@ -287,11 +314,56 @@ export async function runReviewJob(
       );
     }
   }
-  const toReview = retry ? contexts.filter((context) => retry.componentIds.has(context.id)) : contexts;
+  const filesOf = (componentId: string): LocalFilePatch[] =>
+    (match.pathsByComponentId.get(componentId) ?? [])
+      .map((path) => filesByPath.get(path))
+      .filter((file): file is LocalFilePatch => Boolean(file));
+  const patchHashes = new Map(contexts.map((context) => [context.id, componentPatchHash(filesOf(context.id), aiConfig.model, effort)]));
+
+  /** A few finding summaries per component, for the PR map pass. */
+  const summariesByComponent = new Map<string, string[]>();
+  /** One line per finding, for the PR-level intent call. */
+  const findingLines: string[] = [];
+
+  // --- Incremental re-review: keep components the push didn't change ----
+  // After the head moved, a component whose patch hashes the same as the
+  // one its last call saw would be sent the same diff: its findings (and
+  // their triage) stay, restamped with the new head, and no call is made.
+  // Re-running at the same head re-calls everything — that is a deliberate
+  // "ask again" (DESIGN.md §6.21).
+  const reused = new Set<string>();
+  const headSha = resolved.reviewed.headSha;
+  if (!retry && headSha) {
+    const slots = listReviewSlots(repoId, targetKey);
+    const stored = await listFindingsByTargetKey(repoId, targetKey);
+    const failedComponents = new Set(stored.filter((f) => f.category === "change" && f.callFailed).map((f) => f.componentId));
+    for (const context of contexts) {
+      const slot = slots.get(context.id);
+      if (!slot || slot.headSha === headSha || slot.patchHash !== patchHashes.get(context.id) || failedComponents.has(context.id)) continue;
+      reused.add(context.id);
+      const kept = await restampFindingsForTargetComponent(repoId, targetKey, context.id, revision);
+      writeReviewSlot(repoId, targetKey, { componentId: context.id, patchHash: slot.patchHash, headSha, reviewedAt });
+      summariesByComponent.set(context.id, kept.slice(0, 3).map((finding) => finding.summary));
+      for (const finding of kept) {
+        const labels = [finding.kind, finding.scope, finding.assessment].filter(Boolean).join(", ");
+        findingLines.push(`${finding.filePath ?? context.name}: ${finding.summary} (${labels})`);
+      }
+    }
+    if (reused.size > 0) log(`${reused.size} component(s) unchanged since the last review — their findings are reused, no call`);
+  }
+
+  const toReview = retry
+    ? contexts.filter((context) => retry.componentIds.has(context.id))
+    : contexts.filter((context) => !reused.has(context.id));
 
   progress.total = toReview.length;
+  progress.reused = reused.size;
   progress.unmatchedFiles = match.unmatchedFiles.length;
   await publishProgress();
+
+  // Findings the reviewer dismissed as "not a problem" on this repo: each
+  // component's call is told about the ones on its files (DESIGN.md §6.21).
+  const suppressions = listFindingSuppressions(repoId);
 
   // --- One call per component, a few at a time ---------------------------
   let findingsWritten = 0;
@@ -300,16 +372,14 @@ export async function runReviewJob(
   // many model calls finish at once, findings are written one component at
   // a time and in completion order.
   let writeChain: Promise<unknown> = Promise.resolve();
-  /** A few finding summaries per component, for the PR map pass. */
-  const summariesByComponent = new Map<string, string[]>();
-  /** One line per finding, for the PR-level intent call. */
-  const findingLines: string[] = [];
 
   const reviewOne = async (context: ComponentReviewContext): Promise<void> => {
     const paths = match.pathsByComponentId.get(context.id) ?? [];
-    const files = paths
-      .map((path) => filesByPath.get(path))
-      .filter((file): file is LocalFilePatch => Boolean(file));
+    const files = filesOf(context.id);
+    const pathSet = new Set(paths);
+    const knownNonIssues = suppressions
+      .filter((s) => pathSet.has(s.filePath))
+      .map((s) => ({ filePath: s.filePath, summary: s.summary, ...(s.reason ? { reason: s.reason } : {}) }));
 
     running.set(context.id, context.name);
     await publishProgress();
@@ -342,7 +412,7 @@ export async function runReviewJob(
             dependents: context.dependents,
           },
           files,
-          related: relatedWithMoves,
+          related: knownNonIssues.length > 0 ? { ...relatedWithMoves, knownNonIssues } : relatedWithMoves,
         },
         { tokenBudget: effortSettings.tokenBudget, signal }
       );
@@ -423,9 +493,13 @@ export async function runReviewJob(
 
     running.delete(context.id);
 
-    const write = writeChain.then(() =>
-      replaceFindingsForTargetComponent(repoId, targetKey, context.id, findings)
-    );
+    const write = writeChain.then(async () => {
+      await syncFindingsForTargetComponent(repoId, targetKey, context.id, findings);
+      // What this call saw, for the next run's incremental check — or, for a
+      // failed call, nothing, so the next run makes it again.
+      if (failed || !headSha) deleteReviewSlot(repoId, targetKey, context.id);
+      else writeReviewSlot(repoId, targetKey, { componentId: context.id, patchHash: patchHashes.get(context.id)!, headSha, reviewedAt });
+    });
     // Keep the chain alive even when this link rejects, so one failed write
     // can't poison every component queued behind it.
     writeChain = write.catch(() => undefined);
@@ -461,6 +535,7 @@ export async function runReviewJob(
     targetKey,
     contexts.map((context) => context.id)
   );
+  deleteReviewSlotsExcept(repoId, targetKey, contexts.map((context) => context.id));
   if (prunedFindings > 0) {
     log(`pruned ${prunedFindings} finding(s) for components no longer touched`);
   }
@@ -478,6 +553,15 @@ export async function runReviewJob(
       findingsWritten += findings.length;
     } catch (error) {
       log(`persisting ${category} findings failed — ${(error as Error).message}`);
+    }
+  };
+
+  // The intent pass's per-criterion verdicts, as the checklist's acceptance-criteria answer (DESIGN.md §6.27).
+  const saveIntentCriteria = async (criteria: AcceptanceCriterionAnswer[] | undefined) => {
+    try {
+      await saveAcceptanceCriteria({ repoId, targetKey, headSha: revision.reviewedHeadSha, model: aiConfig.model, criteria });
+    } catch (error) {
+      log(`saving the acceptance-criteria verdicts failed — ${(error as Error).message}`);
     }
   };
 
@@ -510,6 +594,8 @@ export async function runReviewJob(
       progress.completionTokens += intentPass.completionTokens;
       await stopIfCancelled();
       await persistCategory("intent", [intentPass.finding]);
+    await saveIntentCriteria(intentPass.criteria);
+      await saveIntentCriteria(intentPass.criteria);
     }
     await publishProgress();
     return finish();
@@ -592,6 +678,32 @@ export async function runReviewJob(
   progress.completionTokens += prMapSpent.completionTokens;
   await stopIfCancelled();
 
+  // --- What to test before it merges (DESIGN.md §6.22 §5) -----------------
+  running.set("__test-plan", "Test plan");
+  await publishProgress();
+  const testPlanSpent = await runTestPlanPass({
+    repoId,
+    targetKey,
+    target,
+    title: resolved.intent.title,
+    headSha: resolved.reviewed.headSha,
+    ...(apiChange && (apiChange.changes.length || apiChange.logic.length) ? { apiLines: describeApiChange(apiChange) } : {}),
+    ...(infraChange && infraChanged ? { infraLines: describeInfraChange(infraChange) } : {}),
+    ...(dbChange && dbChanged ? { schemaLines: describeSchemaChange(dbChange) } : {}),
+    ...(envChange && envChanged ? { envLines: describeEnvChange(envChange) } : {}),
+    tests: analyses ? compareTests(analyses.base.tests, analyses.head.tests, analyses.changed) : null,
+    ...(analyses ? { callGraph: buildCallGraph(analyses.base, analyses.head, analyses.changed) } : {}),
+    aiConfig,
+    tokenBudget: effortSettings.tokenBudget,
+    log,
+    signal,
+  });
+  running.delete("__test-plan");
+  progress.calls += testPlanSpent.calls;
+  progress.promptTokens += testPlanSpent.promptTokens;
+  progress.completionTokens += testPlanSpent.completionTokens;
+  await stopIfCancelled();
+
   await publishProgress();
   return finish();
 
@@ -599,6 +711,7 @@ export async function runReviewJob(
     const durationMs = Date.now() - startedAt;
     log(
       `done in ${durationMs}ms — ${progress.completed} component(s) reviewed, ` +
+        (reused.size > 0 ? `${reused.size} unchanged and reused, ` : "") +
         `${progress.failed} failed, ${findingsWritten} finding(s), ${progress.calls} model call(s), ` +
         `${progress.promptTokens}+${progress.completionTokens} token(s)`
     );
@@ -613,6 +726,7 @@ export async function runReviewJob(
       promptTokens: progress.promptTokens,
       completionTokens: progress.completionTokens,
       prunedFindings,
+      ...(reused.size > 0 ? { reusedComponents: reused.size } : {}),
       durationMs,
       ...(resolved.reviewed.baseSha ? { reviewedBaseSha: resolved.reviewed.baseSha } : {}),
       ...(resolved.reviewed.headSha ? { reviewedHeadSha: resolved.reviewed.headSha } : {}),

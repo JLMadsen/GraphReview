@@ -25,7 +25,7 @@
 // repo was analyzed, through `GET /api/repos/[repoId]/file`.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FileDiff, LoaderCircle, TriangleAlert } from "lucide-react";
+import { Files, FileDiff, LoaderCircle, TriangleAlert } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -35,6 +35,8 @@ import {
 import { runtimeForPath } from "@/lib/preview/runtime";
 import { cn } from "cn";
 import { DiffViewer } from "./DiffViewer";
+import { DiffToolbar, useDiffPrefs, useDiffShortcuts } from "./DiffToolbar";
+import { ignoreWhitespaceHunks, markMovedLines } from "./diff-model";
 import { highlightLines, languageForPath } from "./highlight";
 import { startMiddleScroll } from "./middle-scroll";
 import { PreviewPanel } from "./PreviewPanel";
@@ -84,9 +86,13 @@ export interface FileDiffModalProps {
   /** The tab a changed file opens on — the diff unless a list (or the chat) asks for another. */
   initialTab?: "diff" | "file" | "base" | "preview";
   onClose: () => void;
+  /** Opens the all-files reader at this file (and the finding's lines) — shown as a header button when given. */
+  onOpenReader?: (path: string, lineRange?: string) => void;
 }
 
-export function FileDiffModal({ repoId, target, finding, initialComponent, initialTab = "diff", onClose }: FileDiffModalProps) {
+export function FileDiffModal({ repoId, target, finding, initialComponent, initialTab = "diff", onClose, onOpenReader }: FileDiffModalProps) {
+  const prefs = useDiffPrefs("modal");
+  const { ignoreWhitespace } = prefs;
   const [state, setState] = useState<FetchState>({ status: "loading" });
   const [fileState, setFileState] = useState<FileState>({ status: "idle" });
   const [tab, setTab] = useState<ModalTab>("diff");
@@ -146,7 +152,7 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
     let cancelled = false;
     setState({ status: "loading" });
     const url = target
-      ? `/api/repos/${repoId}/diff-impact/file?${diffQuery(target, filePath, headSha)}`
+      ? `/api/repos/${repoId}/diff-impact/file?${diffQuery(target, filePath, headSha)}${ignoreWhitespace ? "&w=1" : ""}`
       : `/api/repos/${repoId}/file?${new URLSearchParams({ path: filePath })}`;
     fetch(url)
       .then(async (res) => {
@@ -181,19 +187,26 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
     // `target` is fixed while a file is open (GraphView closes the viewer
     // when the diff selection changes) — only the file ever changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repoId, filePath, headSha]);
+  }, [repoId, filePath, headSha, ignoreWhitespace]);
+  useDiffShortcuts(prefs, Boolean(finding) && shownTab === "diff" && !outsideDiff);
 
   const highlightRange = parseLineRange(finding?.lineRange);
-  const hunks = useMemo(
+  const rawHunks = useMemo(
     () => (state.status === "loaded" && state.data.patch ? parseUnifiedDiff(state.data.patch) : []),
     [state]
   );
+  /** What the Diff tab draws: whitespace-only changes left out here when the host's patch still has them, moved blocks marked. */
+  const hunks = useMemo(() => {
+    const filtered =
+      ignoreWhitespace && state.status === "loaded" && state.data.whitespace === "client" ? ignoreWhitespaceHunks(rawHunks) : rawHunks;
+    return markMovedLines([{ path: filePath ?? "", hunks: filtered }])[0];
+  }, [rawHunks, ignoreWhitespace, state, filePath]);
   /** New-file line numbers the diff added — marked in the File tab's gutter. */
   const addedLines = useMemo(() => {
     const lines = new Set<number>();
-    for (const hunk of hunks) for (const line of hunk.lines) if (line.type === "add" && line.newLine != null) lines.add(line.newLine);
+    for (const hunk of rawHunks) for (const line of hunk.lines) if (line.type === "add" && line.newLine != null) lines.add(line.newLine);
     return lines;
-  }, [hunks]);
+  }, [rawHunks]);
   const tabOptions = [
     { value: "diff" as const, label: "Diff" },
     { value: "file" as const, label: "File", title: "The whole file at the head of the diff, with the changed lines marked" },
@@ -210,7 +223,7 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
       <DialogContent
         className={cn(
           "flex w-full max-w-[calc(100%-2rem)] flex-col",
-          shownTab === "preview" ? "max-h-[92vh] sm:max-w-7xl" : "max-h-[85vh] sm:max-w-4xl"
+          shownTab === "preview" || (shownTab === "diff" && prefs.layout === "split") ? "max-h-[92vh] sm:max-w-7xl" : "max-h-[85vh] sm:max-w-4xl"
         )}
       >
         <DialogHeader>
@@ -247,6 +260,30 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
               </span>
             )}
           </DialogTitle>
+          {shownTab === "diff" && !outsideDiff && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pr-8 text-[11px] text-muted-foreground">
+              <DiffToolbar prefs={prefs} />
+              {state.status === "loaded" && state.data.oldPath && (
+                <span className="truncate font-mono" title={`Renamed from ${state.data.oldPath}`}>
+                  renamed from {state.data.oldPath}
+                </span>
+              )}
+              {state.status === "loaded" && state.data.truncated && <span className="text-warning">Cut off — the diff is very large.</span>}
+              {state.status === "loaded" && state.data.source === "api" && (
+                <span title="No local copy of these commits — the patch is the git host's, which leaves out very large files">from the host&apos;s API</span>
+              )}
+              {onOpenReader && filePath && (
+                <button
+                  type="button"
+                  onClick={() => onOpenReader(filePath, finding?.lineRange)}
+                  className="ml-auto inline-flex h-6 items-center gap-1 border border-border px-2 text-[11px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+                >
+                  <Files className="size-3" aria-hidden />
+                  All files
+                </button>
+              )}
+            </div>
+          )}
         </DialogHeader>
 
         <div className="min-h-0 flex-1 overflow-y-auto" onMouseDown={startMiddleScroll}>
@@ -271,13 +308,17 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
           {shownTab === "diff" &&
             state.status === "loaded" &&
             state.data.content === undefined &&
-            (state.data.patch ? (
-              <DiffViewer hunks={hunks} filePath={filePath} highlightRange={highlightRange} />
+            (state.data.patch && hunks.length > 0 ? (
+              <DiffViewer hunks={hunks} filePath={filePath} highlightRange={highlightRange} layout={prefs.layout} scrollToHighlight />
             ) : (
               <p className="px-1 py-6 text-center text-xs text-muted-foreground">
-                {state.data.status === "added" || state.data.status === "removed"
-                  ? `File was ${state.data.status}; no line-by-line diff to show.`
-                  : "No textual diff for this file (binary, or too large)."}
+                {state.data.whitespaceOnly || (state.data.patch && ignoreWhitespace)
+                  ? "Only whitespace changed in this file. Show whitespace (W) to see it."
+                  : state.data.status === "renamed" && !state.data.patch
+                    ? `Renamed from ${state.data.oldPath ?? "another path"} with no content change.`
+                    : state.data.status === "added" || state.data.status === "removed"
+                      ? `File was ${state.data.status}; no line-by-line diff to show.`
+                      : "No textual diff for this file (binary, or too large)."}
               </p>
             ))}
           {wholeTab && state.status === "loaded" && (fileState.status === "loading" || fileState.status === "idle") && (

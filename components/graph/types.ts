@@ -84,6 +84,30 @@ export interface FileDiffResponseDTO {
   content?: string;
   /** With `content`: the commit or ref it was read at. */
   ref?: string;
+  /** The path before a rename or copy. */
+  oldPath?: string;
+  /** Where the patch came from: a local `git diff` (checkout or the app's clone) or the host's API (DESIGN.md §6.24). */
+  source?: "git" | "api";
+  /** Asked with `?w=1`: `git` — git left whitespace changes out; `client` — the viewer has to (an API patch). */
+  whitespace?: "git" | "client" | "shown";
+  /** Git, ignoring whitespace, found nothing else changed. */
+  whitespaceOnly?: boolean;
+  binary?: boolean;
+  /** The patch was cut at the size cap. */
+  truncated?: boolean;
+  /** The head blob id (git sources) — what the reader's "viewed" checkbox remembers. */
+  fingerprint?: string;
+}
+
+/** One file of `GET /api/repos/[repoId]/diff-impact/files` — the all-files reader (DESIGN.md §6.24). */
+export type DiffFileDTO = Omit<FileDiffResponseDTO, "content" | "ref" | "source" | "whitespace">;
+
+/** Response shape for `GET /api/repos/[repoId]/diff-impact/files`: every changed file's patch at once. */
+export interface DiffFilesResponseDTO {
+  source: "git" | "api";
+  whitespace: "git" | "client" | "shown";
+  headSha?: string;
+  files: DiffFileDTO[];
 }
 
 /**
@@ -118,7 +142,7 @@ export type FindingScope = "described" | "supporting" | "unmentioned";
 /** Mirrors `FindingKind`. */
 export type FindingKind = "fix" | "feature" | "refactor" | "test" | "docs" | "config" | "chore";
 /** Which review pass wrote a finding. Mirrors `FindingCategory`. */
-export type FindingCategory = "change" | "impact" | "intent" | "structure" | "infra" | "schema" | "env" | "chat";
+export type FindingCategory = "change" | "impact" | "intent" | "structure" | "infra" | "schema" | "env" | "security" | "tests" | "chat";
 
 /**
  * What a review is about — exactly one of the two shapes, matching the
@@ -151,6 +175,8 @@ export interface ReviewProgressDTO {
   unmatchedFiles: number;
   /** The effort level the run uses. */
   effort?: ReviewEffort;
+  /** Components a re-review after a push kept without a call — their patch didn't change (DESIGN.md §6.21). */
+  reused?: number;
 }
 
 /** Mirrors `ReviewEffort` in lib/ai/effort.ts. */
@@ -203,6 +229,8 @@ export interface FindingDTO {
   callFailed?: boolean;
   /** Replies from coding agents (over MCP), oldest first. */
   responses?: FindingResponseDTO[];
+  /** A near-identical finding on this file was dismissed as not a problem on this repo (DESIGN.md §6.21): hidden behind "suppressed N". */
+  suppressed?: { id: string; reason?: string; summary: string };
 }
 
 /** A reply to a finding. Mirrors `FindingResponse` in lib/db: `answered` resolved it, `fixing` says a fix is under way. */

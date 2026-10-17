@@ -34,7 +34,7 @@ export function useTargetGraph(repoId: string, target: ReviewTargetDTO | null): 
     let timer: ReturnType<typeof setTimeout> | undefined;
     const load = async () => {
       try {
-        const res = await fetch(`/api/repos/${encodeURIComponent(repoId)}/target-graph?${query}`, { cache: "no-store" });
+        const res = await fetch(`/api/repos/${encodeURIComponent(repoId)}/target-graph?${query}`, { method: "POST", cache: "no-store" });
         const json = (await res.json().catch(() => null)) as (TargetGraphResponseDTO & { error?: string }) | null;
         if (gen !== generation.current) return;
         if (!res.ok || !json) throw new Error(json?.error ?? `Request failed (${res.status}).`);

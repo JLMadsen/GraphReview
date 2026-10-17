@@ -3,7 +3,7 @@
 // A small markdown renderer for READMEs and .md files in the Files view:
 // repo-relative links and images resolve against the analysed commit.
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { cn } from "cn";
 import { highlightLines, languageForFence } from "../highlight";
 import { type DirNode, type FileEntry, isImage, rawUrl } from "./tree";
@@ -54,23 +54,55 @@ export function MdLink({ href, children, ctx }: { href: string; children: React.
 }
 
 export function MdImage({ src, alt, width, ctx }: { src: string; alt: string; width?: string; ctx: MdContext }) {
-  // The repo's own images come from `/raw` at the tree's commit; web images (badges, screenshots) load as they are.
+  // The repo's own images come from `/raw` at the tree's commit. Web images
+  // (badges, screenshots) are not fetched until asked (DESIGN.md §6.26 §3):
+  // loading one tells its host who is reading the README, and on an
+  // air-gapped machine it only hangs.
   const repoPath = resolveRepoLink(src, ctx);
-  const url = repoPath && isImage(repoPath) ? rawUrl(ctx.repoId, ctx.sha, repoPath) : /^https:/i.test(src) ? src : null;
-  if (url) {
-    return (
-      // eslint-disable-next-line @next/next/no-img-element -- arbitrary README images
-      <img
-        src={url}
-        alt={alt}
-        width={width ? Number(width) : undefined}
-        className="inline-block max-w-full align-middle"
-        loading="lazy"
-        referrerPolicy="no-referrer"
-      />
-    );
-  }
+  if (repoPath && isImage(repoPath)) return <Img url={rawUrl(ctx.repoId, ctx.sha, repoPath)} alt={alt} width={width} />;
+  if (/^https:/i.test(src)) return <RemoteImage url={src} alt={alt} width={width} />;
   return alt ? <span className="rounded border border-dashed border-border px-1 text-[11px] text-muted-foreground">{alt}</span> : null;
+}
+
+function Img({ url, alt, width }: { url: string; alt: string; width?: string }) {
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- arbitrary README images
+    <img
+      src={url}
+      alt={alt}
+      width={width ? Number(width) : undefined}
+      className="inline-block max-w-full align-middle"
+      loading="lazy"
+      referrerPolicy="no-referrer"
+    />
+  );
+}
+
+/** A remote image as its alt text and URL until clicked; a span, since it may sit inside a link. */
+function RemoteImage({ url, alt, width }: { url: string; alt: string; width?: string }) {
+  const [load, setLoad] = useState(false);
+  if (load) return <Img url={url} alt={alt} width={width} />;
+  const show = (e: React.SyntheticEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setLoad(true);
+  };
+  const shortUrl = url.replace(/^https:\/\//i, "");
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      onClick={show}
+      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && show(e)}
+      title={`Remote image, not loaded: ${url}
+Click to load it once.`}
+      className="inline-flex max-w-full cursor-pointer items-baseline gap-1 rounded border border-dashed border-border px-1 align-middle text-[11px] text-muted-foreground hover:border-brand hover:text-foreground"
+    >
+      <span aria-hidden>🖼</span>
+      {alt ? <span className="font-medium">{alt}</span> : null}
+      <span className="truncate font-mono opacity-70">{shortUrl.length > 60 ? `${shortUrl.slice(0, 57)}…` : shortUrl}</span>
+    </span>
+  );
 }
 
 /** Inline HTML down to Markdown: `<img src alt>` → `![alt](src)`, `<br>` → space, autolinks kept, other tags dropped. */

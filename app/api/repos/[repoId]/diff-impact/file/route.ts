@@ -6,9 +6,10 @@
 // rather than shipping every touched file's diff down with the findings.
 //
 // Sibling of `../route.ts`: that endpoint maps changed paths onto
-// components, this one re-fetches the same diff source (PR files / ref
-// comparison / local git) and hands back one file's raw patch text — no
-// database write, no component matching.
+// components, this one hands back one file's raw patch text — from a local
+// `git diff` when the commits are on disk, the host's API otherwise
+// (lib/jobs/diff-files.ts) — no database write, no component matching.
+// `?w=1` asks for whitespace-only changes to be left out.
 //
 // A path that is NOT part of the diff comes back as the whole file
 // (`content`) instead of a 404: at `?sha=<head commit>` when given — what an
@@ -25,10 +26,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { gitRefSchema } from "../../../_shared";
-import { compareRefs, getPullRequest, listPullRequestFiles } from "@/lib/github";
-import type { PullRequestFile } from "@/lib/github";
-import { compareRefs as compareGitLabRefs, getMergeRequest, listMergeRequestFiles } from "@/lib/gitlab";
-import { listLocalFilePatches, resolveGitHubAccess, resolveGitLabAccess } from "@/lib/jobs";
+import { getPullRequest } from "@/lib/github";
+import { getMergeRequest } from "@/lib/gitlab";
+import { resolveGitHubAccess, resolveGitLabAccess } from "@/lib/jobs";
+import { DiffFilesError, loadTargetDiff, type DiffFile, type DiffFilesResult } from "@/lib/jobs/diff-files";
+import type { ReviewTarget } from "@/lib/jobs/review-queue";
 import { resolveLocalRefSha } from "@/lib/jobs/local-git";
 import { MAX_FILE_CHARS, readFileAtCommit } from "@/lib/jobs/pr-context";
 import { getRepoById } from "@/lib/db";
@@ -51,24 +53,6 @@ const querySchema = z.union([
     sha: shaSchema,
   }),
 ]);
-
-interface FileLike {
-  path: string;
-  status: string;
-  additions: number;
-  deletions: number;
-  patch?: string;
-}
-
-function fromPullRequestFile(file: PullRequestFile): FileLike {
-  return {
-    path: file.filename,
-    status: file.status,
-    additions: file.additions,
-    deletions: file.deletions,
-    patch: file.patch,
-  };
-}
 
 type FileQuery = z.infer<typeof querySchema>;
 
@@ -96,14 +80,27 @@ async function targetRef(repo: RepoRecord, query: FileQuery, side: "head" | "bas
   return side === "head" ? pr.headSha : pr.baseSha;
 }
 
-function toResponse(file: FileLike): FileDiffResponseDTO {
+function toResponse(file: DiffFile, diff: DiffFilesResult): FileDiffResponseDTO {
   return {
     path: file.path,
     status: file.status as FileDiffResponseDTO["status"],
     additions: file.additions,
     deletions: file.deletions,
     patch: file.patch,
+    source: diff.source,
+    whitespace: diff.whitespace,
+    ...(file.oldPath ? { oldPath: file.oldPath } : {}),
+    ...(file.whitespaceOnly ? { whitespaceOnly: true } : {}),
+    ...(file.binary ? { binary: true } : {}),
+    ...(file.truncated ? { truncated: true } : {}),
+    ...(file.fingerprint ? { fingerprint: file.fingerprint } : {}),
   };
+}
+
+function toTarget(query: FileQuery): ReviewTarget {
+  return "prNumber" in query
+    ? { kind: "pr", prNumber: query.prNumber }
+    : { kind: "refs", baseRef: query.baseRef, headRef: query.headRef };
 }
 
 export async function GET(
@@ -131,111 +128,11 @@ export async function GET(
       return NextResponse.json({ error: "Repo not found." }, { status: 404 });
     }
 
-    let file: FileLike | undefined;
-
-    if (repo.provider === "local") {
-      // Same rule the review job enforces (lib/jobs/review.ts): a local
-      // checkout has no PR concept, only refs sitting in its own `.git`.
-      if ("prNumber" in parsed.data) {
-        return NextResponse.json(
-          {
-            error:
-              "A pull/merge request cannot be diffed on a repo with no git-host link — compare two refs instead.",
-          },
-          { status: 400 }
-        );
-      }
-      if (!repo.localPath) {
-        return NextResponse.json(
-          { error: "This local repo has no path on record." },
-          { status: 400 }
-        );
-      }
-      const files = await listLocalFilePatches(
-        repo.localPath,
-        parsed.data.baseRef,
-        parsed.data.headRef
-      );
-      const match = files.find((f) => f.path === path);
-      if (match) {
-        file = {
-          path: match.path,
-          status: match.status,
-          additions: match.additions,
-          deletions: match.deletions,
-          patch: match.patch,
-        };
-      }
-    } else if (repo.provider === "gitlab") {
-      const access = await resolveGitLabAccess(repo);
-      if (!access.ok) {
-        return NextResponse.json(
-          {
-            error:
-              access.reason === "no_token"
-                ? "No GitLab PAT configured in Settings."
-                : "This repo is not linked to GitLab.",
-          },
-          { status: 400 }
-        );
-      }
-      const { path: projectPath } = access.ref;
-
-      if ("prNumber" in parsed.data) {
-        const { data: files } = await listMergeRequestFiles(
-          access.token,
-          projectPath,
-          parsed.data.prNumber
-        );
-        const match = files.find((f) => f.filename === path);
-        if (match) file = fromPullRequestFile(match);
-      } else {
-        const { data: comparison } = await compareGitLabRefs(
-          access.token,
-          projectPath,
-          parsed.data.baseRef,
-          parsed.data.headRef
-        );
-        const match = comparison.files.find((f) => f.filename === path);
-        if (match) file = fromPullRequestFile(match);
-      }
-    } else {
-      const access = await resolveGitHubAccess(repo);
-      if (!access.ok) {
-        return NextResponse.json(
-          {
-            error:
-              access.reason === "no_token"
-                ? "No GitHub PAT configured in Settings."
-                : "This repo is not linked to GitHub.",
-          },
-          { status: 400 }
-        );
-      }
-      const { owner, repo: repoName } = access.ref;
-
-      if ("prNumber" in parsed.data) {
-        const { data: files } = await listPullRequestFiles(
-          access.token,
-          owner,
-          repoName,
-          parsed.data.prNumber
-        );
-        const match = files.find((f) => f.filename === path);
-        if (match) file = fromPullRequestFile(match);
-      } else {
-        const { data: comparison } = await compareRefs(
-          access.token,
-          owner,
-          repoName,
-          parsed.data.baseRef,
-          parsed.data.headRef
-        );
-        const match = comparison.files.find((f) => f.filename === path);
-        if (match) file = fromPullRequestFile(match);
-      }
-    }
-
+    // Git first — the checkout, or the app's clone with both ends fetched —
+    // and the host's API patch only when that can't be had (DESIGN.md §6.24).
+    const ignoreWhitespace = url.searchParams.get("w") === "1";
+    const diff = await loadTargetDiff(repo, toTarget(parsed.data), { ignoreWhitespace, path });
+    const file = diff.files.find((f) => f.path === path);
     if (url.searchParams.get("view") === "file") {
       const side = file?.status === "removed" || url.searchParams.get("side") === "base" ? "base" : "head";
       const ref = await targetRef(repo, parsed.data, side);
@@ -279,8 +176,9 @@ export async function GET(
       );
     }
 
-    return NextResponse.json(toResponse(file));
+    return NextResponse.json(toResponse(file, diff));
   } catch (err) {
+    if (err instanceof DiffFilesError) return NextResponse.json({ error: err.message }, { status: 400 });
     console.error(`GET /api/repos/${repoId}/diff-impact/file failed:`, err);
     return NextResponse.json(
       {

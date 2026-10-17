@@ -5,6 +5,7 @@
  */
 import type { CodeFacts } from "./infra/code-facts";
 import type { DbCodeFacts } from "./db/types";
+import type { TestFileFacts } from "./tests/types";
 
 /** A single import/require/dynamic-import site found in a file. */
 export interface FileImport {
@@ -290,6 +291,8 @@ export interface FileAnalysis {
   code?: CodeFacts;
   /** SQL literals found lexically (./db/read.ts) — Go, Java, Kotlin, Rust; TS/JS and Python carry theirs in `symbols.db`. */
   db?: DbCodeFacts;
+  /** Test cases and skip/focus markers (./tests/facts.ts) — test files only. */
+  tests?: TestFileFacts;
 }
 
 /** Count lines the way {@link FileAnalysis.loc} is defined. */

@@ -1,9 +1,9 @@
-import Link from "next/link";
-import { BarChart3 } from "lucide-react";
 import { PROVIDER_NAMES, RepoStatusText, providerIcon } from "@/app/repo-status-badge";
 import { RepoSwitcher } from "@/app/repo-switcher";
 import { ReanalyzeButton } from "@/app/repo/[repoId]/reanalyze-button";
 import { loadRepo } from "@/app/repo/[repoId]/load-repo";
+import { AiOffChip } from "@/app/ai-off-chip";
+import { loadSetupStatus } from "@/app/setup-status";
 
 /**
  * The repo's identity in the app's top bar, on every /repo/[repoId] page:
@@ -26,7 +26,7 @@ function isWebUrl(source: string): boolean {
 
 export async function RepoNav({ params }: { params: Promise<{ repoId: string }> }) {
   const { repoId } = await params;
-  const { repo } = await loadRepo(repoId);
+  const [{ repo }, setup] = await Promise.all([loadRepo(repoId), loadSetupStatus()]);
   if (!repo) return null;
 
   const source = repo.provider === "local" ? repo.localPath : repo.url;
@@ -54,14 +54,7 @@ export async function RepoNav({ params }: { params: Promise<{ repoId: string }> 
       <span className="shrink-0">
         <RepoStatusText status={repo.status} lastAnalyzedSha={repo.lastAnalyzedSha} repoId={repo.id} />
       </span>
-      <Link
-        href={`/repo/${repo.id}/stats`}
-        className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[12px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-        title="Lines of code, contributors and a timeline of commits and CI"
-      >
-        <BarChart3 className="size-3.5" aria-hidden />
-        Stats
-      </Link>
+      {setup && !setup.aiConfigured ? <AiOffChip /> : null}
       {repo.status !== "analyzing" ? (
         <>
           <span className="h-4 w-px shrink-0 bg-border" aria-hidden />

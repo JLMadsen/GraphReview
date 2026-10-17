@@ -65,6 +65,12 @@ export interface ReviewProgress {
   unmatchedFiles: number;
   /** The effort level this run uses. */
   effort?: ReviewEffort;
+  /**
+   * Touched components an incremental re-review kept as they were — their
+   * patch hasn't changed since the head the last run reviewed, so no call
+   * was made (DESIGN.md §6.21). Not part of `total`.
+   */
+  reused?: number;
 }
 
 /** What a completed review job returns, for log visibility and job introspection. */
@@ -82,6 +88,8 @@ export interface ReviewJobResult {
   completionTokens: number;
   /** Findings dropped because their component is no longer touched by this target. */
   prunedFindings: number;
+  /** Components kept from the last run without a call (see `ReviewProgress.reused`). */
+  reusedComponents?: number;
   durationMs: number;
   /** The commits this run reviewed (also stored on each finding — this copy ages out with the job). Absent only if the source couldn't report them. */
   reviewedBaseSha?: string;

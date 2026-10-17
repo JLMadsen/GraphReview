@@ -125,6 +125,8 @@ export async function deleteRepo(id: string): Promise<void> {
     run(`DELETE FROM pull_requests WHERE repo_id = ?`, id);
     run(`DELETE FROM ref_snapshots WHERE repo_id = ?`, id);
     run(`DELETE FROM findings WHERE repo_id = ?`, id);
+    run(`DELETE FROM review_slots WHERE repo_id = ?`, id);
+    run(`DELETE FROM finding_suppressions WHERE repo_id = ?`, id);
     run(`DELETE FROM merge_suggestions WHERE repo_id = ?`, id);
     run(`DELETE FROM checklist_answers WHERE repo_id = ?`, id);
     run(`DELETE FROM checklist_items WHERE scope = ?`, id);
@@ -138,8 +140,12 @@ export async function deleteRepo(id: string): Promise<void> {
     run(`DELETE FROM env_catalogs WHERE repo_id = ?`, id);
     run(`DELETE FROM kv WHERE key LIKE ?`, `kv:api-shape:${id}:%`);
     run(`DELETE FROM kv WHERE key = ?`, `kv:db-source:${id}`);
+    run(`DELETE FROM kv WHERE key = ?`, `kv:tests-catalog:${id}`);
+    run(`DELETE FROM kv WHERE key LIKE ?`, `kv:test-plan:${id}:%`);
     run(`DELETE FROM kv WHERE key = ?`, `kv:preview:mocks:${id}`);
     run(`DELETE FROM kv WHERE key = ?`, `kv:palette:remote:${id}`);
+    run(`DELETE FROM kv WHERE key LIKE ?`, `kv:posted-review:${id}:%`);
+    run(`DELETE FROM kv WHERE key LIKE ?`, `kv:change-brief:${id}:%`);
     run(`DELETE FROM symbol_index WHERE repo_id = ?`, id);
     run(`DELETE FROM symbol_index_sets WHERE repo_id = ?`, id);
     run(`DELETE FROM palette_history WHERE repo_id = ?`, id);

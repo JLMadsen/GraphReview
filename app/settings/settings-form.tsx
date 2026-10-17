@@ -133,7 +133,7 @@ export function SettingsForm({
   return (
     <>
       {/* Both git hosts in one card, a row each: a token field with its Save beside it. */}
-      <div className="min-w-0">
+      <div id="git-hosts" className="min-w-0 scroll-mt-16">
         <Card className="[--card-spacing:--spacing(5)]">
           <CardHeader>
             <SectionTitle icon={Github}>Git hosts</SectionTitle>
@@ -185,7 +185,7 @@ export function SettingsForm({
         </Card>
       </div>
 
-      <div className="min-w-0">
+      <div id="ai-providers" className="min-w-0 scroll-mt-16">
         <Card className="[--card-spacing:--spacing(5)]">
           <CardHeader>
             <SectionTitle icon={Bot}>AI providers</SectionTitle>

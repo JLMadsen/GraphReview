@@ -34,7 +34,9 @@ import { DEFAULT_REVIEW_EFFORT, isReviewEffort } from "@/lib/ai/effort";
 import {
   getActiveAiProvider,
   getRepoById,
+  listFindingSuppressions,
   listFindingsByTargetKey,
+  matchSuppression,
   type FindingAssessment,
   type FindingCategory,
   type FindingKind,
@@ -74,6 +76,12 @@ export interface FindingDto {
   callFailed?: boolean;
   /** Replies from coding agents (MCP), oldest first. */
   responses?: FindingResponse[];
+  /**
+   * A near-identical finding on the same file was dismissed as not a problem
+   * on this repo (DESIGN.md §6.21): the dock hides it behind "suppressed N".
+   * Deleting the suppression (`…/review/suppressions?id=`) shows it again.
+   */
+  suppressed?: { id: string; reason?: string; summary: string };
 }
 
 /** Lifecycle of a review target, collapsed from the job runner's states. `"none"` means "never reviewed". */
@@ -114,6 +122,10 @@ export interface EnqueueReviewResponse {
   targetKey: string;
   /** `false` when a review of this exact target was already queued or running — the existing job stands. */
   enqueued: boolean;
+}
+
+function suppressedField(s: ReturnType<typeof matchSuppression>): Pick<FindingDto, "suppressed"> {
+  return s ? { suppressed: { id: s.id, summary: s.summary, ...(s.reason ? { reason: s.reason } : {}) } } : {};
 }
 
 function errorResponse(
@@ -254,6 +266,7 @@ function toProgress(raw: unknown): ReviewProgress | undefined {
     completionTokens: candidate.completionTokens ?? 0,
     running: Array.isArray(candidate.running) ? candidate.running : [],
     unmatchedFiles: candidate.unmatchedFiles ?? 0,
+    ...(candidate.reused ? { reused: candidate.reused } : {}),
   };
 }
 
@@ -281,6 +294,9 @@ export async function GET(
       listFindingsByTargetKey(repoId, targetKey),
       isAiConfigured(),
     ]);
+    // Matched on every read, so dismissing (or un-suppressing) applies to
+    // every review of the repo at once — the ones already stored included.
+    const suppressions = listFindingSuppressions(repoId);
 
     let state: ReviewState = "none";
     let progress: ReviewProgress | undefined;
@@ -358,6 +374,7 @@ export async function GET(
         ...(finding.resolvedAt ? { resolvedAt: finding.resolvedAt } : {}),
         ...(finding.callFailed ? { callFailed: true } : {}),
         ...(finding.responses ? { responses: finding.responses } : {}),
+        ...suppressedField(matchSuppression(finding, suppressions)),
       })),
       aiConfigured,
     };

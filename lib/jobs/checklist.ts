@@ -10,30 +10,48 @@
 //   protected-paths  none of the listed paths is touched (touching one fails, as "needs care")
 //   ai               a stored model answer for this head commit, if there is one
 //
+// Plus, when the PR states acceptance criteria, one built-in item listing
+// them, each with the verdict the review's intent pass stored for this head
+// commit (DESIGN.md §6.27).
+//
 // Everything but `ai` is computed on each read — cheap, and always current.
 // `runAiChecklist` makes the one model call that answers all `ai` items and
 // stores the answers; a failing item only ever shows as a badge.
 //
 // Kept out of lib/jobs' barrel: it pulls in lib/ai (via ./pr-context).
 
-import { answerChecklist, type ChecklistDiffFile } from "@/lib/ai";
+import { answerChecklist, criterionKey, parseAcceptanceCriteria, type ChecklistDiffFile } from "@/lib/ai";
 import {
+  ACCEPTANCE_CRITERIA_ITEM_ID,
   getDisabledChecklistItemIds,
   listChecklistAnswers,
   listChecklistItems,
   listFindingsByTargetKey,
   saveChecklistAnswers,
 } from "@/lib/db";
-import type { ChecklistItemRecord, ChecklistStatus, RepoRecord } from "@/lib/db";
+import type { ChecklistAnswerRecord, ChecklistItemRecord, ChecklistStatus, RepoRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import { loadAiConfigOrNull } from "./ai-config";
 import { loadCiStatus, loadPrContext } from "./pr-context";
 import type { ResolvedTarget } from "./review-target";
 import { reviewTargetKey, type ReviewTarget } from "./review-queue";
 
+/** One acceptance criterion and its verdict (DESIGN.md §6.27). */
+export interface AcceptanceCriterionRow {
+  text: string;
+  /** `"description"` or `"#<issue number>"`. */
+  source: string;
+  format: "checkbox" | "gherkin" | "heading";
+  ticked?: boolean;
+  /** `pending`: not judged for the current head commit yet. */
+  verdict: "pass" | "fail" | "unknown" | "pending";
+  reason: string;
+  evidence: Array<{ path: string; lines?: string }>;
+}
+
 export interface ChecklistItemResult {
   itemId: string;
-  kind: ChecklistItemRecord["kind"];
+  kind: ChecklistItemRecord["kind"] | "acceptance-criteria";
   label: string;
   status: ChecklistStatus;
   detail: string;
@@ -42,6 +60,8 @@ export interface ChecklistItemResult {
   /** `ai` items: when the stored answer was made, and by which model. */
   checkedAt?: string;
   model?: string;
+  /** `acceptance-criteria` only: one row per criterion. */
+  criteria?: AcceptanceCriterionRow[];
 }
 
 export interface ChecklistEvaluation {
@@ -173,7 +193,58 @@ export async function evaluateChecklist(
     return evaluateStatic(item, ctx) ?? { ...base, status: "unknown" as const, detail: "Unknown check." };
   });
 
+  const acceptance = acceptanceItem(ctx, answerByItem.get(ACCEPTANCE_CRITERIA_ITEM_ID), aiConfig !== null);
+  if (acceptance) results.push(acceptance);
+
   return { targetKey, headSha, items: results, aiPending, aiConfigured: aiConfig !== null };
+}
+
+/**
+ * The criteria are parsed fresh on every read (so an edited description
+ * shows at once); verdicts come from the review's intent pass, matched by
+ * criterion text and only for the current head commit.
+ */
+function acceptanceItem(ctx: ResolvedTarget, answer: ChecklistAnswerRecord | undefined, aiConfigured: boolean): ChecklistItemResult | null {
+  const criteria = parseAcceptanceCriteria(ctx.intent);
+  if (criteria.length === 0) return null;
+  const fresh = answer?.headSha !== undefined && answer.headSha === ctx.reviewed.headSha;
+  const stored = new Map((fresh ? answer?.criteria ?? [] : []).map((c) => [c.key, c]));
+  const pendingReason = !aiConfigured
+    ? "Needs an AI provider (Settings)."
+    : answer && !fresh
+      ? "Judged for an older commit — review again."
+      : fresh
+        ? "Added after the last review — review again."
+        : "Judged by the AI review.";
+  const rows: AcceptanceCriterionRow[] = criteria.map((c) => {
+    const s = stored.get(criterionKey(c.text));
+    return {
+      text: c.text,
+      source: c.source,
+      format: c.format,
+      ...(c.ticked !== undefined ? { ticked: c.ticked } : {}),
+      verdict: s?.verdict ?? "pending",
+      reason: s?.reason ?? pendingReason,
+      evidence: s?.evidence ?? [],
+    };
+  });
+  const count = (v: AcceptanceCriterionRow["verdict"]) => rows.filter((r) => r.verdict === v).length;
+  const [passed, failed, pending] = [count("pass"), count("fail"), count("pending")];
+  const status: ChecklistStatus =
+    failed > 0 ? "fail" : passed === rows.length ? "pass" : pending > 0 ? "pending" : "unknown";
+  return {
+    itemId: ACCEPTANCE_CRITERIA_ITEM_ID,
+    kind: "acceptance-criteria",
+    label: `Acceptance criteria ${passed}/${rows.length}`,
+    status,
+    detail:
+      `${passed} of ${rows.length} met` +
+      (failed > 0 ? `, ${failed} not met` : "") +
+      (pending > 0 ? `, ${pending} not judged yet` : "") +
+      ".",
+    ...(fresh && answer ? { checkedAt: answer.checkedAt, model: answer.model } : {}),
+    criteria: rows,
+  };
 }
 
 /** One model call answering every enabled `ai` item for the target's current head; stores the answers. */
