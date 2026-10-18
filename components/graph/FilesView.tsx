@@ -98,6 +98,7 @@ export function FilesView({ repoId, repoName, tree, loading, error, changedFiles
       setPathState(next);
       setLine(nextLine);
       setScrollToLine(false);
+      setMarks(undefined);
       try {
         window.localStorage.setItem(pathStorageKey(repoId), next);
       } catch {
@@ -106,6 +107,27 @@ export function FilesView({ repoId, repoName, tree, loading, error, changedFiles
     },
     [repoId]
   );
+  // A followed code link (DESIGN.md §6.28) remembers where it was clicked, for the file pane's Back button.
+  const [trail, setTrail] = useState<Array<{ path: string; line: number | null }>>([]);
+  /** Names marked on the marked line — where a usages dialog opened the file. */
+  const [marks, setMarks] = useState<string[] | undefined>(undefined);
+  useEffect(() => setTrail([]), [repoId]);
+  const followLink = useCallback(
+    (to: string, toLine?: number, names?: string[]) => {
+      setTrail((t) => [...t.slice(-49), { path, line }]);
+      navigate(to, toLine ?? null);
+      setScrollToLine(toLine !== undefined);
+      setMarks(names);
+    },
+    [navigate, path, line]
+  );
+  const goBack = useCallback(() => {
+    const last = trail[trail.length - 1];
+    if (!last) return;
+    setTrail(trail.slice(0, -1));
+    navigate(last.path, last.line);
+    setScrollToLine(last.line !== null);
+  }, [trail, navigate]);
   // After the remembered path is restored, so an outside request on first mount wins.
   useEffect(() => {
     if (!focus) return;
@@ -371,10 +393,14 @@ export function FilesView({ repoId, repoName, tree, loading, error, changedFiles
                     onLine={(n) => {
                       setLine(n);
                       setScrollToLine(false);
+                      setMarks(undefined);
                     }}
+                    markNames={marks}
                     changed={Boolean(changedFiles?.has(fileEntry.path))}
                     onOpenDiff={onOpenDiff}
                     onNavigate={navigate}
+                    onFollowLink={followLink}
+                    back={trail.length > 0 ? { path: trail[trail.length - 1].path, onBack: goBack } : undefined}
                     filesByPath={filesByPath}
                     dirs={dirs}
                   />

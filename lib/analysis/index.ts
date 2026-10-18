@@ -53,6 +53,7 @@ export {
 export { DEFAULT_IGNORED_DIRS, walkRepo, type WalkOptions } from "./walk";
 export { diskSourceTree, gitSourceTree, isGitRepo, type SourceTree } from "./source-tree";
 export type { DeadImport, SymbolCall, SymbolDecl, SymbolGraph, SymbolUse } from "./symbols";
+export { buildCodeLinks, buildCodeUsages, type CodeDecl, type CodeLink, type CodeLinkIndex, type CodeUsageIndex, type UsageFile } from "./code-links";
 export { buildApiCatalog, endpointId } from "./api/catalog";
 export { compareApis } from "./api/compare";
 export type * from "./api/types";

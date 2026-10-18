@@ -148,6 +148,9 @@ export async function deleteRepo(id: string): Promise<void> {
     run(`DELETE FROM kv WHERE key LIKE ?`, `kv:change-brief:${id}:%`);
     run(`DELETE FROM symbol_index WHERE repo_id = ?`, id);
     run(`DELETE FROM symbol_index_sets WHERE repo_id = ?`, id);
+    run(`DELETE FROM code_links WHERE repo_id = ?`, id);
+    run(`DELETE FROM code_link_sets WHERE repo_id = ?`, id);
+    run(`DELETE FROM code_usages WHERE repo_id = ?`, id);
     run(`DELETE FROM palette_history WHERE repo_id = ?`, id);
     // Queued work for the repo would only fail; a running job finishes and
     // its leftovers are removed by `deleteRepo` again (worker/index.ts).

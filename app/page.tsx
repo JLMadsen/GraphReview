@@ -7,9 +7,7 @@ import { RepoDeleteButton } from "./repo-delete-button";
 import { RepoRetryButton } from "./repo-retry-button";
 import { AnalysisFailureInline } from "./analysis-job-inline";
 import { RefreshWhileWorking } from "./refresh-while-working";
-import { SetupChecklist } from "./setup-checklist";
 import { loadSetupStatus } from "./setup-status";
-import { AiOffChip } from "./ai-off-chip";
 
 /**
  * Repo list (landing page).
@@ -44,7 +42,7 @@ function formatTimestamp(iso?: string): string | undefined {
   })} UTC`;
 }
 
-function RepoRow({ repo, aiOff }: { repo: RepoDto; aiOff: boolean }) {
+function RepoRow({ repo }: { repo: RepoDto }) {
   const source = repo.provider === "local" ? repo.localPath : repo.url;
   const analyzedAt = formatTimestamp(repo.lastAnalyzedAt);
   const SourceIcon = providerIcon(repo.provider);
@@ -96,7 +94,6 @@ function RepoRow({ repo, aiOff }: { repo: RepoDto; aiOff: boolean }) {
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {aiOff ? <AiOffChip className="pointer-events-auto" /> : null}
           <ProviderBadge provider={repo.provider} />
           <RepoStatusBadge
             status={repo.status}
@@ -187,8 +184,6 @@ export default async function RepoListPage() {
         <AddRepoDialog />
       </div>
 
-      {setup ? <SetupChecklist hasRepo={repos.length > 0} status={setup} /> : null}
-
       {loadError ? (
         <EmptyState
           icon={Plug}
@@ -202,15 +197,26 @@ export default async function RepoListPage() {
           locked.
         </EmptyState>
       ) : repos.length === 0 ? (
-        // The setup checklist above already has the Add repo step.
-        <EmptyState icon={Waypoints} title="No repos yet" action={setup ? undefined : <AddRepoDialog />}>
+        <EmptyState icon={Waypoints} title="No repos yet" action={<AddRepoDialog />}>
           Add a repo to analyze it into a component graph. Analysis starts
           automatically and its status shows up here.
+          {setup && !setup.aiConfigured ? (
+            // First run is the one time the AI provider needs saying out
+            // loud; after that the top bar's "AI off" chip covers it.
+            <span className="mt-3 block">
+              Reviews, labels and the chat also need an{" "}
+              <Link href="/settings#ai-providers" className="font-medium text-brand hover:underline">
+                AI provider
+              </Link>
+              {" "}— <span className="font-medium text-foreground/85">Use local config</span> there imports one from
+              OpenCode, Codex, Claude Code and the like.
+            </span>
+          ) : null}
         </EmptyState>
       ) : (
         <div className="space-y-3">
           {repos.map((repo) => (
-            <RepoRow key={repo.id} repo={repo} aiOff={setup !== null && !setup.aiConfigured} />
+            <RepoRow key={repo.id} repo={repo} />
           ))}
         </div>
       )}

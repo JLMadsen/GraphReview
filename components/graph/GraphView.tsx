@@ -161,6 +161,9 @@ export interface GraphViewProps {
   initialHeadRef?: string;
 }
 
+/** The file the shared viewer shows; `back` is the one a followed code link left. */
+type OpenFileState = { path: string; component?: string; tab?: "diff" | "file" | "base" | "preview"; lines?: string; marks?: string[]; back?: OpenFileState };
+
 export function GraphView({
   repoId,
   initialPrNumber,
@@ -222,7 +225,15 @@ export function GraphView({
   // (the dock's Files tab, an area's most-changed files) open on the diff;
   // the rest (the explainer's files, chat) on the
   // whole file, its changed lines marked.
-  const [openFile, setOpenFile] = useState<{ path: string; component?: string; tab?: "diff" | "file" | "base" | "preview"; lines?: string } | null>(null);
+  // A followed code link (DESIGN.md §6.28) keeps the file it came from in
+  // `back`, for the viewer's Back button; any other open starts afresh.
+  const [openFile, setOpenFile] = useState<OpenFileState | null>(null);
+  const followCodeLink = useCallback(
+    (path: string, line?: number, marks?: string[]) =>
+      setOpenFile((from) => ({ path, ...(line ? { lines: String(line), tab: "file" as const } : {}), ...(marks?.length ? { marks } : {}), ...(from ? { back: from } : {}) })),
+    []
+  );
+  const openFileBack = useCallback(() => setOpenFile((current) => current?.back ?? null), []);
   const openFilePath = useCallback((path: string) => setOpenFile({ path }), []);
   const openFileAtLine = useCallback((path: string, line?: number) => setOpenFile({ path, lines: line ? String(line) : undefined }), []);
   const openFileView = useCallback((path: string, lines?: string) => setOpenFile({ path, tab: "file", lines }), []);
@@ -1078,8 +1089,23 @@ export function GraphView({
           initialTab={openFile?.tab}
           onClose={() => setOpenFile(null)}
           onOpenReader={reviewTarget ? openReader : undefined}
+          baseSha={reviewTarget ? targetGraph.graph?.baseSha : undefined}
+          headSha={reviewTarget ? targetGraph.graph?.headSha : undefined}
+          onNavigate={followCodeLink}
+          back={openFile?.back ? { path: openFile.back.path, onBack: openFileBack } : undefined}
+          markNames={openFile?.marks}
         />
-        {reviewTarget && <AllFilesReader repoId={repoId} target={reviewTarget} start={readerStart} onClose={() => setReaderStart(null)} />}
+        {reviewTarget && (
+          <AllFilesReader
+            repoId={repoId}
+            target={reviewTarget}
+            start={readerStart}
+            onClose={() => setReaderStart(null)}
+            baseSha={targetGraph.graph?.baseSha}
+            headSha={targetGraph.graph?.headSha}
+            onFollowLink={followCodeLink}
+          />
+        )}
 
         {/* Under the graph, full width: the AI review, exceptions first —
             see ReviewPanel's header for why it lives here rather than in a

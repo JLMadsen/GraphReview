@@ -24,7 +24,7 @@ import {
 } from "@/components/graph/diff-model";
 import { parseUnifiedDiff } from "@/components/graph/diff-utils";
 import type { PullRequestFile } from "@/lib/github";
-import { preferLocalDiff, splitCombinedDiff, type ApiDiff } from "./diff-files";
+import { listGitDiffFiles, preferLocalDiff, splitCombinedDiff, type ApiDiff } from "./diff-files";
 
 let failures = 0;
 function check(label: string, condition: boolean, detail?: unknown): void {
@@ -286,6 +286,23 @@ try {
     "each file carries its head blob id as the viewed fingerprint",
     edit?.fingerprint === blob && Boolean(edit.patch?.includes("+TWO")),
     edit,
+  );
+
+  // Between two commit ids a diff is kept (memo-cache.ts); the kept listing is shared, never written to.
+  const shaSpot = { dir: repo, base: git("rev-parse", "HEAD~1").trim(), head: headSha };
+  const forEdit = await listGitDiffFiles(shaSpot, { path: "src/edit.ts" });
+  const forSpaces = await listGitDiffFiles(shaSpot, { path: "src/spaces.ts" });
+  const forEditAgain = await listGitDiffFiles(shaSpot, { path: "src/edit.ts" });
+  check(
+    "a diff between two commit ids is answered from the cache the second time",
+    forEditAgain === forEdit,
+  );
+  check(
+    "each file's answer has only its own patch (the cached listing isn't shared mutably)",
+    Boolean(forEdit.find((f) => f.path === "src/edit.ts")?.patch) &&
+      !forEdit.find((f) => f.path === "src/spaces.ts")?.patch &&
+      Boolean(forSpaces.find((f) => f.path === "src/spaces.ts")?.patch) &&
+      !forSpaces.find((f) => f.path === "src/edit.ts")?.patch,
   );
 
   const one = await preferLocalDiff({

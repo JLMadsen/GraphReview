@@ -22,7 +22,10 @@ import { grepLocalAtRef, readLocalFileAtRef } from "./local-git";
 import { resolveTarget, type ResolvedTarget } from "./review-target";
 import { reviewTargetKey, type ReviewTarget } from "./review-queue";
 import { readRepoFile, sourceDir } from "./review-context";
-import { gitIn } from "./source";
+import { isFullSha, memo } from "./memo-cache";
+import { gitIn, repoCacheDir } from "./source";
+import { existsSync } from "node:fs";
+import path from "node:path";
 
 const CACHE_MS = 60_000;
 export const MAX_FILE_CHARS = 400_000;
@@ -83,8 +86,10 @@ export async function loadCiStatus(repo: RepoRecord, headSha: string | undefined
 
 /**
  * A file's text at `sha` (the PR's head or base). Local repos read it with
- * `git show`; GitHub/GitLab through their contents API; if that fails, the
- * app's checkout of the default branch is the last resort (and says so).
+ * `git show`; GitHub/GitLab with `git show` in the app's clone when the commit
+ * is there, else through their contents API; if that fails, the app's
+ * checkout of the default branch is the last resort (and says so). Text read
+ * at a full commit id is kept in memory (memo-cache.ts): it can't change.
  */
 export async function readFileAtCommit(
   repo: RepoRecord,
@@ -96,17 +101,15 @@ export async function readFileAtCommit(
 
   if (sha) {
     try {
-      let text: string | null = null;
-      if (repo.provider === "local" && repo.localPath) {
-        text = await readLocalFileAtRef(repo.localPath, sha, clean);
-      } else if (repo.provider === "gitlab") {
-        const access = await resolveGitLabAccess(repo);
-        if (access.ok) text = (await getGitLabFile(access.token, access.ref.path, clean, sha)).data;
-      } else {
-        const access = await resolveGitHubAccess(repo);
-        if (access.ok) text = (await getGitHubFile(access.token, access.ref.owner, access.ref.repo, clean, sha)).data;
-      }
-      if (text !== null) return { text: text.slice(0, MAX_FILE_CHARS), source: "commit" };
+      // Only a found file is kept: a miss may be a token not set up yet.
+      const text = isFullSha(sha)
+        ? await memo("file-at-commit", `${repo.id}\u0000${sha}\u0000${clean}`, FILE_CACHE, async () => {
+            const found = await readCommitText(repo, sha, clean);
+            if (found === null) throw new Error("not found");
+            return found;
+          }).catch(() => null)
+        : await readCommitText(repo, sha, clean);
+      if (text !== null) return { text, source: "commit" };
     } catch {
       /* fall through to the checkout */
     }
@@ -115,6 +118,31 @@ export async function readFileAtCommit(
   const dir = await sourceDir(repo);
   const text = dir ? await readRepoFile(dir, clean) : null;
   return text === null ? null : { text, source: "default-branch" };
+}
+
+/** Files kept by commit: up to ~60M characters (most files are far smaller than the 400K cap). */
+const FILE_CACHE = { ttlMs: 30 * 60_000, maxEntries: 2000, maxWeight: 60_000_000, weigh: (text: string) => text.length };
+
+async function readCommitText(repo: RepoRecord, sha: string, file: string): Promise<string | null> {
+  let text: string | null = null;
+  if (repo.provider === "local" && repo.localPath) {
+    text = await readLocalFileAtRef(repo.localPath, sha, file);
+  } else {
+    const clone = repoCacheDir(repo.id);
+    if (existsSync(path.join(clone, ".git")) && /^[0-9a-f]{7,64}$/.test(sha) && !file.startsWith("-")) {
+      text = await gitIn(clone, undefined, ["safe.directory=*"])
+        .raw(["show", `${sha}:${file}`])
+        .catch(() => null);
+    }
+    if (text === null && repo.provider === "gitlab") {
+      const access = await resolveGitLabAccess(repo);
+      if (access.ok) text = (await getGitLabFile(access.token, access.ref.path, file, sha)).data;
+    } else if (text === null) {
+      const access = await resolveGitHubAccess(repo);
+      if (access.ok) text = (await getGitHubFile(access.token, access.ref.owner, access.ref.repo, file, sha)).data;
+    }
+  }
+  return text === null ? null : text.slice(0, MAX_FILE_CHARS);
 }
 
 /**

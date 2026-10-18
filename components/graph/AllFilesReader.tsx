@@ -18,6 +18,8 @@ import { Check, ChevronDown, ChevronRight, Files, LoaderCircle, TriangleAlert } 
 import { cn } from "cn";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DiffViewer } from "./DiffViewer";
+import { useCodeLinks, type CodeDecl, type CodeLink } from "./code-links";
+import { UsagesDialog } from "./UsagesDialog";
 import { DiffToolbar, isTypingTarget, useDiffPrefs, useDiffShortcuts } from "./DiffToolbar";
 import { hashText, ignoreWhitespaceHunks, markMovedLines } from "./diff-model";
 import { parseLineRange, parseUnifiedDiff, type DiffHunk } from "./diff-utils";
@@ -88,9 +90,14 @@ export interface AllFilesReaderProps {
   /** `null` while closed; otherwise the file to start at (none: the first) and the finding's lines to ring there. */
   start: { path?: string; lineRange?: string } | null;
   onClose: () => void;
+  /** The target's merge-base and head, which its code links are read at (DESIGN.md §6.28). */
+  baseSha?: string;
+  headSha?: string;
+  /** A clicked import or name that leads outside the reader's files, or to a line: open it in the file viewer. */
+  onFollowLink?: (path: string, line?: number, names?: string[]) => void;
 }
 
-export function AllFilesReader({ repoId, target, start, onClose }: AllFilesReaderProps) {
+export function AllFilesReader({ repoId, target, start, onClose, baseSha, headSha, onFollowLink }: AllFilesReaderProps) {
   const open = start !== null;
   const prefs = useDiffPrefs("reader");
   const { ignoreWhitespace, layout } = prefs;
@@ -160,6 +167,18 @@ export function AllFilesReader({ repoId, target, start, onClose }: AllFilesReade
     },
     [files]
   );
+  /** A link to another file the reader shows jumps to it here; a declaration's line, or a file outside the diff, opens in the file viewer. */
+  const followLink = useCallback(
+    (link: CodeLink) => {
+      const index = link.toLine === undefined ? files.findIndex((f) => f.path === link.to) : -1;
+      if (index >= 0) goTo(index);
+      else onFollowLink?.(link.to, link.toLine);
+    },
+    [files, goTo, onFollowLink]
+  );
+
+  /** The usages dialog, over the reader; its View buttons open the file viewer. */
+  const [usagesOf, setUsagesOf] = useState<CodeDecl | null>(null);
 
   // Start at the requested file once the diff is in (or reset to the top).
   const startedFor = useRef<string | null>(null);
@@ -325,6 +344,9 @@ export function AllFilesReader({ repoId, target, start, onClose }: AllFilesReade
                     if (el) sectionRefs.current.set(f.path, el);
                     else sectionRefs.current.delete(f.path);
                   }}
+                  linkSource={onFollowLink ? { repoId, baseSha, headSha } : undefined}
+                  onLink={onFollowLink ? followLink : undefined}
+                  onUsages={onFollowLink ? setUsagesOf : undefined}
                   onToggleViewed={() => toggleViewed(f, false)}
                   onToggleExpanded={() =>
                     setExpanded((prev) => {
@@ -339,6 +361,7 @@ export function AllFilesReader({ repoId, target, start, onClose }: AllFilesReade
             </div>
           </div>
         )}
+        {onFollowLink && <UsagesDialog repoId={repoId} decl={usagesOf} sha={headSha} onClose={() => setUsagesOf(null)} onView={onFollowLink} />}
       </DialogContent>
     </Dialog>
   );
@@ -355,6 +378,9 @@ function FileSection({
   highlightRange,
   scrollRoot,
   sectionRef,
+  linkSource,
+  onLink,
+  onUsages,
   onToggleViewed,
   onToggleExpanded,
 }: {
@@ -368,6 +394,9 @@ function FileSection({
   highlightRange: [number, number] | null;
   scrollRoot: React.RefObject<HTMLDivElement | null>;
   sectionRef: (el: HTMLElement | null) => void;
+  linkSource?: { repoId: string; baseSha?: string; headSha?: string };
+  onLink?: (link: CodeLink) => void;
+  onUsages?: (decl: CodeDecl) => void;
   onToggleViewed: () => void;
   onToggleExpanded: () => void;
 }) {
@@ -416,7 +445,11 @@ function FileSection({
         <div id={bodyId} className="rounded-b-md border border-t-0 border-border">
           <LazyBody estimate={estimateHeight(hunks)} scrollRoot={scrollRoot} eager={highlightRange !== null}>
             {hunks.length > 0 ? (
-              <DiffViewer hunks={hunks} filePath={file.path} layout={layout} highlightRange={highlightRange} scrollToHighlight={highlightRange !== null} />
+              linkSource && onLink ? (
+                <LinkedDiff file={file} hunks={hunks} layout={layout} highlightRange={highlightRange} source={linkSource} onLink={onLink} onUsages={onUsages} />
+              ) : (
+                <DiffViewer hunks={hunks} filePath={file.path} layout={layout} highlightRange={highlightRange} scrollToHighlight={highlightRange !== null} />
+              )
             ) : (
               <p className="px-3 py-4 text-center text-xs text-muted-foreground">
                 {file.whitespaceOnly || (ignoreWhitespace && file.patch)
@@ -435,6 +468,40 @@ function FileSection({
         </div>
       )}
     </section>
+  );
+}
+
+/** A file's diff with its code links — fetched only once the lazy body draws it. */
+function LinkedDiff({
+  file,
+  hunks,
+  layout,
+  highlightRange,
+  source,
+  onLink,
+  onUsages,
+}: {
+  file: DiffFileDTO;
+  hunks: DiffHunk[];
+  layout: "unified" | "split";
+  highlightRange: [number, number] | null;
+  source: { repoId: string; baseSha?: string; headSha?: string };
+  onLink: (link: CodeLink) => void;
+  onUsages?: (decl: CodeDecl) => void;
+}) {
+  const head = useCodeLinks(source.repoId, source.headSha ? file.path : null, source.headSha);
+  const base = useCodeLinks(source.repoId, source.baseSha ? (file.oldPath ?? file.path) : null, source.baseSha);
+  return (
+    <DiffViewer
+      hunks={hunks}
+      filePath={file.path}
+      layout={layout}
+      highlightRange={highlightRange}
+      scrollToHighlight={highlightRange !== null}
+      links={{ base, head }}
+      onLink={onLink}
+      onUsages={onUsages}
+    />
   );
 }
 

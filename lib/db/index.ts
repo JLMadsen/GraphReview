@@ -29,3 +29,4 @@ export * from "./env-catalog";
 export * from "./tests-catalog";
 export * from "./db-source";
 export * from "./search";
+export * from "./code-links";

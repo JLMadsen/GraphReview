@@ -27,7 +27,7 @@
 // Controlled state survives the reset.
 
 import { useActionState, useEffect, useState } from "react";
-import { Bot, Check, Github, Gitlab, LoaderCircle, TriangleAlert } from "lucide-react";
+import { Bot, Check, ChevronRight, Github, Gitlab, LoaderCircle, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -148,6 +148,19 @@ export function SettingsForm({
               name="GitHub"
               hint="repo scope"
               placeholder="ghp_..."
+              scopes={
+                <>
+                  <ScopeLine name="Classic token">
+                    <Scope>repo</Scope> — private repos, pull requests, CI and posting reviews. <Scope>public_repo</Scope> is
+                    enough if every repo you review is public.
+                  </ScopeLine>
+                  <ScopeLine name="Fine-grained token">
+                    on the repos you review: <Scope>Contents</Scope>, <Scope>Metadata</Scope>, <Scope>Issues</Scope>,{" "}
+                    <Scope>Checks</Scope>, <Scope>Commit statuses</Scope> and <Scope>Actions</Scope> read;{" "}
+                    <Scope>Pull requests</Scope> read and write (write only to post reviews).
+                  </ScopeLine>
+                </>
+              }
               formAction={patFormAction}
               fieldState={patFieldState}
               onReplace={() => setPatFieldState("editing")}
@@ -165,6 +178,17 @@ export function SettingsForm({
               name="GitLab"
               hint="api scope"
               placeholder="glpat-..."
+              scopes={
+                <>
+                  <ScopeLine name="Full">
+                    <Scope>api</Scope> — merge requests, diffs, pipelines, private clones and posting reviews (with at least
+                    Reporter access to the project).
+                  </ScopeLine>
+                  <ScopeLine name="Read-only">
+                    <Scope>read_api</Scope> and <Scope>read_repository</Scope> — everything except posting reviews.
+                  </ScopeLine>
+                </>
+              }
               note={
                 <>
                   Self-hosted? Also set <span className="font-mono text-foreground/80">GITLAB_API_URL</span>.
@@ -218,12 +242,25 @@ export function SettingsForm({
 }
 
 /** One git host's token: label, then the field (or the saved marker) with Save beside it, then any message. */
+function ScopeLine({ name, children }: { name: string; children: React.ReactNode }) {
+  return (
+    <p>
+      <span className="font-medium text-foreground/85">{name}:</span> {children}
+    </p>
+  );
+}
+
+function Scope({ children }: { children: React.ReactNode }) {
+  return <code className="rounded bg-secondary px-1 py-px font-mono text-[11px] text-foreground/85">{children}</code>;
+}
+
 function HostTokenRow({
   id,
   icon: Icon,
   name,
   hint,
   placeholder,
+  scopes,
   note,
   formAction,
   fieldState,
@@ -241,6 +278,8 @@ function HostTokenRow({
   name: string;
   hint: string;
   placeholder: string;
+  /** What the token needs, folded under the host's name. */
+  scopes?: React.ReactNode;
   note?: React.ReactNode;
   formAction: (payload: FormData) => void;
   fieldState: SecretFieldState;
@@ -262,6 +301,15 @@ function HostTokenRow({
           {name}
         </span>
       </FieldLabel>
+      {scopes && (
+        <details className="group/scopes text-xs text-muted-foreground">
+          <summary className="flex w-fit cursor-pointer list-none items-center gap-1 rounded select-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none [&::-webkit-details-marker]:hidden">
+            <ChevronRight className="size-3.5 transition-transform group-open/scopes:rotate-90" aria-hidden />
+            Required scopes
+          </summary>
+          <div className="mt-1.5 space-y-1.5 border-l border-border pl-3 leading-relaxed">{scopes}</div>
+        </details>
+      )}
       {fieldState === "saved" ? (
         <SavedSecret label="PAT" onReplace={onReplace} clearAction={clearAction} clearing={clearing} />
       ) : (

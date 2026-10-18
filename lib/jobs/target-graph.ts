@@ -33,7 +33,7 @@ import { getFileOwnerMap, getRepoById, listComponentsByRepoId, readDbSource, syn
 import type { RepoRecord, TargetFindingInput } from "@/lib/db";
 import { emitFindingsChanged } from "@/lib/mcp/events";
 import type { JobLogger } from "./analyze";
-import { analyzeRepoCommit, writeCommitSymbols } from "./commit-analysis";
+import { analyzeRepoCommit, writeCommitLinks, writeCommitSymbols } from "./commit-analysis";
 import { resolveCommits } from "./preview";
 import { reviewTargetKey, type ReviewTarget } from "./review-queue";
 import { UnrecoverableError } from "./runner";
@@ -231,6 +231,8 @@ export async function runTargetGraphJob(data: TargetGraphJobData, log: JobLogger
   const base = await analyzeRepoCommit(repoDir, baseSha, undefined, dbSource);
   const head = await analyzeRepoCommit(repoDir, headSha, undefined, dbSource);
   writeCommitSymbols(repo.id, headSha, "head", head);
+  writeCommitLinks(repo.id, baseSha, "target", base);
+  writeCommitLinks(repo.id, headSha, "target", head);
   log(`analysed: base ${base.files.length} file(s), head ${head.files.length} file(s), ${base.cached + head.cached} from the cache`);
 
   const diff = await diffBetween(repoDir, baseSha, headSha);

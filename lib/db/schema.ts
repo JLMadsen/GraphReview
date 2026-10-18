@@ -322,6 +322,32 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX finding_suppressions_repo ON finding_suppressions (repo_id, file_path);
   `,
+  `
+  CREATE TABLE code_links (
+    repo_id TEXT NOT NULL,
+    sha     TEXT NOT NULL,
+    file    TEXT NOT NULL,
+    links   TEXT NOT NULL,
+    PRIMARY KEY (repo_id, sha, file)
+  );
+
+  CREATE TABLE code_link_sets (
+    repo_id  TEXT NOT NULL,
+    sha      TEXT NOT NULL,
+    role     TEXT NOT NULL,
+    built_at INTEGER NOT NULL,
+    PRIMARY KEY (repo_id, sha)
+  );
+  `,
+  `
+  CREATE TABLE code_usages (
+    repo_id TEXT NOT NULL,
+    sha     TEXT NOT NULL,
+    decl_id TEXT NOT NULL,
+    data    TEXT NOT NULL,
+    PRIMARY KEY (repo_id, sha, decl_id)
+  );
+  `,
 ];
 
 /** Brings the database up to the latest schema version. */

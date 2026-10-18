@@ -12,7 +12,7 @@
 
 import { UnrecoverableError } from "./runner";
 import type { AnalysisResult } from "@/lib/analysis";
-import { analyzeRepoCommit, writeCommitSymbols } from "./commit-analysis";
+import { analyzeRepoCommit, writeCommitLinks, writeCommitSymbols } from "./commit-analysis";
 import {
   clearRepoFileImports,
   deleteFiles,
@@ -222,6 +222,7 @@ export async function runAnalysisJob(
   writeEnvCatalog(repo.id, sha, result.env);
   writeTestsCatalog(repo.id, sha, result.tests);
   writeCommitSymbols(repo.id, sha, "tip", result);
+  writeCommitLinks(repo.id, sha, "tip", result);
   log(
     `env catalog: ${result.env.vars.length} name(s), ${result.env.targets.length} environment(s)/target(s) from ${result.env.files} env source file(s)` +
       (result.env.vars.some((v) => v.tags.includes("undeclared")) ? `, ${result.env.vars.filter((v) => v.tags.includes("undeclared")).length} undeclared` : "")

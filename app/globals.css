@@ -529,3 +529,28 @@ mark.diff-word {
   background: color-mix(in oklch, var(--destructive) 30%, transparent);
   text-decoration-style: dotted;
 }
+
+/* Imports and names that open another file or a declaration (code-links.ts,
+   DESIGN.md §6.28): a faint dotted underline at rest, so the code still reads
+   as code, a solid brand one under the pointer. */
+.code-link {
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-decoration-color: color-mix(in oklch, currentColor 55%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.code-link:hover {
+  text-decoration-style: solid;
+  text-decoration-color: var(--brand);
+}
+
+/* The used name on a use line of the usages dialog (UsagesDialog.tsx, §6.28). */
+mark.usage-mark {
+  color: inherit;
+  border-radius: 2px;
+  background: color-mix(in oklch, var(--brand) 30%, transparent);
+  text-decoration: underline;
+  text-decoration-color: var(--brand);
+  text-underline-offset: 3px;
+}

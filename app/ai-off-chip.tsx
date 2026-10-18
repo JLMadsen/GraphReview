@@ -5,7 +5,7 @@ import { cn } from "cn";
 /**
  * "AI off" (DESIGN.md §6.25): no AI provider is active, so reviews, labels,
  * the chat and the AI checklist items don't run. A link to Settings → AI
- * providers. Shown on repo cards and in the top bar.
+ * providers. Shown in the top bar.
  */
 export function AiOffChip({ className }: { className?: string }) {
   return (

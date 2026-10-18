@@ -17,6 +17,7 @@
 
 import type { Branch, CommitSummary, PullRequestFile, PullRequestFileStatus } from "@/lib/github";
 import { assertSafeGitRef, isSafeGitRef } from "./git-ref";
+import { memo } from "./memo-cache";
 import { gitIn, resolveLocalRepoPath } from "./source";
 
 /**
@@ -166,6 +167,19 @@ export async function resolveLocalRefSha(localPath: string, ref: string): Promis
     throw new Error(`Ref "${ref}" does not exist in this repository.`);
   }
   return sha;
+}
+
+/** How long the code views trust a branch name's commit — a commit to it shows this much later at most. */
+const VIEWER_REF_TTL_MS = 5_000;
+
+/**
+ * `resolveLocalRefSha` for the code views, which ask it on every file they
+ * open: a commit id answers itself, a branch name is kept for a few seconds
+ * (memo-cache.ts). The review's own pinning keeps the uncached one.
+ */
+export function viewerRefSha(localPath: string, ref: string): Promise<string> {
+  if (/^[0-9a-f]{40}$/.test(ref)) return Promise.resolve(ref);
+  return memo("local-ref", `${localPath}\u0000${ref}`, { ttlMs: VIEWER_REF_TTL_MS, maxEntries: 50 }, () => resolveLocalRefSha(localPath, ref));
 }
 
 /** `git merge-base a b`, or `null` when the two commits share no history (or either is gone). Two commits' merge base is what a three-dot diff is anchored on. */

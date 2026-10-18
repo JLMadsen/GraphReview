@@ -4,6 +4,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  ArrowLeft,
   Copy,
   Check,
   GitCommitHorizontal,
@@ -19,6 +20,8 @@ import { type FileEntry, type DirNode, isImage, isMarkdown, formatBytes, rawUrl,
 import { useFileText } from "./useFileText";
 import { useLastCommits } from "./useLastCommits";
 import { formatRelativeDate } from "../types";
+import { useCodeLinks, type CodeDecl } from "../code-links";
+import { UsagesDialog } from "../UsagesDialog";
 
 export function FilePane({
   repoId,
@@ -30,6 +33,9 @@ export function FilePane({
   changed,
   onOpenDiff,
   onNavigate,
+  onFollowLink,
+  markNames,
+  back,
   filesByPath,
   dirs,
 }: {
@@ -43,6 +49,12 @@ export function FilePane({
   changed: boolean;
   onOpenDiff: (path: string) => void;
   onNavigate: (path: string) => void;
+  /** A clicked import or name in the code (DESIGN.md §6.28): open that file, at that line. */
+  onFollowLink?: (path: string, line?: number, names?: string[]) => void;
+  /** Names marked on the marked line (a usages dialog's View). */
+  markNames?: readonly string[];
+  /** Where the last followed link was clicked — shown as a Back button. */
+  back?: { path: string; onBack: () => void };
   filesByPath: Map<string, FileEntry>;
   dirs: Map<string, DirNode>;
 }) {
@@ -62,6 +74,9 @@ export function FilePane({
   // The file's newest commit, from its folder's listing (usually already walked).
   const commits = useLastCommits(repoId, cacheKey, entry.added ? null : parentOf(entry.path));
   const commit = commits?.[entry.name];
+  // Read as the file is: at the analysed commit, which `cacheKey` names.
+  const links = useCodeLinks(repoId, onFollowLink && !image && !showPreview ? entry.path : null, undefined, cacheKey);
+  const [usagesOf, setUsagesOf] = useState<CodeDecl | null>(null);
 
   return (
     <section className="overflow-hidden rounded-lg border border-border bg-card">
@@ -79,6 +94,16 @@ export function FilePane({
         </div>
       )}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border bg-secondary/40 px-3 py-1.5">
+        {back && (
+          <button
+            type="button"
+            onClick={back.onBack}
+            className="flex items-center gap-1 rounded-md border border-border bg-background px-1.5 py-0.5 text-[11px] font-medium hover:bg-secondary"
+            title={`Back to ${back.path}`}
+          >
+            <ArrowLeft className="size-3.5" aria-hidden /> Back
+          </button>
+        )}
         {(markdown || svg) && (
           <Segmented
             label="Show as"
@@ -149,9 +174,14 @@ export function FilePane({
             whole
             scrollToRange={scrollToLine}
             onLineClick={(n) => onLine(n === line ? null : n)}
+            links={links}
+            onLink={onFollowLink ? (link) => onFollowLink(link.to, link.toLine) : undefined}
+            onUsages={onFollowLink ? setUsagesOf : undefined}
+            markNames={markNames}
           />
         </div>
       )}
+      {onFollowLink && <UsagesDialog repoId={repoId} decl={usagesOf} onClose={() => setUsagesOf(null)} onView={onFollowLink} />}
       {state?.status === "ready" && state.data.truncated && (
         <p className="border-t border-border px-3 py-1.5 text-[11px] text-muted-foreground">The file is longer than the viewer reads — the rest is cut off.</p>
       )}

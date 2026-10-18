@@ -105,6 +105,23 @@ async function main(): Promise<void> {
     check("js: it.skip is a skip marker on line 5", js.markers.length === 1 && js.markers[0].marker === "it.skip" && js.markers[0].line === 5, JSON.stringify(js.markers));
     const focus = scanTestFacts("javascript", lines('fdescribe("x", () => {', '  test.only("y", () => {});', '  xdescribe("z", () => {});', "});"))!;
     check("js: fdescribe and test.only focus, xdescribe skips", focus.markers.map((m) => `${m.kind}:${m.marker}`).join(",") === "focus:fdescribe,focus:test.only,skip:xdescribe", JSON.stringify(focus.markers));
+    // A test of a test scanner holds markers as text: none of these is one.
+    const quoted = scanTestFacts(
+      "typescript",
+      lines(
+        "const fixture = lines('  it.only(\"debug\", () => {});', \"  xit('parked', () => {});\");",
+        'it("flags `it.skip` and fdescribe(", () => {});',
+        "const t = `",
+        '  test.only("in a template", () => {});',
+        "`;",
+        "/* describe.only(",
+        "   xdescribe( */",
+        "const re = /it\\.only\\s*\\(/g;"
+      )
+    )!;
+    check("js: markers in strings, templates, block comments and regexes ignored", quoted.markers.length === 0 && quoted.cases === 1, JSON.stringify(quoted));
+    const pyQuoted = scanTestFacts("python", lines('"""', "@pytest.mark.skip", '"""', "def test_a():", "    s = '@pytest.mark.skip # x'", "    pytest.skip('x')"))!;
+    check("python: markers in docstrings and strings ignored", pyQuoted.markers.length === 1 && pyQuoted.markers[0].line === 6 && pyQuoted.cases === 1, JSON.stringify(pyQuoted));
     const py = scanTestFacts("python", BASE["py/tests/test_app.py"])!;
     check("python: two cases, pytest.mark.skip", py.cases === 2 && py.markers[0]?.marker === "@pytest.mark.skip", JSON.stringify(py));
     const java = scanTestFacts("java", BASE["jvm/src/test/java/com/acme/FooTest.java"])!;

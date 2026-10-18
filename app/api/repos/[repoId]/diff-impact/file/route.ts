@@ -26,12 +26,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { gitRefSchema } from "../../../_shared";
-import { getPullRequest } from "@/lib/github";
-import { getMergeRequest } from "@/lib/gitlab";
-import { resolveGitHubAccess, resolveGitLabAccess } from "@/lib/jobs";
-import { DiffFilesError, loadTargetDiff, type DiffFile, type DiffFilesResult } from "@/lib/jobs/diff-files";
+import { DiffFilesError, loadTargetDiff, pullRequestEnds, type DiffFile, type DiffFilesResult } from "@/lib/jobs/diff-files";
 import type { ReviewTarget } from "@/lib/jobs/review-queue";
-import { resolveLocalRefSha } from "@/lib/jobs/local-git";
+import { viewerRefSha } from "@/lib/jobs/local-git";
 import { MAX_FILE_CHARS, readFileAtCommit } from "@/lib/jobs/pr-context";
 import { getRepoById } from "@/lib/db";
 import type { RepoRecord } from "@/lib/db";
@@ -64,20 +61,12 @@ type FileQuery = z.infer<typeof querySchema>;
 async function targetRef(repo: RepoRecord, query: FileQuery, side: "head" | "base"): Promise<string | null> {
   if (!("prNumber" in query)) {
     const ref = side === "head" ? query.headRef : query.baseRef;
-    if (repo.provider === "local") return repo.localPath ? resolveLocalRefSha(repo.localPath, ref) : null;
+    if (repo.provider === "local") return repo.localPath ? viewerRefSha(repo.localPath, ref) : null;
     return ref;
   }
-  if (repo.provider === "gitlab") {
-    const access = await resolveGitLabAccess(repo);
-    if (!access.ok) return null;
-    const { data: mr } = await getMergeRequest(access.token, access.ref.path, query.prNumber);
-    return side === "head" ? mr.headSha : mr.baseSha;
-  }
-  if (repo.provider === "local") return null;
-  const access = await resolveGitHubAccess(repo);
-  if (!access.ok) return null;
-  const { data: pr } = await getPullRequest(access.token, access.ref.owner, access.ref.repo, query.prNumber);
-  return side === "head" ? pr.headSha : pr.baseSha;
+  // Shared with the diff itself, which asked the host a moment ago.
+  const ends = await pullRequestEnds(repo, query.prNumber);
+  return ends ? (side === "head" ? ends.head : ends.base) : null;
 }
 
 function toResponse(file: DiffFile, diff: DiffFilesResult): FileDiffResponseDTO {

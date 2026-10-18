@@ -308,8 +308,8 @@ export function splitRows(lines: readonly DiffLine[]): SplitRow[] {
 /**
  * Wraps the character ranges of a line's *text* in `<mark>` inside its
  * syntax-highlighted HTML. Tags don't count as characters and an entity is
- * one; a mark is closed before every tag and reopened after it, so the
- * highlighter's nesting is never broken.
+ * one; a mark is closed before every tag and opened again before the next
+ * text, so the highlighter's nesting is never broken.
  */
 export function markRanges(html: string, ranges: ReadonlyArray<[number, number]>, open = '<mark class="diff-word">', close = "</mark>"): string {
   if (ranges.length === 0) return html;
@@ -325,9 +325,10 @@ export function markRanges(html: string, ranges: ReadonlyArray<[number, number]>
     if (html[i] === "<") {
       const end = html.indexOf(">", i);
       const tag = html.slice(i, end < 0 ? html.length : end + 1);
+      // Closed before the tag and opened again only before the next text, so no empty mark is left behind.
       if (inside) out += close;
+      inside = false;
       out += tag;
-      if (inside) out += open;
       i += tag.length;
       continue;
     }

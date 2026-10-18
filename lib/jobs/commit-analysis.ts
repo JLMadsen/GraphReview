@@ -12,8 +12,8 @@
 // lib/jobs' barrel for that reason.
 
 import path from "node:path";
-import { analyzeCommit, DEFAULT_MODULE_DEPTH, type AnalysisResult, type CachedParse, type ParseCache } from "@/lib/analysis";
-import { readParseCache, writeParseCache, writeSymbolIndex } from "@/lib/db";
+import { analyzeCommit, buildCodeLinks, buildCodeUsages, DEFAULT_MODULE_DEPTH, type AnalysisResult, type CachedParse, type ParseCache } from "@/lib/analysis";
+import { readParseCache, writeCodeLinks, writeParseCache, writeSymbolIndex } from "@/lib/db";
 
 export const dbParseCache: ParseCache = {
   async getMany(keys) {
@@ -73,4 +73,9 @@ export function writeCommitSymbols(repoId: string, sha: string, role: "tip" | "h
       exported: d.exported !== null,
     }))
   );
+}
+
+/** Stores the code views' import and name links, and where each declaration is used, of an analysed commit (DESIGN.md §6.28). */
+export function writeCommitLinks(repoId: string, sha: string, role: "tip" | "target", result: AnalysisResult): void {
+  writeCodeLinks(repoId, sha, role, buildCodeLinks(result), buildCodeUsages(result));
 }

@@ -25,7 +25,7 @@
 // repo was analyzed, through `GET /api/repos/[repoId]/file`.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Files, FileDiff, LoaderCircle, TriangleAlert } from "lucide-react";
+import { ArrowLeft, Files, FileDiff, LoaderCircle, TriangleAlert } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -36,8 +36,11 @@ import { runtimeForPath } from "@/lib/preview/runtime";
 import { cn } from "cn";
 import { DiffViewer } from "./DiffViewer";
 import { DiffToolbar, useDiffPrefs, useDiffShortcuts } from "./DiffToolbar";
-import { ignoreWhitespaceHunks, markMovedLines } from "./diff-model";
+import { ignoreWhitespaceHunks, markMovedLines, markRanges } from "./diff-model";
 import { highlightLines, languageForPath } from "./highlight";
+import { escapeHtml, linkFromEvent, linkLine, nameRanges, useCodeLinks, type CodeDecl, type CodeLink, type LineLinks } from "./code-links";
+import { UsagesButton, UsagesDialog } from "./UsagesDialog";
+import { fetchJsonCached } from "./fetch-cache";
 import { startMiddleScroll } from "./middle-scroll";
 import { PreviewPanel } from "./PreviewPanel";
 import { Segmented } from "./Segmented";
@@ -88,9 +91,33 @@ export interface FileDiffModalProps {
   onClose: () => void;
   /** Opens the all-files reader at this file (and the finding's lines) — shown as a header button when given. */
   onOpenReader?: (path: string, lineRange?: string) => void;
+  /** The review target's merge-base and head, which its code links are read at (DESIGN.md §6.28). */
+  baseSha?: string;
+  headSha?: string;
+  /** A clicked import or name: open that file (at that line, `names` marked on it). Without it the code shows no links. */
+  onNavigate?: (path: string, line?: number, names?: string[]) => void;
+  /** Names to mark on the highlighted line — where a usages dialog opened the file. */
+  markNames?: string[];
+  /** The file a link was followed from — shown as a Back button. */
+  back?: { path: string; onBack: () => void };
 }
 
-export function FileDiffModal({ repoId, target, finding, initialComponent, initialTab = "diff", onClose, onOpenReader }: FileDiffModalProps) {
+const isSha = (ref: string | undefined): ref is string => Boolean(ref && /^[0-9a-f]{40}$/.test(ref));
+
+export function FileDiffModal({
+  repoId,
+  target,
+  finding,
+  initialComponent,
+  initialTab = "diff",
+  onClose,
+  onOpenReader,
+  baseSha: targetBaseSha,
+  headSha: targetHeadSha,
+  onNavigate,
+  back,
+  markNames,
+}: FileDiffModalProps) {
   const prefs = useDiffPrefs("modal");
   const { ignoreWhitespace } = prefs;
   const [state, setState] = useState<FetchState>({ status: "loading" });
@@ -127,11 +154,11 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
     fileRequested.current = key;
     setFileState({ status: "loading" });
     const query = diffQuery(target, filePath!, undefined, "file") + (shownTab === "base" ? "&side=base" : "");
-    fetch(`/api/repos/${repoId}/diff-impact/file?${query}`)
-      .then(async (res) => {
-        const json = (await res.json().catch(() => null)) as FileContentResponseDTO | { error: string } | null;
-        if (!res.ok || !json || "error" in json) {
-          throw new Error(json && "error" in json ? json.error : `Request failed (${res.status}).`);
+    fetchJsonCached(`/api/repos/${repoId}/diff-impact/file?${query}`)
+      .then(({ ok, status, json: answer }) => {
+        const json = answer as FileContentResponseDTO | { error: string } | null;
+        if (!ok || !json || "error" in json) {
+          throw new Error(json && "error" in json ? json.error : `Request failed (${status}).`);
         }
         return json;
       })
@@ -154,17 +181,15 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
     const url = target
       ? `/api/repos/${repoId}/diff-impact/file?${diffQuery(target, filePath, headSha)}${ignoreWhitespace ? "&w=1" : ""}`
       : `/api/repos/${repoId}/file?${new URLSearchParams({ path: filePath })}`;
-    fetch(url)
-      .then(async (res) => {
-        const json = (await res.json().catch(() => null)) as
-          | FileDiffResponseDTO
-          | FileContentResponseDTO
-          | { error: string }
-          | null;
-        if (!res.ok || !json || "error" in json) {
-          throw new Error(
-            json && "error" in json ? json.error : `Request failed (${res.status}).`
-          );
+    fetchJsonCached(url)
+      .then(({ ok, status, json: answer }) => {
+        const json = answer as FileDiffResponseDTO | FileContentResponseDTO | { error: string } | null;
+        if (!ok || !json || "error" in json) {
+          throw new Error(json && "error" in json ? json.error : `Request failed (${status}).`);
+        }
+        // A changed file: its File tab is warmed now, so switching to it draws at once.
+        if (target && !("side" in json) && json.content === undefined && json.status !== "removed") {
+          void fetchJsonCached(`/api/repos/${repoId}/diff-impact/file?${diffQuery(target, filePath, undefined, "file")}`);
         }
         // With no diff the answer is just the file — the same shape as an unchanged one.
         return "side" in json
@@ -207,6 +232,27 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
     for (const hunk of rawHunks) for (const line of hunk.lines) if (line.type === "add" && line.newLine != null) lines.add(line.newLine);
     return lines;
   }, [rawHunks]);
+  // Links: a whole file at the commit it was read at (the analysed commit
+  // with no diff selected); the diff's removed lines at the merge-base, the
+  // rest at the head.
+  const linkPath = onNavigate ? filePath : null;
+  const shownRef = state.status === "loaded" ? state.data.ref : undefined;
+  const wholeRef = fileState.status === "loaded" ? fileState.data.ref : undefined;
+  const wholeSide = fileState.status === "loaded" ? fileState.data.side : "head";
+  const outsideSha = target ? (isSha(shownRef) ? shownRef : (headSha ?? targetHeadSha)) : undefined;
+  const outsideLinks = useCodeLinks(repoId, outsideDiff && state.status === "loaded" ? linkPath : null, outsideSha, shownRef);
+  const headLinks = useCodeLinks(repoId, target && !outsideDiff && targetHeadSha ? linkPath : null, targetHeadSha);
+  /** A renamed file is read at the base under its old path. */
+  const basePath = linkPath && state.status === "loaded" ? (state.data.oldPath ?? linkPath) : linkPath;
+  const baseLinks = useCodeLinks(repoId, target && !outsideDiff && targetBaseSha ? basePath : null, targetBaseSha);
+  const wholeSha = isSha(wholeRef) ? wholeRef : wholeSide === "base" ? targetBaseSha : targetHeadSha;
+  const wholeLinks = useCodeLinks(repoId, wholeTab && fileState.status === "loaded" ? (wholeSide === "base" ? basePath : linkPath) : null, wholeSha);
+  const followLink = onNavigate ? (link: CodeLink) => onNavigate(link.to, link.toLine) : undefined;
+  /** The usages dialog, with the commit the code it was opened from is read at. */
+  const [usages, setUsages] = useState<{ decl: CodeDecl; sha?: string } | null>(null);
+  useEffect(() => setUsages(null), [filePath]);
+  const usagesAt = (sha: string | undefined) => (onNavigate ? (decl: CodeDecl) => setUsages({ decl, sha }) : undefined);
+
   const tabOptions = [
     { value: "diff" as const, label: "Diff" },
     { value: "file" as const, label: "File", title: "The whole file at the head of the diff, with the changed lines marked" },
@@ -228,6 +274,17 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
       >
         <DialogHeader>
           <DialogTitle className="flex min-w-0 items-center gap-2 pr-8 font-mono text-[13px] font-normal">
+            {back && (
+              <button
+                type="button"
+                onClick={back.onBack}
+                title={`Back to ${back.path}`}
+                className="inline-flex h-6 shrink-0 items-center gap-1 border border-border px-1.5 font-sans text-[11px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+              >
+                <ArrowLeft className="size-3" aria-hidden />
+                Back
+              </button>
+            )}
             <FileDiff className="size-4 shrink-0 text-brand" aria-hidden />
             <span className="truncate" title={filePath}>
               {filePath}
@@ -303,13 +360,22 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
             </p>
           )}
           {shownTab === "diff" && state.status === "loaded" && state.data.content !== undefined && (
-            <FileText content={state.data.content} filePath={filePath} highlightRange={highlightRange} />
+            <FileText content={state.data.content} filePath={filePath} highlightRange={highlightRange} links={outsideLinks} onLink={followLink} onUsages={usagesAt(outsideSha)} markNames={markNames} />
           )}
           {shownTab === "diff" &&
             state.status === "loaded" &&
             state.data.content === undefined &&
             (state.data.patch && hunks.length > 0 ? (
-              <DiffViewer hunks={hunks} filePath={filePath} highlightRange={highlightRange} layout={prefs.layout} scrollToHighlight />
+              <DiffViewer
+                hunks={hunks}
+                filePath={filePath}
+                highlightRange={highlightRange}
+                layout={prefs.layout}
+                scrollToHighlight
+                links={{ base: baseLinks, head: headLinks }}
+                onLink={followLink}
+                onUsages={usagesAt(targetHeadSha)}
+              />
             ) : (
               <p className="px-1 py-6 text-center text-xs text-muted-foreground">
                 {state.data.whitespaceOnly || (state.data.patch && ignoreWhitespace)
@@ -361,10 +427,17 @@ export function FileDiffModal({ repoId, target, finding, initialComponent, initi
                 highlightRange={highlightRange}
                 addedLines={fileState.data.side === "head" ? addedLines : undefined}
                 whole
+                links={wholeLinks}
+                onLink={followLink}
+                onUsages={usagesAt(wholeSha)}
+                markNames={markNames}
               />
             </>
           )}
         </div>
+        {onNavigate && (
+          <UsagesDialog repoId={repoId} decl={usages?.decl ?? null} sha={usages?.sha} onClose={() => setUsages(null)} onView={onNavigate} />
+        )}
       </DialogContent>
     </Dialog>
   );
@@ -390,6 +463,10 @@ export function FileText({
   whole = false,
   onLineClick,
   scrollToRange = true,
+  links,
+  onLink,
+  onUsages,
+  markNames,
 }: {
   content: string;
   filePath?: string;
@@ -400,6 +477,13 @@ export function FileText({
   onLineClick?: (line: number) => void;
   /** `false`: a range picked by clicking a line number doesn't scroll the view. */
   scrollToRange?: boolean;
+  /** Imports and names that open another file or a declaration (DESIGN.md §6.28). */
+  links?: LineLinks | null;
+  onLink?: (link: CodeLink) => void;
+  /** A function's, method's or class's "N usages" button, at the end of its declaration line (DESIGN.md §6.28). */
+  onUsages?: (decl: CodeDecl) => void;
+  /** Names marked on the highlighted lines — the use or declaration a usages dialog opened the file at. */
+  markNames?: readonly string[];
 }) {
   const lines = useMemo(() => content.replace(/\r?\n$/, "").split(/\r?\n/), [content]);
   const html = useMemo(() => highlightLines(lines, languageForPath(filePath)), [lines, filePath]);
@@ -421,7 +505,16 @@ export function FileText({
   return (
     <div className="overflow-x-auto rounded-md border border-border">
       <table className="w-full border-collapse">
-        <tbody>
+        <tbody
+          onClick={
+            onLink && links
+              ? (event) => {
+                  const link = linkFromEvent(event, links);
+                  if (link) onLink(link);
+                }
+              : undefined
+          }
+        >
           {from > 1 && (
             <tr>
               <td colSpan={2} className="px-2 py-0.5 font-mono text-[10px] text-muted-foreground/60 italic">
@@ -433,6 +526,10 @@ export function FileText({
             const n = from + index;
             const highlighted = Boolean(highlightRange && n >= highlightRange[0] && n <= highlightRange[1]);
             const added = Boolean(addedLines?.has(n));
+            const linked = (onLink ? linkLine(text, html?.[n - 1] ?? null, n, links ?? null) : null) ?? html?.[n - 1];
+            const lineHtml =
+              highlighted && markNames?.length ? markRanges(linked ?? escapeHtml(text), nameRanges(text, markNames), '<mark class="usage-mark">', "</mark>") : linked;
+            const decl = links?.decls.get(n);
             return (
               <tr
                 key={n}
@@ -456,15 +553,15 @@ export function FileText({
                 >
                   {n}
                 </td>
-                {html?.[n - 1] ? (
-                  // highlight.js output: the line's text, escaped, inside its token spans.
-                  <td
-                    className="w-full px-2 font-mono text-[12px] leading-relaxed whitespace-pre"
-                    dangerouslySetInnerHTML={{ __html: html[n - 1] }}
-                  />
-                ) : (
-                  <td className="w-full px-2 font-mono text-[12px] leading-relaxed whitespace-pre">{text || " "}</td>
-                )}
+                <td className="w-full px-2 font-mono text-[12px] leading-relaxed whitespace-pre">
+                  {lineHtml ? (
+                    // highlight.js output: the line's text, escaped, inside its token spans (and link spans).
+                    <span dangerouslySetInnerHTML={{ __html: lineHtml }} />
+                  ) : (
+                    text || " "
+                  )}
+                  {decl && onUsages && <UsagesButton decl={decl} onOpen={onUsages} />}
+                </td>
               </tr>
             );
           })}

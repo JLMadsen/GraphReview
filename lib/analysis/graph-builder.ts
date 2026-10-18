@@ -119,7 +119,7 @@ const ENV_FILE_LANGUAGES: Partial<Record<string, string>> = { dotenv: "dotenv", 
  * Bumped whenever what a parse produces changes (queries, extractors, the
  * cached shape), so stale cache entries are never read back.
  */
-export const PARSE_VERSION = 12;
+export const PARSE_VERSION = 13;
 
 /** What a file's own syntax says — the cached unit. */
 export interface CachedParse {

@@ -10,11 +10,13 @@
 // removed/added pair the words that changed are marked (diff-model.ts), and
 // a block of code that moved gets a "moved from / to" row above it.
 
-import { Fragment, useEffect, useMemo, useRef } from "react";
+import { Fragment, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { cn } from "cn";
 import type { DiffHunk, DiffLine } from "./diff-utils";
 import { annotateIntraline, markRanges, rangePieces, splitRows } from "./diff-model";
 import { highlightHunks, languageForPath } from "./highlight";
+import { linkFromEvent, linkLine, type CodeDecl, type CodeLink, type LineLinks } from "./code-links";
+import { UsagesButton } from "./UsagesDialog";
 
 export type DiffLayout = "unified" | "split";
 
@@ -27,6 +29,18 @@ export interface DiffViewerProps {
   layout?: DiffLayout;
   /** Scroll the first highlighted line into view once drawn. */
   scrollToHighlight?: boolean;
+  /** Imports and names that open another file or a declaration (DESIGN.md §6.28): removed lines are read at the base, the rest at the head. */
+  links?: { base: LineLinks | null; head: LineLinks | null };
+  onLink?: (link: CodeLink) => void;
+  /** A declaration's "N usages" button, on the head side's line of it (DESIGN.md §6.28). */
+  onUsages?: (decl: CodeDecl) => void;
+}
+
+/** A line's HTML with its links, or the highlighted HTML as it was. */
+function linkedHtml(line: DiffLine | undefined, html: string | null, links: DiffViewerProps["links"]): string | null {
+  if (!line || !links) return html;
+  const linked = line.type === "remove" ? linkLine(line.content, html, line.oldLine, links.base) : linkLine(line.content, html, line.newLine, links.head);
+  return linked ?? html;
 }
 
 function isHighlighted(line: DiffLine | undefined, range: [number, number] | null | undefined): boolean {
@@ -59,7 +73,20 @@ function Marker({ line, className }: { line: DiffLine | undefined; className?: s
   );
 }
 
-function Content({ line, html, wrap, className }: { line: DiffLine | undefined; html: string | null; wrap: boolean; className?: string | false }) {
+function Content({
+  line,
+  html,
+  wrap,
+  className,
+  extra,
+}: {
+  line: DiffLine | undefined;
+  html: string | null;
+  wrap: boolean;
+  className?: string | false;
+  /** After the code: a usages button. */
+  extra?: ReactNode;
+}) {
   const cls = cn(
     "px-2 align-top font-mono text-[12px] leading-relaxed",
     wrap ? "w-1/2 whitespace-pre-wrap break-all" : "w-full whitespace-pre",
@@ -69,8 +96,17 @@ function Content({ line, html, wrap, className }: { line: DiffLine | undefined; 
   if (!line) return <td className={cls} />;
   const ranges = line.ranges && line.ranges.length > 0 ? line.ranges : null;
   if (html) {
-    // highlight.js output: the line's text, escaped, inside its token spans.
-    return <td className={cls} dangerouslySetInnerHTML={{ __html: ranges ? markRanges(html, ranges) : html }} />;
+    // highlight.js output: the line's text, escaped, inside its token spans (and link spans).
+    const __html = ranges ? markRanges(html, ranges) : html;
+    if (extra) {
+      return (
+        <td className={cls} data-side={line.type === "remove" ? "base" : "head"}>
+          <span dangerouslySetInnerHTML={{ __html }} />
+          {extra}
+        </td>
+      );
+    }
+    return <td className={cls} data-side={line.type === "remove" ? "base" : "head"} dangerouslySetInnerHTML={{ __html }} />;
   }
   if (ranges) {
     return (
@@ -84,10 +120,16 @@ function Content({ line, html, wrap, className }: { line: DiffLine | undefined; 
             <Fragment key={i}>{text}</Fragment>
           )
         )}
+        {extra}
       </td>
     );
   }
-  return <td className={cls}>{line.content || " "}</td>;
+  return (
+    <td className={cls}>
+      {line.content || " "}
+      {extra}
+    </td>
+  );
 }
 
 /** The "moved from / to" row above the first line of a moved block. */
@@ -115,7 +157,13 @@ function MetaRow({ line, colSpan }: { line: DiffLine; colSpan: number }) {
   );
 }
 
-export function DiffViewer({ hunks, filePath, highlightRange, layout = "unified", scrollToHighlight = false }: DiffViewerProps) {
+export function DiffViewer({ hunks, filePath, highlightRange, layout = "unified", scrollToHighlight = false, links, onLink, onUsages }: DiffViewerProps) {
+  /** The usages button of a head-side line that declares something. */
+  const usages = (line: DiffLine | undefined): ReactNode => {
+    if (!onUsages || !line || line.type === "remove" || line.newLine == null) return undefined;
+    const decl = links?.head?.decls.get(line.newLine);
+    return decl ? <UsagesButton decl={decl} onOpen={onUsages} /> : undefined;
+  };
   const annotated = useMemo(() => annotateIntraline(hunks), [hunks]);
   const html = useMemo(() => highlightHunks(annotated, languageForPath(filePath)), [annotated, filePath]);
   const firstHighlight = useRef<HTMLTableRowElement | null>(null);
@@ -148,7 +196,16 @@ export function DiffViewer({ hunks, filePath, highlightRange, layout = "unified"
             <col />
           </colgroup>
         )}
-        <tbody>
+        <tbody
+          onClick={
+            onLink && links
+              ? (event) => {
+                  const link = linkFromEvent(event, (event.target as Element).closest?.("td[data-side=base]") ? links.base : links.head);
+                  if (link) onLink(link);
+                }
+              : undefined
+          }
+        >
           {annotated.map((hunk, i) => (
             <Fragment key={i}>
               <tr>
@@ -172,10 +229,10 @@ export function DiffViewer({ hunks, filePath, highlightRange, layout = "unified"
                         <tr ref={rowRef(highlighted)} className={cn(highlighted && "ring-1 ring-inset ring-brand/60")}>
                           <td className={cn(GUTTER, leftTone)}>{left?.oldLine ?? ""}</td>
                           <Marker line={context ? undefined : left} className={leftTone} />
-                          <Content line={left} html={row.left !== null ? (html?.[i][row.left] ?? null) : null} wrap className={leftTone} />
+                          <Content line={left} html={linkedHtml(left, row.left !== null ? (html?.[i][row.left] ?? null) : null, onLink ? links : undefined)} wrap className={leftTone} />
                           <td className={cn(GUTTER, "border-l", rightTone)}>{right?.newLine ?? ""}</td>
                           <Marker line={context ? undefined : right} className={rightTone} />
-                          <Content line={right} html={row.right !== null ? (html?.[i][row.right] ?? null) : null} wrap className={rightTone} />
+                          <Content line={right} html={linkedHtml(right, row.right !== null ? (html?.[i][row.right] ?? null) : null, onLink ? links : undefined)} wrap className={rightTone} extra={usages(right)} />
                         </tr>
                       </Fragment>
                     );
@@ -190,7 +247,7 @@ export function DiffViewer({ hunks, filePath, highlightRange, layout = "unified"
                           <td className={GUTTER}>{line.oldLine ?? ""}</td>
                           <td className={GUTTER}>{line.newLine ?? ""}</td>
                           <Marker line={line} />
-                          <Content line={line} html={html?.[i][j] ?? null} wrap={false} />
+                          <Content line={line} html={linkedHtml(line, html?.[i][j] ?? null, onLink ? links : undefined)} wrap={false} extra={usages(line)} />
                         </tr>
                       </Fragment>
                     );

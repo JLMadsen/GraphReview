@@ -25,6 +25,8 @@ import { assertSafeGitRef } from "./git-ref";
 import { resolveGitHubAccess } from "./github-access";
 import { resolveGitLabAccess } from "./gitlab-access";
 import type { ReviewTarget } from "./review-queue";
+import { viewerRefSha } from "./local-git";
+import { isFullSha, memo } from "./memo-cache";
 import { ensureCommitsInCache, gitIn, repoCacheDir, resolveLocalRepoPath } from "./source";
 
 /** `safe.directory` as everywhere else; `core.quotePath=false` keeps non-ASCII paths verbatim in the patch headers. */
@@ -167,12 +169,66 @@ export async function listGitDiffFiles(
   spot: GitDiffSpot,
   options: { ignoreWhitespace?: boolean; path?: string } = {}
 ): Promise<DiffFile[]> {
+  // Between two commit ids the answer never changes: kept, one bucket per
+  // file (small) and one for whole diffs (the reader's, can be big).
+  if (!isFullSha(spot.base) || !isFullSha(spot.head)) return computeGitDiffFiles(spot, options);
+  const key = `${spot.dir}\u0000${spot.base}\u0000${spot.head}\u0000${options.ignoreWhitespace ? "w" : ""}\u0000${options.path ?? ""}`;
+  return options.path
+    ? memo("git-diff-file", key, { ttlMs: DIFF_CACHE_TTL_MS, maxEntries: 400, maxWeight: 60_000_000, weigh: patchChars }, () => computeGitDiffFiles(spot, options))
+    : memo("git-diff-all", key, { ttlMs: DIFF_CACHE_TTL_MS, maxEntries: 4, maxWeight: 80_000_000, weigh: patchChars }, () => computeGitDiffFiles(spot, options));
+}
+
+/** How long a diff between two commits is kept — it can't go stale, this only lets memory go. */
+const DIFF_CACHE_TTL_MS = 30 * 60_000;
+const patchChars = (files: DiffFile[]) => files.reduce((n, f) => n + (f.patch?.length ?? 0) + 200, 0);
+
+async function computeGitDiffFiles(spot: GitDiffSpot, options: { ignoreWhitespace?: boolean; path?: string }): Promise<DiffFile[]> {
   assertSafeGitRef(spot.base);
   assertSafeGitRef(spot.head);
   const git = gitIn(spot.dir, DIFF_TIMEOUT_MS, GIT_CONFIG);
   const range = `${spot.base}...${spot.head}`;
   const common = ["--find-renames", "--no-color", "--no-ext-diff", "--no-textconv"];
+  const listing =
+    isFullSha(spot.base) && isFullSha(spot.head)
+      ? await memo("git-diff-list", `${spot.dir}\u0000${range}`, { ttlMs: DIFF_CACHE_TTL_MS, maxEntries: 20 }, () => listChangedFiles(git, range, common))
+      : await listChangedFiles(git, range, common);
+  // The kept listing is shared: each answer fills in patches on its own copies.
+  const files = listing.map((f) => ({ ...f }));
 
+  const wanted = options.path ? files.filter((f) => f.path === options.path) : files;
+  if (wanted.length === 0) return files;
+  const pathspec = options.path ? wanted.flatMap((f) => (f.oldPath ? [f.oldPath, f.path] : [f.path])) : [];
+  const patchOut = await git.raw([
+    "diff",
+    "-U3",
+    ...common,
+    ...(options.ignoreWhitespace ? ["-w"] : []),
+    "--end-of-options",
+    range,
+    "--",
+    ...pathspec.map((p) => `:(literal)${p}`),
+  ]);
+  const patches = splitCombinedDiff(patchOut);
+  let total = 0;
+  for (const file of wanted) {
+    const patch = patches.get(file.path);
+    if (!patch) {
+      if (options.ignoreWhitespace && !file.binary && file.additions + file.deletions > 0) file.whitespaceOnly = true;
+      continue;
+    }
+    if (total >= MAX_TOTAL_PATCH_CHARS || patch.length > MAX_FILE_PATCH_CHARS) {
+      file.truncated = true;
+      if (total < MAX_TOTAL_PATCH_CHARS) file.patch = patch.slice(0, patch.lastIndexOf("\n", MAX_FILE_PATCH_CHARS));
+    } else {
+      file.patch = patch;
+    }
+    total += file.patch?.length ?? 0;
+  }
+  return files;
+}
+
+/** Every changed file of `range` with renames, counts and head blob ids — no patches. */
+async function listChangedFiles(git: ReturnType<typeof gitIn>, range: string, common: string[]): Promise<DiffFile[]> {
   const [rawOut, numstatOut] = await Promise.all([
     git.raw(["diff", "--raw", "-z", "--abbrev=40", ...common, "--end-of-options", range, "--"]),
     git.raw(["diff", "--numstat", "-z", ...common, "--end-of-options", range, "--"]),
@@ -217,35 +273,6 @@ export async function listGitDiffFiles(
     file.deletions = file.binary ? 0 : Number(dels) || 0;
   }
 
-  const wanted = options.path ? files.filter((f) => f.path === options.path) : files;
-  if (wanted.length === 0) return files;
-  const pathspec = options.path ? wanted.flatMap((f) => (f.oldPath ? [f.oldPath, f.path] : [f.path])) : [];
-  const patchOut = await git.raw([
-    "diff",
-    "-U3",
-    ...common,
-    ...(options.ignoreWhitespace ? ["-w"] : []),
-    "--end-of-options",
-    range,
-    "--",
-    ...pathspec.map((p) => `:(literal)${p}`),
-  ]);
-  const patches = splitCombinedDiff(patchOut);
-  let total = 0;
-  for (const file of wanted) {
-    const patch = patches.get(file.path);
-    if (!patch) {
-      if (options.ignoreWhitespace && !file.binary && file.additions + file.deletions > 0) file.whitespaceOnly = true;
-      continue;
-    }
-    if (total >= MAX_TOTAL_PATCH_CHARS || patch.length > MAX_FILE_PATCH_CHARS) {
-      file.truncated = true;
-      if (total < MAX_TOTAL_PATCH_CHARS) file.patch = patch.slice(0, patch.lastIndexOf("\n", MAX_FILE_PATCH_CHARS));
-    } else {
-      file.patch = patch;
-    }
-    total += file.patch?.length ?? 0;
-  }
   return files;
 }
 
@@ -303,6 +330,30 @@ function fallbackRefspecs(repo: RepoRecord, target: ReviewTarget): string[] {
   return repo.provider === "gitlab" ? [`merge-requests/${target.prNumber}/head`] : [`pull/${target.prNumber}/head`];
 }
 
+/** How long a PR's two ends are trusted: a push moves its head, so briefly — long enough for a file and its tabs. */
+const PR_ENDS_TTL_MS = 30_000;
+
+/**
+ * A pull/merge request's base and head commits, from the host — kept for a
+ * few seconds, so opening one file (its diff, then its File tab) and the
+ * next asks the host once, not on every request. `null` with no access.
+ */
+export function pullRequestEnds(repo: RepoRecord, prNumber: number): Promise<{ base: string; head: string } | null> {
+  return memo("pr-ends", `${repo.id}\u0000${prNumber}`, { ttlMs: PR_ENDS_TTL_MS, maxEntries: 50 }, async () => {
+    if (repo.provider === "gitlab") {
+      const access = await resolveGitLabAccess(repo);
+      if (!access.ok) return null;
+      const { data: mr } = await getMergeRequest(access.token, access.ref.path, prNumber);
+      return { base: mr.baseSha, head: mr.headSha };
+    }
+    if (repo.provider === "local") return null;
+    const access = await resolveGitHubAccess(repo);
+    if (!access.ok) return null;
+    const { data: pr } = await getPullRequest(access.token, access.ref.owner, access.ref.repo, prNumber);
+    return { base: pr.baseSha, head: pr.headSha };
+  });
+}
+
 /** The app's clone of a hosted repo, if the analysis already made one — never cloned here, a request is no place for that. */
 function hasClone(repo: RepoRecord): boolean {
   return existsSync(path.join(repoCacheDir(repo.id), ".git"));
@@ -326,8 +377,11 @@ export async function loadTargetDiff(
     }
     if (!repo.localPath) throw new DiffFilesError("This local repo has no path on record.");
     const dir = resolveLocalRepoPath(repo.localPath);
-    const files = await listGitDiffFiles({ dir, base: target.baseRef, head: target.headRef }, options);
-    const headSha = (await gitIn(dir, undefined, GIT_CONFIG).raw(["rev-parse", "--verify", "--end-of-options", `${target.headRef}^{commit}`]).catch(() => "")).trim();
+    // Both refs to commit ids first (kept a few seconds, local-git.ts): the
+    // diff between two ids is kept (listGitDiffFiles), a branch name can move.
+    const toSha = (ref: string) => viewerRefSha(repo.localPath!, ref).catch(() => "");
+    const [baseSha, headSha] = await Promise.all([toSha(target.baseRef), toSha(target.headRef)]);
+    const files = await listGitDiffFiles({ dir, base: baseSha || target.baseRef, head: headSha || target.headRef }, options);
     return { source: "git", whitespace: options.ignoreWhitespace ? "git" : "shown", headSha: headSha || undefined, files };
   }
 
@@ -340,10 +394,7 @@ export async function loadTargetDiff(
       const access = await resolveGitLabAccess(repo);
       if (!access.ok) throw new DiffFilesError(access.reason === "no_token" ? "No GitLab PAT configured in Settings." : "This repo is not linked to GitLab.");
       if (target.kind === "pr") {
-        if (!ends) {
-          const { data: mr } = await getMergeRequest(access.token, access.ref.path, target.prNumber);
-          ends = { base: mr.baseSha, head: mr.headSha };
-        }
+        ends ??= await pullRequestEnds(repo, target.prNumber);
         if (!apiFiles) apiFiles = (await listMergeRequestFiles(access.token, access.ref.path, target.prNumber)).data;
       } else if (!apiFiles) {
         const { data } = await compareGitLabRefs(access.token, access.ref.path, target.baseRef, target.headRef);
@@ -356,10 +407,7 @@ export async function loadTargetDiff(
     if (!access.ok) throw new DiffFilesError(access.reason === "no_token" ? "No GitHub PAT configured in Settings." : "This repo is not linked to GitHub.");
     const { owner, repo: name } = access.ref;
     if (target.kind === "pr") {
-      if (!ends) {
-        const { data: pr } = await getPullRequest(access.token, owner, name, target.prNumber);
-        ends = { base: pr.baseSha, head: pr.headSha };
-      }
+      ends ??= await pullRequestEnds(repo, target.prNumber);
       if (!apiFiles) apiFiles = (await listPullRequestFiles(access.token, owner, name, target.prNumber)).data;
     } else if (!apiFiles) {
       const { data } = await compareRefs(access.token, owner, name, target.baseRef, target.headRef);
@@ -373,24 +421,18 @@ export async function loadTargetDiff(
     if (!hasClone(repo)) return null;
     if (!ends) {
       if (target.kind === "pr") {
-        if (repo.provider === "gitlab") {
-          const access = await resolveGitLabAccess(repo);
-          if (!access.ok) return null;
-          const { data: mr } = await getMergeRequest(access.token, access.ref.path, target.prNumber);
-          ends = { base: mr.baseSha, head: mr.headSha };
-        } else {
-          const access = await resolveGitHubAccess(repo);
-          if (!access.ok) return null;
-          const { data: pr } = await getPullRequest(access.token, access.ref.owner, access.ref.repo, target.prNumber);
-          ends = { base: pr.baseSha, head: pr.headSha };
-        }
+        ends = await pullRequestEnds(repo, target.prNumber);
+        if (!ends) return null;
       } else {
         await fetchApi(); // the comparison names both ends (and is the fallback)
       }
     }
     if (!ends) return null;
     const { base, head } = ends;
-    const dir = await ensureCommitsInCache(repo, [base, head], fallbackRefspecs(repo, target), log);
+    // A commit fetched into the clone stays there: checked (and fetched) once per pair.
+    const dir = await memo("clone-commits", `${repo.id}\u0000${base}\u0000${head}`, { ttlMs: 10 * 60_000, maxEntries: 50 }, () =>
+      ensureCommitsInCache(repo, [base, head], fallbackRefspecs(repo, target), log)
+    );
     return { dir, base, head, headSha: head };
   };
 
