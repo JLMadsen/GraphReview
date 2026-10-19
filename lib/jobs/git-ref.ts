@@ -17,3 +17,11 @@ export function isSafeGitRef(ref: string): boolean {
 export function assertSafeGitRef(ref: string): void {
   if (!isSafeGitRef(ref)) throw new Error(`"${ref}" is not a valid git ref.`);
 }
+
+/**
+ * The pseudo-ref for a local repo's uncommitted changes ("Changes on disk",
+ * DESIGN.md §6.29). `:` can't appear in a branch or tag name, so no real ref
+ * collides with it; ./local-git.ts turns it into a snapshot commit before
+ * anything reaches git. Client-safe: the diff picker offers it by this name.
+ */
+export const WORKTREE_REF = ":worktree";

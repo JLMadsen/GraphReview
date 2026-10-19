@@ -8,6 +8,7 @@ import type { GraphResponseDTO } from "../types";
 /** Trimmed shape of `GET /api/repos/[repoId]` — see this repo's task brief. Only the fields this view needs. */
 export interface RepoContext {
   name: string;
+  provider?: "local" | "github" | "gitlab" | "git";
   defaultBranch?: string;
   lastAnalyzedSha?: string;
   status?: "analyzing" | "up_to_date" | "stale" | "error";

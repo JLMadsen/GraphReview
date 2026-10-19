@@ -1,22 +1,25 @@
 // Bridge between a stored repo record and lib/github.
 //
 // lib/github is deliberately credential-free (every function takes an
-// explicit `token`), and lib/db only stores the *encrypted* PAT. This
-// module is the one place that joins the two: read the Settings singleton,
-// decrypt the PAT with lib/crypto, parse owner/repo out of the stored GitHub
-// URL, and call the matching lib/github function.
+// explicit `auth`), and lib/db only stores *encrypted* tokens. This module
+// is the one place that joins the two: parse the server and owner/repo out
+// of the stored GitHub URL and fetch that server's token (./git-hosts.ts,
+// DESIGN.md §6.30) — github.com and each GitHub Enterprise server have
+// their own.
 //
 // getRepoBranches/getRepoPullRequests (the actual per-tab dispatch across
 // local/GitHub/GitLab) live in ./repo-access.ts, not here — this module only
 // exports the GitHub-specific pieces that repo-access.ts (and the
 // diff-impact routes) call into, mirroring gitlab-access.ts's shape.
 
-import { decrypt } from "@/lib/crypto";
 import { GitHubApiError } from "@/lib/github";
-import { getSettings } from "@/lib/db";
+import type { GitHostAuth } from "@/lib/github";
 import type { RepoRecord } from "@/lib/db";
+import { originOf, tokenFor } from "./git-hosts";
 
 export interface GitHubRepoRef {
+  /** The server's web origin (`https://github.com`, a GitHub Enterprise host). */
+  origin: string;
   owner: string;
   repo: string;
 }
@@ -55,48 +58,19 @@ export function parseGitHubUrl(url: string): GitHubRepoRef | null {
 
   const owner = segments[0];
   const repo = segments[1].replace(/\.git$/i, "");
-  if (!owner || !repo) return null;
-  return { owner, repo };
+  const origin = originOf(trimmed);
+  if (!owner || !repo || !origin) return null;
+  return { origin, owner, repo };
 }
 
-/**
- * The GitHub *web* host — used for the clone URL and the repo URL stored/
- * displayed in the UI. Distinct from `GITHUB_API_URL` (lib/github/client.ts)
- * because a GitHub Enterprise Server instance's web host and API host differ
- * (`https://host` vs `https://host/api/v3`). Defaults to `https://github.com`;
- * override via `GITHUB_WEB_URL` on a closed network — see
- * docs/install.md. Trailing slashes are stripped so the templates
- * below don't end up with a doubled `//`.
- */
-const GITHUB_WEB_URL = (process.env.GITHUB_WEB_URL || "https://github.com").replace(/\/+$/, "");
-
-/** Canonical `<GITHUB_WEB_URL>/<owner>/<repo>.git` remote for cloning. */
+/** `<origin>/<owner>/<repo>.git` — the HTTPS remote for cloning. */
 export function gitHubCloneUrl(ref: GitHubRepoRef): string {
-  return `${GITHUB_WEB_URL}/${ref.owner}/${ref.repo}.git`;
+  return `${ref.origin}/${ref.owner}/${ref.repo}.git`;
 }
 
-/** Canonical `<GITHUB_WEB_URL>/<owner>/<repo>` page URL — what gets stored on `Repo.url` and shown in the UI. */
+/** `<origin>/<owner>/<repo>` page URL — what gets stored on `Repo.url` and shown in the UI. */
 export function gitHubRepoWebUrl(ref: GitHubRepoRef): string {
-  return `${GITHUB_WEB_URL}/${ref.owner}/${ref.repo}`;
-}
-
-/**
- * The decrypted GitHub PAT from the Settings singleton, or `null` when none
- * is configured (or when it can't be decrypted — e.g. `SESSION_SECRET`
- * changed since it was saved). Never logged, never returned to a client.
- */
-export async function getStoredGitHubToken(): Promise<string | null> {
-  const settings = await getSettings();
-  const encrypted = settings?.githubPatEncrypted;
-  if (!encrypted) return null;
-  try {
-    return decrypt(encrypted);
-  } catch {
-    console.warn(
-      "[github-access] stored GitHub PAT could not be decrypted — has the secret key (SESSION_SECRET or secret.key in the data folder) changed? Re-enter it in Settings."
-    );
-    return null;
-  }
+  return `${ref.origin}/${ref.owner}/${ref.repo}`;
 }
 
 /** Why a repo can't be talked to over the GitHub API right now. */
@@ -105,14 +79,14 @@ export type GitHubUnavailableReason =
   | "not_linked"
   /** A URL is stored but owner/repo couldn't be parsed out of it. */
   | "invalid_url"
-  /** No PAT saved in Settings yet. */
+  /** No token saved in Settings for this repo's server. */
   | "no_token";
 
 export type GitHubAccess =
-  | { ok: true; ref: GitHubRepoRef; token: string }
+  | { ok: true; ref: GitHubRepoRef; token: GitHostAuth }
   | { ok: false; reason: GitHubUnavailableReason };
 
-/** Resolves everything needed for a GitHub call against this repo: owner/repo + a decrypted PAT. */
+/** Resolves everything needed for a GitHub call against this repo: owner/repo + its server's decrypted token and API. */
 export async function resolveGitHubAccess(
   repo: Pick<RepoRecord, "provider" | "url">
 ): Promise<GitHubAccess> {
@@ -122,10 +96,10 @@ export async function resolveGitHubAccess(
   const ref = parseGitHubUrl(repo.url);
   if (!ref) return { ok: false, reason: "invalid_url" };
 
-  const token = await getStoredGitHubToken();
-  if (!token) return { ok: false, reason: "no_token" };
+  const saved = await tokenFor(ref.origin);
+  if (!saved || saved.kind !== "github") return { ok: false, reason: "no_token" };
 
-  return { ok: true, ref, token };
+  return { ok: true, ref, token: saved.auth };
 }
 
 /** Turns any error from a `lib/github` call into a short human-readable string — shared by ./repo-access.ts. */

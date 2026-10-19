@@ -23,13 +23,13 @@ export function RepoSwitcher({ repoName, className }: RepoSwitcherProps) {
       onClick={() => openPalette({ scope: "repos" })}
       aria-haspopup="dialog"
       className={cn(
-        "flex items-center gap-1 rounded px-1 py-0.5 text-foreground/80 transition-colors hover:text-foreground",
+        "flex min-w-0 items-center gap-1 rounded px-1 py-0.5 text-foreground/80 transition-colors hover:text-foreground",
         className
       )}
       title="Switch repo (Ctrl+Space)"
     >
       <span className="max-w-48 truncate">{repoName}</span>
-      <ChevronDown className="size-3.5 opacity-60" aria-hidden />
+      <ChevronDown className="size-3.5 shrink-0 opacity-60" aria-hidden />
     </button>
   );
 }

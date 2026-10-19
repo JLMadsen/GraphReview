@@ -24,6 +24,7 @@ import type { RepoRecord } from "@/lib/db";
 import type { JobLogger } from "./analyze";
 import { resolveGitHubAccess } from "./github-access";
 import { resolveGitLabAccess } from "./gitlab-access";
+import { inPlacePath, readsInPlace, refreshGitMirror } from "./source";
 import {
   listLocalFilePatches,
   resolveLocalRefSha,
@@ -159,7 +160,7 @@ export async function resolveTarget(
   log: JobLogger
 ): Promise<ResolvedTarget> {
   // --- Local repo: refs only, straight off the checkout on disk ---------
-  if (repo.provider === "local") {
+  if (readsInPlace(repo)) {
     if (target.kind === "pr") {
       // The API route rejects this with a 400; this is the backstop for a
       // job enqueued before a repo was switched to a local source.
@@ -167,9 +168,11 @@ export async function resolveTarget(
         "A pull request cannot be reviewed on a repo with no GitHub link — compare two refs instead."
       );
     }
-    if (!repo.localPath) {
+    const at = inPlacePath(repo);
+    if (!at) {
       throw new UnrecoverableError(`Repo ${repo.id} is a local repo but has no localPath.`);
     }
+    await refreshGitMirror(repo);
     // Pin both refs to commits first and diff *those*, so the recorded shas
     // are guaranteed to be what was actually reviewed even if a branch moves
     // while the job is running. A missing ref fails the whole job here with a
@@ -178,13 +181,13 @@ export async function resolveTarget(
     let headSha: string;
     try {
       [baseSha, headSha] = await Promise.all([
-        resolveLocalRefSha(repo.localPath, target.baseRef),
-        resolveLocalRefSha(repo.localPath, target.headRef),
+        resolveLocalRefSha(at, target.baseRef),
+        resolveLocalRefSha(at, target.headRef),
       ]);
     } catch (error) {
       throw new UnrecoverableError((error as Error).message);
     }
-    const files = await listLocalFilePatches(repo.localPath, baseSha, headSha);
+    const files = await listLocalFilePatches(at, baseSha, headSha);
     return {
       files,
       reviewed: { baseSha, headSha },
@@ -193,7 +196,7 @@ export async function resolveTarget(
       // stated intent". Inventing a title here would give the model
       // something to "match" that nobody actually claimed.
       intent: { source: "ref_comparison" },
-      description: `local ${target.baseRef}...${target.headRef} (${baseSha.slice(0, 7)}...${headSha.slice(0, 7)})`,
+      description: `${repo.provider} ${target.baseRef}...${target.headRef} (${baseSha.slice(0, 7)}...${headSha.slice(0, 7)})`,
     };
   }
 
@@ -203,7 +206,7 @@ export async function resolveTarget(
     if (!access.ok) {
       throw new UnrecoverableError(
         access.reason === "no_token"
-          ? "No GitLab PAT configured in Settings — it is needed to fetch this diff."
+          ? "No GitLab token saved for this server in Settings → Git servers — it is needed to fetch this diff."
           : `This repo is not usable over the GitLab API (${access.reason}).`
       );
     }
@@ -255,7 +258,7 @@ export async function resolveTarget(
   if (!access.ok) {
     throw new UnrecoverableError(
       access.reason === "no_token"
-        ? "No GitHub PAT configured in Settings — it is needed to fetch this diff."
+        ? "No GitHub token saved for this server in Settings → Git servers — it is needed to fetch this diff."
         : `This repo is not usable over the GitHub API (${access.reason}).`
     );
   }

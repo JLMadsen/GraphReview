@@ -15,6 +15,7 @@ import { rememberRemote, type RepoRecord } from "@/lib/db";
 import { describeGitHubError, resolveGitHubAccess, type GitHubUnavailableReason } from "./github-access";
 import { describeGitLabError, resolveGitLabAccess, type GitLabUnavailableReason } from "./gitlab-access";
 import { listLocalBranches, listLocalCommits } from "./local-git";
+import { inPlacePath, readsInPlace, refreshGitMirror } from "./source";
 
 export type RepoAccessUnavailableReason = GitHubUnavailableReason | GitLabUnavailableReason;
 
@@ -52,18 +53,20 @@ export interface CommitsResponse extends RepoListResponse {
  * `defaultBranch` stored on the repo, which can be out of date.
  */
 export async function getRepoCommits(
-  repo: Pick<RepoRecord, "provider" | "url" | "localPath">,
+  repo: RepoRecord,
   ref: string | undefined,
   limit = 50
 ): Promise<CommitsResponse> {
   const empty = { ref: ref ?? "", commits: [], rateLimit: null };
-  if (repo.provider === "local") {
-    if (!repo.localPath) return { linked: false, reason: "not_linked", ...empty };
+  if (readsInPlace(repo)) {
+    const at = inPlacePath(repo);
+    if (!at) return { linked: false, reason: "not_linked", ...empty };
     try {
+      await refreshGitMirror(repo);
       return {
         linked: true,
         ref: ref ?? "HEAD",
-        commits: await listLocalCommits(repo.localPath, ref ?? "HEAD", limit),
+        commits: await listLocalCommits(at, ref ?? "HEAD", limit),
         rateLimit: null,
       };
     } catch (err) {
@@ -100,14 +103,16 @@ export async function getRepoCommits(
  * same "not linked" empty state the UI already knows how to render.
  */
 export async function getRepoBranches(
-  repo: Pick<RepoRecord, "provider" | "url" | "localPath">
+  repo: RepoRecord
 ): Promise<BranchesResponse> {
-  if (repo.provider === "local") {
-    if (!repo.localPath) {
+  if (readsInPlace(repo)) {
+    const at = inPlacePath(repo);
+    if (!at) {
       return { linked: false, reason: "not_linked", branches: [], rateLimit: null };
     }
     try {
-      const branches = await listLocalBranches(repo.localPath);
+      await refreshGitMirror(repo);
+      const branches = await listLocalBranches(at);
       return { linked: true, branches, rateLimit: null };
     } catch (err) {
       return {

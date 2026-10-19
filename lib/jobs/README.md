@@ -27,8 +27,8 @@ SQLite database by `runner.ts`, so a queued job survives a restart.
 |---|---|
 | `queue.ts` | The `analysis` queue, the typed `{ repoId }` payload, and `enqueueAnalysis()` — idempotent via a deterministic job id (`analysis-<repoId>`). |
 | `source.ts` | Resolving a `Repo` to a directory: local paths (absolute, or confined to `LOCAL_REPOS_ROOT` when that is set) and the app-managed clone/fetch into the clone cache (`<data folder>/repos`, or `REPO_CACHE_DIR`). Also the cheap HEAD probes (`git ls-remote` / `rev-parse`). |
-| `github-access.ts` | Joins a stored `Repo` to `lib/github`: parses owner/repo out of the URL, decrypts the PAT from `Settings`, and resolves `{owner, repo, token}` access for a repo. |
-| `gitlab-access.ts` | The GitLab counterpart to `github-access.ts` — parses a project's full namespace path out of the URL, decrypts the GitLab PAT, and resolves `{path, token}` access for a repo. |
+| `github-access.ts` | Joins a stored `Repo` to `lib/github`: parses the server and owner/repo out of the URL, takes that server's token (`git-hosts.ts`), and resolves `{owner, repo, token}` access for a repo. |
+| `gitlab-access.ts` | The GitLab counterpart to `github-access.ts` — parses a project's full namespace path out of the URL, takes that server's token (`git-hosts.ts`), and resolves `{path, token}` access for a repo. |
 | `repo-access.ts` | `getRepoBranches`/`getRepoPullRequests` — the per-tab dispatch across local git, `github-access.ts`, and `gitlab-access.ts`, returning one envelope shape regardless of which source produced it. Shared by the API routes and the server components that render the Branches/Pull-Requests tabs. |
 | `staleness.ts` | `checkAndEnqueueIfStale()` — compare `lastAnalyzedSha` to the current HEAD, enqueue a refresh when they differ. Callable from any route. |
 | `repo-status.ts` | Derives the status indicator (`analyzing`/`up_to_date`/`stale`/`error`) and the `RepoDto` wire shape used by `GET /api/repos[/:id]`. |

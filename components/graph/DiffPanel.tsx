@@ -17,7 +17,8 @@
 // the diff is older than the analyzed graph it is mapped onto.
 
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, LoaderCircle, TriangleAlert } from "lucide-react";
+import { ChevronDown, HardDrive, LoaderCircle, TriangleAlert } from "lucide-react";
+import { WORKTREE_REF } from "@/lib/jobs/git-ref";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "./Segmented";
 import { formatRelativeDate, isShaLike } from "./types";
@@ -135,6 +136,8 @@ function FieldLabel({
 export interface DiffPanelProps {
   repoId: string;
   defaultBranch?: string;
+  /** A repo read from a folder on this machine — offers its uncommitted changes ("Changes on disk", DESIGN.md §6.29). */
+  isLocal?: boolean;
   /** The commit the component graph was analyzed at — marks that commit in the picker and decides whether a diff is "historical". */
   lastAnalyzedSha?: string;
   /** Pre-fills and auto-runs the PR mode — see GraphView's `?pr=` handling. */
@@ -169,6 +172,7 @@ const NO_META: DiffTargetMeta = { autoReview: false, historical: false };
 export function DiffPanel({
   repoId,
   defaultBranch,
+  isLocal,
   lastAnalyzedSha,
   initialPrNumber,
   initialBaseRef,
@@ -465,6 +469,26 @@ export function DiffPanel({
         )}
       </div>
 
+      {isLocal && (
+        <button
+          type="button"
+          onClick={() => {
+            setMode("refs");
+            setBaseRef("HEAD");
+            setHeadRef(WORKTREE_REF);
+            void runCheck({ baseRef: "HEAD", headRef: WORKTREE_REF });
+          }}
+          title="Everything you haven't committed yet — edits, staged changes and new files .gitignore doesn't hide — against the checked-out commit"
+          className="flex w-full items-center gap-2 rounded-lg border border-border px-2.5 py-2 text-left hover:bg-secondary/60"
+        >
+          <HardDrive className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+          <span className="min-w-0">
+            <span className="block text-xs font-medium">Changes on disk</span>
+            <span className="block truncate text-[11px] text-muted-foreground">Uncommitted edits and new files, against HEAD</span>
+          </span>
+        </button>
+      )}
+
       <Segmented
         label="Diff source"
         className="w-full"
@@ -610,7 +634,9 @@ export function DiffPanel({
                     <option value="" disabled>
                       Select a branch…
                     </option>
+                    {isLocal && <option value={WORKTREE_REF}>Changes on disk</option>}
                     {headRef &&
+                      headRef !== WORKTREE_REF &&
                       !branchesState.items.some((b) => b.name === headRef) && (
                         <option value={headRef}>{headRef}</option>
                       )}

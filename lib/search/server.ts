@@ -25,6 +25,7 @@ import {
   type RepoRecord,
 } from "@/lib/db";
 import { endpointLabel } from "@/lib/analysis/api/describe";
+import { readsInPlace } from "@/lib/jobs/source";
 import { fuzzyMatch, fuzzyMatchPath, subsequenceLike, type FuzzyMatch } from "./fuzzy";
 import type { SearchItem, SearchKind, SearchNotice, SearchRepoInfo, SearchRequest, SearchResponse, SearchScope } from "./types";
 
@@ -225,7 +226,7 @@ async function searchRefs(ctx: Ctx, kinds: ReadonlySet<SearchKind>): Promise<Sea
         url: p.url,
       });
     }
-    if (q === "" && !snap.fetchedAt.prs && repo.provider !== "local") {
+    if (q === "" && !snap.fetchedAt.prs && !readsInPlace(repo)) {
       ctx.notices.push({ id: "no-remote", text: "No PR list stored yet — refresh to search PRs, branches and commits.", action: "refresh-remote" });
     }
   }

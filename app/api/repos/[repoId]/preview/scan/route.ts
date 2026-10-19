@@ -15,7 +15,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { gitRefSchema } from "../../../_shared";
-import { enqueuePreview, ensurePreviewScan, getPreviewJob, type ReviewTarget } from "@/lib/jobs";
+import { enqueuePreview, ensurePreviewScan, getPreviewJob, readsInPlace, type ReviewTarget } from "@/lib/jobs";
 import { getRepoById } from "@/lib/db";
 import { symbolStatus } from "@/lib/preview/compare";
 import { getDockerStatus } from "@/lib/preview/sandbox";
@@ -84,7 +84,7 @@ async function loadTarget(raw: unknown, repoId: string) {
   if (!target) return { response: errorResponse("Pass prNumber, or baseRef and headRef.", 400) };
   const repo = await getRepoById(repoId);
   if (!repo) return { response: errorResponse("Repo not found.", 404) };
-  if (repo.provider === "local" && target.kind === "pr") {
+  if (readsInPlace(repo) && target.kind === "pr") {
     return { response: errorResponse("A pull request can't be previewed on a repo with no git-host link.", 400) };
   }
   return { target };

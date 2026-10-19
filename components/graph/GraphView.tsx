@@ -853,6 +853,7 @@ export function GraphView({
           <DiffPanel
             repoId={repoId}
             defaultBranch={repo?.defaultBranch}
+            isLocal={repo?.provider === "local"}
             lastAnalyzedSha={repo?.lastAnalyzedSha}
             initialPrNumber={initialPrNumber}
             initialBaseRef={initialBaseRef}

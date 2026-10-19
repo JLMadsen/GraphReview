@@ -18,6 +18,7 @@ export * from "./chat";
 export * from "./pr-map";
 export * from "./app-map";
 export * from "./settings";
+export * from "./git-tokens";
 export * from "./ai-provider";
 export * from "./kv";
 export * from "./parse-cache";

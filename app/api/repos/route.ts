@@ -1,5 +1,6 @@
 // `GET /api/repos`  — every tracked repo with its status indicator.
-// `POST /api/repos` — add a repo (local path, GitHub URL, or GitLab URL)
+// `POST /api/repos` — add a repo (a local path, or any git URL — GitHub,
+//                     GitLab or another server, told apart by its host)
 //                     and kick off its first analysis
 //                     immediately.
 
@@ -14,10 +15,14 @@ import {
   gitHubRepoWebUrl,
   gitLabCloneUrl,
   gitLabRepoWebUrl,
+  isCloneableUrl,
+  isSshUrl,
   LocalPathOutsideRootError,
   listRepoDtos,
   parseGitHubUrl,
   parseGitLabUrl,
+  probeRemote,
+  providerForUrl,
   toRepoDto,
   validateLocalRepoPath,
   type RepoDto,
@@ -35,6 +40,12 @@ const addRepoSchema = z.discriminatedUnion("provider", [
     provider: z.literal("local"),
     /** Absolute path (or relative to `LOCAL_REPOS_ROOT` when that is set) — validated below. */
     localPath: z.string().trim().min(1, "localPath is required."),
+    name: z.string().trim().min(1).optional(),
+  }),
+  z.object({
+    /** Any git URL; the host decides the provider (`providerForUrl`). */
+    provider: z.literal("url"),
+    url: z.string().trim().min(1, "url is required."),
     name: z.string().trim().min(1).optional(),
   }),
   z.object({
@@ -71,6 +82,13 @@ function sourceKey(repo: Pick<RepoRecord, "provider" | "url" | "localPath">): st
   return `${repo.provider}|${normalized.replace(/[\\/]+$/, "").replace(/\.git$/, "")}`;
 }
 
+/** `group/project` out of a clone URL in any form, for a plain git repo's default name. */
+function nameFromUrl(url: string): string {
+  const pathname = isSshUrl(url) && !url.includes("://") ? url.slice(url.indexOf(":") + 1) : new URL(url).pathname;
+  const segments = pathname.replace(/\.git$/i, "").split("/").filter(Boolean);
+  return segments.slice(-2).join("/") || url;
+}
+
 /** The 409 for a repo that's already been added, or `null` when it's new. */
 async function duplicateOf(candidate: Pick<RepoRecord, "provider" | "url" | "localPath">): Promise<NextResponse | null> {
   const key = sourceKey(candidate);
@@ -99,6 +117,8 @@ export async function POST(request: Request): Promise<NextResponse> {
   const id = randomUUID();
 
   let repoInput: Parameters<typeof upsertRepo>[0];
+  // A URL's provider comes from its host — see `providerForUrl`.
+  const provider = input.provider === "local" ? "local" : input.provider === "url" ? await providerForUrl(input.url) : input.provider;
   if (input.provider === "local") {
     // `validateLocalRepoPath` resolves the path (confining it to
     // `LOCAL_REPOS_ROOT` when that is set) and confirms the directory exists.
@@ -119,44 +139,67 @@ export async function POST(request: Request): Promise<NextResponse> {
       provider: "local",
       defaultBranch: await detectDefaultBranch({ provider: "local", dir: resolved }),
     };
-  } else if (input.provider === "gitlab") {
+  } else if (provider === "git") {
+    // Any other git server: cloned as entered, with the user's SSH key for an
+    // SSH URL. Reached once now, so a typo or a key without access is said
+    // here rather than as a failed analysis.
+    const url = input.url.replace(/\/+$/, "");
+    if (!isCloneableUrl(url)) {
+      return apiError(`"${input.url}" isn't a URL git can clone — expected https://host/group/repo.git or git@host:group/repo.git.`, 400);
+    }
+    const duplicate = await duplicateOf({ provider: "git", url });
+    if (duplicate) return duplicate;
+    let defaultBranch: string | undefined;
+    try {
+      defaultBranch = (await probeRemote(url, "git")).defaultBranch;
+    } catch (error) {
+      return apiError(`Could not reach ${url}: ${errorMessage(error)}`, 400);
+    }
+    repoInput = { id, name: input.name ?? nameFromUrl(url), url, provider: "git", defaultBranch: defaultBranch ?? "main" };
+  } else if (provider === "gitlab") {
     const ref = parseGitLabUrl(input.url);
     if (!ref) {
       return apiError(
-        `Could not parse a project path out of "${input.url}". Expected something like ${gitLabRepoWebUrl({ path: "group/project" })}.`,
+        `Could not parse a project path out of "${input.url}". Expected something like ${gitLabRepoWebUrl({ origin: "https://gitlab.com", path: "group/project" })}.`,
         400
       );
     }
     const duplicate = await duplicateOf({ provider: "gitlab", url: gitLabRepoWebUrl(ref) });
     if (duplicate) return duplicate;
+    // An SSH URL is cloned as entered, with the user's SSH key; the API
+    // (pull requests, CI) still uses the PAT from Settings.
+    const cloneUrl = isSshUrl(input.url) ? input.url : undefined;
     repoInput = {
       id,
       name: input.name ?? ref.path,
       url: gitLabRepoWebUrl(ref),
+      cloneUrl,
       provider: "gitlab",
       defaultBranch: await detectDefaultBranch({
         provider: "gitlab",
-        url: gitLabCloneUrl(ref),
+        url: cloneUrl ?? gitLabCloneUrl(ref),
       }),
     };
   } else {
     const ref = parseGitHubUrl(input.url);
     if (!ref) {
       return apiError(
-        `Could not parse an owner/repo out of "${input.url}". Expected something like ${gitHubRepoWebUrl({ owner: "owner", repo: "repo" })}.`,
+        `Could not parse an owner/repo out of "${input.url}". Expected something like ${gitHubRepoWebUrl({ origin: "https://github.com", owner: "owner", repo: "repo" })}.`,
         400
       );
     }
     const duplicate = await duplicateOf({ provider: "github", url: gitHubRepoWebUrl(ref) });
     if (duplicate) return duplicate;
+    const cloneUrl = isSshUrl(input.url) ? input.url : undefined;
     repoInput = {
       id,
       name: input.name ?? `${ref.owner}/${ref.repo}`,
       url: gitHubRepoWebUrl(ref),
+      cloneUrl,
       provider: "github",
       defaultBranch: await detectDefaultBranch({
         provider: "github",
-        url: gitHubCloneUrl(ref),
+        url: cloneUrl ?? gitHubCloneUrl(ref),
       }),
     };
   }

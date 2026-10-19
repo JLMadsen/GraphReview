@@ -28,7 +28,7 @@ export function MainNav() {
   const pathname = usePathname() ?? "/";
 
   return (
-    <nav className="flex items-center gap-1">
+    <nav className="flex shrink-0 items-center gap-1">
       {LINKS.map((link) => {
         const active = isActive(pathname, link.href);
         const Icon = link.icon;

@@ -3,13 +3,20 @@
 // Timestamps are stored and returned as ISO-8601 strings to keep the
 // storage boundary plain-JSON-friendly for route handlers and job payloads.
 
-export type RepoProvider = "local" | "github" | "gitlab";
+/** `"git"`: any other git server, cloned by URL — refs and branches only, no pull requests (DESIGN.md §6.29). */
+export type RepoProvider = "local" | "github" | "gitlab" | "git";
 
 export interface RepoRecord {
   id: string;
   name: string;
-  /** Present when `provider === "github"` or `provider === "gitlab"`. */
+  /** Present for every provider but `"local"`: the web URL for GitHub/GitLab, the clone URL as entered for `"git"`. */
   url?: string;
+  /**
+   * The URL to clone from when it isn't derived from `url` — a GitHub/GitLab
+   * repo added by its SSH URL, so it clones with the user's SSH key. Unset:
+   * HTTPS with the PAT from Settings.
+   */
+  cloneUrl?: string;
   /** Present when `provider === "local"`. */
   localPath?: string;
   defaultBranch: string;

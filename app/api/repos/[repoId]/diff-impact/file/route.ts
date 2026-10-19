@@ -29,6 +29,7 @@ import { gitRefSchema } from "../../../_shared";
 import { DiffFilesError, loadTargetDiff, pullRequestEnds, type DiffFile, type DiffFilesResult } from "@/lib/jobs/diff-files";
 import type { ReviewTarget } from "@/lib/jobs/review-queue";
 import { viewerRefSha } from "@/lib/jobs/local-git";
+import { inPlacePath, readsInPlace } from "@/lib/jobs/source";
 import { MAX_FILE_CHARS, readFileAtCommit } from "@/lib/jobs/pr-context";
 import { getRepoById } from "@/lib/db";
 import type { RepoRecord } from "@/lib/db";
@@ -61,7 +62,10 @@ type FileQuery = z.infer<typeof querySchema>;
 async function targetRef(repo: RepoRecord, query: FileQuery, side: "head" | "base"): Promise<string | null> {
   if (!("prNumber" in query)) {
     const ref = side === "head" ? query.headRef : query.baseRef;
-    if (repo.provider === "local") return repo.localPath ? viewerRefSha(repo.localPath, ref) : null;
+    if (readsInPlace(repo)) {
+      const at = inPlacePath(repo);
+      return at ? viewerRefSha(at, ref) : null;
+    }
     return ref;
   }
   // Shared with the diff itself, which asked the host a moment ago.

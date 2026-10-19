@@ -2,7 +2,7 @@
 
 // Server actions backing the settings page.
 //
-// Plaintext secrets (GitHub PAT, AI provider API keys) are submitted here as
+// Plaintext secrets (git server tokens, AI provider API keys) are submitted here as
 // FormData from the client and encrypted (lib/crypto) before ever being
 // persisted via lib/db — they are never sent back to the client in
 // plaintext, and never round-tripped through anything client-persisted
@@ -11,8 +11,8 @@
 // AI provider config lives as a list of saved AI providers
 // (lib/db/ai-provider.ts) rather than directly on `Settings`, so a user
 // can save several (e.g. a local model server alongside a hosted one) and
-// flip which is active without re-entering anything. GitHub PAT stays a
-// single instance-wide credential on `Settings`.
+// flip which is active without re-entering anything. Git server tokens are
+// a list too, one per server (lib/db/git-tokens.ts, DESIGN.md §6.30).
 
 import { revalidatePath } from "next/cache";
 import { pingProvider } from "@/lib/ai";
@@ -23,26 +23,25 @@ import {
 } from "@/lib/ai/local-configs";
 import { decrypt, encrypt } from "@/lib/crypto";
 import { clearMcpToken, createMcpToken } from "@/lib/mcp/token";
+import { probeGitServer } from "@/lib/jobs/git-server-probe";
 import {
-  clearSettingsFields,
   createAiProvider,
+  deleteGitToken,
   deleteAiProvider,
   getAiProvider,
   listAiProviders,
+  saveGitToken,
   setActiveAiProvider,
   updateAiProvider,
-  upsertSettings,
 } from "@/lib/db";
 import type {
-  ClearGithubPatState,
-  ClearGitlabPatState,
   DeleteAiProviderState,
+  DeleteGitServerTokenState,
   ImportLocalProvidersState,
   LocalProviderSelection,
   PublicLocalProviderCandidate,
   SaveAiProviderState,
-  SaveGithubPatState,
-  SaveGitlabPatState,
+  SaveGitServerTokenState,
   SetActiveAiProviderState,
   TestConnectionState,
 } from "./state";
@@ -53,79 +52,47 @@ function readField(formData: FormData, key: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// GitHub PAT
+// Git servers — one token per server (DESIGN.md §6.30)
 // ---------------------------------------------------------------------------
 
-export async function saveGithubPatAction(
-  _prevState: SaveGithubPatState,
+/**
+ * Saves a token for a server. The server is asked once what it is (GitHub,
+ * GitLab or another git server) and who the token belongs to; a token a
+ * GitHub/GitLab API refuses is not saved. A second token for the same
+ * server replaces the first.
+ */
+export async function saveGitServerTokenAction(
+  _prevState: SaveGitServerTokenState,
   formData: FormData
-): Promise<SaveGithubPatState> {
+): Promise<SaveGitServerTokenState> {
+  const server = readField(formData, "server");
+  const token = readField(formData, "token");
+  const username = readField(formData, "username");
+  if (!server || !token) return { status: "error", error: "Enter the server and its token." };
   try {
-    const githubPat = readField(formData, "githubPat");
-    // Blank means "leave the currently-saved PAT alone" — the client only
-    // renders this input once the user clicks "Replace" (see
-    // settings-form.tsx), so a blank submission never means "clear it".
-    if (githubPat) {
-      await upsertSettings({ githubPatEncrypted: encrypt(githubPat) });
-    }
+    const probed = await probeGitServer(server, token);
+    const saved = await saveGitToken({
+      id: crypto.randomUUID(),
+      origin: probed.origin,
+      kind: probed.kind,
+      apiUrl: probed.apiUrl,
+      username: username || probed.username,
+      tokenEncrypted: encrypt(token),
+    });
     revalidatePath("/settings");
-    return { status: "success", githubPatUpdated: Boolean(githubPat) };
+    return { status: "success", saved: { id: saved.id, origin: saved.origin, kind: saved.kind, username: saved.username } };
   } catch (err) {
-    return {
-      status: "error",
-      error: err instanceof Error ? err.message : "Failed to save the GitHub PAT.",
-    };
+    return { status: "error", error: err instanceof Error ? err.message : "Failed to save the token." };
   }
 }
 
-export async function clearGithubPatAction(): Promise<ClearGithubPatState> {
+export async function deleteGitServerTokenAction(id: string): Promise<DeleteGitServerTokenState> {
   try {
-    await clearSettingsFields(["githubPatEncrypted"]);
+    await deleteGitToken(id);
     revalidatePath("/settings");
     return { status: "success" };
   } catch (err) {
-    return {
-      status: "error",
-      error: err instanceof Error ? err.message : "Failed to clear the GitHub PAT.",
-    };
-  }
-}
-
-// ---------------------------------------------------------------------------
-// GitLab PAT — same shape as the GitHub PAT above (extended)
-// ---------------------------------------------------------------------------
-
-export async function saveGitlabPatAction(
-  _prevState: SaveGitlabPatState,
-  formData: FormData
-): Promise<SaveGitlabPatState> {
-  try {
-    const gitlabPat = readField(formData, "gitlabPat");
-    // Blank means "leave the currently-saved PAT alone" — same convention as
-    // the GitHub PAT action above.
-    if (gitlabPat) {
-      await upsertSettings({ gitlabPatEncrypted: encrypt(gitlabPat) });
-    }
-    revalidatePath("/settings");
-    return { status: "success", gitlabPatUpdated: Boolean(gitlabPat) };
-  } catch (err) {
-    return {
-      status: "error",
-      error: err instanceof Error ? err.message : "Failed to save the GitLab PAT.",
-    };
-  }
-}
-
-export async function clearGitlabPatAction(): Promise<ClearGitlabPatState> {
-  try {
-    await clearSettingsFields(["gitlabPatEncrypted"]);
-    revalidatePath("/settings");
-    return { status: "success" };
-  } catch (err) {
-    return {
-      status: "error",
-      error: err instanceof Error ? err.message : "Failed to clear the GitLab PAT.",
-    };
+    return { status: "error", error: err instanceof Error ? err.message : "Failed to remove the token." };
   }
 }
 
@@ -179,7 +146,7 @@ export async function createAiProviderAction(
 /**
  * Updates an existing provider's name/base URL/model, and its API key only
  * if a new one was typed (blank means "keep the saved key" — same
- * masked-secret convention as the GitHub PAT).
+ * masked-secret convention as the git server tokens).
  *
  * `providerId` is a *bound* first argument
  * (`updateAiProviderAction.bind(null, provider.id)` in the form), for the

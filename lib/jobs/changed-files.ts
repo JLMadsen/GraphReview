@@ -16,6 +16,7 @@ import type { RepoRecord } from "@/lib/db";
 import { resolveGitHubAccess } from "./github-access";
 import { resolveGitLabAccess } from "./gitlab-access";
 import { listLocalFilePatches, toLocalFilePatch, type LocalFilePatch } from "./local-git";
+import { inPlacePath, readsInPlace } from "./source";
 import { reviewTargetKey, type ReviewTarget } from "./review-queue";
 
 /** A target whose files can't be fetched for a reason the user can fix (no PAT, bad URL, PR on a local repo …). */
@@ -41,14 +42,15 @@ export async function listTargetChangedFiles(
 }
 
 async function fetchChangedFiles(repo: RepoRecord, target: ReviewTarget): Promise<LocalFilePatch[]> {
-  if (repo.provider === "local") {
+  if (readsInPlace(repo)) {
     if (target.kind === "pr") {
       throw new ChangedFilesError(
         "A pull request cannot be diffed on a repo with no git-host link — compare two refs instead."
       );
     }
-    if (!repo.localPath) throw new ChangedFilesError("This local repo has no path on record.");
-    return listLocalFilePatches(repo.localPath, target.baseRef, target.headRef);
+    const at = inPlacePath(repo);
+    if (!at) throw new ChangedFilesError("This local repo has no path on record.");
+    return listLocalFilePatches(at, target.baseRef, target.headRef);
   }
 
   if (repo.provider === "gitlab") {
@@ -56,7 +58,7 @@ async function fetchChangedFiles(repo: RepoRecord, target: ReviewTarget): Promis
     if (!access.ok) {
       throw new ChangedFilesError(
         access.reason === "no_token"
-          ? "No GitLab PAT configured in Settings."
+          ? "No GitLab token saved for this server in Settings → Git servers."
           : "This repo is not usable over the GitLab API."
       );
     }
@@ -72,7 +74,7 @@ async function fetchChangedFiles(repo: RepoRecord, target: ReviewTarget): Promis
   if (!access.ok) {
     throw new ChangedFilesError(
       access.reason === "no_token"
-        ? "No GitHub PAT configured in Settings."
+        ? "No GitHub token saved for this server in Settings → Git servers."
         : "This repo is not usable over the GitHub API."
     );
   }

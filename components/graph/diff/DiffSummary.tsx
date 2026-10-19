@@ -3,6 +3,7 @@
 // The one-line summary of the selected diff under the diff picker.
 
 import { ChevronsUpDown, LoaderCircle } from "lucide-react";
+import { WORKTREE_REF } from "@/lib/jobs/git-ref";
 import { formatRelativeDate, isShaLike, shortRef } from "../types";
 import type {
   DiffImpactRequestDTO,
@@ -36,7 +37,7 @@ export function DiffSummary({
   headline?: React.ReactNode;
   children?: React.ReactNode;
 }) {
-  const kind = "prNumber" in checked ? "Pull request" : "baseRef" in checked ? (isShaLike(checked.headRef) ? "Commits" : "Branches") : "Files";
+  const kind = "prNumber" in checked ? "Pull request" : "baseRef" in checked ? (checked.headRef === WORKTREE_REF ? "Uncommitted" : isShaLike(checked.headRef) ? "Commits" : "Branches") : "Files";
   // One file count for the whole page: every file in the diff, on the map or not.
   const files = result.touchedFiles.length + result.unmatchedFiles.length;
 

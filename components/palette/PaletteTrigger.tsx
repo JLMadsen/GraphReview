@@ -13,7 +13,7 @@ export function PaletteTrigger() {
       type="button"
       onClick={() => openPalette()}
       aria-haspopup="dialog"
-      className="mx-auto hidden h-8 w-full max-w-sm min-w-40 items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 text-left text-[13px] text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground/80 md:flex"
+      className="mx-auto hidden h-8 max-w-sm min-w-40 flex-1 items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 text-left text-[13px] text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground/80 md:flex"
     >
       <Search className="size-3.5 shrink-0" aria-hidden />
       <span className="min-w-0 flex-1 truncate">Search or jump to…</span>

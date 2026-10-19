@@ -27,7 +27,7 @@ import { resolveGitLabAccess } from "./gitlab-access";
 import type { ReviewTarget } from "./review-queue";
 import { viewerRefSha } from "./local-git";
 import { isFullSha, memo } from "./memo-cache";
-import { ensureCommitsInCache, gitIn, repoCacheDir, resolveLocalRepoPath } from "./source";
+import { ensureCommitsInCache, gitIn, inPlacePath, readsInPlace, repoCacheDir, resolveLocalRepoPath } from "./source";
 
 /** `safe.directory` as everywhere else; `core.quotePath=false` keeps non-ASCII paths verbatim in the patch headers. */
 const GIT_CONFIG = ["safe.directory=*", "core.quotePath=false"];
@@ -346,7 +346,7 @@ export function pullRequestEnds(repo: RepoRecord, prNumber: number): Promise<{ b
       const { data: mr } = await getMergeRequest(access.token, access.ref.path, prNumber);
       return { base: mr.baseSha, head: mr.headSha };
     }
-    if (repo.provider === "local") return null;
+    if (readsInPlace(repo)) return null;
     const access = await resolveGitHubAccess(repo);
     if (!access.ok) return null;
     const { data: pr } = await getPullRequest(access.token, access.ref.owner, access.ref.repo, prNumber);
@@ -371,15 +371,16 @@ export async function loadTargetDiff(
 ): Promise<DiffFilesResult> {
   const log = (message: string) => console.warn(`[diff ${repo.id}] ${message}`);
 
-  if (repo.provider === "local") {
+  if (readsInPlace(repo)) {
     if (target.kind === "pr") {
       throw new DiffFilesError("A pull/merge request cannot be diffed on a repo with no git-host link — compare two refs instead.");
     }
-    if (!repo.localPath) throw new DiffFilesError("This local repo has no path on record.");
-    const dir = resolveLocalRepoPath(repo.localPath);
+    const at = inPlacePath(repo);
+    if (!at) throw new DiffFilesError("This local repo has no path on record.");
+    const dir = resolveLocalRepoPath(at);
     // Both refs to commit ids first (kept a few seconds, local-git.ts): the
     // diff between two ids is kept (listGitDiffFiles), a branch name can move.
-    const toSha = (ref: string) => viewerRefSha(repo.localPath!, ref).catch(() => "");
+    const toSha = (ref: string) => viewerRefSha(at, ref).catch(() => "");
     const [baseSha, headSha] = await Promise.all([toSha(target.baseRef), toSha(target.headRef)]);
     const files = await listGitDiffFiles({ dir, base: baseSha || target.baseRef, head: headSha || target.headRef }, options);
     return { source: "git", whitespace: options.ignoreWhitespace ? "git" : "shown", headSha: headSha || undefined, files };
@@ -392,7 +393,7 @@ export async function loadTargetDiff(
   const fetchApi = async (): Promise<ApiDiff> => {
     if (repo.provider === "gitlab") {
       const access = await resolveGitLabAccess(repo);
-      if (!access.ok) throw new DiffFilesError(access.reason === "no_token" ? "No GitLab PAT configured in Settings." : "This repo is not linked to GitLab.");
+      if (!access.ok) throw new DiffFilesError(access.reason === "no_token" ? "No GitLab token saved for this server in Settings → Git servers." : "This repo is not linked to GitLab.");
       if (target.kind === "pr") {
         ends ??= await pullRequestEnds(repo, target.prNumber);
         if (!apiFiles) apiFiles = (await listMergeRequestFiles(access.token, access.ref.path, target.prNumber)).data;
@@ -404,7 +405,7 @@ export async function loadTargetDiff(
       return { files: apiFiles!, headSha: ends?.head };
     }
     const access = await resolveGitHubAccess(repo);
-    if (!access.ok) throw new DiffFilesError(access.reason === "no_token" ? "No GitHub PAT configured in Settings." : "This repo is not linked to GitHub.");
+    if (!access.ok) throw new DiffFilesError(access.reason === "no_token" ? "No GitHub token saved for this server in Settings → Git servers." : "This repo is not linked to GitHub.");
     const { owner, repo: name } = access.ref;
     if (target.kind === "pr") {
       ends ??= await pullRequestEnds(repo, target.prNumber);

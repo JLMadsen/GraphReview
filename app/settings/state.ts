@@ -4,23 +4,30 @@
 // `initialSaveSettingsState` there breaks the Next.js build/runtime with
 // "A 'use server' file can only export async functions, found object."
 
-export interface SaveGithubPatState {
-  status: "idle" | "success" | "error";
-  error?: string;
-  /** Whether this submission actually included a new GitHub PAT. */
-  githubPatUpdated?: boolean;
+// ---------------------------------------------------------------------------
+// Git servers — one token per server (DESIGN.md §6.30)
+// ---------------------------------------------------------------------------
+
+/** A saved server token as the browser sees it: never the token itself. */
+export interface GitServerTokenSummary {
+  id: string;
+  origin: string;
+  kind: "github" | "gitlab" | "git";
+  username?: string;
 }
 
-export const initialSaveGithubPatState: SaveGithubPatState = { status: "idle" };
-
-export interface SaveGitlabPatState {
+export interface SaveGitServerTokenState {
   status: "idle" | "success" | "error";
   error?: string;
-  /** Whether this submission actually included a new GitLab PAT. */
-  gitlabPatUpdated?: boolean;
+  saved?: GitServerTokenSummary;
 }
 
-export const initialSaveGitlabPatState: SaveGitlabPatState = { status: "idle" };
+export const initialSaveGitServerTokenState: SaveGitServerTokenState = { status: "idle" };
+
+export interface DeleteGitServerTokenState {
+  status: "idle" | "success" | "error";
+  error?: string;
+}
 
 // ---------------------------------------------------------------------------
 // Test connection — `pingProvider` from lib/ai, run server-side
@@ -45,28 +52,6 @@ export interface TestConnectionState {
 }
 
 export const initialTestConnectionState: TestConnectionState = {
-  status: "idle",
-};
-
-// ---------------------------------------------------------------------------
-// Clearing the saved GitHub PAT
-// ---------------------------------------------------------------------------
-
-export interface ClearGithubPatState {
-  status: "idle" | "success" | "error";
-  error?: string;
-}
-
-export const initialClearGithubPatState: ClearGithubPatState = {
-  status: "idle",
-};
-
-export interface ClearGitlabPatState {
-  status: "idle" | "success" | "error";
-  error?: string;
-}
-
-export const initialClearGitlabPatState: ClearGitlabPatState = {
   status: "idle",
 };
 

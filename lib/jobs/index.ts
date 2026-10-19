@@ -46,6 +46,14 @@ export {
   detectDefaultBranch,
   getLocalReposRoot,
   getRepoCacheRoot,
+  inPlacePath,
+  isCloneableUrl,
+  probeRemote,
+  providerForUrl,
+  isSshUrl,
+  readsInPlace,
+  refreshGitMirror,
+  urlHost,
   prepareRepoSource,
   readCurrentBranch,
   readCurrentSha,
@@ -61,7 +69,6 @@ export {
 
 export {
   describeGitHubError,
-  getStoredGitHubToken,
   gitHubCloneUrl,
   gitHubRepoWebUrl,
   parseGitHubUrl,
@@ -73,7 +80,6 @@ export {
 
 export {
   describeGitLabError,
-  getStoredGitLabToken,
   gitLabCloneUrl,
   gitLabRepoWebUrl,
   parseGitLabUrl,

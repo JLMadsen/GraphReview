@@ -6,10 +6,17 @@
 //     `LOCAL_REPOS_ROOT` (see `resolveLocalRepoPath`).
 //   - `provider: "github"` / `provider: "gitlab"` — an app-managed clone in
 //     the clone cache (`<data folder>/repos/<repoId>`).
+//   - `provider: "git"` — any other git server (DESIGN.md §6.29): an
+//     app-managed clone whose branches mirror the server's, read in place
+//     like a local repo (`inPlacePath`), since there is no API to ask.
+//
+// SSH URLs clone with the user's own SSH setup (keys, agent, ssh config);
+// HTTPS ones with the PAT from Settings, or anonymously.
 //
 // Server-only (spawns `git`, reads env vars) — never import from a client
 // component.
 
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import { mkdir, rm, stat } from "node:fs/promises";
@@ -18,12 +25,14 @@ import { simpleGit } from "simple-git";
 import type { SimpleGit, SimpleGitOptions } from "simple-git";
 import type { RepoProvider, RepoRecord } from "@/lib/db";
 import { gitCaBundle } from "@/lib/runtime/ca";
+import { memo } from "./memo-cache";
 import { getDataDir } from "@/lib/runtime/paths";
 import { assertSafeGitRef, isSafeGitRef } from "./git-ref";
-import { getStoredGitHubToken, gitHubCloneUrl, parseGitHubUrl } from "./github-access";
-import { getStoredGitLabToken, gitLabCloneUrl, parseGitLabUrl } from "./gitlab-access";
+import { hostOf, serverFor, tokenFor } from "./git-hosts";
+import { gitHubCloneUrl, parseGitHubUrl } from "./github-access";
+import { gitLabCloneUrl, parseGitLabUrl } from "./gitlab-access";
 
-/** The two providers `source.ts` clones/fetches over git — everything that isn't `"local"`. */
+/** The providers `source.ts` clones/fetches over git — everything that isn't `"local"`. */
 type RemoteProvider = Exclude<RepoProvider, "local">;
 
 // A `git` subprocess that decides to ask for credentials would hang forever
@@ -34,8 +43,9 @@ type RemoteProvider = Exclude<RepoProvider, "local">;
 // (or an editor's, inherited via GIT_ASKPASS) open a login window instead,
 // and the clone waits on it. So askpass answers with nothing, and
 // credential helpers are switched off for every command (`gitOptions`) —
-// GraphReview authenticates with the PAT from Settings only, never with the
-// user's own git credentials.
+// over HTTPS GraphReview authenticates with the PAT from Settings only, never
+// with the user's own git credentials. SSH is the exception: an SSH URL uses
+// the user's keys and agent, in batch mode (`ensureSshCommand`).
 process.env.GIT_TERMINAL_PROMPT = "0";
 process.env.GIT_ASKPASS = "echo";
 process.env.SSH_ASKPASS = "echo";
@@ -55,7 +65,45 @@ const GIT_ENVIRONMENT = [
   "GIT_SSL_CAINFO",
   "GIT_SSL_CAPATH",
   "GIT_SSL_NO_VERIFY",
+  "GIT_SSH",
+  "GIT_SSH_COMMAND",
 ];
+
+/** Never prompt (a passphrase, a host key) — a background job can't answer; trust a host seen for the first time, refuse one whose key changed. */
+const SSH_BATCH_OPTIONS = "-o BatchMode=yes -o StrictHostKeyChecking=accept-new";
+
+let sshCommandSet = false;
+
+/**
+ * Sets `GIT_SSH_COMMAND` once, so an SSH clone/fetch never waits on a
+ * prompt: the user's own ssh command (their `GIT_SSH_COMMAND`, else
+ * `core.sshCommand` from their git config — on Windows often the system
+ * OpenSSH, for its agent) plus {@link SSH_BATCH_OPTIONS}. The variable wins
+ * over `core.sshCommand`, which is why that is folded in rather than left to
+ * git. A `GIT_SSH` (PuTTY's plink) is left alone — it takes no `-o`.
+ */
+function ensureSshCommand(): void {
+  if (sshCommandSet) return;
+  sshCommandSet = true;
+  if (process.env.GIT_SSH && !process.env.GIT_SSH_COMMAND) return;
+  let base = process.env.GIT_SSH_COMMAND?.trim();
+  if (!base) {
+    try {
+      base = execFileSync("git", ["config", "--get", "core.sshCommand"], { cwd: os.homedir(), encoding: "utf8", windowsHide: true }).trim();
+    } catch {
+      /* not configured */
+    }
+  }
+  process.env.GIT_SSH_COMMAND = `${base || "ssh"} ${SSH_BATCH_OPTIONS}`;
+}
+
+/** `git@host:path`, `ssh://…` — a URL git fetches over SSH. */
+export function isSshUrl(url: string): boolean {
+  return /^ssh:\/\//i.test(url) || (!url.includes("://") && /^[\w.-]+@[\w.-]+:/.test(url));
+}
+
+/** The host of a clone URL in any form git takes (`https://`, `ssh://`, `git@host:path`, `host/path`), lowercase, or `null`. */
+export const urlHost = hostOf;
 
 /** Idle timeout for a git subprocess that should be quick (`ls-remote`, `rev-parse`). */
 const QUICK_GIT_TIMEOUT_MS = 20_000;
@@ -72,6 +120,7 @@ function gitOptions(
   timeoutMs: number,
   config: string[] = []
 ): Partial<SimpleGitOptions> {
+  ensureSshCommand();
   return {
     baseDir,
     maxConcurrentProcesses: 1,
@@ -87,7 +136,7 @@ function gitOptions(
     // migration name) fail the checkout unless git uses long paths.
     config: ["credential.helper=", ...(process.platform === "win32" ? ["core.longpaths=true"] : []), ...gitCaConfig(), ...config],
     allowEnvironment: GIT_ENVIRONMENT,
-    unsafe: { allowUnsafeCredentialHelper: true },
+    unsafe: { allowUnsafeCredentialHelper: true, allowUnsafeSshCommand: true },
   };
 }
 
@@ -107,17 +156,19 @@ export function gitIn(baseDir: string, timeoutMs = QUICK_GIT_TIMEOUT_MS, config:
  * `/proc/<pid>/cmdline`) and ends up in error messages; an environment isn't
  * and doesn't.
  *
- * The Basic-auth username differs by host convention: GitHub accepts (and
- * its own docs recommend) `x-access-token` as the username for a PAT;
- * GitLab's documented convention for PAT-over-HTTPS is `oauth2`. Either
- * host actually accepts near-arbitrary non-empty usernames as long as the
- * password is a valid token, but matching each host's own convention avoids
- * surprises.
+ * The token is the one saved for the URL's server (./git-hosts.ts) — never
+ * for an SSH URL, which authenticates with the user's key instead. The
+ * Basic-auth username follows each server's convention: GitHub recommends
+ * `x-access-token`, GitLab documents `oauth2` (both accept near-anything);
+ * another git server gets the username saved with its token (Bitbucket
+ * needs the real one), else `git`.
  */
-function authEnv(token: string | null, provider: RemoteProvider): Record<string, string> | null {
-  if (!token) return null;
-  const username = provider === "gitlab" ? "oauth2" : "x-access-token";
-  const basic = Buffer.from(`${username}:${token}`).toString("base64");
+async function authEnv(url: string): Promise<Record<string, string> | null> {
+  if (isSshUrl(url)) return null;
+  const saved = await tokenFor(url);
+  if (!saved) return null;
+  const username = saved.kind === "gitlab" ? "oauth2" : saved.kind === "github" ? "x-access-token" : saved.username || "git";
+  const basic = Buffer.from(`${username}:${saved.auth.token}`).toString("base64");
   return {
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "http.extraHeader",
@@ -151,17 +202,12 @@ function remoteGit(baseDir: string, timeoutMs: number, auth: Record<string, stri
     // The explicit environment carries the no-prompt GIT_ASKPASS/SSH_ASKPASS
     // (`echo`, set at the top of this file), which simple-git checks only when
     // they are passed this way rather than inherited.
-    unsafe: { allowUnsafeCredentialHelper: true, allowUnsafeConfigEnvCount: true, allowUnsafeAskPass: true },
+    unsafe: { allowUnsafeCredentialHelper: true, allowUnsafeConfigEnvCount: true, allowUnsafeAskPass: true, allowUnsafeSshCommand: true },
   }).env({ ...env, ...auth });
 }
 
-/** The token + host label for whichever remote provider a repo uses. */
-async function resolveRemoteToken(provider: RemoteProvider): Promise<string | null> {
-  return provider === "gitlab" ? getStoredGitLabToken() : getStoredGitHubToken();
-}
-
 function providerLabel(provider: RemoteProvider): string {
-  return provider === "gitlab" ? "GitLab" : "GitHub";
+  return provider === "gitlab" ? "GitLab" : provider === "git" ? "the git server" : "GitHub";
 }
 
 /**
@@ -199,15 +245,37 @@ export class RepoAccessError extends Error {
   override readonly name = "RepoAccessError";
 }
 
-function withFriendlyAuthError<T>(promise: Promise<T>, provider: RemoteProvider, hadToken: boolean): Promise<T> {
+/** SSH's own refusals: no key the server accepts, or a passphrase with no agent to supply it. */
+const SSH_KEY_REFUSED_PATTERN = /permission denied \(publickey|incorrect passphrase/i;
+/** A host key that no longer matches known_hosts. (A new host is accepted — `accept-new`.) */
+const SSH_HOST_KEY_PATTERN = /host key verification failed|remote host identification has changed/i;
+
+function withFriendlyAuthError<T>(promise: Promise<T>, provider: RemoteProvider, hadToken: boolean, url = ""): Promise<T> {
   return promise.catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
+    if (isSshUrl(url) && SSH_HOST_KEY_PATTERN.test(message)) {
+      throw new RepoAccessError(
+        `The SSH host key of ${urlHost(url) ?? "the server"} doesn't match the one in your known_hosts — it changed, or something is in between. Check it, then remove the old entry with ssh-keygen -R <host>.`
+      );
+    }
+    if (isSshUrl(url) && SSH_KEY_REFUSED_PATTERN.test(message)) {
+      throw new RepoAccessError(
+        `${urlHost(url) ?? "The server"} refused your SSH key. GraphReview uses your own SSH setup without prompting: a key in ~/.ssh (or your ssh config) with access to this repository, and a key with a passphrase loaded into ssh-agent.`
+      );
+    }
+    if (provider === "git" && AUTH_FAILURE_PATTERN.test(message)) {
+      throw new RepoAccessError(
+        hadToken
+          ? `${urlHost(url) ?? "The server"} rejected the token saved for it — re-enter it in Settings → Git servers, with your username if the server needs one.`
+          : "This repository could not be reached without credentials. Save a token for its server in Settings → Git servers, or add it by its SSH URL (git@host:path) to clone with your SSH key."
+      );
+    }
     if (AUTH_FAILURE_PATTERN.test(message)) {
       const host = providerLabel(provider);
       throw new RepoAccessError(
         hadToken
-          ? `${host} rejected the request (likely an invalid, expired, or insufficiently-scoped PAT — it needs repo read access for a private repository). Re-enter it in Settings.`
-          : `This repository could not be reached without credentials — it's likely private. Add a ${host} PAT in Settings.`
+          ? `${host} rejected the request (likely an invalid, expired, or insufficiently-scoped PAT — it needs repo read access for a private repository). Re-enter it in Settings → Git servers.`
+          : `This repository could not be reached without credentials — it's likely private. Save a token for its server in Settings → Git servers.`
       );
     }
     throw error;
@@ -233,6 +301,11 @@ export function getRepoCacheRoot(): string {
 
 export function repoCacheDir(repoId: string): string {
   return path.join(getRepoCacheRoot(), repoId);
+}
+
+function isInside(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
 export class LocalPathOutsideRootError extends Error {
@@ -263,6 +336,11 @@ export function resolveLocalRepoPath(localPath: string): string {
       : localPath;
 
   const root = getLocalReposRoot();
+  // A plain git repo's clone is read through here too (`inPlacePath`); it is
+  // the app's own folder, not one LOCAL_REPOS_ROOT is meant to confine.
+  if (root && path.isAbsolute(expanded) && isInside(getRepoCacheRoot(), path.resolve(expanded))) {
+    return path.resolve(expanded);
+  }
   if (!root) {
     if (!path.isAbsolute(expanded)) {
       throw new Error(`Local repo path "${localPath}" must be absolute (e.g. ${path.join(os.homedir(), "code", "my-app")}).`);
@@ -342,12 +420,8 @@ export interface RemoteHead {
  * one network round trip, no clone, and it yields the default branch name in
  * the same call.
  */
-export async function readRemoteHead(
-  url: string,
-  token: string | null,
-  provider: RemoteProvider
-): Promise<RemoteHead> {
-  const output = await remoteGit(process.cwd(), QUICK_GIT_TIMEOUT_MS, authEnv(token, provider)).listRemote([
+export async function readRemoteHead(url: string): Promise<RemoteHead> {
+  const output = await remoteGit(process.cwd(), QUICK_GIT_TIMEOUT_MS, await authEnv(url)).listRemote([
     "--symref",
     url,
     "HEAD",
@@ -368,8 +442,17 @@ export async function readRemoteHead(
   return result;
 }
 
-/** The clone URL for a github- or gitlab-provider repo, normalized to `https://<host>/<owner>/<repo>.git`. */
-export function remoteUrlForRepo(repo: Pick<RepoRecord, "provider" | "url">): string {
+/**
+ * The URL a repo is cloned from: a plain git repo's URL as entered, a
+ * GitHub/GitLab repo's SSH URL when it was added by one (`cloneUrl`), else
+ * `https://<host>/<owner>/<repo>.git`.
+ */
+export function remoteUrlForRepo(repo: Pick<RepoRecord, "provider" | "url" | "cloneUrl">): string {
+  if (repo.provider === "git") {
+    if (!repo.url) throw new Error("remoteUrlForRepo: repo has no URL.");
+    return repo.url;
+  }
+  if (repo.cloneUrl) return repo.cloneUrl;
   if (repo.provider === "gitlab") {
     if (!repo.url) throw new Error("remoteUrlForRepo: repo has no GitLab URL.");
     const ref = parseGitLabUrl(repo.url);
@@ -421,8 +504,7 @@ export async function prepareRepoSource(
   const remoteProvider = repo.provider as RemoteProvider;
   const remote = remoteUrlForRepo(repo);
   const dir = repoCacheDir(repo.id);
-  const token = await resolveRemoteToken(remoteProvider);
-  const auth = authEnv(token, remoteProvider);
+  const auth = await authEnv(remote);
 
   if (!existsSync(path.join(dir, ".git"))) {
     // A leftover directory without a .git (interrupted earlier clone) would
@@ -433,15 +515,23 @@ export async function prepareRepoSource(
     await withFriendlyAuthError(
       remoteGit(getRepoCacheRoot(), SLOW_GIT_TIMEOUT_MS, auth).clone(remote, dir),
       remoteProvider,
-      Boolean(token)
+      Boolean(auth),
+      remote
     );
+    if (repo.provider === "git") await syncGitMirror(repo, log);
     return { dir, sha: await readHeadSha(dir), cloned: true };
+  }
+
+  if (repo.provider === "git") {
+    log(`fetching ${remote} into existing clone at ${dir}`);
+    await syncGitMirror(repo, log);
+    return { dir, sha: await readHeadSha(dir), cloned: false };
   }
 
   log(`fetching ${remote} into existing clone at ${dir}`);
   const git = remoteGit(dir, SLOW_GIT_TIMEOUT_MS, auth);
   await git.remote(["set-url", "origin", remote]);
-  await withFriendlyAuthError(git.fetch(["--prune", "origin"]), remoteProvider, Boolean(token));
+  await withFriendlyAuthError(git.fetch(["--prune", "origin"]), remoteProvider, Boolean(auth), remote);
 
   // Force the working tree onto the remote's current default-branch head.
   // `-B` resets an existing local branch instead of failing, and `--force`
@@ -456,6 +546,57 @@ export async function prepareRepoSource(
   }
 
   return { dir, sha: await readHeadSha(dir), cloned: false };
+}
+
+/** Where a plain git repo's clone keeps the server's branches: as its own branches, so names resolve and list as in a local repo. */
+const MIRROR_BRANCHES = "+refs/heads/*:refs/heads/*";
+
+/**
+ * Brings a plain git repo's clone level with the server: every server branch
+ * becomes (or moves) the clone's branch of that name, gone ones are pruned,
+ * and the checkout sits detached at the default branch. Detached first, so
+ * the fetch may move every branch, the default one included.
+ */
+async function syncGitMirror(repo: RepoRecord, log: Logger): Promise<void> {
+  const remote = remoteUrlForRepo(repo);
+  const auth = await authEnv(remote);
+  const git = remoteGit(repoCacheDir(repo.id), SLOW_GIT_TIMEOUT_MS, auth);
+  await git.remote(["set-url", "origin", remote]);
+  await git.raw(["checkout", "--force", "--detach"]);
+  await git.raw(["config", "remote.origin.fetch", MIRROR_BRANCHES]);
+  await withFriendlyAuthError(git.fetch(["--prune", "--tags", "origin"]), "git", Boolean(auth), remote);
+  if (!isSafeGitRef(repo.defaultBranch)) return;
+  try {
+    await git.raw(["checkout", "--force", "--detach", `refs/heads/${repo.defaultBranch}`]);
+  } catch (error) {
+    log(`could not check out ${repo.defaultBranch} (${(error as Error).message.split("\n")[0]}) — keeping the current commit`);
+  }
+}
+
+/** How long a plain git repo's branches are trusted before the branch picker fetches again. */
+const GIT_MIRROR_TTL_MS = 30_000;
+
+/**
+ * Fetches a plain git repo's branches into its clone, at most every
+ * {@link GIT_MIRROR_TTL_MS} — what the branch and commit pickers call, so a
+ * branch pushed since the last analysis shows up. A repo not cloned yet is
+ * left to its analysis.
+ */
+export function refreshGitMirror(repo: RepoRecord): Promise<void> {
+  if (repo.provider !== "git" || !existsSync(path.join(repoCacheDir(repo.id), ".git"))) return Promise.resolve();
+  return memo("git-mirror", repo.id, { ttlMs: GIT_MIRROR_TTL_MS, maxEntries: 50 }, () => syncGitMirror(repo, () => {}));
+}
+
+/** Repos the git layer (./local-git.ts) reads in place: local folders, and plain git repos' clones. */
+export function readsInPlace(repo: Pick<RepoRecord, "provider">): boolean {
+  return repo.provider === "local" || repo.provider === "git";
+}
+
+/** The folder ./local-git.ts reads `repo` in: a local repo's path, a plain git repo's clone, `undefined` for GitHub/GitLab (or a local repo with no path). */
+export function inPlacePath(repo: Pick<RepoRecord, "provider" | "id" | "localPath">): string | undefined {
+  if (repo.provider === "local") return repo.localPath;
+  if (repo.provider === "git") return repoCacheDir(repo.id);
+  return undefined;
 }
 
 /**
@@ -481,8 +622,9 @@ export async function ensureCommitsInCache(
   const dir = repoCacheDir(repo.id);
   if (!existsSync(path.join(dir, ".git"))) await prepareRepoSource(repo, log);
 
-  const token = await resolveRemoteToken(remoteProvider);
-  const git = remoteGit(dir, SLOW_GIT_TIMEOUT_MS, authEnv(token, remoteProvider));
+  const remote = remoteUrlForRepo(repo);
+  const auth = await authEnv(remote);
+  const git = remoteGit(dir, SLOW_GIT_TIMEOUT_MS, auth);
   const missing = async (): Promise<string[]> => {
     const out: string[] = [];
     for (const sha of shas) {
@@ -499,13 +641,13 @@ export async function ensureCommitsInCache(
   if (absent.length === 0) return dir;
   log(`fetching ${absent.map((s) => s.slice(0, 7)).join(", ")} into the app's clone`);
   try {
-    await withFriendlyAuthError(git.fetch(["--end-of-options", "origin", ...absent]), remoteProvider, Boolean(token));
+    await withFriendlyAuthError(git.fetch(["--end-of-options", "origin", ...absent]), remoteProvider, Boolean(auth), remote);
   } catch (error) {
     log(`fetch by sha failed (${(error as Error).message.split("\n")[0]}) — fetching refs instead`);
   }
   absent = await missing();
   if (absent.length > 0 && refspecs.length > 0) {
-    await withFriendlyAuthError(git.fetch(["--end-of-options", "origin", ...refspecs]), remoteProvider, Boolean(token));
+    await withFriendlyAuthError(git.fetch(["--end-of-options", "origin", ...refspecs]), remoteProvider, Boolean(auth), remote);
     absent = await missing();
   }
   if (absent.length > 0) {
@@ -527,9 +669,7 @@ export async function readCurrentSha(repo: RepoRecord): Promise<string | null> {
       const dir = resolveLocalRepoPath(repo.localPath);
       return await readDefaultTipSha(dir, repo.defaultBranch);
     }
-    const remoteProvider = repo.provider as RemoteProvider;
-    const token = await resolveRemoteToken(remoteProvider);
-    const { sha } = await readRemoteHead(remoteUrlForRepo(repo), token, remoteProvider);
+    const { sha } = await readRemoteHead(remoteUrlForRepo(repo));
     return sha ?? null;
   } catch {
     return null;
@@ -559,6 +699,27 @@ export async function readLocalDefaultBranch(dir: string): Promise<string | unde
   return readCurrentBranch(dir);
 }
 
+/** A URL git can clone that isn't a local path or a transport helper: `http(s)://`, `ssh://`, `git://`, or `user@host:path`. */
+export function isCloneableUrl(url: string): boolean {
+  return /^(?:https?|ssh|git):\/\/[^/\s]+\/\S+$/i.test(url) || (isSshUrl(url) && !/\s/.test(url));
+}
+
+/**
+ * Which provider a URL belongs to, by its host alone (./git-hosts.ts): a
+ * server a token was saved for says what it is; else the configured or
+ * public GitHub/GitLab hosts; else a plain git server. The add-repo form
+ * takes one URL and asks nothing else (DESIGN.md §6.29, §6.30).
+ */
+export async function providerForUrl(url: string): Promise<RemoteProvider> {
+  return (await serverFor(url))?.kind ?? "git";
+}
+
+/** `readRemoteHead` that fails with the same actionable message a clone would (no SSH key access, no credentials). */
+export async function probeRemote(url: string, provider: RemoteProvider): Promise<RemoteHead> {
+  const auth = await authEnv(url);
+  return withFriendlyAuthError(readRemoteHead(url), provider, Boolean(auth), url);
+}
+
 /** Best-effort default-branch detection when adding a repo, falling back to `"main"`. */
 export async function detectDefaultBranch(
   source: { provider: "local"; dir: string } | { provider: RemoteProvider; url: string }
@@ -567,8 +728,7 @@ export async function detectDefaultBranch(
     if (source.provider === "local") {
       return (await readLocalDefaultBranch(source.dir)) ?? "main";
     }
-    const token = await resolveRemoteToken(source.provider);
-    const { defaultBranch } = await readRemoteHead(source.url, token, source.provider);
+    const { defaultBranch } = await readRemoteHead(source.url);
     return defaultBranch ?? "main";
   } catch {
     return "main";

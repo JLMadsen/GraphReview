@@ -17,7 +17,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ rep
   try {
     const repo = await getRepoById(repoId);
     if (!repo) return apiError("Repo not found.", 404);
-    const ciHost = repo.provider === "local" ? null : repo.provider === "gitlab" ? "GitLab" : "GitHub";
+    const ciHost = repo.provider === "local" || repo.provider === "git" ? null : repo.provider === "gitlab" ? "GitLab" : "GitHub";
     return NextResponse.json({ stats: await loadRepoStats(repo), ciHost });
   } catch (error) {
     console.error(`GET /api/repos/${repoId}/stats failed:`, error);

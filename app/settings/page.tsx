@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
-import { getActiveAiProviderId, getSettings, listAiProviders } from "@/lib/db";
+import { getActiveAiProviderId, listAiProviders, listGitTokens } from "@/lib/db";
+import { GitServersCard } from "./git-servers-card";
 import { SettingsForm } from "./settings-form";
 import { getMcpToken } from "@/lib/mcp/token";
 import { McpCard } from "./mcp-card";
@@ -9,7 +10,7 @@ import { ChecklistEditor } from "@/components/graph/ChecklistEditor";
 /**
  * Settings.
  *
- * A single global (not per-repo) page for the GitHub PAT and AI provider
+ * A single global (not per-repo) page for the git server tokens and AI provider
  * config, since both are instance-wide under the
  * single-local-admin model. AI provider config is a *list* of saved
  * providers (base URL/key/model each, lib/db/ai-provider.ts) with one
@@ -43,17 +44,17 @@ export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   // The database may fail to open (e.g. an unreadable data folder). Degrade
   // to an empty settings view rather than crashing the whole page.
-  let settings: Awaited<ReturnType<typeof getSettings>> | null = null;
+  let gitTokens: Awaited<ReturnType<typeof listGitTokens>> = [];
   let providers: Awaited<ReturnType<typeof listAiProviders>> = [];
   let activeProviderId: string | null = null;
   try {
-    [settings, providers, activeProviderId] = await Promise.all([
-      getSettings(),
+    [gitTokens, providers, activeProviderId] = await Promise.all([
+      listGitTokens(),
       listAiProviders(),
       getActiveAiProviderId(),
     ]);
   } catch {
-    settings = null;
+    gitTokens = [];
     providers = [];
     activeProviderId = null;
   }
@@ -61,7 +62,7 @@ export default async function SettingsPage() {
   // The MCP snippets use the address this page was reached on, so they carry
   // this instance's real port (middleware.ts only lets loopback hosts through).
   const mcpUrl = `http://${(await headers()).get("host") ?? "127.0.0.1:3470"}/api/mcp`;
-  // Shown back (unlike the PATs): each agent's config needs it.
+  // Shown back (unlike the git tokens): each agent's config needs it.
   const mcpToken = await getMcpToken().catch(() => null);
 
   return (
@@ -74,12 +75,13 @@ export default async function SettingsPage() {
         </p>
       </div>
 
-      {/* Four columns on a wide screen — git-host PATs, AI providers, PR
+      {/* Four columns on a wide screen — git server tokens, AI providers, PR
           checklist, MCP — two on a laptop, one on a phone. */}
       <div className="grid items-start gap-5 lg:grid-cols-2 2xl:grid-cols-4">
+        <GitServersCard
+          servers={gitTokens.map((t) => ({ id: t.id, origin: t.origin, kind: t.kind, username: t.username }))}
+        />
         <SettingsForm
-          initialHasGithubPat={Boolean(settings?.githubPatEncrypted)}
-          initialHasGitlabPat={Boolean(settings?.gitlabPatEncrypted)}
           initialProviders={providers.map((p) => ({
             id: p.id,
             name: p.name,

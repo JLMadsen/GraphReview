@@ -16,6 +16,7 @@
 
 import {
   Check,
+  GitBranch,
   Github,
   Gitlab,
   HardDrive,
@@ -155,12 +156,14 @@ const PROVIDER_ICONS: Record<RepoProvider, LucideIcon> = {
   local: HardDrive,
   github: Github,
   gitlab: Gitlab,
+  git: GitBranch,
 };
 
 export const PROVIDER_NAMES: Record<RepoProvider, string> = {
   local: "Local",
   github: "GitHub",
   gitlab: "GitLab",
+  git: "Git",
 };
 
 /** The icon for a repo's source — shared by the repo list, the repo detail header, and the repo switcher, so the three don't each hand-roll the same lookup. */

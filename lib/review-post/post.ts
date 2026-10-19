@@ -12,6 +12,7 @@ import {
   type PullRequestReviewComment,
   type PullRequestReviewEvent,
 } from "@/lib/github";
+import type { GitHostAuth } from "@/lib/github";
 import {
   approveMergeRequest,
   createMergeRequestDiscussion,
@@ -71,7 +72,7 @@ function hostOf(repo: RepoRecord): PostHost | null {
 const UNAVAILABLE: Record<GitHubUnavailableReason | GitLabUnavailableReason, (host: string) => string> = {
   not_linked: () => "This repo isn't linked to GitHub or GitLab, so there's no PR to post to.",
   invalid_url: (host) => `The repo's ${host} URL couldn't be read.`,
-  no_token: (host) => `No ${host} token is saved — add one in Settings to post reviews.`,
+  no_token: (host) => `No ${host} token is saved — add one for this server in Settings → Git servers to post reviews.`,
 };
 
 /** The Markdown an inline comment carries: verdict, tag, summary, then the reasoning. */
@@ -191,8 +192,8 @@ export async function buildPostDraft(repo: RepoRecord, prNumber: number): Promis
 }
 
 type Access =
-  | { ok: true; host: "github"; owner: string; repo: string; token: string }
-  | { ok: true; host: "gitlab"; project: string; token: string }
+  | { ok: true; host: "github"; owner: string; repo: string; token: GitHostAuth }
+  | { ok: true; host: "gitlab"; project: string; token: GitHostAuth }
   | { ok: false; message: string };
 
 async function accessFor(repo: RepoRecord): Promise<Access> {
@@ -218,7 +219,7 @@ async function checkScopes(access: Exclude<Access, { ok: false }>): Promise<void
     if (scopes && !scopes.includes("repo") && !scopes.includes("public_repo")) {
       throw new PostReviewError(
         `Your GitHub token can't post reviews: it has ${scopes.length ? scopes.map((s) => `"${s}"`).join(", ") : "no scopes"}, ` +
-          `and needs "repo" ("public_repo" is enough for a public repo). Make a token with that scope and save it in Settings.`,
+          `and needs "repo" ("public_repo" is enough for a public repo). Make a token with that scope and save it in Settings → Git servers.`,
         403,
         "missing_scope"
       );
@@ -229,7 +230,7 @@ async function checkScopes(access: Exclude<Access, { ok: false }>): Promise<void
   if (scopes && !scopes.includes("api")) {
     throw new PostReviewError(
       `Your GitLab token can't post reviews: it has ${scopes.length ? scopes.map((s) => `"${s}"`).join(", ") : "no scopes"}, ` +
-        `and needs "api" ("read_api" can't write). Make a token with that scope and save it in Settings.`,
+        `and needs "api" ("read_api" can't write). Make a token with that scope and save it in Settings → Git servers.`,
       403,
       "missing_scope"
     );
@@ -240,7 +241,7 @@ async function checkScopes(access: Exclude<Access, { ok: false }>): Promise<void
 function describeHostError(err: unknown, host: PostHost): PostReviewError {
   if (err instanceof PostReviewError) return err;
   if (err instanceof GitHubApiError || err instanceof GitLabApiError) {
-    if (err.status === 401) return new PostReviewError(`${host === "github" ? "GitHub" : "GitLab"} rejected the token (401) — save a valid one in Settings.`, 403, "bad_token");
+    if (err.status === 401) return new PostReviewError(`${host === "github" ? "GitHub" : "GitLab"} rejected the token (401) — save a valid one in Settings → Git servers.`, 403, "bad_token");
     if (host === "github" && (err.status === 403 || err.status === 404)) {
       return new PostReviewError(
         `GitHub refused the review (${err.status}). A classic token needs the "repo" scope; a fine-grained token needs "Pull requests: Read and write" on this repo. ${err.message}`,

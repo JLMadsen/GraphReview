@@ -1,8 +1,8 @@
 // GitLab API wrapper — the GitLab counterpart to lib/github/client.ts.
 //
-// Fully self-contained: every function takes the PAT as an explicit `token`
-// parameter. Nothing here reads settings, decrypts credentials, or touches
-// the database — that wiring belongs to lib/jobs/gitlab-access.ts, matching how
+// Fully self-contained: every function takes the PAT and its API host as an
+// explicit `auth` parameter (`GitHostAuth`). Nothing here reads settings,
+// decrypts credentials, or touches the database — that wiring belongs to lib/jobs/gitlab-access.ts, matching how
 // lib/jobs/github-access.ts wires up lib/github/client.ts.
 //
 // Uses a plain `fetch` client against GitLab REST API v4 rather than a
@@ -10,9 +10,9 @@
 // Link-header pagination (same shape as GitHub's), simple enough not to
 // need a generated SDK for the handful of endpoints this app uses.
 //
-// The API host is overridable via `GITLAB_API_URL` (a self-hosted GitLab
-// instance, or an internal mirror) — see `GITLAB_API_BASE_URL` below and
-// docs/install.md. Defaults to gitlab.com.
+// The API host comes with each saved token (`auth.apiUrl`, a self-hosted
+// instance's `/api/v4`); without one, `GITLAB_API_URL`, else gitlab.com —
+// see `GITLAB_API_BASE_URL` below and docs/install.md.
 //
 // GitLab merge requests are mapped onto the exact same PullRequestSummary/
 // PullRequestDetail/PullRequestFile/LinkedIssue shapes lib/github uses (see
@@ -20,6 +20,7 @@
 // this module.
 
 import { GitLabApiError, toGitLabApiError, toGitLabNetworkError } from "./errors";
+import type { GitHostAuth } from "@/lib/github/types";
 import type {
   Branch,
   CiCheck,
@@ -49,8 +50,12 @@ const DEFAULT_PER_PAGE = 100;
 const GITLAB_API_BASE_URL = process.env.GITLAB_API_URL || "https://gitlab.com/api/v4";
 
 /** GitLab identifies a project by numeric ID or by its URL-encoded full path — `group/subgroup/project` becomes one path-encoded segment, which is how nested subgroups of arbitrary depth are supported. */
-function projectApiBase(projectPath: string): string {
-  return `${GITLAB_API_BASE_URL}/projects/${encodeURIComponent(projectPath)}`;
+function apiBase(auth: GitHostAuth): string {
+  return (auth.apiUrl ?? GITLAB_API_BASE_URL).replace(/\/+$/, "");
+}
+
+function projectApiBase(auth: GitHostAuth, projectPath: string): string {
+  return `${apiBase(auth)}/projects/${encodeURIComponent(projectPath)}`;
 }
 
 interface FetchResult {
@@ -58,10 +63,10 @@ interface FetchResult {
   headers: Headers;
 }
 
-async function gitlabFetch(endpoint: string, url: string, token: string): Promise<FetchResult> {
+async function gitlabFetch(endpoint: string, url: string, auth: GitHostAuth): Promise<FetchResult> {
   let response: Response;
   try {
-    response = await fetch(url, { headers: { "PRIVATE-TOKEN": token } });
+    response = await fetch(url, { headers: { "PRIVATE-TOKEN": auth.token } });
   } catch (err) {
     throw toGitLabNetworkError(err, endpoint);
   }
@@ -112,7 +117,7 @@ function nextLinkFrom(headers: Headers): string | null {
 async function runPaginated<Item, T>(
   endpoint: string,
   initialUrl: string,
-  token: string,
+  auth: GitHostAuth,
   mapItem: (item: Item) => T,
   /** Stop paging once this many items are in. */
   maxItems?: number
@@ -121,7 +126,7 @@ async function runPaginated<Item, T>(
   let rateLimit: RateLimitInfo | null = null;
   let url: string | null = initialUrl;
   while (url) {
-    const { data, headers } = await gitlabFetch(endpoint, url, token);
+    const { data, headers } = await gitlabFetch(endpoint, url, auth);
     rateLimit = extractRateLimit(headers) ?? rateLimit;
     for (const item of data as Item[]) items.push(mapItem(item));
     url = maxItems !== undefined && items.length >= maxItems ? null : nextLinkFrom(headers);
@@ -139,10 +144,10 @@ interface GitLabBranch {
   protected: boolean;
 }
 
-export async function listBranches(token: string, projectPath: string): Promise<GitLabResult<Branch[]>> {
+export async function listBranches(auth: GitHostAuth, projectPath: string): Promise<GitLabResult<Branch[]>> {
   const endpoint = "GET /projects/{id}/repository/branches";
-  const url = `${projectApiBase(projectPath)}/repository/branches?per_page=${DEFAULT_PER_PAGE}`;
-  return runPaginated<GitLabBranch, Branch>(endpoint, url, token, (branch) => ({
+  const url = `${projectApiBase(auth, projectPath)}/repository/branches?per_page=${DEFAULT_PER_PAGE}`;
+  return runPaginated<GitLabBranch, Branch>(endpoint, url, auth, (branch) => ({
     name: branch.name,
     commitSha: branch.commit.id,
     protected: branch.protected,
@@ -189,7 +194,7 @@ function mapMrSummary(mr: GitLabMergeRequestListItem): PullRequestSummary {
 }
 
 async function listMergeRequestsByState(
-  token: string,
+  auth: GitHostAuth,
   projectPath: string,
   glState: string,
   limit?: number
@@ -201,26 +206,26 @@ async function listMergeRequestsByState(
     order_by: "updated_at",
     sort: "desc",
   });
-  const url = `${projectApiBase(projectPath)}/merge_requests?${params}`;
-  return runPaginated<GitLabMergeRequestListItem, PullRequestSummary>(endpoint, url, token, mapMrSummary, limit);
+  const url = `${projectApiBase(auth, projectPath)}/merge_requests?${params}`;
+  return runPaginated<GitLabMergeRequestListItem, PullRequestSummary>(endpoint, url, auth, mapMrSummary, limit);
 }
 
 export async function listMergeRequests(
-  token: string,
+  auth: GitHostAuth,
   projectPath: string,
   state: PullRequestListState = "open",
   /** Most recently updated first; omit for every MR. */
   limit?: number
 ): Promise<GitLabResult<PullRequestSummary[]>> {
-  if (state === "open") return listMergeRequestsByState(token, projectPath, "opened", limit);
-  if (state === "all") return listMergeRequestsByState(token, projectPath, "all", limit);
+  if (state === "open") return listMergeRequestsByState(auth, projectPath, "opened", limit);
+  if (state === "all") return listMergeRequestsByState(auth, projectPath, "all", limit);
 
   // GitLab's `state=closed` excludes merged MRs — unlike GitHub, where a
   // "closed" PR list includes merged ones — so fetch both and merge to give
   // the app's "Closed" tab the same meaning it has for a GitHub repo.
   const [closed, merged] = await Promise.all([
-    listMergeRequestsByState(token, projectPath, "closed", limit),
-    listMergeRequestsByState(token, projectPath, "merged", limit),
+    listMergeRequestsByState(auth, projectPath, "closed", limit),
+    listMergeRequestsByState(auth, projectPath, "merged", limit),
   ]);
   const combined = [...closed.data, ...merged.data]
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
@@ -234,13 +239,13 @@ interface GitLabMergeRequestDetail extends GitLabMergeRequestListItem {
 }
 
 export async function getMergeRequest(
-  token: string,
+  auth: GitHostAuth,
   projectPath: string,
   iid: number
 ): Promise<GitLabResult<PullRequestDetail>> {
   const endpoint = "GET /projects/{id}/merge_requests/{iid}";
-  const url = `${projectApiBase(projectPath)}/merge_requests/${iid}`;
-  const { data, headers } = await gitlabFetch(endpoint, url, token);
+  const url = `${projectApiBase(auth, projectPath)}/merge_requests/${iid}`;
+  const { data, headers } = await gitlabFetch(endpoint, url, auth);
   const mr = data as GitLabMergeRequestDetail;
   if (!mr.diff_refs) {
     throw new GitLabApiError(
@@ -310,13 +315,13 @@ interface GitLabChangesResponse {
 
 /** Per-file unified diffs for a merge request, via `GET /projects/{id}/merge_requests/{iid}/changes` — GitLab's counterpart to GitHub's files-with-`patch` endpoint. */
 export async function listMergeRequestFiles(
-  token: string,
+  auth: GitHostAuth,
   projectPath: string,
   iid: number
 ): Promise<GitLabResult<PullRequestFile[]>> {
   const endpoint = "GET /projects/{id}/merge_requests/{iid}/changes";
-  const url = `${projectApiBase(projectPath)}/merge_requests/${iid}/changes`;
-  const { data, headers } = await gitlabFetch(endpoint, url, token);
+  const url = `${projectApiBase(auth, projectPath)}/merge_requests/${iid}/changes`;
+  const { data, headers } = await gitlabFetch(endpoint, url, auth);
   const body = data as GitLabChangesResponse;
   return { data: (body.changes ?? []).map(toPullRequestFile), rateLimit: extractRateLimit(headers) };
 }
@@ -329,18 +334,18 @@ interface GitLabCompareResponse {
 
 /** Ad-hoc `from...to` ref comparison, via `GET /projects/{id}/repository/compare` (not tied to a merge request). `base`/`head` resolved to exact SHAs via {@link getRefSha} rather than trusted as already-SHAs, since callers may pass branch names. */
 export async function compareRefs(
-  token: string,
+  auth: GitHostAuth,
   projectPath: string,
   base: string,
   head: string
 ): Promise<GitLabResult<RefComparison>> {
   const endpoint = "GET /projects/{id}/repository/compare";
-  const url = `${projectApiBase(projectPath)}/repository/compare?${new URLSearchParams({ from: base, to: head })}`;
+  const url = `${projectApiBase(auth, projectPath)}/repository/compare?${new URLSearchParams({ from: base, to: head })}`;
 
   const [compareResult, baseShaResult, headShaResult] = await Promise.all([
-    gitlabFetch(endpoint, url, token),
-    getRefSha(token, projectPath, base),
-    getRefSha(token, projectPath, head),
+    gitlabFetch(endpoint, url, auth),
+    getRefSha(auth, projectPath, base),
+    getRefSha(auth, projectPath, head),
   ]);
 
   const body = compareResult.data as GitLabCompareResponse;
@@ -376,7 +381,7 @@ interface GitLabCommit {
 
 /** The newest `limit` commits reachable from `ref` (omitted = the project's default branch), newest first, via `GET /projects/{id}/repository/commits`. One page — capped at 100. */
 export async function listCommits(
-  token: string,
+  auth: GitHostAuth,
   projectPath: string,
   ref: string | undefined,
   limit = 50
@@ -384,8 +389,8 @@ export async function listCommits(
   const endpoint = "GET /projects/{id}/repository/commits";
   const params = new URLSearchParams({ per_page: String(Math.min(100, Math.max(1, limit))) });
   if (ref) params.set("ref_name", ref);
-  const url = `${projectApiBase(projectPath)}/repository/commits?${params}`;
-  const { data, headers } = await gitlabFetch(endpoint, url, token);
+  const url = `${projectApiBase(auth, projectPath)}/repository/commits?${params}`;
+  const { data, headers } = await gitlabFetch(endpoint, url, auth);
   return {
     data: (data as GitLabCommit[]).map((commit) => ({
       sha: commit.id,
@@ -399,10 +404,10 @@ export async function listCommits(
 }
 
 /** The commit sha a ref (branch, tag or sha) currently points at, via `GET /projects/{id}/repository/commits/{ref}`. This is what the stale-review check polls, so it stays a single lightweight call. */
-export async function getRefSha(token: string, projectPath: string, ref: string): Promise<GitLabResult<string>> {
+export async function getRefSha(auth: GitHostAuth, projectPath: string, ref: string): Promise<GitLabResult<string>> {
   const endpoint = "GET /projects/{id}/repository/commits/{ref}";
-  const url = `${projectApiBase(projectPath)}/repository/commits/${encodeURIComponent(ref)}`;
-  const { data, headers } = await gitlabFetch(endpoint, url, token);
+  const url = `${projectApiBase(auth, projectPath)}/repository/commits/${encodeURIComponent(ref)}`;
+  const { data, headers } = await gitlabFetch(endpoint, url, auth);
   const commit = data as { id?: unknown };
   if (typeof commit.id !== "string" || !commit.id) {
     throw new GitLabApiError(`GitLab returned no commit id for "${ref}" (${endpoint}).`, { status: 0, endpoint });
@@ -424,13 +429,13 @@ interface GitLabClosesIssue {
 
 /** Issues GitLab resolves as "closed by" this merge request, via `GET /projects/{id}/merge_requests/{iid}/closes_issues` — a plain REST endpoint, unlike GitHub's GraphQL-only `closingIssuesReferences`. */
 export async function getLinkedIssues(
-  token: string,
+  auth: GitHostAuth,
   projectPath: string,
   mrIid: number
 ): Promise<GitLabResult<LinkedIssue[]>> {
   const endpoint = "GET /projects/{id}/merge_requests/{iid}/closes_issues";
-  const url = `${projectApiBase(projectPath)}/merge_requests/${mrIid}/closes_issues`;
-  const { data, headers } = await gitlabFetch(endpoint, url, token);
+  const url = `${projectApiBase(auth, projectPath)}/merge_requests/${mrIid}/closes_issues`;
+  const { data, headers } = await gitlabFetch(endpoint, url, auth);
   const issues = data as GitLabClosesIssue[];
   return {
     data: issues
@@ -475,21 +480,21 @@ interface GitLabJob {
  * GitLab's counterpart to GitHub's check runs + statuses.
  */
 export async function getCommitCiStatus(
-  token: string,
+  auth: GitHostAuth,
   projectPath: string,
   sha: string
 ): Promise<GitLabResult<CiStatus>> {
   const endpoint = "GET /projects/{id}/pipelines";
-  const url = `${projectApiBase(projectPath)}/pipelines?sha=${encodeURIComponent(sha)}&per_page=1&order_by=id&sort=desc`;
-  const { data, headers } = await gitlabFetch(endpoint, url, token);
+  const url = `${projectApiBase(auth, projectPath)}/pipelines?sha=${encodeURIComponent(sha)}&per_page=1&order_by=id&sort=desc`;
+  const { data, headers } = await gitlabFetch(endpoint, url, auth);
   const pipeline = (data as GitLabPipeline[])[0];
   if (!pipeline) return { data: { state: "none", checks: [] }, rateLimit: extractRateLimit(headers) };
 
   const jobsEndpoint = "GET /projects/{id}/pipelines/{pipeline_id}/jobs";
-  const jobsUrl = `${projectApiBase(projectPath)}/pipelines/${pipeline.id}/jobs?per_page=100`;
+  const jobsUrl = `${projectApiBase(auth, projectPath)}/pipelines/${pipeline.id}/jobs?per_page=100`;
   let checks: CiCheck[] = [];
   try {
-    const jobs = await gitlabFetch(jobsEndpoint, jobsUrl, token);
+    const jobs = await gitlabFetch(jobsEndpoint, jobsUrl, auth);
     checks = (jobs.data as GitLabJob[]).map((job) => ({
       name: job.name,
       state: pipelineState(job.status),
@@ -520,16 +525,16 @@ function pipelineRunState(status: string): CiRun["state"] {
 
 /** The newest `maxItems` pipelines on `ref`, newest first (the Stats timeline). */
 export async function listPipelines(
-  token: string,
+  auth: GitHostAuth,
   projectPath: string,
   ref: string,
   maxItems = 1000
 ): Promise<GitLabResult<CiRun[]>> {
-  const url = `${projectApiBase(projectPath)}/pipelines?ref=${encodeURIComponent(ref)}&per_page=${DEFAULT_PER_PAGE}&order_by=id&sort=desc`;
+  const url = `${projectApiBase(auth, projectPath)}/pipelines?ref=${encodeURIComponent(ref)}&per_page=${DEFAULT_PER_PAGE}&order_by=id&sort=desc`;
   return runPaginated<GitLabPipelineListItem, CiRun>(
     "GET /projects/{id}/pipelines",
     url,
-    token,
+    auth,
     (pipeline) => ({
       id: String(pipeline.id),
       name: "pipeline",
@@ -544,16 +549,16 @@ export async function listPipelines(
 
 /** A file's text at a ref, or `null` when it doesn't exist there. */
 export async function getFileAtRef(
-  token: string,
+  auth: GitHostAuth,
   projectPath: string,
   path: string,
   ref: string
 ): Promise<GitLabResult<string | null>> {
   const endpoint = "GET /projects/{id}/repository/files/{path}/raw";
-  const url = `${projectApiBase(projectPath)}/repository/files/${encodeURIComponent(path)}/raw?ref=${encodeURIComponent(ref)}`;
+  const url = `${projectApiBase(auth, projectPath)}/repository/files/${encodeURIComponent(path)}/raw?ref=${encodeURIComponent(ref)}`;
   let response: Response;
   try {
-    response = await fetch(url, { headers: { "PRIVATE-TOKEN": token } });
+    response = await fetch(url, { headers: { "PRIVATE-TOKEN": auth.token } });
   } catch (err) {
     throw toGitLabNetworkError(err, endpoint);
   }
@@ -571,14 +576,14 @@ async function gitlabSend(
   endpoint: string,
   method: "POST" | "PUT",
   url: string,
-  token: string,
+  auth: GitHostAuth,
   body?: unknown
 ): Promise<FetchResult> {
   let response: Response;
   try {
     response = await fetch(url, {
       method,
-      headers: { "PRIVATE-TOKEN": token, ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
+      headers: { "PRIVATE-TOKEN": auth.token, ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
   } catch (err) {
@@ -602,10 +607,10 @@ async function gitlabSend(
  * `null` when the instance doesn't have that endpoint (older GitLab, a
  * project/group token on some versions), so the scopes can't be read up front.
  */
-export async function getTokenScopes(token: string): Promise<GitLabResult<string[] | null>> {
+export async function getTokenScopes(auth: GitHostAuth): Promise<GitLabResult<string[] | null>> {
   const endpoint = "GET /personal_access_tokens/self";
   try {
-    const { data, headers } = await gitlabFetch(endpoint, `${GITLAB_API_BASE_URL}/personal_access_tokens/self`, token);
+    const { data, headers } = await gitlabFetch(endpoint, `${apiBase(auth)}/personal_access_tokens/self`, auth);
     const scopes = (data as { scopes?: unknown }).scopes;
     return {
       data: Array.isArray(scopes) ? scopes.filter((s): s is string => typeof s === "string") : null,
@@ -626,12 +631,12 @@ export interface MergeRequestDiffRefs {
 
 /** The three shas a diff position needs (`diff_refs`), and the MR's page. */
 export async function getMergeRequestDiffRefs(
-  token: string,
+  auth: GitHostAuth,
   projectPath: string,
   iid: number
 ): Promise<GitLabResult<MergeRequestDiffRefs>> {
   const endpoint = "GET /projects/{id}/merge_requests/{iid}";
-  const { data, headers } = await gitlabFetch(endpoint, `${projectApiBase(projectPath)}/merge_requests/${iid}`, token);
+  const { data, headers } = await gitlabFetch(endpoint, `${projectApiBase(auth, projectPath)}/merge_requests/${iid}`, auth);
   const mr = data as { web_url: string; diff_refs?: { base_sha: string; start_sha: string; head_sha: string } | null };
   if (!mr.diff_refs) {
     throw new GitLabApiError(`GitLab merge request !${iid} has no diff_refs yet (still being processed).`, { status: 0, endpoint });
@@ -660,14 +665,14 @@ export interface PostedNote {
 
 /** One thread on the MR — on a diff line when `position` is given (`POST …/discussions`). */
 export async function createMergeRequestDiscussion(
-  token: string,
+  auth: GitHostAuth,
   projectPath: string,
   iid: number,
   body: string,
   position?: MergeRequestDiffPosition
 ): Promise<GitLabResult<PostedNote>> {
   const endpoint = "POST /projects/{id}/merge_requests/{iid}/discussions";
-  const { data, headers } = await gitlabSend(endpoint, "POST", `${projectApiBase(projectPath)}/merge_requests/${iid}/discussions`, token, {
+  const { data, headers } = await gitlabSend(endpoint, "POST", `${projectApiBase(auth, projectPath)}/merge_requests/${iid}/discussions`, auth, {
     body,
     ...(position
       ? {
@@ -691,22 +696,22 @@ export async function createMergeRequestDiscussion(
 
 /** A plain comment on the MR (`POST …/notes`). */
 export async function createMergeRequestNote(
-  token: string,
+  auth: GitHostAuth,
   projectPath: string,
   iid: number,
   body: string,
   webUrl = ""
 ): Promise<GitLabResult<PostedNote>> {
   const endpoint = "POST /projects/{id}/merge_requests/{iid}/notes";
-  const { data, headers } = await gitlabSend(endpoint, "POST", `${projectApiBase(projectPath)}/merge_requests/${iid}/notes`, token, { body });
+  const { data, headers } = await gitlabSend(endpoint, "POST", `${projectApiBase(auth, projectPath)}/merge_requests/${iid}/notes`, auth, { body });
   const id = (data as { id?: number }).id ?? 0;
   return { data: { id, url: webUrl && id ? `${webUrl}#note_${id}` : webUrl }, rateLimit: extractRateLimit(headers) };
 }
 
 /** Approves the MR as the token's user (`POST …/approve`). */
-export async function approveMergeRequest(token: string, projectPath: string, iid: number): Promise<GitLabResult<null>> {
+export async function approveMergeRequest(auth: GitHostAuth, projectPath: string, iid: number): Promise<GitLabResult<null>> {
   const endpoint = "POST /projects/{id}/merge_requests/{iid}/approve";
-  const { headers } = await gitlabSend(endpoint, "POST", `${projectApiBase(projectPath)}/merge_requests/${iid}/approve`, token);
+  const { headers } = await gitlabSend(endpoint, "POST", `${projectApiBase(auth, projectPath)}/merge_requests/${iid}/approve`, auth);
   return { data: null, rateLimit: extractRateLimit(headers) };
 }
 
@@ -715,10 +720,10 @@ export async function approveMergeRequest(token: string, projectPath: string, ii
  * REST equivalent to "request changes". A 404 means there was no approval to
  * revoke, which is the state wanted anyway.
  */
-export async function unapproveMergeRequest(token: string, projectPath: string, iid: number): Promise<GitLabResult<null>> {
+export async function unapproveMergeRequest(auth: GitHostAuth, projectPath: string, iid: number): Promise<GitLabResult<null>> {
   const endpoint = "POST /projects/{id}/merge_requests/{iid}/unapprove";
   try {
-    const { headers } = await gitlabSend(endpoint, "POST", `${projectApiBase(projectPath)}/merge_requests/${iid}/unapprove`, token);
+    const { headers } = await gitlabSend(endpoint, "POST", `${projectApiBase(auth, projectPath)}/merge_requests/${iid}/unapprove`, auth);
     return { data: null, rateLimit: extractRateLimit(headers) };
   } catch (err) {
     if (err instanceof GitLabApiError && err.status === 404) return { data: null, rateLimit: null };

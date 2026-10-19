@@ -23,7 +23,7 @@ import { resolveTarget, type ResolvedTarget } from "./review-target";
 import { reviewTargetKey, type ReviewTarget } from "./review-queue";
 import { readRepoFile, sourceDir } from "./review-context";
 import { isFullSha, memo } from "./memo-cache";
-import { gitIn, repoCacheDir } from "./source";
+import { gitIn, inPlacePath, readsInPlace, repoCacheDir } from "./source";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
@@ -64,8 +64,8 @@ export type CiLookup =
 /** CI status of the target's head commit, from GitHub or GitLab. Local repos have none. */
 export async function loadCiStatus(repo: RepoRecord, headSha: string | undefined): Promise<CiLookup> {
   if (!headSha) return { available: false, reason: "The head commit could not be resolved." };
-  if (repo.provider === "local") {
-    return { available: false, reason: "Local repos have no CI to read — link the repo to GitHub or GitLab." };
+  if (readsInPlace(repo)) {
+    return { available: false, reason: repo.provider === "local" ? "Local repos have no CI to read — link the repo to GitHub or GitLab." : "Only GitHub and GitLab repos have CI to read — this repo is on another git server." };
   }
   try {
     if (repo.provider === "gitlab") {
@@ -125,8 +125,9 @@ const FILE_CACHE = { ttlMs: 30 * 60_000, maxEntries: 2000, maxWeight: 60_000_000
 
 async function readCommitText(repo: RepoRecord, sha: string, file: string): Promise<string | null> {
   let text: string | null = null;
-  if (repo.provider === "local" && repo.localPath) {
-    text = await readLocalFileAtRef(repo.localPath, sha, file);
+  const at = inPlacePath(repo);
+  if (at) {
+    text = await readLocalFileAtRef(at, sha, file);
   } else {
     const clone = repoCacheDir(repo.id);
     if (existsSync(path.join(clone, ".git")) && /^[0-9a-f]{7,64}$/.test(sha) && !file.startsWith("-")) {
@@ -155,8 +156,9 @@ export async function searchCode(
   sha: string | undefined,
   query: string
 ): Promise<{ hits: Array<{ path: string; line: number; text: string }>; total: number; source: "commit" | "default-branch" }> {
-  if (repo.provider === "local" && repo.localPath && sha) {
-    return { ...(await grepLocalAtRef(repo.localPath, sha, query)), source: "commit" };
+  const at = inPlacePath(repo);
+  if (at && sha) {
+    return { ...(await grepLocalAtRef(at, sha, query)), source: "commit" };
   }
   const dir = await sourceDir(repo);
   if (!dir) return { hits: [], total: 0, source: "default-branch" };

@@ -22,6 +22,9 @@ import {
   toDiffImpactResponse,
   type GitHubUnavailableReason,
   type GitLabUnavailableReason,
+  inPlacePath,
+  readsInPlace,
+  refreshGitMirror,
 } from "@/lib/jobs";
 import { getRepoById } from "@/lib/db";
 import type { DiffImpactResponseDTO } from "@/components/graph/types";
@@ -40,7 +43,7 @@ function accessErrorMessage(
   reason: GitHubUnavailableReason | GitLabUnavailableReason,
   repoUrl?: string
 ): string {
-  if (reason === "no_token") return `No ${host} PAT configured in Settings.`;
+  if (reason === "no_token") return `No ${host} token saved for this server in Settings → Git servers.`;
   if (reason === "invalid_url") {
     return host === "GitLab"
       ? `Could not parse a project path from ${repoUrl ?? "the stored URL"}.`
@@ -89,19 +92,21 @@ export async function POST(
 
     if ("filePaths" in parsed.data) {
       changedPaths = parsed.data.filePaths.map((p) => p.trim()).filter(Boolean);
-    } else if ("baseRef" in parsed.data && repo.provider === "local") {
+    } else if ("baseRef" in parsed.data && readsInPlace(repo)) {
       // Local repos have no GitHub URL to compare against, but the refs are
       // sitting right there in the checkout — same "no PAT needed" reasoning
       // as the Branches tab's local-git path (lib/jobs/local-git.ts).
-      if (!repo.localPath) {
+      const at = inPlacePath(repo);
+      if (!at) {
         return NextResponse.json(
           { error: "This local repo has no path on record." },
           { status: 400 }
         );
       }
       try {
+        await refreshGitMirror(repo);
         changedPaths = await listLocalChangedFiles(
-          repo.localPath,
+          at,
           parsed.data.baseRef,
           parsed.data.headRef
         );

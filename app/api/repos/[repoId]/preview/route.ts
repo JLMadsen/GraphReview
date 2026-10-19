@@ -10,7 +10,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { gitRefSchema } from "../../_shared";
-import { enqueuePreview, getPreviewJob, getPreviewJobLogs, type ReviewTarget } from "@/lib/jobs";
+import { enqueuePreview, getPreviewJob, getPreviewJobLogs, readsInPlace, type ReviewTarget } from "@/lib/jobs";
 import { getRepoById } from "@/lib/db";
 import { getDockerStatus } from "@/lib/preview/sandbox";
 import type { PreviewJobState, PreviewProgress, PreviewStatusDTO } from "@/lib/preview/types";
@@ -65,7 +65,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ rep
   try {
     const repo = await getRepoById(repoId);
     if (!repo) return errorResponse("Repo not found.", 404);
-    if (repo.provider === "local" && target.kind === "pr") {
+    if (readsInPlace(repo) && target.kind === "pr") {
       return errorResponse("A pull request can't be previewed on a repo with no git-host link — compare two refs instead.", 400);
     }
     const sandbox = await getDockerStatus();

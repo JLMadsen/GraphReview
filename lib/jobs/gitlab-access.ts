@@ -7,12 +7,14 @@
 // ./repo-access.ts, not here — this module only exports the GitLab-specific
 // pieces that repo-access.ts (and the diff-impact routes) call into.
 
-import { decrypt } from "@/lib/crypto";
 import { GitLabApiError } from "@/lib/gitlab";
-import { getSettings } from "@/lib/db";
+import type { GitHostAuth } from "@/lib/github";
 import type { RepoRecord } from "@/lib/db";
+import { originOf, tokenFor } from "./git-hosts";
 
 export interface GitLabProjectRef {
+  /** The server's web origin (`https://gitlab.com`, a self-hosted instance). */
+  origin: string;
   /**
    * Full namespace path, e.g. `"group/subgroup/project"` — GitLab supports
    * arbitrarily nested subgroups, unlike GitHub's fixed owner/repo split, so
@@ -65,45 +67,18 @@ export function parseGitLabUrl(url: string): GitLabProjectRef | null {
   if (!last) return null;
 
   const path = [...segments.slice(0, -1), last].join("/");
-  return { path };
+  const origin = originOf(trimmed);
+  return origin ? { origin, path } : null;
 }
 
-/**
- * The GitLab *web* host — used for the clone URL and the repo URL stored/
- * displayed in the UI. Distinct from `GITLAB_API_URL` (lib/gitlab/client.ts)
- * because a self-hosted instance's web host and API host can diverge.
- * Defaults to `https://gitlab.com`; override via `GITLAB_WEB_URL` — see
- * docs/install.md.
- */
-const GITLAB_WEB_URL = (process.env.GITLAB_WEB_URL || "https://gitlab.com").replace(/\/+$/, "");
-
-/** Canonical `<GITLAB_WEB_URL>/<path>.git` remote for cloning. */
+/** `<origin>/<path>.git` — the HTTPS remote for cloning. */
 export function gitLabCloneUrl(ref: GitLabProjectRef): string {
-  return `${GITLAB_WEB_URL}/${ref.path}.git`;
+  return `${ref.origin}/${ref.path}.git`;
 }
 
-/** Canonical `<GITLAB_WEB_URL>/<path>` page URL — what gets stored on `Repo.url` and shown in the UI. */
+/** `<origin>/<path>` page URL — what gets stored on `Repo.url` and shown in the UI. */
 export function gitLabRepoWebUrl(ref: GitLabProjectRef): string {
-  return `${GITLAB_WEB_URL}/${ref.path}`;
-}
-
-/**
- * The decrypted GitLab PAT from the Settings singleton, or `null` when none
- * is configured (or when it can't be decrypted — e.g. `SESSION_SECRET`
- * changed since it was saved). Never logged, never returned to a client.
- */
-export async function getStoredGitLabToken(): Promise<string | null> {
-  const settings = await getSettings();
-  const encrypted = settings?.gitlabPatEncrypted;
-  if (!encrypted) return null;
-  try {
-    return decrypt(encrypted);
-  } catch {
-    console.warn(
-      "[gitlab-access] stored GitLab PAT could not be decrypted — has the secret key (SESSION_SECRET or secret.key in the data folder) changed? Re-enter it in Settings."
-    );
-    return null;
-  }
+  return `${ref.origin}/${ref.path}`;
 }
 
 /** Why a repo can't be talked to over the GitLab API right now. */
@@ -112,11 +87,11 @@ export type GitLabUnavailableReason =
   | "not_linked"
   /** A URL is stored but a project path couldn't be parsed out of it. */
   | "invalid_url"
-  /** No PAT saved in Settings yet. */
+  /** No token saved in Settings for this repo's server. */
   | "no_token";
 
 export type GitLabAccess =
-  | { ok: true; ref: GitLabProjectRef; token: string }
+  | { ok: true; ref: GitLabProjectRef; token: GitHostAuth }
   | { ok: false; reason: GitLabUnavailableReason };
 
 /** Resolves everything needed for a GitLab call against this repo: project path + a decrypted PAT. */
@@ -129,10 +104,10 @@ export async function resolveGitLabAccess(
   const ref = parseGitLabUrl(repo.url);
   if (!ref) return { ok: false, reason: "invalid_url" };
 
-  const token = await getStoredGitLabToken();
-  if (!token) return { ok: false, reason: "no_token" };
+  const saved = await tokenFor(ref.origin);
+  if (!saved || saved.kind !== "gitlab") return { ok: false, reason: "no_token" };
 
-  return { ok: true, ref, token };
+  return { ok: true, ref, token: saved.auth };
 }
 
 /** Turns any error from a `lib/gitlab` call into a short human-readable string — shared by ./repo-access.ts. */

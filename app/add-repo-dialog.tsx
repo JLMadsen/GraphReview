@@ -2,9 +2,10 @@
 
 // "Add repo" dialog for the landing page.
 //
-// Three ingestion flows behind one dialog: a git repo already on this
-// machine, or a GitHub/GitLab URL the app clones itself (into its clone
-// cache). All POST to /api/repos, which creates the repo and
+// Two ingestion flows behind one dialog: a git repo already on this
+// machine, or any git URL the app clones itself (into its clone cache) —
+// the server tells GitHub, GitLab and other git servers apart by the host
+// (DESIGN.md §6.29). All POST to /api/repos, which creates the repo and
 // immediately queues the first analysis — so on success we just
 // refresh the server-rendered list and the new repo shows up as
 // "Analyzing…".
@@ -14,8 +15,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   ChevronDown,
-  Github,
-  Gitlab,
+  Globe,
   HardDrive,
   LoaderCircle,
   Plus,
@@ -35,7 +35,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-type Mode = "local" | "github" | "gitlab";
+type Mode = "local" | "url";
 
 interface LocalRepoCandidate {
   name: string;
@@ -99,7 +99,7 @@ export function AddRepoDialog({ size, variant }: { size?: "sm"; variant?: "outli
     const body =
       mode === "local"
         ? { provider: "local", localPath: localPath.trim(), name: name.trim() || undefined }
-        : { provider: mode, url: url.trim(), name: name.trim() || undefined };
+        : { provider: "url", url: url.trim(), name: name.trim() || undefined };
 
     try {
       const response = await fetch("/api/repos", {
@@ -165,13 +165,9 @@ export function AddRepoDialog({ size, variant }: { size?: "sm"; variant?: "outli
                 <HardDrive aria-hidden />
                 Local path
               </TabsTrigger>
-              <TabsTrigger value="github">
-                <Github aria-hidden />
-                GitHub URL
-              </TabsTrigger>
-              <TabsTrigger value="gitlab">
-                <Gitlab aria-hidden />
-                GitLab URL
+              <TabsTrigger value="url">
+                <Globe aria-hidden />
+                Git URL
               </TabsTrigger>
             </TabsList>
 
@@ -224,7 +220,7 @@ export function AddRepoDialog({ size, variant }: { size?: "sm"; variant?: "outli
               </p>
             </TabsContent>
 
-            <TabsContent value="github" className="space-y-2 pt-3">
+            <TabsContent value="url" className="space-y-2 pt-3">
               <label htmlFor="url" className="text-[13px] font-medium">
                 Repository URL
               </label>
@@ -234,35 +230,14 @@ export function AddRepoDialog({ size, variant }: { size?: "sm"; variant?: "outli
                 className="font-mono"
                 value={url}
                 onChange={(event) => setUrl(event.target.value)}
-                placeholder="https://github.com/owner/repo"
+                placeholder="https://host/group/repo or git@host:group/repo.git"
                 autoComplete="off"
               />
               <p className="text-xs leading-relaxed text-muted-foreground">
-                Cloned and kept up to date by the app. Private repos need a
-                GitHub PAT in Settings.
-              </p>
-            </TabsContent>
-
-            <TabsContent value="gitlab" className="space-y-2 pt-3">
-              <label htmlFor="gitlabUrl" className="text-[13px] font-medium">
-                Repository URL
-              </label>
-              <Input
-                id="gitlabUrl"
-                name="url"
-                className="font-mono"
-                value={url}
-                onChange={(event) => setUrl(event.target.value)}
-                placeholder="https://gitlab.com/group/project"
-                autoComplete="off"
-              />
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                Cloned and kept up to date by the app. Private/self-hosted
-                repos need a GitLab PAT in Settings (and{" "}
-                <span className="rounded bg-secondary px-1 py-0.5 font-mono text-[11px] text-foreground/80">
-                  GITLAB_API_URL
-                </span>{" "}
-                set for a self-hosted instance).
+                Any git server. Cloned and kept up to date by the app; an SSH URL
+                clones with your own SSH key (a key with a passphrase needs
+                ssh-agent). GitHub and GitLab repos also get pull requests —
+                private ones need a PAT in Settings unless added by SSH URL.
               </p>
             </TabsContent>
           </Tabs>
@@ -279,7 +254,7 @@ export function AddRepoDialog({ size, variant }: { size?: "sm"; variant?: "outli
               name="name"
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder="Defaults to the folder or owner/repo name"
+              placeholder="Defaults to the folder or group/repo name"
               autoComplete="off"
             />
           </div>

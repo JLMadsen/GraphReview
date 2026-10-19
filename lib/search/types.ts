@@ -71,7 +71,7 @@ export interface SearchNotice {
 export interface SearchRepoInfo {
   id: string;
   name: string;
-  provider: "local" | "github" | "gitlab";
+  provider: "local" | "github" | "gitlab" | "git";
   url?: string;
   defaultBranch: string;
 }

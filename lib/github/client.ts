@@ -1,16 +1,16 @@
 // GitHub API wrapper.
 //
-// Fully self-contained: every function takes the PAT as an explicit `token`
-// parameter. Nothing here reads settings, decrypts credentials, or touches
-// the database — that wiring ("read the stored token, decrypt it, pass it
-// in") belongs to lib/jobs/github-access.ts.
+// Fully self-contained: every function takes the PAT and its API host as an
+// explicit `auth` parameter (`GitHostAuth`). Nothing here reads settings,
+// decrypts credentials, or touches the database — that wiring ("read the
+// stored token, decrypt it, pass it in") belongs to lib/jobs/github-access.ts.
 //
 // REST calls go through `@octokit/rest`; the one GraphQL-only need (linked
 // issues via `closingIssuesReferences`) goes through `@octokit/graphql`.
 //
-// The API host itself is overridable via `GITHUB_API_URL` (GitHub
-// Enterprise Server, or an internal mirror on a closed network) — see
-// `GITHUB_API_BASE_URL` below and docs/install.md.
+// The API host comes with each saved token (`auth.apiUrl`, a GitHub
+// Enterprise Server's `/api/v3`); without one, `GITHUB_API_URL`, else
+// api.github.com — see `GITHUB_API_BASE_URL` below and docs/install.md.
 
 import { Octokit } from "@octokit/rest";
 import type { OctokitResponse } from "@octokit/types";
@@ -18,6 +18,7 @@ import { graphql } from "@octokit/graphql";
 import { GitHubApiError, toGitHubApiError } from "./errors";
 import type {
   Branch,
+  GitHostAuth,
   CiCheck,
   CiRun,
   CiState,
@@ -47,10 +48,11 @@ const DEFAULT_PER_PAGE = 100;
  */
 const GITHUB_API_BASE_URL = process.env.GITHUB_API_URL || undefined;
 
-function createOctokit(token: string): Octokit {
+function createOctokit(auth: GitHostAuth): Octokit {
+  const baseUrl = auth.apiUrl ?? GITHUB_API_BASE_URL;
   return new Octokit({
-    auth: token,
-    ...(GITHUB_API_BASE_URL ? { baseUrl: GITHUB_API_BASE_URL } : {}),
+    auth: auth.token,
+    ...(baseUrl ? { baseUrl } : {}),
   });
 }
 
@@ -144,8 +146,8 @@ function toPullRequestState(rawState: string, mergedAt: string | null): PullRequ
 // ---------------------------------------------------------------------------
 
 /** Repos the authenticated user has access to — for a repo-picker UI when adding a repo. */
-export async function listUserRepos(token: string): Promise<GitHubResult<RepoSummary[]>> {
-  const octokit = createOctokit(token);
+export async function listUserRepos(auth: GitHostAuth): Promise<GitHubResult<RepoSummary[]>> {
+  const octokit = createOctokit(auth);
   return runPaginated<
     Awaited<ReturnType<Octokit["rest"]["repos"]["listForAuthenticatedUser"]>>["data"][number],
     RepoSummary
@@ -169,11 +171,11 @@ export async function listUserRepos(token: string): Promise<GitHubResult<RepoSum
 }
 
 export async function listBranches(
-  token: string,
+  auth: GitHostAuth,
   owner: string,
   repo: string
 ): Promise<GitHubResult<Branch[]>> {
-  const octokit = createOctokit(token);
+  const octokit = createOctokit(auth);
   return runPaginated<
     Awaited<ReturnType<Octokit["rest"]["repos"]["listBranches"]>>["data"][number],
     Branch
@@ -195,14 +197,14 @@ export async function listBranches(
 // ---------------------------------------------------------------------------
 
 export async function listPullRequests(
-  token: string,
+  auth: GitHostAuth,
   owner: string,
   repo: string,
   state: PullRequestListState = "open",
   /** Most recently updated first; omit for every PR. */
   limit?: number
 ): Promise<GitHubResult<PullRequestSummary[]>> {
-  const octokit = createOctokit(token);
+  const octokit = createOctokit(auth);
   return runPaginated<
     Awaited<ReturnType<Octokit["rest"]["pulls"]["list"]>>["data"][number],
     PullRequestSummary
@@ -229,13 +231,13 @@ export async function listPullRequests(
 
 /** The newest `limit` commits reachable from `ref` (a branch name or sha; omitted = the repo's default branch as GitHub knows it), newest first. One page — `limit` is capped at 100. */
 export async function listCommits(
-  token: string,
+  auth: GitHostAuth,
   owner: string,
   repo: string,
   ref: string | undefined,
   limit = 50
 ): Promise<GitHubResult<CommitSummary[]>> {
-  const octokit = createOctokit(token);
+  const octokit = createOctokit(auth);
   const endpoint = `GET /repos/${owner}/${repo}/commits${ref ? `?sha=${ref}` : ""}`;
   const { data, rateLimit } = await runRest(endpoint, () =>
     octokit.rest.repos.listCommits({
@@ -259,12 +261,12 @@ export async function listCommits(
 
 /** Title, body, base/head SHA, author, state, url for a single PR. */
 export async function getPullRequest(
-  token: string,
+  auth: GitHostAuth,
   owner: string,
   repo: string,
   number: number
 ): Promise<GitHubResult<PullRequestDetail>> {
-  const octokit = createOctokit(token);
+  const octokit = createOctokit(auth);
   const endpoint = `GET /repos/${owner}/${repo}/pulls/${number}`;
   const { data: pr, rateLimit } = await runRest(endpoint, () =>
     octokit.rest.pulls.get({ owner, repo, pull_number: number })
@@ -292,12 +294,12 @@ export async function getPullRequest(
 
 /** Per-file unified diffs for a PR, via `GET /repos/{owner}/{repo}/pulls/{pull_number}/files` — `patch` text comes straight from GitHub, no separate diffing step. */
 export async function listPullRequestFiles(
-  token: string,
+  auth: GitHostAuth,
   owner: string,
   repo: string,
   number: number
 ): Promise<GitHubResult<PullRequestFile[]>> {
-  const octokit = createOctokit(token);
+  const octokit = createOctokit(auth);
   return runPaginated<
     Awaited<ReturnType<Octokit["rest"]["pulls"]["listFiles"]>>["data"][number],
     PullRequestFile
@@ -334,13 +336,13 @@ export async function listPullRequestFiles(
  * array.
  */
 export async function compareRefs(
-  token: string,
+  auth: GitHostAuth,
   owner: string,
   repo: string,
   base: string,
   head: string
 ): Promise<GitHubResult<RefComparison>> {
-  const octokit = createOctokit(token);
+  const octokit = createOctokit(auth);
 
   const compareEndpoint = `GET /repos/${owner}/${repo}/compare/${base}...${head}`;
   const { data: comparison, rateLimit: compareRateLimit } = await runRest(compareEndpoint, () =>
@@ -388,12 +390,12 @@ export async function compareRefs(
  * (GitHub answers 422 "No commit found for SHA" for an unknown branch name).
  */
 export async function getRefSha(
-  token: string,
+  auth: GitHostAuth,
   owner: string,
   repo: string,
   ref: string
 ): Promise<GitHubResult<string>> {
-  const octokit = createOctokit(token);
+  const octokit = createOctokit(auth);
   const endpoint = `GET /repos/${owner}/${repo}/commits/${ref}`;
   const { data, rateLimit } = await runRest<unknown>(endpoint, () =>
     octokit.request("GET /repos/{owner}/{repo}/commits/{ref}", {
@@ -472,7 +474,7 @@ const LINKED_ISSUES_QUERY = /* GraphQL */ `
  * REST-style rate-limit headers on success.
  */
 export async function getLinkedIssues(
-  token: string,
+  auth: GitHostAuth,
   owner: string,
   repo: string,
   prNumber: number
@@ -483,11 +485,11 @@ export async function getLinkedIssues(
       owner,
       repo,
       number: prNumber,
-      headers: { authorization: `token ${token}` },
+      headers: { authorization: `token ${auth.token}` },
       // Same override as `createOctokit` above — `@octokit/graphql` detects
       // a GHES-style `/api/v3` suffix on `baseUrl` and rewrites it to
       // `/api/graphql` itself, so one env var covers both REST and GraphQL.
-      ...(GITHUB_API_BASE_URL ? { baseUrl: GITHUB_API_BASE_URL } : {}),
+      ...((auth.apiUrl ?? GITHUB_API_BASE_URL) ? { baseUrl: auth.apiUrl ?? GITHUB_API_BASE_URL } : {}),
     });
 
     const nodes = response.repository?.pullRequest?.closingIssuesReferences?.nodes ?? [];
@@ -537,12 +539,12 @@ export function combineCiStates(checks: readonly CiCheck[]): CiState {
  * The two APIs are independent, so both are read and merged.
  */
 export async function getCommitCiStatus(
-  token: string,
+  auth: GitHostAuth,
   owner: string,
   repo: string,
   sha: string
 ): Promise<GitHubResult<CiStatus>> {
-  const octokit = createOctokit(token);
+  const octokit = createOctokit(auth);
   const [runs, statuses] = await Promise.all([
     runRest(`GET /repos/${owner}/${repo}/commits/${sha}/check-runs`, () =>
       octokit.rest.checks.listForRef({ owner, repo, ref: sha, per_page: 100 })
@@ -575,13 +577,13 @@ function workflowRunState(status: string | null, conclusion: string | null): CiR
 
 /** The newest `maxItems` GitHub Actions runs on `branch`, newest first (the Stats timeline). Legacy commit statuses have no history API, so they're not here. */
 export async function listWorkflowRuns(
-  token: string,
+  auth: GitHostAuth,
   owner: string,
   repo: string,
   branch: string,
   maxItems = 1000
 ): Promise<GitHubResult<CiRun[]>> {
-  const octokit = createOctokit(token);
+  const octokit = createOctokit(auth);
   const endpoint = `GET /repos/${owner}/${repo}/actions/runs`;
   try {
     let rateLimit: RateLimitInfo | null = null;
@@ -609,13 +611,13 @@ export async function listWorkflowRuns(
 
 /** A file's text at a ref, or `null` when it doesn't exist there (or is a directory/binary). */
 export async function getFileAtRef(
-  token: string,
+  auth: GitHostAuth,
   owner: string,
   repo: string,
   path: string,
   ref: string
 ): Promise<GitHubResult<string | null>> {
-  const octokit = createOctokit(token);
+  const octokit = createOctokit(auth);
   const endpoint = `GET /repos/${owner}/${repo}/contents/{path}`;
   try {
     const response = await octokit.rest.repos.getContent({ owner, repo, path, ref });
@@ -642,8 +644,8 @@ export async function getFileAtRef(
  * authenticated call. `null` when the header is absent: a fine-grained PAT
  * (or a GitHub App token), whose permissions can't be read up front.
  */
-export async function getTokenScopes(token: string): Promise<GitHubResult<string[] | null>> {
-  const octokit = createOctokit(token);
+export async function getTokenScopes(auth: GitHostAuth): Promise<GitHubResult<string[] | null>> {
+  const octokit = createOctokit(auth);
   const endpoint = "GET /user";
   try {
     const response = await octokit.request("GET /user");
@@ -683,13 +685,13 @@ export interface PostedPullRequestReview {
  * to the head the draft was built from.
  */
 export async function createPullRequestReview(
-  token: string,
+  auth: GitHostAuth,
   owner: string,
   repo: string,
   number: number,
   review: { commitId?: string; event: PullRequestReviewEvent; body: string; comments: PullRequestReviewComment[] }
 ): Promise<GitHubResult<PostedPullRequestReview>> {
-  const octokit = createOctokit(token);
+  const octokit = createOctokit(auth);
   const endpoint = `POST /repos/${owner}/${repo}/pulls/${number}/reviews`;
   const { data, rateLimit } = await runRest(endpoint, () =>
     octokit.rest.pulls.createReview({

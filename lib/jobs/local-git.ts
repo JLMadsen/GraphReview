@@ -15,10 +15,18 @@
 // `--end-of-options`: a ref like `--output=<path>` must never reach git as
 // an option.
 
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 import type { Branch, CommitSummary, PullRequestFile, PullRequestFileStatus } from "@/lib/github";
-import { assertSafeGitRef, isSafeGitRef } from "./git-ref";
+import { WORKTREE_REF, assertSafeGitRef, isSafeGitRef } from "./git-ref";
 import { memo } from "./memo-cache";
 import { gitIn, resolveLocalRepoPath } from "./source";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Git config applied to every command in this module.
@@ -36,6 +44,69 @@ const LOCAL_GIT_CONFIG = ["safe.directory=*"];
 
 /** Per-file patch text is capped so one enormous generated file (a lockfile, a bundled asset) can't blow up a job payload or an LLM prompt. The review pipeline truncates further before sending; this is just the outer guard. */
 const MAX_PATCH_BYTES = 60_000;
+
+/** How long one snapshot of the working tree answers for it — long enough for the handful of git calls one request makes. */
+const WORKTREE_SNAPSHOT_TTL_MS = 3_000;
+
+/** `git` in `dir` with extra environment — simple-git won't pass `GIT_INDEX_FILE` or the identity variables through. */
+async function rawGit(dir: string, args: string[], env: Record<string, string> = {}): Promise<string> {
+  const { stdout } = await execFileAsync("git", ["-c", "safe.directory=*", ...args], {
+    cwd: dir,
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    windowsHide: true,
+  });
+  return stdout;
+}
+
+/**
+ * The working tree of a local checkout as a commit: everything tracked plus
+ * untracked files `.gitignore` doesn't exclude, on top of HEAD — what
+ * "Changes on disk" reviews (DESIGN.md §6.29).
+ *
+ * Built in a throwaway index (a copy of the real one, so `git add` only
+ * re-hashes what changed), then `write-tree` + `commit-tree`. The user's
+ * branches, HEAD, index and files are never touched; the only trace is
+ * loose objects in `.git/objects` that nothing references and `git gc`
+ * removes. The commit's identity and date are fixed (HEAD's date), so the
+ * same files always give the same sha — a review of them stays current until
+ * something on disk changes. With nothing changed it is HEAD itself.
+ */
+export function snapshotWorktree(localPath: string): Promise<string> {
+  const dir = resolveLocalRepoPath(localPath);
+  return memo("worktree-snapshot", dir, { ttlMs: WORKTREE_SNAPSHOT_TTL_MS, maxEntries: 20 }, async () => {
+    const top = (await rawGit(dir, ["rev-parse", "--show-toplevel"])).trim();
+    const realIndex = path.resolve(top, (await rawGit(top, ["rev-parse", "--git-path", "index"])).trim());
+    const head = (await rawGit(top, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]).catch(() => "")).trim();
+    const scratch = await mkdtemp(path.join(os.tmpdir(), "graphreview-index-"));
+    try {
+      const index = { GIT_INDEX_FILE: path.join(scratch, "index") };
+      if (existsSync(realIndex)) await copyFile(realIndex, index.GIT_INDEX_FILE);
+      await rawGit(top, ["add", "--all", "--", "."], index);
+      const tree = (await rawGit(top, ["write-tree"], index)).trim();
+      if (head && tree === (await rawGit(top, ["rev-parse", `${head}^{tree}`])).trim()) return head;
+      const date = head ? `${(await rawGit(top, ["show", "-s", "--format=%ct", head])).trim()} +0000` : "0 +0000";
+      const identity = {
+        GIT_AUTHOR_NAME: "GraphReview",
+        GIT_AUTHOR_EMAIL: "graphreview@localhost",
+        GIT_AUTHOR_DATE: date,
+        GIT_COMMITTER_NAME: "GraphReview",
+        GIT_COMMITTER_EMAIL: "graphreview@localhost",
+        GIT_COMMITTER_DATE: date,
+      };
+      const args = ["commit-tree", tree, ...(head ? ["-p", head] : []), "-m", "Changes on disk"];
+      return (await rawGit(top, args, identity)).trim();
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+}
+
+/** `ref` as git can take it: {@link WORKTREE_REF} becomes the working tree's snapshot commit, anything else passes through. */
+export async function localRev(localPath: string, ref: string): Promise<string> {
+  return ref === WORKTREE_REF ? snapshotWorktree(localPath) : ref;
+}
 
 /**
  * Local branches (`refs/heads/*`) of a checkout on disk, via a single
@@ -78,9 +149,11 @@ export async function listLocalBranches(localPath: string): Promise<Branch[]> {
  */
 export async function listLocalChangedFiles(
   localPath: string,
-  baseRef: string,
-  headRef: string
+  base: string,
+  head: string
 ): Promise<string[]> {
+  const baseRef = await localRev(localPath, base);
+  const headRef = await localRev(localPath, head);
   assertSafeGitRef(baseRef);
   assertSafeGitRef(headRef);
   const dir = resolveLocalRepoPath(localPath);
@@ -104,9 +177,10 @@ export async function listLocalChangedFiles(
  */
 export async function listLocalCommits(
   localPath: string,
-  ref: string,
+  rev: string,
   limit = 50
 ): Promise<CommitSummary[]> {
+  const ref = await localRev(localPath, rev);
   assertSafeGitRef(ref);
   const dir = resolveLocalRepoPath(localPath);
   const output = await gitIn(dir, undefined, LOCAL_GIT_CONFIG).raw([
@@ -146,7 +220,8 @@ export async function listLocalCommits(
  * a query string and git would otherwise parse it as an option. (rev-parse
  * only learned `--end-of-options` in git 2.30, so the check is all there is.)
  */
-export async function resolveLocalRefSha(localPath: string, ref: string): Promise<string> {
+export async function resolveLocalRefSha(localPath: string, rev: string): Promise<string> {
+  const ref = await localRev(localPath, rev);
   assertSafeGitRef(ref);
   const dir = resolveLocalRepoPath(localPath);
   let out: string;
@@ -185,12 +260,13 @@ export function viewerRefSha(localPath: string, ref: string): Promise<string> {
 /** `git merge-base a b`, or `null` when the two commits share no history (or either is gone). Two commits' merge base is what a three-dot diff is anchored on. */
 export async function localMergeBase(
   localPath: string,
-  a: string,
-  b: string
+  revA: string,
+  revB: string
 ): Promise<string | null> {
-  if (!isSafeGitRef(a) || !isSafeGitRef(b)) return null;
+  if (!isSafeGitRef(revA) || !isSafeGitRef(revB)) return null;
   const dir = resolveLocalRepoPath(localPath);
   try {
+    const [a, b] = [await localRev(localPath, revA), await localRev(localPath, revB)];
     const out = await gitIn(dir, undefined, LOCAL_GIT_CONFIG).raw(["merge-base", "--end-of-options", a, b]);
     return out.trim() || null;
   } catch {
@@ -259,9 +335,11 @@ function splitNul(output: string): string[] {
  */
 export async function listLocalFilePatches(
   localPath: string,
-  baseRef: string,
-  headRef: string
+  base: string,
+  head: string
 ): Promise<LocalFilePatch[]> {
+  const baseRef = await localRev(localPath, base);
+  const headRef = await localRev(localPath, head);
   assertSafeGitRef(baseRef);
   assertSafeGitRef(headRef);
   const dir = resolveLocalRepoPath(localPath);

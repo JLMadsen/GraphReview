@@ -38,6 +38,7 @@ import {
   matchFilesToComponents,
   reviewTargetKey,
   type ReviewTarget,
+  readsInPlace,
 } from "@/lib/jobs";
 import { isSafeGitRef } from "@/lib/jobs/git-ref";
 import { readFileAtCommit } from "@/lib/jobs/pr-context";
@@ -526,7 +527,7 @@ export function createGraphReviewMcpServer(): McpServer {
       json(async () => {
         const repo = await loadRepo(repoId);
         const parsed = parseTarget(target);
-        if (repo.provider === "local" && parsed.kind === "pr") throw new ToolError("This repo has no git-host link, so it has no PRs — use a refs target.");
+        if (readsInPlace(repo) && parsed.kind === "pr") throw new ToolError("This repo has no git-host link, so it has no PRs — use a refs target.");
         const stored = readTargetGraph<TargetGraphData>(repoId, reviewTargetKey(parsed));
         const job = await ensureTargetGraph(repoId, parsed);
         const state = await job.getState();
@@ -599,7 +600,7 @@ export function createGraphReviewMcpServer(): McpServer {
       json(async () => {
         const repo = await loadRepo(repoId);
         const parsed = parseTarget(target);
-        if (repo.provider === "local" && parsed.kind === "pr") throw new ToolError("This repo has no git-host link, so it has no PRs — use a refs target.");
+        if (readsInPlace(repo) && parsed.kind === "pr") throw new ToolError("This repo has no git-host link, so it has no PRs — use a refs target.");
         const stored = readTargetGraph<TargetGraphData>(repoId, reviewTargetKey(parsed));
         const job = await ensureTargetGraph(repoId, parsed);
         const state = await job.getState();
@@ -667,7 +668,7 @@ export function createGraphReviewMcpServer(): McpServer {
       json(async () => {
         const repo = await loadRepo(repoId);
         const parsed = parseTarget(target);
-        if (repo.provider === "local" && parsed.kind === "pr") throw new ToolError("This repo has no git-host link, so it has no PRs — use a refs target.");
+        if (readsInPlace(repo) && parsed.kind === "pr") throw new ToolError("This repo has no git-host link, so it has no PRs — use a refs target.");
         const stored = readTargetGraph<TargetGraphData>(repoId, reviewTargetKey(parsed));
         const job = await ensureTargetGraph(repoId, parsed);
         const state = await job.getState();
@@ -747,7 +748,7 @@ export function createGraphReviewMcpServer(): McpServer {
       json(async () => {
         const repo = await loadRepo(repoId);
         const parsed = parseTarget(target);
-        if (repo.provider === "local" && parsed.kind === "pr") throw new ToolError("This repo has no git-host link, so it has no PRs — use a refs target.");
+        if (readsInPlace(repo) && parsed.kind === "pr") throw new ToolError("This repo has no git-host link, so it has no PRs — use a refs target.");
         const stored = readTargetGraph<TargetGraphData>(repoId, reviewTargetKey(parsed));
         const job = await ensureTargetGraph(repoId, parsed);
         const state = await job.getState();

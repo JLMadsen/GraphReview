@@ -85,11 +85,12 @@ Deleting it resets GraphReview completely.
 ## 5. First-run setup (in the app)
 
 1. Go to **Settings**:
-   - **GitHub / GitLab PAT** (optional) — needed only for PR/MR and linked-
-     issue fetching and cloning private repos. Local repos work with **no
-     token at all** — branch listing, ref comparison, and diffs for the AI
-     review all come from the checkout's own `git`. GitHub needs `repo`
-     scope, GitLab `api`.
+   - **Git servers** (optional) — a token per server (github.com, GitHub
+     Enterprise, GitLab, or any other git server), for PR/MR and linked-issue
+     fetching and cloning private repos over HTTPS. Enter the server and the
+     token; GraphReview works out what the server is. Local repos, and repos
+     added by SSH URL (cloned with your SSH key), need **no token at all**.
+     GitHub needs `repo` scope, GitLab `api`.
    - **AI provider(s)** (optional) — add one or more OpenAI-compatible
      endpoints (base URL, API key, model name). You can save several and
      toggle which one is *active*; only the active one is used. Use **Test
@@ -246,7 +247,11 @@ Most of this is automatic — GraphReview reuses the setup your machine already 
 **What you need to do, once.** Remove the `#` in front of the lines you need
 in `config.env`, fill in your values, and restart GraphReview:
 
-1. **Self-hosted GitLab** (or GitHub Enterprise) — then save a PAT in Settings:
+1. **Self-hosted GitLab or GitHub Enterprise** — nothing to set here: save a
+   token for the server in Settings → Git servers, which finds its API
+   (`/api/v4`, `/api/v3`) itself. Set these only when the API lives somewhere
+   else (a proxy), or to treat the server as GitHub/GitLab before any token
+   is saved:
    ```ini
    GITLAB_API_URL=https://gitlab.example.com/api/v4
    GITLAB_WEB_URL=https://gitlab.example.com
@@ -329,11 +334,11 @@ also need the `python:3.12-slim` image and a PyPI mirror.
 
 ## 8. Other known caveats worth knowing before you rely on this
 
-- **Private GitHub/GitLab repos need a PAT in Settings.** GraphReview never
-  uses your own git credentials (credential manager, SSH agent) for the
-  repos it clones — on a desktop those can pop up a login window that a
-  background job would wait on forever. Without access, analysis fails at
-  once with "add a PAT in Settings".
+- **Private repos need a token in Settings → Git servers, or an SSH URL.**
+  Over HTTPS GraphReview never uses your git credential manager — on a
+  desktop it can pop up a login window that a background job would wait on
+  forever. An SSH URL uses your SSH key and agent without prompting. Without
+  access, analysis fails at once and says which of the two to add.
 - **GitHub-backed review paths are code-reviewed but not live-tested**
   against a real PAT/GitHub API as of this writing. Similarly, AI
   review/labeling has mainly been exercised against the mock server; a real

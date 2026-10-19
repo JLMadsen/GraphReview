@@ -10,6 +10,7 @@ import { listRepos, readKv, writeKv } from "@/lib/db";
 import type { RepoRecord } from "@/lib/db";
 import { DEFAULT_REVIEW_EFFORT } from "@/lib/ai/effort";
 import type { JobDto, JobKind, JobsResponse, JobStateDto } from "@/components/jobs/types";
+import { WORKTREE_REF } from "./git-ref";
 import { ANALYSIS_QUEUE_NAME, ANALYSIS_VERSION, enqueueAnalysis, isPendingJobState } from "./queue";
 import { REVIEW_CANCELLED_REASON, REVIEW_QUEUE_NAME, cancelReview, enqueueReview, reviewTargetKey, type ReviewProgress, type ReviewTarget } from "./review-queue";
 import { APP_MAP_CANCELLED_REASON, APP_MAP_QUEUE_NAME, cancelAppMap, enqueueAppMap, type AppMapJobData, type AppMapProgress } from "./app-map-queue";
@@ -83,7 +84,8 @@ function ordinal(n: number): string {
 
 function targetLabel(target: ReviewTarget | undefined): string | undefined {
   if (!target) return undefined;
-  return target.kind === "pr" ? `PR #${target.prNumber}` : `${target.baseRef} → ${target.headRef}`;
+  if (target.kind === "pr") return `PR #${target.prNumber}`;
+  return target.headRef === WORKTREE_REF ? "Changes on disk" : `${target.baseRef} → ${target.headRef}`;
 }
 
 function graphHref(repoId: string, target?: ReviewTarget): string {

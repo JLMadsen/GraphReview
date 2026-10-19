@@ -4,6 +4,8 @@
 // colocated here rather than in types/ — see components/graph/README.md's
 // scope note; promote later if another layer needs them.
 
+import { WORKTREE_REF } from "@/lib/jobs/git-ref";
+
 /** Mirrors `lib/db`'s `ComponentTier`, duplicated here (not imported) so
  * this file stays framework/DB-agnostic and safe to import from client
  * components — `lib/db` is server-only. */
@@ -327,6 +329,7 @@ export function isShaLike(ref: string): boolean {
 
 /** A commit sha shortened to 7 characters; branch names unchanged. */
 export function shortRef(ref: string): string {
+  if (ref === WORKTREE_REF) return "changes on disk";
   return isShaLike(ref) ? ref.slice(0, 7) : ref;
 }
 

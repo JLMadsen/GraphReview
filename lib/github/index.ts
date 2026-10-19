@@ -23,6 +23,7 @@ export { GitHubApiError, toGitHubApiError } from "./errors";
 export type {
   RateLimitInfo,
   GitHubResult,
+  GitHostAuth,
   RepoSummary,
   Branch,
   CommitSummary,

@@ -97,15 +97,15 @@ export default function RootLayout({
     >
       <body className="antialiased">
         <TooltipProvider>
-          {/* `group/app`: the bar spans the window when the page is an
-              edge-to-edge analysis surface (`data-wide-shell`, the Graph
-              tab), the same `:has()` switch the repo shell uses. */}
-          <div className="group/app flex min-h-screen flex-col">
+          {/* The bar always spans the window with the same padding, so the
+              logo and links sit in one place on every page — it used to
+              narrow to max-w-7xl outside the Graph tab and jump on navigation. */}
+          <div className="flex min-h-screen flex-col">
             <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur-xl supports-[backdrop-filter]:bg-background/65">
-              <div className="mx-auto flex h-12 max-w-7xl items-center gap-5 px-6 group-has-[[data-wide-shell]]/app:max-w-none group-has-[[data-wide-shell]]/app:px-4">
+              <div className="flex h-12 items-center gap-5 px-4">
                 <Link
                   href="/"
-                  className="group flex items-center gap-2.5 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                  className="group flex shrink-0 items-center gap-2.5 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
                 >
                   <GraphMark />
                   <span className="text-[15px] font-semibold tracking-[-0.02em] text-foreground">

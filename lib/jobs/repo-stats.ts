@@ -16,6 +16,7 @@ import { listPipelines } from "@/lib/gitlab";
 import { resolveGitHubAccess } from "./github-access";
 import { resolveGitLabAccess } from "./gitlab-access";
 import { sourceDir } from "./review-context";
+import { readsInPlace } from "./source";
 
 export type { CiRun };
 
@@ -320,8 +321,8 @@ const ciCache = new Map<string, { at: number; value: CiRunsLookup }>();
 
 /** CI runs on the default branch, newest first, from GitHub Actions or GitLab pipelines. Local repos have none. Cached for a few minutes. */
 export async function loadCiRuns(repo: RepoRecord): Promise<CiRunsLookup> {
-  if (repo.provider === "local") {
-    return { available: false, reason: "Local repos have no CI to read — link the repo to GitHub or GitLab." };
+  if (readsInPlace(repo)) {
+    return { available: false, reason: repo.provider === "local" ? "Local repos have no CI to read — link the repo to GitHub or GitLab." : "Only GitHub and GitLab repos have CI to read — this repo is on another git server." };
   }
   const hit = ciCache.get(repo.id);
   if (hit && Date.now() - hit.at < CI_TTL_MS) return hit.value;

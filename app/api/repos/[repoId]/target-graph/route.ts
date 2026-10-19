@@ -14,7 +14,7 @@
 
 import { NextResponse } from "next/server";
 import { getRepoById, readTargetGraph } from "@/lib/db";
-import { ensureTargetGraph, getTargetGraphJob, reviewTargetKey, type TargetGraphData } from "@/lib/jobs";
+import { ensureTargetGraph, getTargetGraphJob, readsInPlace, reviewTargetKey, type TargetGraphData } from "@/lib/jobs";
 import { apiError, targetFromSearchParams } from "../../_shared";
 import type { TargetGraphResponseDTO } from "@/components/graph/target-graph-types";
 
@@ -42,7 +42,7 @@ async function respond(request: Request, params: Promise<{ repoId: string }>, st
   try {
     const repo = await getRepoById(repoId);
     if (!repo) return apiError("Repo not found.", 404);
-    if (repo.provider === "local" && target.kind === "pr") {
+    if (readsInPlace(repo) && target.kind === "pr") {
       return apiError("A pull request can't be compared on a repo with no git-host link.", 400);
     }
     const job = start ? await ensureTargetGraph(repoId, target) : await getTargetGraphJob(repoId, target);

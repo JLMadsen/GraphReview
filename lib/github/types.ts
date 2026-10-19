@@ -4,6 +4,16 @@
 // handlers) should depend on these, not on `@octokit/*` types directly.
 
 /** REST rate-limit info read from `x-ratelimit-*` response headers ("REST rate-limit headers are surfaced in the UI"). */
+/**
+ * A saved token and the API it belongs to (Settings → Git servers,
+ * DESIGN.md §6.30). `apiUrl` unset means the client's default: the
+ * `GITHUB_API_URL` / `GITLAB_API_URL` override, else github.com / gitlab.com.
+ */
+export interface GitHostAuth {
+  token: string;
+  apiUrl?: string;
+}
+
 export interface RateLimitInfo {
   /** Max requests allowed in the current window (`x-ratelimit-limit`). */
   limit: number;
