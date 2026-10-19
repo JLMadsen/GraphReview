@@ -334,9 +334,26 @@ export function ReviewPanel({
       : costTitle;
 
   // Nothing reviewed yet: the empty dock becomes one big start button
-  // (and the header's small one steps aside).
-  const showStart =
-    status === "ready" && aiConfigured && state === "none" && !running && !rerunning && !cancelled && findings.length === 0;
+  // (and the header's small one steps aside). Static-analysis findings can
+  // exist before any review; then the start button sits above them, so it
+  // stays obvious that the AI review hasn't run.
+  const notReviewed = status === "ready" && aiConfigured && state === "none" && !running && !rerunning && !cancelled;
+  const showStart = notReviewed && findings.length === 0;
+  const startButton = (size: "lg" | "sm") => (
+    <button
+      type="button"
+      onClick={onRerun}
+      disabled={!canRerun}
+      title={reviewedNote ?? "Run the review at the selected effort."}
+      className={cn(
+        "group flex shrink-0 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-primary transition-colors hover:bg-primary/20 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:opacity-50",
+        size === "lg" ? "size-16" : "size-10"
+      )}
+    >
+      <Play className={cn("fill-current", size === "lg" ? "ml-1 size-7" : "ml-0.5 size-4")} aria-hidden />
+      <span className="sr-only">Review this diff</span>
+    </button>
+  );
 
   const scopeArea = scopeAreaId ? areas.areas.get(scopeAreaId) : undefined;
   const scopeParts = [
@@ -486,7 +503,7 @@ export function ReviewPanel({
                 {expanded ? <ChevronsDown aria-hidden /> : <ChevronsUp aria-hidden />}
               </Button>
             )}
-            {aiConfigured && !showStart && (
+            {aiConfigured && !notReviewed && (
               <Button
                 type="button"
                 variant="outline"
@@ -636,6 +653,17 @@ export function ReviewPanel({
           {tab === "findings" &&
             (findings.length > 0 ? (
               <>
+                {notReviewed && (
+                  <div className="my-2 flex items-center gap-3 rounded-md border border-primary/30 bg-primary/5 px-3 py-2.5">
+                    {startButton("sm")}
+                    <div className="min-w-0 space-y-0.5">
+                      <p className="text-sm font-medium">Not reviewed yet</p>
+                      <p className="text-xs text-muted-foreground">
+                        These findings come from static analysis only — run the review for the full picture.
+                      </p>
+                    </div>
+                  </div>
+                )}
                 {visibleRows.length > 0 && (
                   <div
                     className={cn(
@@ -710,16 +738,7 @@ export function ReviewPanel({
               </>
             ) : showStart ? (
               <div className="flex h-full min-h-40 flex-col items-center justify-center gap-3 py-6 text-center">
-                <button
-                  type="button"
-                  onClick={onRerun}
-                  disabled={!canRerun}
-                  title={reviewedNote ?? "Run the review at the selected effort."}
-                  className="group flex size-16 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-primary transition-colors hover:bg-primary/20 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:opacity-50"
-                >
-                  <Play className="ml-1 size-7 fill-current" aria-hidden />
-                  <span className="sr-only">Review this diff</span>
-                </button>
+                {startButton("lg")}
                 <div className="space-y-1">
                   <p className="text-sm font-medium">Review this diff</p>
                   <p className="max-w-sm text-xs text-muted-foreground">

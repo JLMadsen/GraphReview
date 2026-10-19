@@ -11,6 +11,7 @@
 //
 // Kept out of lib/jobs' barrel: it pulls in lib/ai and lib/analysis.
 
+import { createHash } from "node:crypto";
 import { copyFile, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -27,7 +28,10 @@ import {
   resolveImage,
   type ResolvedImage,
   prepareDeps,
+  prepareTreeVolume,
   pruneDepsVolumes,
+  pruneTreeVolumes,
+  releaseTreeVolume,
   runHarness,
   SandboxUnavailableError,
   type PreparedDeps,
@@ -93,21 +97,72 @@ function isQuotaError(error: unknown): boolean {
   return /\b(429|quota|rate.?limit|resource.?exhausted|too many requests)\b/i.test(String((error as Error)?.message ?? error));
 }
 
+/** Tree volume → when a preview last used it (ms); as {@link DEPS_LAST_USED_KEY}. */
+const TREES_LAST_USED_KEY = "preview:trees-last-used";
+
 /**
- * Records which dependency caches this run used, then removes the ones that
- * went unused for too long (lib/preview/sandbox.ts `pruneDepsVolumes`).
- * Best effort: cleanup never fails a preview.
+ * Records which dependency caches and tree volumes this run used, then
+ * removes the ones that went unused for too long (lib/preview/sandbox.ts
+ * `pruneDepsVolumes`, `pruneTreeVolumes`). Best effort: cleanup never fails a preview.
  */
-async function recordAndPruneDeps(used: Array<string | undefined>, log: JobLogger): Promise<void> {
+async function recordAndPruneVolumes(deps: Array<string | undefined>, trees: Array<string | undefined>, log: JobLogger): Promise<void> {
+  const kinds = [
+    { key: DEPS_LAST_USED_KEY, used: deps, prune: pruneDepsVolumes, what: "dependency cache" },
+    { key: TREES_LAST_USED_KEY, used: trees, prune: pruneTreeVolumes, what: "tree volume" },
+  ];
+  for (const { key, used, prune, what } of kinds) {
+    try {
+      const lastUsed = new Map(Object.entries(readKv<Record<string, number>>(key) ?? {}));
+      const now = Date.now();
+      for (const volume of new Set(used.filter((v): v is string => Boolean(v)))) lastUsed.set(volume, now);
+      const removed = await prune(lastUsed, log);
+      for (const volume of removed) lastUsed.delete(volume);
+      writeKv(key, Object.fromEntries(lastUsed));
+    } catch (error) {
+      log(`${what} cleanup skipped: ${(error as Error).message}`);
+    }
+  }
+}
+
+/**
+ * Per repo: a hash of a symbol's file, name, kind and before/after source →
+ * the cases the model wrote for it. Preview all and Run again then reuse
+ * them for every symbol a push didn't touch instead of asking the model
+ * again. Hand-edited inputs never come from here. The newest
+ * {@link INPUTS_CACHE_MAX} entries are kept, for 30 days after the last write.
+ */
+function inputsCacheKey(repoId: string): string {
+  return `preview:inputs:${repoId}`;
+}
+const INPUTS_CACHE_MAX = 400;
+type InputsCache = Record<string, { cases: PreviewCaseInput[]; at: number }>;
+
+function symbolInputsHash(filePath: string, symbol: PreviewSymbol, sources: { before?: string; after?: string } | undefined): string {
+  return createHash("sha1")
+    .update(JSON.stringify([filePath, symbol.name, symbol.kind, symbol.change, symbol.via ?? null, sources?.before ?? null, sources?.after ?? null]))
+    .digest("hex");
+}
+
+function readInputsCache(repoId: string): InputsCache {
   try {
-    const lastUsed = new Map(Object.entries(readKv<Record<string, number>>(DEPS_LAST_USED_KEY) ?? {}));
+    return readKv<InputsCache>(inputsCacheKey(repoId)) ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function writeInputsCache(repoId: string, entries: Array<[string, PreviewCaseInput[]]>): void {
+  if (entries.length === 0) return;
+  try {
     const now = Date.now();
-    for (const volume of new Set(used.filter((v): v is string => Boolean(v)))) lastUsed.set(volume, now);
-    const removed = await pruneDepsVolumes(lastUsed, log);
-    for (const volume of removed) lastUsed.delete(volume);
-    writeKv(DEPS_LAST_USED_KEY, Object.fromEntries(lastUsed));
-  } catch (error) {
-    log(`dependency cache cleanup skipped: ${(error as Error).message}`);
+    const merged: InputsCache = { ...readInputsCache(repoId) };
+    for (const [hash, cases] of entries) merged[hash] = { cases, at: now };
+    const kept = Object.entries(merged)
+      .sort(([, a], [, b]) => b.at - a.at)
+      .slice(0, INPUTS_CACHE_MAX);
+    writeKv(inputsCacheKey(repoId), Object.fromEntries(kept), MOCK_CACHE_TTL_S);
+  } catch {
+    /* the cache is an optimisation */
   }
 }
 
@@ -187,23 +242,29 @@ function summarize(
 /** A side's checkout and dependencies, kept so the side can run again (with mocks) without redoing them. */
 interface PreparedSide {
   treeDir: string;
+  /** The tree in a Docker volume, mounted instead of copying `treeDir` into each run's container. */
+  treeVolume?: string;
   jobDir: string;
   projectRoot: string;
   prepared: PreparedDeps;
 }
 
-interface SideRun {
-  harness: PreviewHarnessResult | null;
+/** A side made ready to run, or why it couldn't be. */
+interface SidePrep {
   deps: string;
-  /** The dependency cache volume this side ran with, if any. */
   depsVolume?: string;
   fatal?: string;
   prepared?: PreparedSide;
 }
 
+interface SideRun extends SidePrep {
+  harness: PreviewHarnessResult | null;
+}
+
 const NO_SIDE: SideRun = { harness: null, deps: "none" };
 
-async function runSide(options: {
+/** Writes one side's tree, installs its dependencies (cached) and fills its tree volume. */
+async function prepareSide(options: {
   side: PreviewSide;
   runtime: PreviewRuntime;
   /** The sandbox image (both sides share one); undefined = the runtime's default. */
@@ -211,44 +272,59 @@ async function runSide(options: {
   repoDir: string;
   sha: string;
   filePath: string;
+  scratch: string;
+  log: JobLogger;
+}): Promise<SidePrep> {
+  const { side, runtime, image, repoDir, sha, filePath, scratch } = options;
+  const log: JobLogger = (message) => options.log(`${side}: ${message}`);
+  try {
+    const treeDir = path.join(scratch, side);
+    const jobDir = path.join(scratch, `${side}-job`);
+    log(`writing the tree at ${sha.slice(0, 7)}`);
+    await materializeTree(repoDir, sha, treeDir, scratch);
+    const projectRoot = projectRootFor(treeDir, filePath, runtime);
+    const [installed, treeVolume] = await Promise.all([
+      prepareDeps(runtime, treeDir, projectRoot, log, image),
+      prepareTreeVolume(sha, treeDir, image ?? imageFor(runtime), log),
+    ]);
+    await mkdir(jobDir, { recursive: true });
+    const script = harnessScript(runtime);
+    await copyFile(script, path.join(jobDir, path.basename(script)));
+    // The Node harness is split into modules beside it (plus its stand-in values,
+    // preview-fakes.mjs): every .mjs file goes along.
+    if (runtime === "node") {
+      for (const name of await readdir(path.dirname(script))) {
+        if (name.endsWith(".mjs") && name !== path.basename(script)) await copyFile(path.join(path.dirname(script), name), path.join(jobDir, name));
+      }
+    }
+    return { deps: installed.status, depsVolume: installed.volume, prepared: { treeDir, treeVolume, jobDir, projectRoot, prepared: installed } };
+  } catch (error) {
+    if (error instanceof SandboxUnavailableError) throw error;
+    log(`failed: ${(error as Error).message}`);
+    return { deps: "none", fatal: (error as Error).message };
+  }
+}
+
+async function runSide(options: {
+  side: PreviewSide;
+  runtime: PreviewRuntime;
+  image?: string;
+  filePath: string;
   symbols: PreviewSymbol[];
   inputs: PreviewInputs;
   mocks: PreviewMocks;
-  scratch: string;
   log: JobLogger;
-  /** Reuse an earlier run's checkout and dependencies. */
-  reuse?: PreparedSide;
+  prep: SidePrep;
 }): Promise<SideRun> {
-  const { side, runtime, image, repoDir, sha, filePath, symbols, inputs, mocks, scratch, reuse } = options;
+  const { side, runtime, image, symbols, inputs, mocks, prep } = options;
   const log: JobLogger = (message) => options.log(`${side}: ${message}`);
-  let deps = reuse?.prepared.status ?? "none";
-  let depsVolume = reuse?.prepared.volume;
+  const prepared = prep.prepared;
+  if (!prepared) return { ...prep, harness: null };
+  const { deps, depsVolume } = prep;
   try {
-    let prepared = reuse;
-    if (!prepared) {
-      const treeDir = path.join(scratch, side);
-      const jobDir = path.join(scratch, `${side}-job`);
-      log(`writing the tree at ${sha.slice(0, 7)}`);
-      await materializeTree(repoDir, sha, treeDir, scratch);
-      const projectRoot = projectRootFor(treeDir, filePath, runtime);
-      const installed = await prepareDeps(runtime, treeDir, projectRoot, log, image);
-      deps = installed.status;
-      depsVolume = installed.volume;
-      await mkdir(jobDir, { recursive: true });
-      const script = harnessScript(runtime);
-      await copyFile(script, path.join(jobDir, path.basename(script)));
-      // The Node harness is split into modules beside it (plus its stand-in values,
-      // preview-fakes.mjs): every .mjs file goes along.
-      if (runtime === "node") {
-        for (const name of await readdir(path.dirname(script))) {
-          if (name.endsWith(".mjs") && name !== path.basename(script)) await copyFile(path.join(path.dirname(script), name), path.join(jobDir, name));
-        }
-      }
-      prepared = { treeDir, jobDir, projectRoot, prepared: installed };
-    }
     const spec = {
       side,
-      file: filePath,
+      file: options.filePath,
       projectRoot: prepared.projectRoot,
       caseTimeoutMs: CASE_TIMEOUT_MS,
       symbols: symbols.map((s) => ({ name: s.name, kind: s.kind, cases: inputs[s.name] ?? [] })),
@@ -259,6 +335,7 @@ async function runSide(options: {
     const harness = await runHarness({
       runtime,
       treeDir: prepared.treeDir,
+      treeVolume: prepared.treeVolume,
       jobDir: prepared.jobDir,
       projectRoot: prepared.projectRoot,
       deps: prepared.prepared,
@@ -269,7 +346,7 @@ async function runSide(options: {
   } catch (error) {
     if (error instanceof SandboxUnavailableError) throw error;
     log(`failed: ${(error as Error).message}`);
-    return { harness: null, deps, depsVolume, fatal: (error as Error).message, prepared: reuse };
+    return { harness: null, deps, depsVolume, fatal: (error as Error).message, prepared };
   }
 }
 
@@ -354,81 +431,111 @@ export async function runPreviewJob(
   const resolvedImage: ResolvedImage = symbols.length > 0 ? await resolveImage(wantedImage, log) : { image: wantedImage };
   const image = resolvedImage.image;
 
-  // 3. inputs
-  const inputs: PreviewInputs = {};
-  let inputsSource: PreviewResult["inputsSource"] = "default";
-  let inputsNote: string | undefined;
-  const needInputs: PreviewSymbol[] = [];
-  for (const symbol of symbols) {
-    const given = data.inputs?.[symbol.name];
-    if (given && given.length > 0) {
-      inputs[symbol.name] = given;
-      inputsSource = "user";
-    } else {
-      needInputs.push(symbol);
-    }
-  }
-  if (needInputs.length > 0) {
-    progress("inputs", `mocking up inputs for ${needInputs.map((s) => s.name).join(", ")}`);
-    const config = await loadAiConfig();
-    if (!config) {
-      inputsNote = "No AI provider is configured, so each symbol starts with empty inputs. Edit them and run again.";
-    } else {
-      try {
-        const result = await generatePreviewInputs(config, {
-          filePath: data.filePath,
-          language: runtime === "python" ? "python" : "javascript/typescript",
-          symbols: needInputs.map((s) => ({
-            name: s.name,
-            kind: s.kind,
-            change: s.change,
-            via: s.via,
-            before: detected.sources[s.name]?.before,
-            after: detected.sources[s.name]?.after,
-          })),
-          fileAfter: after ?? undefined,
-          fileBefore: before ?? undefined,
-        });
-        for (const [name, cases] of Object.entries(result.inputs)) inputs[name] = cases;
-        if (inputsSource === "default" && Object.keys(result.inputs).length > 0) inputsSource = "ai";
-        if (result.parseFailed) {
-          inputsNote = "The AI's answer couldn't be read, even after asking again, so empty inputs were used. Edit them and run again.";
-          log(`unreadable AI answer: ${(result.rawAnswer ?? "").replace(/\s+/g, " ")}`);
-        }
-        log(`inputs from the AI: ${result.usage.promptTokens}+${result.usage.completionTokens} tokens`);
-      } catch (error) {
-        inputsNote = `Mocking up inputs failed (${(error as Error).message}), so empty inputs were used.`;
-        log(inputsNote);
-      }
-    }
-    for (const symbol of needInputs) inputs[symbol.name] ??= defaultCases(symbol);
-  }
-
-  // 4 + 5. prepare and run both sides; then record → mock → replay: server
-  // calls the renders made (server actions, fetch) get mocked answers from the
-  // model, and both sides run again with them.
+  // 4 (started early). Writing both trees, installing dependencies and filling
+  // the tree volumes doesn't depend on the inputs, so it runs while the model
+  // writes them.
   const scratch = await mkdtemp(path.join(os.tmpdir(), "graphreview-preview-"));
+  const prepCommon = { runtime, image, repoDir, filePath: data.filePath, scratch, log };
+  const preparing: Promise<[SidePrep, SidePrep]> =
+    symbols.length === 0
+      ? Promise.resolve([NO_SIDE, NO_SIDE])
+      : Promise.all([
+          before === null ? NO_SIDE : prepareSide({ ...prepCommon, side: "before", sha: baseSha }),
+          after === null ? NO_SIDE : prepareSide({ ...prepCommon, side: "after", sha: headSha }),
+        ]);
+  // Awaited below; this only keeps a rejection from going unhandled meanwhile.
+  preparing.catch(() => undefined);
+  if (symbols.length > 0) progress("preparing", "checking out both sides");
+
   let beforeRun: SideRun = NO_SIDE;
   let afterRun: SideRun = NO_SIDE;
   // The repo's cached mocks first, then whatever this run was given (edited or reused) on top.
   let mocks: PreviewMocks = { ...(await readMockCache(data.repoId)), ...(data.mocks ?? {}) };
   let mocksSource: PreviewResult["mocksSource"] = data.mocks && Object.keys(data.mocks).length > 0 ? "user" : "none";
   let mocksNote: string | undefined;
+  const inputs: PreviewInputs = {};
+  let inputsSource: PreviewResult["inputsSource"] = "default";
+  let inputsNote: string | undefined;
   try {
+    // 3. inputs
+    const needInputs: PreviewSymbol[] = [];
+    for (const symbol of symbols) {
+      const given = data.inputs?.[symbol.name];
+      if (given && given.length > 0) {
+        inputs[symbol.name] = given;
+        inputsSource = "user";
+      } else {
+        needInputs.push(symbol);
+      }
+    }
+    // The model's earlier cases for a symbol whose source hasn't changed since.
+    const inputsCache = readInputsCache(data.repoId);
+    const inputHashes = new Map(needInputs.map((s) => [s.name, symbolInputsHash(data.filePath, s, detected.sources[s.name])]));
+    const reused = needInputs.filter((s) => inputsCache[inputHashes.get(s.name)!]);
+    for (const symbol of reused) inputs[symbol.name] = inputsCache[inputHashes.get(symbol.name)!].cases;
+    if (reused.length > 0) {
+      if (inputsSource === "default") inputsSource = "ai";
+      log(`inputs reused from an earlier AI answer: ${reused.map((s) => s.name).join(", ")}`);
+    }
+    const askFor = needInputs.filter((s) => !reused.includes(s));
+    if (askFor.length > 0) {
+      progress("inputs", `mocking up inputs for ${askFor.map((s) => s.name).join(", ")}`);
+      const config = await loadAiConfig();
+      if (!config) {
+        inputsNote = "No AI provider is configured, so each symbol starts with empty inputs. Edit them and run again.";
+      } else {
+        try {
+          const result = await generatePreviewInputs(config, {
+            filePath: data.filePath,
+            language: runtime === "python" ? "python" : "javascript/typescript",
+            symbols: askFor.map((s) => ({
+              name: s.name,
+              kind: s.kind,
+              change: s.change,
+              via: s.via,
+              before: detected.sources[s.name]?.before,
+              after: detected.sources[s.name]?.after,
+            })),
+            fileAfter: after ?? undefined,
+            fileBefore: before ?? undefined,
+          });
+          for (const [name, cases] of Object.entries(result.inputs)) inputs[name] = cases;
+          if (inputsSource === "default" && Object.keys(result.inputs).length > 0) inputsSource = "ai";
+          if (result.parseFailed) {
+            inputsNote = "The AI's answer couldn't be read, even after asking again, so empty inputs were used. Edit them and run again.";
+            log(`unreadable AI answer: ${(result.rawAnswer ?? "").replace(/\s+/g, " ")}`);
+          }
+          writeInputsCache(
+            data.repoId,
+            askFor.filter((s) => result.inputs[s.name]?.length).map((s) => [inputHashes.get(s.name)!, result.inputs[s.name]])
+          );
+          log(`inputs from the AI: ${result.usage.promptTokens}+${result.usage.completionTokens} tokens`);
+        } catch (error) {
+          inputsNote = `Mocking up inputs failed (${(error as Error).message}), so empty inputs were used.`;
+          log(inputsNote);
+        }
+      }
+    }
+    for (const symbol of needInputs) inputs[symbol.name] ??= defaultCases(symbol);
+
+    // 4 + 5. prepare and run both sides; then record → mock → replay: server
+    // calls the renders made (server actions, fetch) get mocked answers from the
+    // model, and both sides run again with them.
     if (symbols.length > 0) {
-      progress("preparing", "checking out both sides and running them in the sandbox");
-      const runBoth = (reuseBefore?: PreparedSide, reuseAfter?: PreparedSide) => {
-        const common = { runtime, image, repoDir, filePath: data.filePath, inputs, mocks, scratch, log };
+      const [beforePrep, afterPrep] = await preparing;
+      progress("running", "running both sides in the sandbox");
+      const runBoth = (beforeSide: SidePrep, afterSide: SidePrep) => {
+        const common = { runtime, image, filePath: data.filePath, inputs, mocks, log };
         return Promise.all([
           before === null
             ? Promise.resolve<SideRun>(NO_SIDE)
-            : runSide({ ...common, side: "before", sha: baseSha, symbols: symbols.filter((s) => s.change !== "added"), reuse: reuseBefore }),
+            : runSide({ ...common, side: "before", symbols: symbols.filter((s) => s.change !== "added"), prep: beforeSide }),
           after === null
             ? Promise.resolve<SideRun>(NO_SIDE)
-            : runSide({ ...common, side: "after", sha: headSha, symbols: symbols.filter((s) => s.change !== "removed"), reuse: reuseAfter }),
+            : runSide({ ...common, side: "after", symbols: symbols.filter((s) => s.change !== "removed"), prep: afterSide }),
         ]);
       };
-      [beforeRun, afterRun] = await runBoth();
+      [beforeRun, afterRun] = await runBoth(beforePrep, afterPrep);
 
       // Each round can reveal more calls: once a session check passes, the page loads its data.
       for (let round = 1; round <= MAX_MOCK_ROUNDS; round++) {
@@ -471,7 +578,7 @@ export async function runPreviewJob(
           await writeMockCache(data.repoId, result.mocks);
           if (mocksSource === "none") mocksSource = "ai";
           progress("running", "rendering again with the mocked server responses");
-          [beforeRun, afterRun] = await runBoth(beforeRun.prepared, afterRun.prepared);
+          [beforeRun, afterRun] = await runBoth(beforeRun, afterRun);
         } catch (error) {
           mocksNote = isQuotaError(error)
             ? "The AI provider refused (quota or rate limit), so some server calls had no mocked answer and those parts render as if the server were down. Try again later."
@@ -485,8 +592,16 @@ export async function runPreviewJob(
     if (error instanceof SandboxUnavailableError) throw new UnrecoverableError(error.message);
     throw error;
   } finally {
+    // Still writing when something above threw: let it finish before removing its folder.
+    const preps = await preparing.catch(() => [NO_SIDE, NO_SIDE]);
     await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
-    await recordAndPruneDeps([beforeRun.depsVolume, afterRun.depsVolume], log);
+    const treeVolumes = preps.map((p) => p.prepared?.treeVolume);
+    for (const volume of treeVolumes) releaseTreeVolume(volume);
+    await recordAndPruneVolumes(
+      preps.map((p) => p.depsVolume),
+      treeVolumes,
+      log
+    );
   }
 
   // 6. compare

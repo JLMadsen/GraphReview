@@ -9,6 +9,8 @@
 //   graphreview-preview-deps-<hash>   one repo's installed dependencies,
 //                                     keyed by its manifests + lockfile, so
 //                                     base and head share it when unchanged
+//   graphreview-preview-tree-<v>-<sha> the repo's tree at one commit, mounted
+//                                     read-only by every run at that commit
 //
 // A run container gets no network, capped memory/CPU/processes and a wall-
 // clock limit. Installs are the only step that goes online, and they carry
@@ -540,6 +542,15 @@ export async function prepareDeps(
 
 const installsInFlight = new Map<string, Promise<PreparedDeps>>();
 
+/**
+ * Volumes (dependency caches and trees) known to be complete, so later runs
+ * skip the `docker run … test -f <marker>` probe, about a second each on
+ * Docker Desktop. In memory only: after a restart each is probed once again.
+ * Forgotten when GraphReview removes the volume; a volume removed by hand
+ * while GraphReview runs is not noticed.
+ */
+const depsReady = new Set<string>();
+
 async function installInto(options: {
   runtime: PreviewRuntime;
   image: string;
@@ -552,8 +563,12 @@ async function installInto(options: {
   log: Logger;
 }): Promise<PreparedDeps> {
   const { runtime, image, volume, workdir, mountPoint, marker, projectDir, treeDir, log } = options;
+  if (depsReady.has(volume)) return { volume, status: "cached" };
   const probe = await docker(["run", "--rm", "-v", `${volume}:${mountPoint}`, image, "test", "-f", marker]);
-  if (probe.code === 0) return { volume, status: "cached" };
+  if (probe.code === 0) {
+    depsReady.add(volume);
+    return { volume, status: "cached" };
+  }
 
   log(`installing ${runtime === "python" ? "Python" : "npm"} dependencies (cached for next time)`);
   await logHostConfig(log);
@@ -575,6 +590,7 @@ async function installInto(options: {
       await removeVolume(volume);
       return { status: `failed: ${reason || "unknown error"}` };
     }
+    depsReady.add(volume);
     return { volume, status: "installed" };
   } catch (error) {
     log(`dependency install failed: ${(error as Error).message}`);
@@ -585,7 +601,83 @@ async function installInto(options: {
 
 /** Best effort: a half-filled cache from a failed install would only be retried into anyway. */
 async function removeVolume(name: string): Promise<boolean> {
+  depsReady.delete(name);
+  treesReady.delete(name);
   return (await docker(["volume", "rm", name]).catch(() => ({ code: 1 }))).code === 0;
+}
+
+// ---------------------------------------------------------------------------
+// Trees: one read-only volume per commit
+// ---------------------------------------------------------------------------
+
+const TREE_VOLUME_PREFIX = "graphreview-preview-tree-";
+const TREE_MARKER = "/src/.graphreview-ready";
+/** Where the Node harness writes its entry files, inside the project (harness-context.mjs `ENTRIES`). */
+const ENTRIES_DIR = ".graphreview-entries";
+
+/** Tree volumes known to be complete (see {@link depsReady}). */
+const treesReady = new Set<string>();
+const treesInFlight = new Map<string, Promise<string | undefined>>();
+/** Tree volume → how many running previews hold it; pruning skips held ones. */
+const treesInUse = new Map<string, number>();
+
+/**
+ * Copies the repo's tree at `sha` into a named volume, once per commit, so
+ * runs mount it read-only instead of `docker cp`-ing the whole tree into
+ * every container: every file of a Preview all and every mock replay round
+ * share it. Docker can't create a mount point inside a read-only mount, so
+ * every Node project folder (one with a package.json, and the repo root)
+ * gets empty ones first: `node_modules` for a dependency cache, and the
+ * harness's entry folder, which each run gets as its own tmpfs.
+ * Holds the volume until {@link releaseTreeVolume}.
+ * Returns undefined when filling fails; the run then copies the tree in as before.
+ */
+export async function prepareTreeVolume(sha: string, treeDir: string, image: string, log: Logger): Promise<string | undefined> {
+  // The number is the volume's layout; bump it when what fillTreeVolume writes changes.
+  const volume = `${TREE_VOLUME_PREFIX}2-${sha}`;
+  treesInUse.set(volume, (treesInUse.get(volume) ?? 0) + 1);
+  if (treesReady.has(volume)) return volume;
+  let work = treesInFlight.get(volume);
+  if (!work) {
+    work = fillTreeVolume(volume, treeDir, image, log).finally(() => treesInFlight.delete(volume));
+    treesInFlight.set(volume, work);
+  }
+  const filled = await work;
+  if (!filled) releaseTreeVolume(volume);
+  return filled;
+}
+
+export function releaseTreeVolume(volume: string | undefined): void {
+  if (!volume) return;
+  const count = (treesInUse.get(volume) ?? 1) - 1;
+  if (count > 0) treesInUse.set(volume, count);
+  else treesInUse.delete(volume);
+}
+
+async function fillTreeVolume(volume: string, treeDir: string, image: string, log: Logger): Promise<string | undefined> {
+  try {
+    if (await volumeExists(volume)) {
+      const probe = await docker(["run", "--rm", "-v", `${volume}:/src`, image, "test", "-f", TREE_MARKER]);
+      if (probe.code === 0) {
+        treesReady.add(volume);
+        return volume;
+      }
+    }
+    const script =
+      "{ echo /src/package.json; find /src -name package.json -not -path '*/node_modules/*'; } | " +
+      `while read f; do d="$(dirname "$f")"; mkdir -p "$d/node_modules" "$d/${ENTRIES_DIR}"; done && touch ${TREE_MARKER}`;
+    const result = await withContainer(["--network", "none", "-v", `${volume}:/src`, image, "sh", "-c", script], async (id) => {
+      await copyIn(id, treeDir, "/src");
+      return startAttached(id, INSTALL_TIMEOUT_MS);
+    });
+    if (result.code !== 0) throw new Error(installOutputExcerpt(result.stderr || result.stdout) || `exit code ${result.code}`);
+    treesReady.add(volume);
+    return volume;
+  } catch (error) {
+    log(`couldn't keep the tree in a volume, copying it in instead: ${(error as Error).message}`);
+    await removeVolume(volume);
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -610,26 +702,49 @@ const DEPS_KEEP = envMs("PREVIEW_DEPS_KEEP", 6);
  * skipped, and Docker itself refuses to remove one a container still uses.
  */
 export async function pruneDepsVolumes(lastUsed: ReadonlyMap<string, number>, log: Logger): Promise<string[]> {
-  const listed = await docker(["volume", "ls", "-q", "--filter", `name=${DEPS_VOLUME_PREFIX}`]);
-  const names = listed.stdout.split("\n").map((n) => n.trim()).filter((n) => n.startsWith(DEPS_VOLUME_PREFIX));
+  const removed = await pruneVolumes(DEPS_VOLUME_PREFIX, lastUsed, DEPS_MAX_AGE_MS, DEPS_KEEP, (name) => installsInFlight.has(name));
+  if (removed.length > 0) log(`removed ${removed.length} unused dependency cache(s)`);
+  return removed;
+}
+
+/** Tree volumes unused for longer than this are removed (`PREVIEW_TREES_MAX_AGE_HOURS`, default 24 h). */
+const TREES_MAX_AGE_MS = envMs("PREVIEW_TREES_MAX_AGE_HOURS", 24) * 60 * 60 * 1000;
+/** At most this many tree volumes are kept (`PREVIEW_TREES_KEEP`, default 8: base and head of four targets). */
+const TREES_KEEP = envMs("PREVIEW_TREES_KEEP", 8);
+
+/** The same for tree volumes ({@link prepareTreeVolume}): one per commit, so they pile up with every push. */
+export async function pruneTreeVolumes(lastUsed: ReadonlyMap<string, number>, log: Logger): Promise<string[]> {
+  const removed = await pruneVolumes(TREE_VOLUME_PREFIX, lastUsed, TREES_MAX_AGE_MS, TREES_KEEP, (name) => treesInUse.has(name) || treesInFlight.has(name));
+  if (removed.length > 0) log(`removed ${removed.length} unused tree volume(s)`);
+  return removed;
+}
+
+async function pruneVolumes(
+  prefix: string,
+  lastUsed: ReadonlyMap<string, number>,
+  maxAgeMs: number,
+  keep: number,
+  busy: (name: string) => boolean
+): Promise<string[]> {
+  const listed = await docker(["volume", "ls", "-q", "--filter", `name=${prefix}`]);
+  const names = listed.stdout.split("\n").map((n) => n.trim()).filter((n) => n.startsWith(prefix));
   if (names.length === 0) return [];
 
   const inspected = await docker(["volume", "inspect", "--format", "{{.Name}} {{.CreatedAt}}", ...names]);
   const volumes = inspected.stdout
     .split("\n")
     .map((row) => row.trim().split(" "))
-    .filter(([name]) => name && !installsInFlight.has(name))
+    .filter(([name]) => name && !busy(name))
     .map(([name, createdAt]) => ({ name, used: lastUsed.get(name) ?? (Date.parse(createdAt ?? "") || 0) }))
     .sort((a, b) => b.used - a.used);
 
   const now = Date.now();
   const removed: string[] = [];
   for (const [index, volume] of volumes.entries()) {
-    const stale = now - volume.used > DEPS_MAX_AGE_MS;
-    if (!stale && index < DEPS_KEEP) continue;
+    const stale = now - volume.used > maxAgeMs;
+    if (!stale && index < keep) continue;
     if (await removeVolume(volume.name)) removed.push(volume.name);
   }
-  if (removed.length > 0) log(`removed ${removed.length} unused dependency cache(s)`);
   return removed;
 }
 
@@ -656,6 +771,8 @@ export interface RunHarnessOptions {
   runtime: PreviewRuntime;
   /** The repo checked out at one commit. */
   treeDir: string;
+  /** That tree in a volume ({@link prepareTreeVolume}), mounted read-only instead of copying `treeDir` in. */
+  treeVolume?: string;
   /** Holds spec.json + the harness script; copied to /job. */
   jobDir: string;
   projectRoot: string;
@@ -667,7 +784,7 @@ export interface RunHarnessOptions {
 
 /** Runs one side in a fresh, offline container and parses the harness's result line. */
 export async function runHarness(options: RunHarnessOptions): Promise<PreviewHarnessResult> {
-  const { runtime, treeDir, jobDir, projectRoot, deps, log } = options;
+  const { runtime, treeDir, treeVolume, jobDir, projectRoot, deps, log } = options;
   const image = options.image ?? imageFor(runtime);
   await ensureImage(image, log);
   if (runtime === "node") await ensureHarnessVolume(image, log);
@@ -693,6 +810,8 @@ export async function runHarness(options: RunHarnessOptions): Promise<PreviewHar
     "-e",
     `GRAPHREVIEW_MEMORY=${MEMORY}`,
   ];
+  if (treeVolume) args.push("-v", `${treeVolume}:/src:ro`);
+  if (treeVolume && runtime === "node") args.push("--tmpfs", path.posix.join(workdir, ENTRIES_DIR));
   if (runtime === "node") {
     args.push("-v", `${HARNESS_VOLUME}:/harness:ro`);
     if (deps.volume) args.push("-v", `${deps.volume}:${path.posix.join(workdir, "node_modules")}:ro`);
@@ -703,7 +822,7 @@ export async function runHarness(options: RunHarnessOptions): Promise<PreviewHar
   }
 
   const result = await withContainer(args, async (id) => {
-    await copyIn(id, treeDir, "/src");
+    if (!treeVolume) await copyIn(id, treeDir, "/src");
     await copyIn(id, jobDir, "/job");
     return startAttached(id, RUN_TIMEOUT_MS);
   });

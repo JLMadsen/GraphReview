@@ -212,6 +212,7 @@ since it decides where the file is.)
 | `PREVIEW_RUN_TIMEOUT_MS` / `PREVIEW_INSTALL_TIMEOUT_MS` | `120000` / `900000` | Wall-clock limits for one side's run, and for a dependency install |
 | `PREVIEW_MEMORY` / `PREVIEW_CPUS` | `2g` / `1` | Resource caps per sandbox container |
 | `PREVIEW_DEPS_MAX_AGE_HOURS` / `PREVIEW_DEPS_KEEP` | `48` / `6` | Installed dependencies are cached in Docker volumes (often hundreds of MB each); after every preview, caches unused this long are removed and only this many are kept. Package downloads go to one shared volume, `graphreview-preview-downloads`, which reinstalls read from first |
+| `PREVIEW_TREES_MAX_AGE_HOURS` / `PREVIEW_TREES_KEEP` | `24` / `8` | Each commit a preview runs is kept in a Docker volume (`graphreview-preview-tree-…`, the size of the repo) so later previews at that commit mount it instead of copying the repo in again; the same cleanup applies |
 | `PREVIEW_CONCURRENCY` | `1` | Files previewed at once (each runs two containers) |
 
 ### Private registries, company certificates and offline networks
