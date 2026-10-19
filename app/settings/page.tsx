@@ -88,6 +88,7 @@ export default async function SettingsPage() {
             baseUrl: p.baseUrl,
             model: p.model,
             hasApiKey: Boolean(p.apiKeyEncrypted),
+            generousSpending: p.generousSpending === true,
           }))}
           initialActiveProviderId={activeProviderId}
         />

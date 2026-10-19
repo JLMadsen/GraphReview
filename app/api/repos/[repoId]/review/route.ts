@@ -30,7 +30,8 @@ import {
   type ReviewFreshness,
   type ReviewProgress,
 } from "@/lib/jobs";
-import { DEFAULT_REVIEW_EFFORT, isReviewEffort } from "@/lib/ai/effort";
+import { isReviewEffort, type ReviewEffort } from "@/lib/ai/effort";
+import { defaultReviewEffort } from "@/lib/jobs/ai-config";
 import {
   getActiveAiProvider,
   getRepoById,
@@ -111,6 +112,8 @@ export interface ReviewStatusResponse {
   freshness?: ReviewFreshness;
   /** Whether all three AI provider settings are present — lets the UI decide whether auto-running a review can work at all (no cost gate, but no point firing into an unconfigured provider either). */
   aiConfigured: boolean;
+  /** The effort a run gets when nobody picks one (lib/jobs/ai-config.ts). */
+  defaultEffort: ReviewEffort;
   /** Recent `job.log()` lines from the worker, oldest first — present only for `?logs=1` (the dock's hover-to-see-progress affordance). */
   logs?: string[];
 }
@@ -171,7 +174,8 @@ export async function POST(
   if (rawEffort !== undefined && !isReviewEffort(rawEffort)) {
     return errorResponse("effort must be one of low, medium, high, max.", 400);
   }
-  const effort = rawEffort ?? DEFAULT_REVIEW_EFFORT;
+  // Nobody picked a level: the provider's default (one higher under generous spending).
+  const effort = rawEffort ?? (await defaultReviewEffort());
 
   // Optional: `"failed"` re-runs only what failed last time (lib/jobs/review.ts).
   const rawOnly = (rawBody as { only?: unknown }).only;
@@ -290,9 +294,10 @@ export async function GET(
     const repo = await getRepoById(repoId);
     if (!repo) return errorResponse("Repo not found.", 404);
 
-    const [findingRecords, aiConfigured] = await Promise.all([
+    const [findingRecords, aiConfigured, defaultEffort] = await Promise.all([
       listFindingsByTargetKey(repoId, targetKey),
       isAiConfigured(),
+      defaultReviewEffort(),
     ]);
     // Matched on every read, so dismissing (or un-suppressing) applies to
     // every review of the repo at once — the ones already stored included.
@@ -377,6 +382,7 @@ export async function GET(
         ...suppressedField(matchSuppression(finding, suppressions)),
       })),
       aiConfigured,
+      defaultEffort,
     };
     return NextResponse.json(body);
   } catch (err) {

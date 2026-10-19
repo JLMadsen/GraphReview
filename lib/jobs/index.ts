@@ -221,6 +221,7 @@ export {
   closePreviewScanQueue,
   enqueuePreview,
   ensurePreviewScan,
+  enqueuePreviewWarm,
   getPreviewJob,
   getPreviewJobLogs,
   getPreviewQueue,

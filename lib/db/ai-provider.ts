@@ -20,6 +20,12 @@ export interface AiProviderRecord {
   apiKeyEncrypted?: string;
   model: string;
   createdAt: string;
+  /**
+   * Generous spending: let GraphReview spend tokens ahead of time to be
+   * faster and see more — preview inputs prepared when a diff opens, reviews
+   * at high effort by default (lib/jobs/ai-config.ts). Off by default.
+   */
+  generousSpending?: boolean;
 }
 
 function toAiProviderRecord(props: Record<string, unknown>): AiProviderRecord {
@@ -30,6 +36,7 @@ function toAiProviderRecord(props: Record<string, unknown>): AiProviderRecord {
     apiKeyEncrypted: (props.apiKeyEncrypted as string | undefined) || undefined,
     model: props.model as string,
     createdAt: props.createdAt as string,
+    ...(props.generousSpending === true ? { generousSpending: true } : {}),
   };
 }
 
@@ -92,7 +99,7 @@ export async function createAiProvider(input: CreateAiProviderInput): Promise<Ai
   return record;
 }
 
-export type UpdateAiProviderInput = Partial<Pick<AiProviderRecord, "name" | "baseUrl" | "model" | "apiKeyEncrypted">>;
+export type UpdateAiProviderInput = Partial<Pick<AiProviderRecord, "name" | "baseUrl" | "model" | "apiKeyEncrypted" | "generousSpending">>;
 
 /**
  * Merges the given fields into an existing provider. An omitted (or empty)
@@ -107,6 +114,10 @@ export async function updateAiProvider(id: string, fields: UpdateAiProviderInput
     for (const key of ["name", "baseUrl", "model", "apiKeyEncrypted"] as const) {
       const value = fields[key];
       if (value !== undefined && value !== null) next[key] = value;
+    }
+    if (fields.generousSpending !== undefined) {
+      if (fields.generousSpending) next.generousSpending = true;
+      else delete next.generousSpending;
     }
     writeProvider(next);
   });

@@ -180,6 +180,7 @@ export async function updateAiProviderAction(
       baseUrl,
       model,
       apiKeyEncrypted: apiKey ? encrypt(apiKey) : undefined,
+      generousSpending: formData.get("generousSpending") === "on",
     });
     revalidatePath("/settings");
     return { status: "success", apiKeyUpdated: Boolean(apiKey) };

@@ -107,6 +107,14 @@ export function ProviderViewRow({
                   Active
                 </span>
               )}
+              {provider.generousSpending && (
+                <span
+                  className="shrink-0 rounded-full bg-brand/10 px-1.5 py-0.5 text-[10px] font-medium text-brand"
+                  title="Generous spending: spends tokens ahead of time to be faster and see more (Edit to change)"
+                >
+                  Generous
+                </span>
+              )}
             </div>
             <div className="truncate font-mono text-[12px] text-muted-foreground">
               {provider.baseUrl} · {provider.model}

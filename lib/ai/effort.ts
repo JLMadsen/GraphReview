@@ -21,6 +21,9 @@ export type ReviewEffort = (typeof REVIEW_EFFORTS)[number];
 /** What the UI pre-selects, and what a request without an explicit effort gets. */
 export const DEFAULT_REVIEW_EFFORT: ReviewEffort = "medium";
 
+/** The default instead when the active provider allows generous spending (lib/jobs/ai-config.ts). */
+export const GENEROUS_REVIEW_EFFORT: ReviewEffort = "high";
+
 export interface ReviewEffortSettings {
   /** Per-call input budget, in estimated tokens. */
   tokenBudget: number;

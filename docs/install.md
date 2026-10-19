@@ -213,7 +213,11 @@ since it decides where the file is.)
 | `PREVIEW_MEMORY` / `PREVIEW_CPUS` | `2g` / `1` | Resource caps per sandbox container |
 | `PREVIEW_DEPS_MAX_AGE_HOURS` / `PREVIEW_DEPS_KEEP` | `48` / `6` | Installed dependencies are cached in Docker volumes (often hundreds of MB each); after every preview, caches unused this long are removed and only this many are kept. Package downloads go to one shared volume, `graphreview-preview-downloads`, which reinstalls read from first |
 | `PREVIEW_TREES_MAX_AGE_HOURS` / `PREVIEW_TREES_KEEP` | `24` / `8` | Each commit a preview runs is kept in a Docker volume (`graphreview-preview-tree-…`, the size of the repo) so later previews at that commit mount it instead of copying the repo in again; the same cleanup applies |
-| `PREVIEW_CONCURRENCY` | `1` | Files previewed at once (each runs two containers) |
+| `PREVIEW_CONCURRENCY` | `3` | Files previewed at once (their sandbox runs share each side's warm session) |
+| `PREVIEW_SESSIONS` | on | `0` runs every Node preview in a container of its own instead of a warm session that loads the packages once per commit |
+| `PREVIEW_PREWARM` | on | `0` stops getting previews ready ahead of time: no checkouts, installs or warm sessions when a diff opens, and no dependency installs after an analysis |
+| `PREVIEW_SESSION_IDLE_SECONDS` / `PREVIEW_SESSIONS_MAX` | `300` / `4` | A warm session closes after this long without a preview; at most this many run at once |
+| `PREVIEW_SESSION_MEMORY` / `PREVIEW_SESSION_CPUS` | `3g` / `2` | Resource caps per warm session container (two worker processes) |
 
 ### Private registries, company certificates and offline networks
 

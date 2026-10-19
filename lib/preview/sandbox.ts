@@ -22,11 +22,12 @@
 //
 // Server-only (spawns processes). Worker-only in practice.
 
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import {
   CONTAINER_CA_FILE,
   CONTAINER_HOME,
@@ -37,7 +38,7 @@ import {
 } from "./host-config";
 import harnessPackages from "./harness/packages.json";
 import { DEFAULT_NODE_MAJOR } from "./node-version";
-import type { PreviewHarnessResult, PreviewRuntime } from "./types";
+import type { PreviewHarnessResult, PreviewHarnessSymbol, PreviewRuntime } from "./types";
 
 export const RESULT_MARKER = "@@GRAPHREVIEW_PREVIEW_RESULT@@";
 
@@ -603,7 +604,32 @@ async function installInto(options: {
 async function removeVolume(name: string): Promise<boolean> {
   depsReady.delete(name);
   treesReady.delete(name);
-  return (await docker(["volume", "rm", name]).catch(() => ({ code: 1 }))).code === 0;
+  const removed = (await docker(["volume", "rm", name]).catch(() => ({ code: 1 }))).code === 0;
+  // A dependency cache's compiled-code cache goes with it.
+  if (removed && name.startsWith(DEPS_VOLUME_PREFIX)) await docker(["volume", "rm", compileCacheVolume(name)]).catch(() => undefined);
+  return removed;
+}
+
+// ---------------------------------------------------------------------------
+// Compiled-code cache (Node's NODE_COMPILE_CACHE), one per dependency cache
+// ---------------------------------------------------------------------------
+
+const COMPILE_CACHE_DIR = "/compile-cache";
+
+/**
+ * The writable volume beside a (read-only) dependency cache where Node keeps
+ * the compiled code of the packages it loads (Node 22.1+), so a new session
+ * or worker loads React, Next and the rest faster than from source. One per
+ * dependency cache, never shared between repos, and removed with it.
+ */
+function compileCacheVolume(depsVolume: string): string {
+  return depsVolume.replace(DEPS_VOLUME_PREFIX, "graphreview-preview-jscache-");
+}
+
+/** `docker create` arguments that give a Node run the compile cache of its dependency cache. */
+function compileCacheArgs(deps: PreparedDeps): string[] {
+  if (!deps.volume || !deps.volume.includes("-node-")) return [];
+  return ["-v", `${compileCacheVolume(deps.volume)}:${COMPILE_CACHE_DIR}`, "-e", `NODE_COMPILE_CACHE=${COMPILE_CACHE_DIR}`];
 }
 
 // ---------------------------------------------------------------------------
@@ -815,6 +841,7 @@ export async function runHarness(options: RunHarnessOptions): Promise<PreviewHar
   if (runtime === "node") {
     args.push("-v", `${HARNESS_VOLUME}:/harness:ro`);
     if (deps.volume) args.push("-v", `${deps.volume}:${path.posix.join(workdir, "node_modules")}:ro`);
+    args.push(...compileCacheArgs(deps));
     args.push(image, "node", "/job/node-harness.mjs");
   } else {
     if (deps.volume) args.push("-v", `${deps.volume}:/deps:ro`);
@@ -841,4 +868,308 @@ export async function runHarness(options: RunHarnessOptions): Promise<PreviewHar
   const stderr = result.stderr.trim();
   if (parsed.fatal && stderr) log(`sandbox stderr: ${stderr.split("\n").slice(-6).join(" | ").slice(0, 800)}`);
   return parsed;
+}
+
+// ---------------------------------------------------------------------------
+// Warm sessions (Node): one long-lived container per side, file after file
+// ---------------------------------------------------------------------------
+
+/** `PREVIEW_SESSIONS=0` turns warm sessions off: every run gets its own container, as before. */
+const SESSIONS_ON = process.env.PREVIEW_SESSIONS?.trim() !== "0";
+/** A session closes after this long without a run (`PREVIEW_SESSION_IDLE_SECONDS`, default 5 min). */
+const SESSION_IDLE_MS = envMs("PREVIEW_SESSION_IDLE_SECONDS", 300) * 1000;
+/** At most this many sessions run at once (`PREVIEW_SESSIONS_MAX`); the least recently used idle one makes room. */
+const SESSIONS_MAX = envMs("PREVIEW_SESSIONS_MAX", 4);
+/** Memory and CPUs for a whole session container: two worker processes (with and without a DOM) and their esbuild. */
+const SESSION_MEMORY = process.env.PREVIEW_SESSION_MEMORY?.trim() || "3g";
+const SESSION_CPUS = process.env.PREVIEW_SESSION_CPUS?.trim() || "2";
+const SESSION_START_TIMEOUT_MS = 60_000;
+const SESSION_LABEL = "graphreview.preview-session";
+
+/** What a session streams while a file runs. */
+export interface SessionCallbacks {
+  /** The file loaded: the stylesheet both its renders use. */
+  onHead?: (head: { css?: string; cssNote?: string }) => void;
+  /** One symbol's cases, as soon as they are done. */
+  onSymbol?: (entry: PreviewHarnessSymbol) => void;
+}
+
+/** The session died or never started; the caller runs the file the one-shot way instead. */
+export class SessionUnavailableError extends Error {
+  override readonly name = "SessionUnavailableError";
+}
+
+export interface SessionOptions {
+  image: string;
+  sha: string;
+  /** The tree in a volume; without one, `treeDir` is copied into the session once. */
+  treeVolume?: string;
+  treeDir: string;
+  projectRoot: string;
+  deps: PreparedDeps;
+}
+
+interface PendingRun extends SessionCallbacks {
+  resolve: (result: PreviewHarnessResult) => void;
+  reject: (error: Error) => void;
+}
+
+type SessionMessage = { type: string; id?: string; [key: string]: unknown };
+
+/**
+ * A running session container (lib/preview/harness/harness-server.mjs),
+ * talked to over the attached `docker start -a -i`: requests on stdin,
+ * streamed results on stdout. Shared by every preview with the same image,
+ * commit, dependencies and project folder: every file of a Preview all,
+ * the mock replay rounds, Run again.
+ */
+class PreviewSession {
+  private readonly pending = new Map<string, PendingRun>();
+  private nextId = 0;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private stderr: string[] = [];
+  private closed = false;
+  lastUsed = Date.now();
+
+  private constructor(
+    readonly key: string,
+    private readonly id: string,
+    private readonly child: ChildProcess,
+    private readonly treeVolume: string | undefined
+  ) {}
+
+  static async start(key: string, options: SessionOptions): Promise<PreviewSession> {
+    const { image, treeVolume, treeDir, projectRoot, deps } = options;
+    const quiet: Logger = () => undefined;
+    await ensureImage(image, quiet);
+    await ensureHarnessVolume(image, quiet);
+    const root = projectRoot.split(path.sep).join("/");
+    const workdir = path.posix.join("/src", root);
+    const args = [
+      "create",
+      "--rm",
+      "-i",
+      "--label",
+      `${SESSION_LABEL}=${process.pid}`,
+      "--network",
+      "none",
+      "--memory",
+      SESSION_MEMORY,
+      "--cpus",
+      SESSION_CPUS,
+      "--pids-limit",
+      "512",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "-w",
+      workdir,
+      "-e",
+      "HOME=/tmp",
+      "-e",
+      `GRAPHREVIEW_MEMORY=${SESSION_MEMORY}`,
+      "-e",
+      `GRAPHREVIEW_PROJECT_ROOT=${root}`,
+      "-e",
+      `GRAPHREVIEW_SESSION_IDLE_MS=${SESSION_IDLE_MS}`,
+      "-v",
+      `${HARNESS_VOLUME}:/harness:ro`,
+    ];
+    if (treeVolume) args.push("-v", `${treeVolume}:/src:ro`, "--tmpfs", path.posix.join(workdir, ENTRIES_DIR));
+    if (deps.volume) args.push("-v", `${deps.volume}:${path.posix.join(workdir, "node_modules")}:ro`);
+    args.push(...compileCacheArgs(deps));
+    args.push(image, "node", "/job/harness-server.mjs");
+
+    const id = (await dockerOk(args, "docker create (session)")).trim();
+    try {
+      await copyIn(id, harnessDir(), "/job");
+      if (!treeVolume) await copyIn(id, treeDir, "/src");
+    } catch (error) {
+      await docker(["rm", "-f", id]).catch(() => undefined);
+      throw error;
+    }
+    const child = spawn("docker", ["start", "-a", "-i", id], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    if (treeVolume) treesInUse.set(treeVolume, (treesInUse.get(treeVolume) ?? 0) + 1);
+    const session = new PreviewSession(key, id, child, treeVolume);
+    liveSessions.add(session);
+    watchSessionsOnExit();
+    await session.attach();
+    return session;
+  }
+
+  /** Reads the session's output; resolves once it says it is ready. */
+  private attach(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let ready = false;
+      const timer = setTimeout(() => {
+        reject(new SessionUnavailableError(`the session didn't start within ${SESSION_START_TIMEOUT_MS / 1000} s`));
+        this.close();
+      }, SESSION_START_TIMEOUT_MS);
+      createInterface({ input: this.child.stdout! }).on("line", (line) => {
+        if (!line.startsWith(RESULT_MARKER)) return;
+        let message: SessionMessage;
+        try {
+          message = JSON.parse(line.slice(RESULT_MARKER.length)) as SessionMessage;
+        } catch {
+          return;
+        }
+        if (message.type === "ready") {
+          ready = true;
+          clearTimeout(timer);
+          resolve();
+          return;
+        }
+        this.onMessage(message);
+      });
+      this.child.stderr!.on("data", (chunk: Buffer) => {
+        this.stderr.push(...chunk.toString().split("\n").filter((l) => l.trim()));
+        this.stderr.splice(0, Math.max(0, this.stderr.length - 8));
+      });
+      this.child.on("close", (code) => {
+        clearTimeout(timer);
+        const why = `the session ended (${this.stderr.slice(-3).join(" ").slice(0, 300) || `exit code ${code}`})`;
+        if (!ready) reject(new SessionUnavailableError(why));
+        this.close(why);
+      });
+    });
+  }
+
+  private onMessage(message: SessionMessage): void {
+    const run = message.id ? this.pending.get(message.id) : undefined;
+    if (!run) return;
+    if (message.type === "head") run.onHead?.({ css: message.css as string | undefined, cssNote: message.cssNote as string | undefined });
+    else if (message.type === "symbol") run.onSymbol?.(message.entry as PreviewHarnessSymbol);
+    else if (message.type === "done") {
+      this.pending.delete(message.id!);
+      run.resolve(message.result as PreviewHarnessResult);
+      this.armIdle();
+    }
+  }
+
+  run(spec: object, callbacks: SessionCallbacks): Promise<PreviewHarnessResult> {
+    if (this.closed) return Promise.reject(new SessionUnavailableError("the session has closed"));
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.lastUsed = Date.now();
+    const id = `r${++this.nextId}`;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject, ...callbacks });
+      this.child.stdin!.write(`${JSON.stringify({ id, spec, timeoutMs: RUN_TIMEOUT_MS })}\n`);
+    });
+  }
+
+  get busy(): boolean {
+    return this.pending.size > 0;
+  }
+
+  private armIdle(): void {
+    this.lastUsed = Date.now();
+    if (this.pending.size > 0) return;
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => this.close(), SESSION_IDLE_MS);
+    this.idleTimer.unref?.();
+  }
+
+  close(why = "the session was closed"): void {
+    if (this.closed) return;
+    this.closed = true;
+    liveSessions.delete(this);
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    sessions.delete(this.key);
+    for (const run of this.pending.values()) run.reject(new SessionUnavailableError(why));
+    this.pending.clear();
+    this.child.stdin?.end();
+    void docker(["rm", "-f", this.id]).catch(() => undefined);
+    if (this.treeVolume) releaseTreeVolume(this.treeVolume);
+  }
+
+  /** For the exit handler: synchronous, since the process is going away. */
+  removeNow(): void {
+    spawnSync("docker", ["rm", "-f", this.id], { windowsHide: true, timeout: 10_000 });
+  }
+}
+
+const sessions = new Map<string, Promise<PreviewSession>>();
+const liveSessions = new Set<PreviewSession>();
+
+let exitWatched = false;
+/** Session containers would otherwise outlive GraphReview until their own idle timeout. */
+function watchSessionsOnExit(): void {
+  if (exitWatched) return;
+  exitWatched = true;
+  process.once("exit", () => {
+    for (const session of liveSessions) session.removeNow();
+  });
+}
+
+function sessionKey(options: SessionOptions): string {
+  return [options.image, options.sha, options.deps.volume ?? "no-deps", options.projectRoot].join("|");
+}
+
+/** The running session for these options, started if there is none (and room made for it). */
+function acquireSession(options: SessionOptions): Promise<PreviewSession> {
+  const key = sessionKey(options);
+  const existing = sessions.get(key);
+  if (existing) return existing;
+  if (sessions.size >= SESSIONS_MAX) {
+    const idle = [...liveSessions].filter((s) => !s.busy).sort((a, b) => a.lastUsed - b.lastUsed)[0];
+    idle?.close();
+  }
+  const starting = PreviewSession.start(key, options).catch((error: Error) => {
+    sessions.delete(key);
+    throw error instanceof SessionUnavailableError ? error : new SessionUnavailableError(error.message);
+  });
+  sessions.set(key, starting);
+  return starting;
+}
+
+/** Node previews run in warm sessions; Python ones keep the one-shot container. */
+export function sessionsEnabled(runtime: PreviewRuntime): boolean {
+  return SESSIONS_ON && runtime === "node";
+}
+
+/**
+ * Starts the session for one side ahead of its first run, so its workers load
+ * React, Next and the stylesheet while the job waits for the model. Best
+ * effort: a session that can't start is reported when the run asks for it.
+ */
+export function warmSession(options: SessionOptions): void {
+  acquireSession(options).catch(() => undefined);
+}
+
+/**
+ * The same, awaited: resolves once the session runs (its workers keep warming
+ * up after that). For preparing ahead of a preview, where the checkout it may
+ * copy from is removed right after.
+ */
+export async function startSession(options: SessionOptions): Promise<void> {
+  await acquireSession(options);
+}
+
+/**
+ * Before anyone asks for a preview (worker start): the default sandbox image
+ * and the harness volume, which the first preview would otherwise check —
+ * and on a fresh machine pull and install — while the user waits. Best
+ * effort and quiet: without Docker it simply does nothing.
+ */
+export async function warmSandbox(log: Logger): Promise<void> {
+  if (!(await getDockerStatus()).available) return;
+  try {
+    const started = Date.now();
+    await ensureImage(NODE_IMAGE, log);
+    await ensureHarnessVolume(NODE_IMAGE, log);
+    log(`preview sandbox ready (${NODE_IMAGE}, harness ${HARNESS_VERSION}) in ${Date.now() - started} ms`);
+  } catch (error) {
+    log(`preview sandbox warm-up skipped: ${(error as Error).message}`);
+  }
+}
+
+/**
+ * Runs one side's file in its warm session, streaming each symbol to
+ * `callbacks` as it finishes. Throws {@link SessionUnavailableError} when no
+ * session can run it; the caller then falls back to {@link runHarness}.
+ */
+export async function runInSession(options: SessionOptions, spec: object, callbacks: SessionCallbacks): Promise<PreviewHarnessResult> {
+  const session = await acquireSession(options);
+  return session.run(spec, callbacks);
 }

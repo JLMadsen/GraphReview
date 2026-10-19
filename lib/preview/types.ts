@@ -127,6 +127,8 @@ export interface PreviewSymbolResult extends PreviewSymbol {
   cases: PreviewCaseResult[];
   beforeError?: string;
   afterError?: string;
+  /** In a partial result (a run still going): not rendered on both sides yet. */
+  pending?: boolean;
 }
 
 /** The preview job's result. */
@@ -162,6 +164,12 @@ export type PreviewStage = "resolving" | "inputs" | "preparing" | "running";
 export interface PreviewProgress {
   stage: PreviewStage;
   message: string;
+  /**
+   * While the sandbox runs: the result so far, each symbol in it as soon as
+   * both sides have rendered it (the rest marked `pending`), so the UI can
+   * show components one by one. Replaced by the final result.
+   */
+  partial?: PreviewResult;
 }
 
 export type PreviewJobState = "none" | "queued" | "running" | "completed" | "failed";

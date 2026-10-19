@@ -21,6 +21,7 @@ import { symbolStatus } from "@/lib/preview/compare";
 import { getDockerStatus } from "@/lib/preview/sandbox";
 import type {
   PreviewJobState,
+  PreviewProgress,
   PreviewResult,
   PreviewScanDTO,
   PreviewScanFileDTO,
@@ -55,7 +56,8 @@ function toState(jobState: string): PreviewJobState {
 /** How one component came out of a finished preview run. */
 function looksOf(result: PreviewResult, name: string): PreviewScanFileDTO["components"][number]["looks"] {
   const symbol = result.symbols.find((s) => s.name === name);
-  if (!symbol) return undefined;
+  // A partial result's symbol that hasn't rendered on both sides yet.
+  if (!symbol || symbol.pending) return undefined;
   // A side that didn't render (load error, a throw, notFound()) is a failure,
   // never "looks different" — see lib/preview/compare.ts.
   switch (symbolStatus(symbol)) {
@@ -97,7 +99,9 @@ async function readScan(repoId: string, target: ReviewTarget) {
     for (const file of scan?.files ?? []) {
       const job = await getPreviewJob(repoId, target, file.filePath);
       const preview = job ? toState(await job.getState()) : "none";
-      const result = job?.returnvalue ?? undefined;
+      // A running preview streams its components (PreviewProgress.partial): the finished ones show at once.
+      const partial = preview === "running" ? (job?.progress as PreviewProgress | undefined)?.partial : undefined;
+      const result = job?.returnvalue ?? partial ?? undefined;
       files.push({
         filePath: file.filePath,
         preview,

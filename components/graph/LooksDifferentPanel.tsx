@@ -43,7 +43,8 @@ export function LooksDifferentPanel({
   // button shows a warning icon, and the reason appears once it is pressed.
   const [askedWhileDown, setAskedWhileDown] = useState(false);
   const rows: Row[] = (scan?.files ?? []).flatMap((f) =>
-    f.components.map((c) => ({ ...c, filePath: f.filePath, pending: f.preview === "queued" || f.preview === "running" }))
+    // A running preview reports each component as it finishes, so only the ones without a look yet are still rendering.
+    f.components.map((c) => ({ ...c, filePath: f.filePath, pending: (f.preview === "queued" || f.preview === "running") && c.looks === undefined }))
   );
   if (!scan || (rows.length === 0 && !error)) return null;
 

@@ -33,7 +33,13 @@ import {
   pruneTreeVolumes,
   releaseTreeVolume,
   runHarness,
+  runInSession,
   SandboxUnavailableError,
+  SessionUnavailableError,
+  sessionsEnabled,
+  warmSession,
+  type SessionCallbacks,
+  type SessionOptions,
   type PreparedDeps,
 } from "@/lib/preview/sandbox";
 import { relatedSources } from "@/lib/preview/related";
@@ -43,6 +49,7 @@ import { caseDiffers } from "@/lib/preview/compare";
 import type {
   PreviewCaseInput,
   PreviewHarnessResult,
+  PreviewHarnessSymbol,
   PreviewInputs,
   PreviewMocks,
   PreviewProgress,
@@ -97,6 +104,23 @@ function isQuotaError(error: unknown): boolean {
   return /\b(429|quota|rate.?limit|resource.?exhausted|too many requests)\b/i.test(String((error as Error)?.message ?? error));
 }
 
+/**
+ * Repos someone has previewed: only theirs get dependencies installed ahead
+ * of time after an analysis (./preview-warm.ts), so nobody who never previews
+ * pays for installs.
+ */
+function previewedKey(repoId: string): string {
+  return `preview:used:${repoId}`;
+}
+
+export function wasRepoPreviewed(repoId: string): boolean {
+  try {
+    return readKv<number>(previewedKey(repoId)) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
 /** Tree volume → when a preview last used it (ms); as {@link DEPS_LAST_USED_KEY}. */
 const TREES_LAST_USED_KEY = "preview:trees-last-used";
 
@@ -105,7 +129,7 @@ const TREES_LAST_USED_KEY = "preview:trees-last-used";
  * removes the ones that went unused for too long (lib/preview/sandbox.ts
  * `pruneDepsVolumes`, `pruneTreeVolumes`). Best effort: cleanup never fails a preview.
  */
-async function recordAndPruneVolumes(deps: Array<string | undefined>, trees: Array<string | undefined>, log: JobLogger): Promise<void> {
+export async function recordAndPruneVolumes(deps: Array<string | undefined>, trees: Array<string | undefined>, log: JobLogger): Promise<void> {
   const kinds = [
     { key: DEPS_LAST_USED_KEY, used: deps, prune: pruneDepsVolumes, what: "dependency cache" },
     { key: TREES_LAST_USED_KEY, used: trees, prune: pruneTreeVolumes, what: "tree volume" },
@@ -141,6 +165,106 @@ function symbolInputsHash(filePath: string, symbol: PreviewSymbol, sources: { be
   return createHash("sha1")
     .update(JSON.stringify([filePath, symbol.name, symbol.kind, symbol.change, symbol.via ?? null, sources?.before ?? null, sources?.after ?? null]))
     .digest("hex");
+}
+
+/** A model call for a file's inputs already under way (the job, or the generous prefetch in ./preview-warm.ts): both wait for one answer. */
+const inputsInFlight = new Map<string, Promise<Awaited<ReturnType<typeof generatePreviewInputs>>>>();
+
+export interface ResolvedInputs {
+  inputs: PreviewInputs;
+  source: PreviewResult["inputsSource"];
+  note?: string;
+}
+
+/**
+ * The inputs for a file's changed symbols, in order: what the user edited,
+ * the model's cached cases for unchanged source, a model call for the rest,
+ * empty defaults. Also run ahead of time when generous spending is on
+ * (./preview-warm.ts), where filling the cache is the point.
+ */
+export async function resolvePreviewInputs(options: {
+  repoId: string;
+  filePath: string;
+  runtime: PreviewRuntime;
+  symbols: PreviewSymbol[];
+  detected: { sources: Record<string, { before?: string; after?: string }> };
+  before: string | null;
+  after: string | null;
+  given?: PreviewInputs;
+  log: JobLogger;
+  /** Called with the symbols the model is asked about, before the call. */
+  onAsk?: (names: string[]) => void;
+}): Promise<ResolvedInputs> {
+  const { repoId, filePath, runtime, symbols, detected, before, after, given, log } = options;
+  const inputs: PreviewInputs = {};
+  let source: ResolvedInputs["source"] = "default";
+  let note: string | undefined;
+  const needInputs: PreviewSymbol[] = [];
+  for (const symbol of symbols) {
+    const edited = given?.[symbol.name];
+    if (edited && edited.length > 0) {
+      inputs[symbol.name] = edited;
+      source = "user";
+    } else {
+      needInputs.push(symbol);
+    }
+  }
+  // The model's earlier cases for a symbol whose source hasn't changed since.
+  const inputsCache = readInputsCache(repoId);
+  const inputHashes = new Map(needInputs.map((s) => [s.name, symbolInputsHash(filePath, s, detected.sources[s.name])]));
+  const reused = needInputs.filter((s) => inputsCache[inputHashes.get(s.name)!]);
+  for (const symbol of reused) inputs[symbol.name] = inputsCache[inputHashes.get(symbol.name)!].cases;
+  if (reused.length > 0) {
+    if (source === "default") source = "ai";
+    log(`inputs reused from an earlier AI answer: ${reused.map((s) => s.name).join(", ")}`);
+  }
+  const askFor = needInputs.filter((s) => !reused.includes(s));
+  if (askFor.length > 0) {
+    options.onAsk?.(askFor.map((s) => s.name));
+    const config = await loadAiConfig();
+    if (!config) {
+      note = "No AI provider is configured, so each symbol starts with empty inputs. Edit them and run again.";
+    } else {
+      const flightKey = [repoId, filePath, ...askFor.map((s) => inputHashes.get(s.name)!)].join("|");
+      try {
+        let call = inputsInFlight.get(flightKey);
+        if (!call) {
+          call = generatePreviewInputs(config, {
+            filePath,
+            language: runtime === "python" ? "python" : "javascript/typescript",
+            symbols: askFor.map((s) => ({
+              name: s.name,
+              kind: s.kind,
+              change: s.change,
+              via: s.via,
+              before: detected.sources[s.name]?.before,
+              after: detected.sources[s.name]?.after,
+            })),
+            fileAfter: after ?? undefined,
+            fileBefore: before ?? undefined,
+          }).finally(() => inputsInFlight.delete(flightKey));
+          inputsInFlight.set(flightKey, call);
+        }
+        const result = await call;
+        for (const [name, cases] of Object.entries(result.inputs)) inputs[name] = cases;
+        if (source === "default" && Object.keys(result.inputs).length > 0) source = "ai";
+        if (result.parseFailed) {
+          note = "The AI's answer couldn't be read, even after asking again, so empty inputs were used. Edit them and run again.";
+          log(`unreadable AI answer: ${(result.rawAnswer ?? "").replace(/\s+/g, " ")}`);
+        }
+        writeInputsCache(
+          repoId,
+          askFor.filter((s) => result.inputs[s.name]?.length).map((s) => [inputHashes.get(s.name)!, result.inputs[s.name]])
+        );
+        log(`inputs from the AI: ${result.usage.promptTokens}+${result.usage.completionTokens} tokens`);
+      } catch (error) {
+        note = `Mocking up inputs failed (${(error as Error).message}), so empty inputs were used.`;
+        log(note);
+      }
+    }
+  }
+  for (const symbol of needInputs) inputs[symbol.name] ??= defaultCases(symbol);
+  return { inputs, source, note };
 }
 
 function readInputsCache(repoId: string): InputsCache {
@@ -198,6 +322,27 @@ function fallbackRefspecs(repo: RepoRecord, target: ReviewTarget): string[] {
   return repo.provider === "gitlab" ? [`merge-requests/${target.prNumber}/head`] : [`pull/${target.prNumber}/head`];
 }
 
+/**
+ * The sandbox image for a file. Both sides run on one image — the newer Node
+ * either side asks for — so a difference in output is the code's, not the
+ * runtime's. Also used to warm up the right session ahead of time (./preview-warm.ts).
+ */
+export async function wantedImageFor(
+  repoDir: string,
+  baseSha: string,
+  headSha: string,
+  filePath: string,
+  runtime: PreviewRuntime,
+  log: JobLogger
+): Promise<string> {
+  if (runtime !== "node") return imageFor(runtime);
+  const majors = await Promise.all([baseSha, headSha].map((sha) => requiredNodeMajor((p) => readFileAt(repoDir, sha, p), filePath)));
+  const declared = majors.filter((m): m is number => m !== undefined);
+  const image = nodeImageFor(declared.length > 0 ? Math.max(...declared) : DEFAULT_NODE_MAJOR);
+  log(`sandbox image ${image}${declared.length > 0 ? "" : " (the repo doesn't say which Node it needs)"}`);
+  return image;
+}
+
 /** Pins a target to its merge-base and head and makes both available on disk. Also used by ./preview-scan.ts. */
 export async function resolveCommits(
   repo: RepoRecord,
@@ -241,6 +386,7 @@ function summarize(
 
 /** A side's checkout and dependencies, kept so the side can run again (with mocks) without redoing them. */
 interface PreparedSide {
+  sha: string;
   treeDir: string;
   /** The tree in a Docker volume, mounted instead of copying `treeDir` into each run's container. */
   treeVolume?: string;
@@ -297,12 +443,20 @@ async function prepareSide(options: {
         if (name.endsWith(".mjs") && name !== path.basename(script)) await copyFile(path.join(path.dirname(script), name), path.join(jobDir, name));
       }
     }
-    return { deps: installed.status, depsVolume: installed.volume, prepared: { treeDir, treeVolume, jobDir, projectRoot, prepared: installed } };
+    const prepared: PreparedSide = { sha, treeDir, treeVolume, jobDir, projectRoot, prepared: installed };
+    // Started now, so its workers load React, Next and the stylesheet while the model writes the inputs.
+    if (sessionsEnabled(runtime)) warmSession(sessionOptions(prepared, image ?? imageFor(runtime)));
+    return { deps: installed.status, depsVolume: installed.volume, prepared };
   } catch (error) {
     if (error instanceof SandboxUnavailableError) throw error;
     log(`failed: ${(error as Error).message}`);
     return { deps: "none", fatal: (error as Error).message };
   }
+}
+
+function sessionOptions(prepared: PreparedSide, image: string): SessionOptions {
+  const { sha, treeVolume, treeDir, projectRoot } = prepared;
+  return { image, sha, treeVolume, treeDir, projectRoot, deps: prepared.prepared };
 }
 
 async function runSide(options: {
@@ -315,6 +469,8 @@ async function runSide(options: {
   mocks: PreviewMocks;
   log: JobLogger;
   prep: SidePrep;
+  /** Each symbol as soon as it is done (warm sessions; a one-shot run reports them all at the end). */
+  stream?: SessionCallbacks;
 }): Promise<SideRun> {
   const { side, runtime, image, symbols, inputs, mocks, prep } = options;
   const log: JobLogger = (message) => options.log(`${side}: ${message}`);
@@ -330,8 +486,17 @@ async function runSide(options: {
       symbols: symbols.map((s) => ({ name: s.name, kind: s.kind, cases: inputs[s.name] ?? [] })),
       mocks,
     };
-    await writeFile(path.join(prepared.jobDir, "spec.json"), JSON.stringify(spec));
     log(Object.keys(mocks).length > 0 ? `running in the sandbox with ${Object.keys(mocks).length} mocked server response(s)` : "running in the sandbox");
+    if (sessionsEnabled(runtime)) {
+      try {
+        const harness = await runInSession(sessionOptions(prepared, image ?? imageFor(runtime)), spec, options.stream ?? {});
+        return { harness, deps, depsVolume, prepared };
+      } catch (error) {
+        if (!(error instanceof SessionUnavailableError)) throw error;
+        log(`warm session unavailable (${error.message}), running in a container of its own`);
+      }
+    }
+    await writeFile(path.join(prepared.jobDir, "spec.json"), JSON.stringify(spec));
     const harness = await runHarness({
       runtime,
       treeDir: prepared.treeDir,
@@ -382,13 +547,20 @@ export async function runPreviewJob(
   log: JobLogger
 ): Promise<PreviewResult> {
   const started = Date.now();
+  /** The last partial result streamed (see `publish` below), kept on every later progress update. */
+  let latestPartial: PreviewResult | undefined;
   const progress = (stage: PreviewProgress["stage"], message: string) => {
     log(message);
-    void job.updateProgress({ stage, message }).catch(() => undefined);
+    void job.updateProgress({ stage, message, ...(latestPartial ? { partial: latestPartial } : {}) }).catch(() => undefined);
   };
 
   const repo = await getRepoById(data.repoId);
   if (!repo) throw new UnrecoverableError(`Repo ${data.repoId} not found.`);
+  try {
+    writeKv(previewedKey(data.repoId), Date.now());
+  } catch {
+    /* only gates the ahead-of-time installs */
+  }
   const runtime = runtimeForPath(data.filePath);
   if (!runtime) {
     throw new UnrecoverableError("Previews run JavaScript/TypeScript and Python files only.");
@@ -411,17 +583,7 @@ export async function runPreviewJob(
   if (before === null && after === null) {
     throw new UnrecoverableError(`${data.filePath} exists at neither ${baseSha.slice(0, 7)} nor ${headSha.slice(0, 7)}.`);
   }
-  // Both sides run on one image — the newer Node either side asks for — so
-  // a difference in output is the code's, not the runtime's.
-  let wantedImage = imageFor(runtime);
-  if (runtime === "node") {
-    const majors = await Promise.all(
-      [baseSha, headSha].map((sha) => requiredNodeMajor((p) => readFileAt(repoDir, sha, p), data.filePath))
-    );
-    const declared = majors.filter((m): m is number => m !== undefined);
-    wantedImage = nodeImageFor(declared.length > 0 ? Math.max(...declared) : DEFAULT_NODE_MAJOR);
-    log(`sandbox image ${wantedImage}${declared.length > 0 ? "" : " (the repo doesn't say which Node it needs)"}`);
-  }
+  const wantedImage = await wantedImageFor(repoDir, baseSha, headSha, data.filePath, runtime, log);
 
   const detected = await detectChangedSymbols(data.filePath, runtime, before, after);
   const symbols = detected.runnable;
@@ -456,67 +618,106 @@ export async function runPreviewJob(
   const inputs: PreviewInputs = {};
   let inputsSource: PreviewResult["inputsSource"] = "default";
   let inputsNote: string | undefined;
+
+  /** The result from both sides' harness output — the final one, and each partial snapshot while the sides stream. */
+  const buildResult = (beforeSide: SideRun, afterSide: SideRun, partial = false): PreviewResult => {
+    const results: PreviewSymbolResult[] = symbols.map((symbol) => {
+      const b = beforeSide.harness?.symbols.find((s) => s.name === symbol.name);
+      const a = afterSide.harness?.symbols.find((s) => s.name === symbol.name);
+      const cases = (inputs[symbol.name] ?? []).map((c, index) => {
+        const beforeCase = b?.cases?.[index];
+        const afterCase = a?.cases?.[index];
+        return {
+          label: c.label,
+          input: c.input,
+          ...(beforeCase ? { before: beforeCase } : {}),
+          ...(afterCase ? { after: afterCase } : {}),
+          differs: caseDiffers(symbol, { before: beforeCase, after: afterCase }),
+        };
+      });
+      const waitsForBefore = before !== null && symbol.change !== "added" && !b;
+      const waitsForAfter = after !== null && symbol.change !== "removed" && !a;
+      return {
+        ...symbol,
+        cases,
+        ...(b?.error ? { beforeError: b.error } : {}),
+        ...(a?.error ? { afterError: a.error } : {}),
+        ...(partial && (waitsForBefore || waitsForAfter) ? { pending: true } : {}),
+      };
+    });
+    return {
+      filePath: data.filePath,
+      runtime,
+      baseSha,
+      headSha,
+      symbols: results,
+      skipped: detected.skipped,
+      before: summarize(baseSha, beforeSide.harness, beforeSide.deps, before === null, beforeSide.fatal),
+      after: summarize(headSha, afterSide.harness, afterSide.deps, after === null, afterSide.fatal),
+      inputsSource,
+      inputs,
+      ...(inputsNote ? { inputsNote } : {}),
+      ...(resolvedImage.note ? { runtimeNote: resolvedImage.note } : {}),
+      mocks,
+      // Mocks reused from the repo cache were made by the model too.
+      mocksSource: mocksSource === "none" && mergeCalls(beforeSide, afterSide).some((c) => c.mocked) ? "ai" : mocksSource,
+      serverCalls: mergeCalls(beforeSide, afterSide),
+      ...(mocksNote ? { mocksNote } : {}),
+      durationMs: Date.now() - started,
+    };
+  };
+
+  // Streaming: each side's stylesheet and finished symbols as the session
+  // reports them, published as a partial result so the UI shows components
+  // one by one. A mock replay round starts from the previous round's, and
+  // overwrites each symbol as it re-renders.
+  const live: Record<PreviewSide, { css?: string; cssNote?: string; symbols: Map<string, PreviewHarnessSymbol> }> = {
+    before: { symbols: new Map() },
+    after: { symbols: new Map() },
+  };
+  let publishTimer: ReturnType<typeof setTimeout> | null = null;
+  const liveSide = (side: PreviewSide, run: SideRun, prep: SidePrep): SideRun => ({
+    ...prep,
+    harness: { side, symbols: [...live[side].symbols.values()], css: live[side].css, cssNote: live[side].cssNote, warnings: run.harness?.warnings ?? [] },
+  });
+  const publish = (preps: [SidePrep, SidePrep]) => {
+    // Coalesced: both sides often finish a symbol within moments of each other.
+    if (publishTimer) return;
+    publishTimer = setTimeout(() => {
+      publishTimer = null;
+      latestPartial = buildResult(liveSide("before", beforeRun, preps[0]), liveSide("after", afterRun, preps[1]), true);
+      const done = latestPartial.symbols.filter((s) => !s.pending).length;
+      void job.updateProgress({ stage: "running", message: `${done} of ${symbols.length} rendered`, partial: latestPartial }).catch(() => undefined);
+    }, 150);
+  };
+  const streamTo = (side: PreviewSide, preps: [SidePrep, SidePrep]): SessionCallbacks => ({
+    onHead: (head) => {
+      live[side].css = head.css;
+      live[side].cssNote = head.cssNote;
+    },
+    onSymbol: (entry) => {
+      live[side].symbols.set(entry.name, entry);
+      publish(preps);
+    },
+  });
+
   try {
     // 3. inputs
-    const needInputs: PreviewSymbol[] = [];
-    for (const symbol of symbols) {
-      const given = data.inputs?.[symbol.name];
-      if (given && given.length > 0) {
-        inputs[symbol.name] = given;
-        inputsSource = "user";
-      } else {
-        needInputs.push(symbol);
-      }
-    }
-    // The model's earlier cases for a symbol whose source hasn't changed since.
-    const inputsCache = readInputsCache(data.repoId);
-    const inputHashes = new Map(needInputs.map((s) => [s.name, symbolInputsHash(data.filePath, s, detected.sources[s.name])]));
-    const reused = needInputs.filter((s) => inputsCache[inputHashes.get(s.name)!]);
-    for (const symbol of reused) inputs[symbol.name] = inputsCache[inputHashes.get(symbol.name)!].cases;
-    if (reused.length > 0) {
-      if (inputsSource === "default") inputsSource = "ai";
-      log(`inputs reused from an earlier AI answer: ${reused.map((s) => s.name).join(", ")}`);
-    }
-    const askFor = needInputs.filter((s) => !reused.includes(s));
-    if (askFor.length > 0) {
-      progress("inputs", `mocking up inputs for ${askFor.map((s) => s.name).join(", ")}`);
-      const config = await loadAiConfig();
-      if (!config) {
-        inputsNote = "No AI provider is configured, so each symbol starts with empty inputs. Edit them and run again.";
-      } else {
-        try {
-          const result = await generatePreviewInputs(config, {
-            filePath: data.filePath,
-            language: runtime === "python" ? "python" : "javascript/typescript",
-            symbols: askFor.map((s) => ({
-              name: s.name,
-              kind: s.kind,
-              change: s.change,
-              via: s.via,
-              before: detected.sources[s.name]?.before,
-              after: detected.sources[s.name]?.after,
-            })),
-            fileAfter: after ?? undefined,
-            fileBefore: before ?? undefined,
-          });
-          for (const [name, cases] of Object.entries(result.inputs)) inputs[name] = cases;
-          if (inputsSource === "default" && Object.keys(result.inputs).length > 0) inputsSource = "ai";
-          if (result.parseFailed) {
-            inputsNote = "The AI's answer couldn't be read, even after asking again, so empty inputs were used. Edit them and run again.";
-            log(`unreadable AI answer: ${(result.rawAnswer ?? "").replace(/\s+/g, " ")}`);
-          }
-          writeInputsCache(
-            data.repoId,
-            askFor.filter((s) => result.inputs[s.name]?.length).map((s) => [inputHashes.get(s.name)!, result.inputs[s.name]])
-          );
-          log(`inputs from the AI: ${result.usage.promptTokens}+${result.usage.completionTokens} tokens`);
-        } catch (error) {
-          inputsNote = `Mocking up inputs failed (${(error as Error).message}), so empty inputs were used.`;
-          log(inputsNote);
-        }
-      }
-    }
-    for (const symbol of needInputs) inputs[symbol.name] ??= defaultCases(symbol);
+    const resolved = await resolvePreviewInputs({
+      repoId: data.repoId,
+      filePath: data.filePath,
+      runtime,
+      symbols,
+      detected,
+      before,
+      after,
+      given: data.inputs,
+      log,
+      onAsk: (names) => progress("inputs", `mocking up inputs for ${names.join(", ")}`),
+    });
+    Object.assign(inputs, resolved.inputs);
+    inputsSource = resolved.source;
+    inputsNote = resolved.note;
 
     // 4 + 5. prepare and run both sides; then record → mock → replay: server
     // calls the renders made (server actions, fetch) get mocked answers from the
@@ -524,15 +725,16 @@ export async function runPreviewJob(
     if (symbols.length > 0) {
       const [beforePrep, afterPrep] = await preparing;
       progress("running", "running both sides in the sandbox");
+      const preps: [SidePrep, SidePrep] = [beforePrep, afterPrep];
       const runBoth = (beforeSide: SidePrep, afterSide: SidePrep) => {
         const common = { runtime, image, filePath: data.filePath, inputs, mocks, log };
         return Promise.all([
           before === null
             ? Promise.resolve<SideRun>(NO_SIDE)
-            : runSide({ ...common, side: "before", symbols: symbols.filter((s) => s.change !== "added"), prep: beforeSide }),
+            : runSide({ ...common, side: "before", symbols: symbols.filter((s) => s.change !== "added"), prep: beforeSide, stream: streamTo("before", preps) }),
           after === null
             ? Promise.resolve<SideRun>(NO_SIDE)
-            : runSide({ ...common, side: "after", symbols: symbols.filter((s) => s.change !== "removed"), prep: afterSide }),
+            : runSide({ ...common, side: "after", symbols: symbols.filter((s) => s.change !== "removed"), prep: afterSide, stream: streamTo("after", preps) }),
         ]);
       };
       [beforeRun, afterRun] = await runBoth(beforePrep, afterPrep);
@@ -592,6 +794,7 @@ export async function runPreviewJob(
     if (error instanceof SandboxUnavailableError) throw new UnrecoverableError(error.message);
     throw error;
   } finally {
+    if (publishTimer) clearTimeout(publishTimer);
     // Still writing when something above threw: let it finish before removing its folder.
     const preps = await preparing.catch(() => [NO_SIDE, NO_SIDE]);
     await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
@@ -605,46 +808,5 @@ export async function runPreviewJob(
   }
 
   // 6. compare
-  const results: PreviewSymbolResult[] = symbols.map((symbol) => {
-    const b = beforeRun.harness?.symbols.find((s) => s.name === symbol.name);
-    const a = afterRun.harness?.symbols.find((s) => s.name === symbol.name);
-    const cases = (inputs[symbol.name] ?? []).map((c, index) => {
-      const beforeCase = b?.cases?.[index];
-      const afterCase = a?.cases?.[index];
-      return {
-        label: c.label,
-        input: c.input,
-        ...(beforeCase ? { before: beforeCase } : {}),
-        ...(afterCase ? { after: afterCase } : {}),
-        differs: caseDiffers(symbol, { before: beforeCase, after: afterCase }),
-      };
-    });
-    return {
-      ...symbol,
-      cases,
-      ...(b?.error ? { beforeError: b.error } : {}),
-      ...(a?.error ? { afterError: a.error } : {}),
-    };
-  });
-
-  return {
-    filePath: data.filePath,
-    runtime,
-    baseSha,
-    headSha,
-    symbols: results,
-    skipped: detected.skipped,
-    before: summarize(baseSha, beforeRun.harness, beforeRun.deps, before === null, beforeRun.fatal),
-    after: summarize(headSha, afterRun.harness, afterRun.deps, after === null, afterRun.fatal),
-    inputsSource,
-    inputs,
-    ...(inputsNote ? { inputsNote } : {}),
-    ...(resolvedImage.note ? { runtimeNote: resolvedImage.note } : {}),
-    mocks,
-    // Mocks reused from the repo cache were made by the model too.
-    mocksSource: mocksSource === "none" && mergeCalls(beforeRun, afterRun).some((c) => c.mocked) ? "ai" : mocksSource,
-    serverCalls: mergeCalls(beforeRun, afterRun),
-    ...(mocksNote ? { mocksNote } : {}),
-    durationMs: Date.now() - started,
-  };
+  return buildResult(beforeRun, afterRun);
 }

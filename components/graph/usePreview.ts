@@ -17,7 +17,7 @@ function targetParams(target: ReviewTargetDTO): Record<string, string> {
 
 export interface UsePreviewResult {
   status: PreviewStatusDTO | null;
-  /** The latest finished run, kept on screen while a new one is pending. */
+  /** The latest finished run, kept on screen while a new one is pending — or that run's partial result once it streams one. */
   result: PreviewResult | null;
   /** A request (GET or POST) failed outright. */
   error: string | null;
@@ -44,7 +44,9 @@ export function usePreview(repoId: string, target: ReviewTargetDTO, filePath: st
         if (gen !== generation.current) return;
         if (!res.ok || !json) throw new Error(json?.error ?? `Request failed (${res.status}).`);
         setStatus(json);
+        // While a run streams, its partial result (finished components, the rest pending) replaces the last one.
         if (json.result) setResult(json.result);
+        else if (json.progress?.partial) setResult(json.progress.partial);
         setLogs(json.logs ?? []);
         setError(null);
         if (json.state === "queued" || json.state === "running") {
@@ -56,6 +58,16 @@ export function usePreview(repoId: string, target: ReviewTargetDTO, filePath: st
     },
     [repoId, filePath, targetKey]
   );
+
+  // The Before / after tab is open: a run is likely, so have its session warm (the server drops repeats).
+  useEffect(() => {
+    if (!enabled) return;
+    void fetch(`/api/repos/${repoId}/preview/warm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(targetParams(JSON.parse(targetKey))),
+    }).catch(() => undefined);
+  }, [enabled, repoId, targetKey]);
 
   useEffect(() => {
     if (!enabled) return;

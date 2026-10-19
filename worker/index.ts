@@ -47,6 +47,9 @@ import { runReviewJob } from "@/lib/jobs/review";
 import { runAppMapJob } from "@/lib/jobs/app-map-job";
 import { runPreviewJob } from "@/lib/jobs/preview";
 import { runPreviewScanJob } from "@/lib/jobs/preview-scan";
+import { prewarmRepoDeps, runPreviewWarmJob } from "@/lib/jobs/preview-warm";
+import { PREVIEW_WARM_QUEUE_NAME, enqueuePreviewWarm, type PreviewWarmJobData } from "@/lib/jobs/preview-queue";
+import { warmSandbox } from "@/lib/preview/sandbox";
 import { runTargetGraphJob } from "@/lib/jobs/target-graph";
 import type { PreviewScanResult } from "@/lib/preview/types";
 import { getDb, purgeExpiredKv, purgeParseCache } from "@/lib/db";
@@ -68,8 +71,12 @@ const CANCEL_POLL_MS = 1000;
 /** App-map runs (DESIGN.md §6.5): on demand, model calls — one at a time, like a review. */
 const APP_MAP_CONCURRENCY = Number(process.env.APP_MAP_CONCURRENCY ?? 1);
 
-/** Before/after previews (DESIGN.md §6.9): each runs two sandbox containers already, so one file at a time by default. */
-const PREVIEW_CONCURRENCY = Math.max(1, Number(process.env.PREVIEW_CONCURRENCY) || 1);
+/**
+ * Before/after previews (DESIGN.md §6.9): three files at a time by default.
+ * Their sandbox runs queue inside the shared warm session of each side, so
+ * running several mostly overlaps the model's input calls and checkouts.
+ */
+const PREVIEW_CONCURRENCY = Math.max(1, Number(process.env.PREVIEW_CONCURRENCY) || 3);
 
 /**
  * Optional periodic staleness sweep. The normal refresh trigger is "on
@@ -191,6 +198,8 @@ export async function startWorker(): Promise<void> {
   );
 
   worker.on("completed", (job, result) => {
+    // Previews of this repo's pull requests then find the default branch's dependencies installed (lib/jobs/preview-warm.ts).
+    void prewarmRepoDeps(result.repoId, result.sha, (message) => log(`preview warm-up · ${message}`));
     log(
       `job ${job.id} completed — repo ${result.repoId} @ ${result.sha.slice(0, 12)}: ` +
         `${result.files} file(s), ${result.components} component(s), ` +
@@ -334,12 +343,31 @@ export async function startWorker(): Promise<void> {
       }),
     { concurrency: 2 }
   );
+  // Changed components found: get their previews ready before anyone asks (lib/jobs/preview-warm.ts).
+  previewScanWorker.on("completed", (job, result) => {
+    if (result.files.length > 0) void enqueuePreviewWarm(job.data.repoId, job.data.target).catch(() => undefined);
+  });
   previewScanWorker.on("failed", (job, error) => {
     logError(`preview-scan job ${job?.id ?? "?"} failed: ${error.message}`);
   });
   previewScanWorker.on("error", (error) => {
     logError(`preview-scan worker error: ${error.message}`);
   });
+
+  // --- preview-warm queue --------------------------------------------------
+  // Checkouts, dependencies and warm sessions ahead of a preview; not in the
+  // jobs drawer (housekeeping, nothing to act on). One at a time.
+  const previewWarmWorker = new Worker<PreviewWarmJobData, void>(
+    PREVIEW_WARM_QUEUE_NAME,
+    async (job: Job<PreviewWarmJobData, void>) => runPreviewWarmJob(job.data, (message) => log(`preview-warm job ${job.id} · ${message}`)),
+    { concurrency: 1 }
+  );
+  previewWarmWorker.on("failed", (job, error) => {
+    logError(`preview-warm job ${job?.id ?? "?"} failed: ${error.message}`);
+  });
+
+  // The sandbox image and harness the first preview would otherwise check (and, on a fresh machine, pull) while the user waits.
+  void warmSandbox((message) => log(message));
 
   // --- target-graph queue ---------------------------------------------------
   // Base vs head of a review target (lib/jobs/target-graph.ts): static
@@ -368,7 +396,7 @@ export async function startWorker(): Promise<void> {
       logError(`cleanup after a removed repo failed: ${(error as Error).message}`)
     );
   };
-  for (const w of [worker, reviewWorker, appMapWorker, previewWorker, previewScanWorker, targetGraphWorker]) {
+  for (const w of [worker, reviewWorker, appMapWorker, previewWorker, previewScanWorker, previewWarmWorker, targetGraphWorker]) {
     (w as Worker<{ repoId: string }, unknown>).on("completed", cleanUp).on("failed", cleanUp);
   }
 

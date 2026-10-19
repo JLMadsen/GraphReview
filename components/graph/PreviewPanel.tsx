@@ -36,10 +36,11 @@ import { ErrorLine, SymbolView } from "./preview/SymbolView";
 // Small helpers
 // ---------------------------------------------------------------------------
 
-type SymbolStatus = PreviewSymbolStatus;
+/** `rendering`: a running preview's symbol that hasn't come back from both sides yet (PreviewProgress.partial). */
+type SymbolStatus = PreviewSymbolStatus | "rendering";
 
 /** A component that never rendered (even failing identically on both sides) didn't run; one that renders on one side only fails there — neither "looks different". See lib/preview/compare.ts. */
-const statusOf = symbolStatus;
+const statusOf = (symbol: PreviewSymbolResult): SymbolStatus => (symbol.pending ? "rendering" : symbolStatus(symbol));
 
 const STATUS_ORDER: Record<SymbolStatus, number> = {
   breaks: 0,
@@ -49,6 +50,7 @@ const STATUS_ORDER: Record<SymbolStatus, number> = {
   recovers: 4,
   failed: 5,
   same: 6,
+  rendering: 7,
 };
 
 const STATUS_WORD: Record<SymbolStatus, { text: (kind: PreviewSymbolResult["kind"]) => string; className: string }> = {
@@ -61,6 +63,7 @@ const STATUS_WORD: Record<SymbolStatus, { text: (kind: PreviewSymbolResult["kind
   breaks: { text: (k) => (k === "component" ? "doesn't render after the change" : "doesn't run after the change"), className: "text-destructive" },
   recovers: { text: (k) => (k === "component" ? "doesn't render before the change" : "doesn't run before the change"), className: "text-muted-foreground" },
   same: { text: () => "same", className: "text-muted-foreground" },
+  rendering: { text: () => "rendering…", className: "text-muted-foreground" },
 };
 
 function verdict(symbols: PreviewSymbolResult[]): { text: string; tone: "warn" | "quiet" } {
@@ -236,7 +239,12 @@ export function PreviewPanel({ repoId, target, filePath, initialSymbol }: Previe
         </div>
       )}
 
-      {current && (
+      {current?.pending ? (
+        <p className="flex items-center gap-2 py-10 text-[13px] text-muted-foreground justify-center">
+          <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
+          Rendering {current.name}…
+        </p>
+      ) : current && (
         <SymbolView
           key={current.name}
           symbol={current}

@@ -275,6 +275,8 @@ export interface ReviewStatusResponseDTO {
   /** Present only for a completed review whose findings carry the shas they were made from. */
   freshness?: ReviewFreshnessDTO;
   aiConfigured: boolean;
+  /** The effort a run gets when nobody picks one: high when the provider allows generous spending, else medium. */
+  defaultEffort?: ReviewEffort;
 }
 
 /** Response shape for `POST /api/repos/[repoId]/review`. */

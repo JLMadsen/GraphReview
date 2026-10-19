@@ -175,12 +175,14 @@ export function GraphView({
   /** What the current impact result was a check *of* — `null` for "paste paths" (no diff to review) and before any check. Drives the whole review flow below. */
   const [reviewTarget, setReviewTarget] = useState<ReviewTargetDTO | null>(null);
 
-  const [reviewEffort, setReviewEffort] = useState<ReviewEffort>(DEFAULT_REVIEW_EFFORT);
+  // Null until the user picks a level: runs then get the provider's default, which the selector shows.
+  const [chosenEffort, setReviewEffort] = useState<ReviewEffort | null>(null);
   /** The right end of the view tabs, where the active view can put its controls (the PR map does). */
   const [tabsSlot, setTabsSlot] = useState<HTMLDivElement | null>(null);
   /** Whether the selected target reviews itself — open PRs and branch comparisons only (see DiffPanel's `DiffTargetMeta`). */
   const [autoReview, setAutoReview] = useState(true);
-  const review = useReview(repoId, reviewTarget, reviewEffort, autoReview);
+  const review = useReview(repoId, reviewTarget, chosenEffort ?? undefined, autoReview);
+  const reviewEffort = chosenEffort ?? review.defaultEffort ?? DEFAULT_REVIEW_EFFORT;
   /** Findings minus the suppressed ones (dismissed before as not a problem, DESIGN.md §6.21) — only the dock shows those, on request. */
   const shownFindings = useMemo(() => review.findings.filter((f) => !f.suppressed), [review.findings]);
   // A cancelled review doesn't hand over to the checklist's automatic AI items.

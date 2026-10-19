@@ -9,7 +9,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PreviewScanDTO } from "@/lib/preview/types";
 import type { ReviewTargetDTO } from "./types";
 
-const POLL_MS = 2500;
+// Short enough that components streaming in from a running preview show up promptly.
+const POLL_MS = 1500;
 
 function isPending(scan: PreviewScanDTO): boolean {
   if (scan.state === "queued" || scan.state === "running") return true;
@@ -67,6 +68,18 @@ export function usePreviewScan(repoId: string, target: ReviewTargetDTO | null): 
       if (timer.current) clearTimeout(timer.current);
     };
   }, [targetKey, load]);
+
+  // Changed components on screen: have their previews ready (checkouts, dependencies, warm sessions) before
+  // anyone presses Preview — once per target here; the server drops repeats and covers sessions that closed.
+  const warmed = useRef<string | null>(null);
+  const warmable = Boolean(scan && scan.state === "completed" && scan.files.length > 0 && scan.sandbox?.available !== false);
+  useEffect(() => {
+    if (!warmable || !targetKey || warmed.current === targetKey) return;
+    warmed.current = targetKey;
+    void fetch(`/api/repos/${repoId}/preview/warm`, { method: "POST", headers: { "content-type": "application/json" }, body: targetKey }).catch(
+      () => undefined
+    );
+  }, [warmable, repoId, targetKey]);
 
   const previewAll = useCallback(async () => {
     if (!targetKey) return;

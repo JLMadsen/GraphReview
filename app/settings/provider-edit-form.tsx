@@ -30,6 +30,7 @@ export interface AiProviderSummary {
   baseUrl: string;
   model: string;
   hasApiKey: boolean;
+  generousSpending: boolean;
 }
 
 /** "Sends one tiny chat completion" test-connection result strip, shared by every provider form. */
@@ -61,6 +62,50 @@ export function TestConnectionResult({ testState }: { testState: TestConnectionS
   );
 }
 
+/**
+ * Generous spending (lib/db/ai-provider.ts): this provider may spend tokens
+ * ahead of time so the app is faster and sees more. A form field, saved with
+ * the rest of the provider.
+ */
+function GenerousSpendingField({
+  providerId,
+  checked,
+  onChange,
+}: {
+  providerId: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  const id = `generous-${providerId}`;
+  return (
+    <div className="flex items-start gap-2.5">
+      <input type="hidden" name="generousSpending" value={checked ? "on" : ""} />
+      <button
+        id={id}
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onChange(!checked)}
+        className={`relative mt-0.5 inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors ${checked ? "bg-brand" : "bg-muted-foreground/30"}`}
+      >
+        <span
+          className={`inline-block size-3 rounded-full bg-background shadow transition-transform ${checked ? "translate-x-3.5" : "translate-x-0.5"}`}
+        />
+      </button>
+      <div className="min-w-0 space-y-0.5">
+        <label htmlFor={id} className="text-[13px] font-medium">
+          Generous spending
+        </label>
+        <p className="text-[12px] leading-relaxed text-muted-foreground">
+          Lets GraphReview spend tokens ahead of time, so it is faster and sees more. Before/after inputs are mocked up as
+          soon as a diff opens, so a preview starts rendering at once, and reviews default to high effort (signatures of the
+          related files) instead of medium. Costs more, including for diffs nobody previews.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export function ProviderEditForm({
   provider,
   onCancel,
@@ -87,6 +132,7 @@ export function ProviderEditForm({
   const [apiKeyState, setApiKeyState] = useState<SecretFieldState>(
     provider.hasApiKey ? "saved" : "editing"
   );
+  const [generous, setGenerous] = useState(provider.generousSpending);
 
   useEffect(() => {
     if (saveState.status !== "success") return;
@@ -171,6 +217,8 @@ export function ProviderEditForm({
           onChange={(e) => setModel(e.target.value)}
         />
       </div>
+
+      <GenerousSpendingField providerId={provider.id} checked={generous} onChange={setGenerous} />
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border pt-3">
         <Button

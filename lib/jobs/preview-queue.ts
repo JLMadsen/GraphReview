@@ -137,3 +137,46 @@ export async function closePreviewScanQueue(): Promise<void> {
   scanQueueSingleton = undefined;
   await queue.close();
 }
+
+// ---------------------------------------------------------------------------
+// Warm-up queue: getting a target's previews ready before anyone asks (./preview-warm.ts)
+// ---------------------------------------------------------------------------
+
+export const PREVIEW_WARM_QUEUE_NAME = "preview-warm";
+export const PREVIEW_WARM_JOB_NAME = "preview-warm-target";
+
+/** A warm-up newer than this isn't repeated: sessions stay up for 5 idle minutes. */
+const WARM_FRESH_MS = 4 * 60_000;
+
+export interface PreviewWarmJobData {
+  repoId: string;
+  target: ReviewTarget;
+}
+
+let warmQueueSingleton: Queue<PreviewWarmJobData, void> | undefined;
+
+export function getPreviewWarmQueue(): Queue<PreviewWarmJobData, void> {
+  warmQueueSingleton ??= new Queue<PreviewWarmJobData, void>(PREVIEW_WARM_QUEUE_NAME, {
+    defaultJobOptions: { attempts: 1, removeOnComplete: { age: 60 * 60, count: 50 }, removeOnFail: { age: 60 * 60, count: 50 } },
+  });
+  return warmQueueSingleton;
+}
+
+/**
+ * Asks the worker to get a target's previews ready (checkouts, dependencies,
+ * warm sessions): when its scan finds changed components, and when the
+ * before/after list or dialog opens. A job rather than a call, because the
+ * sessions live in the worker. Repeats within {@link WARM_FRESH_MS} are dropped.
+ */
+export async function enqueuePreviewWarm(repoId: string, target: ReviewTarget): Promise<void> {
+  const queue = getPreviewWarmQueue();
+  const digest = createHash("sha1").update(`${repoId}|${reviewTargetKey(target)}`).digest("hex").slice(0, 16);
+  const jobId = `preview-warm-${digest}`;
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isPendingJobState(state) || (state === "completed" && Date.now() - (existing.finishedOn ?? 0) < WARM_FRESH_MS)) return;
+    await queue.remove(jobId).catch(() => undefined);
+  }
+  await queue.add(PREVIEW_WARM_JOB_NAME, { repoId, target }, { jobId });
+}

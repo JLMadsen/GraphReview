@@ -100,7 +100,7 @@ function toProgress(raw: unknown): PreviewProgress | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const p = raw as Partial<PreviewProgress>;
   if (typeof p.message !== "string" || typeof p.stage !== "string") return undefined;
-  return { stage: p.stage, message: p.message };
+  return { stage: p.stage, message: p.message, ...(p.partial ? { partial: p.partial } : {}) };
 }
 
 export async function GET(request: Request, { params }: { params: Promise<{ repoId: string }> }) {

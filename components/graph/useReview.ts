@@ -84,6 +84,8 @@ export interface ReviewSnapshot {
   freshness?: ReviewFreshnessDTO;
   /** Whether base URL + key + model are all set. `false` suppresses every POST. */
   aiConfigured: boolean;
+  /** The effort a run gets when nobody picks one (higher under generous spending). */
+  defaultEffort?: ReviewEffort;
   /** Inline message to show in the panel: a failed job's reason, a 503, `not_linked`, … */
   notice: string | null;
   /** `ai_not_configured` | `not_linked` | `queue_unavailable`, when the server sent one. */
@@ -143,7 +145,8 @@ function isPending(state: ReviewStateDTO): boolean {
 export function useReview(
   repoId: string,
   target: ReviewTargetDTO | null,
-  effort: ReviewEffort,
+  /** The level the user picked; undefined lets the server use the provider's default (`defaultEffort`). */
+  effort: ReviewEffort | undefined,
   /** Whether a never-reviewed target is reviewed automatically. Read when the target loads, like `effort`. */
   autoRun = true
 ): UseReviewResult {
@@ -172,7 +175,7 @@ export function useReview(
   targetRef.current = target;
   // Same for the effort level: read when a POST goes out, but changing it
   // must not restart polling or trigger a run — only `rerun()` does that.
-  const effortRef = useRef<ReviewEffort>(effort);
+  const effortRef = useRef<ReviewEffort | undefined>(effort);
   effortRef.current = effort;
   const autoRunRef = useRef(autoRun);
   autoRunRef.current = autoRun;
@@ -222,7 +225,7 @@ export function useReview(
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             ...currentTarget,
-            effort: effortRef.current,
+            ...(effortRef.current ? { effort: effortRef.current } : {}),
             ...(onlyFailed ? { only: "failed" } : {}),
           }),
         });
@@ -311,6 +314,7 @@ export function useReview(
         findings: data.findings,
         freshness: data.freshness,
         aiConfigured: data.aiConfigured,
+        defaultEffort: data.defaultEffort,
         notice: data.error ?? (isPending(data.state) ? null : prev.notice),
         noticeCode: data.error ? null : prev.noticeCode,
         rerunning: prev.rerunning && !isPending(data.state),
