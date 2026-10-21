@@ -28,6 +28,9 @@ export interface PreviewCaseInput {
 /** Mocked inputs per symbol name — what the AI produces and what the user can edit and re-run. */
 export type PreviewInputs = Record<string, PreviewCaseInput[]>;
 
+/** "Retry with the error": per symbol, the inputs the last run used and the errors they hit, for the model to write new ones. */
+export type PreviewRetry = Record<string, { cases: PreviewCaseInput[]; errors: string[] }>;
+
 /** A changed top-level declaration found in the file. */
 export interface PreviewSymbol {
   name: string;

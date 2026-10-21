@@ -814,7 +814,11 @@ export function GraphView({
             aria-controls={viewPanelId}
             tabIndex={active ? 0 : -1}
             title={o.title}
-            onClick={() => setPreferredView(o.value)}
+            onClick={() => {
+              setPreferredView(o.value);
+              // From the folded map, a tab brings the graph back.
+              if (mapFolded) setReviewExpanded(false);
+            }}
             className={cn(
               "-mb-px border-b-2 px-3 pt-2 pb-1.5 text-xs font-medium whitespace-nowrap transition-colors",
               active ? "border-brand text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
@@ -893,7 +897,9 @@ export function GraphView({
             tab bar and column headers to fit), without one all of it. The
             view tabs run across the top, above whichever view is active. The review's Expand
             folds it to nothing (the canvases skip a zero size and refit when
-            it comes back), so the findings get the whole column. */}
+            it comes back), so the findings get the whole column; the view
+            tabs stay above them then, to get back to a view. */}
+        {mapFolded && !apiFull && viewTabs}
         <div
           data-pane-part="map"
           className={cn("flex shrink-0 flex-col transition-[height] duration-200", mapFolded && !apiFull && "overflow-hidden")}
@@ -908,7 +914,7 @@ export function GraphView({
           }}
           inert={mapFolded && !apiFull}
         >
-        {viewTabs}
+        {!(mapFolded && !apiFull) && viewTabs}
         <div role="tabpanel" id={viewPanelId} aria-labelledby={viewTabId(view)} className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)]">
         {appMounted && (
           <div className={viewLayerClass(view === "app")} inert={view !== "app"}>

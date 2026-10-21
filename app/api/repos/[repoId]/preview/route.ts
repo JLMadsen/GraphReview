@@ -35,6 +35,9 @@ const bodySchema = z.object({
   ...targetFields,
   inputs: z.record(z.string(), casesSchema).optional(),
   mocks: z.record(z.string(), z.unknown()).optional(),
+  retry: z
+    .record(z.string(), z.object({ cases: casesSchema, errors: z.array(z.string().max(4000)).min(1).max(20) }))
+    .optional(),
 });
 
 const querySchema = z.object({ path: z.string().min(1), ...targetFields });
@@ -70,7 +73,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ rep
     }
     const sandbox = await getDockerStatus();
     if (!sandbox.available) return errorResponse(sandbox.reason ?? "Docker isn't available.", 409, "sandbox_unavailable");
-    const result = await enqueuePreview({ repoId, target, filePath, inputs: parsed.data.inputs, mocks: parsed.data.mocks });
+    const result = await enqueuePreview({ repoId, target, filePath, inputs: parsed.data.inputs, mocks: parsed.data.mocks, retry: parsed.data.retry });
     return NextResponse.json({ jobId: result.jobId, enqueued: result.enqueued });
   } catch (err) {
     console.error(`POST /api/repos/${repoId}/preview failed:`, err);

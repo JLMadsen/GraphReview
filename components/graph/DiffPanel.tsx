@@ -17,7 +17,7 @@
 // the diff is older than the analyzed graph it is mapped onto.
 
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, HardDrive, LoaderCircle, TriangleAlert } from "lucide-react";
+import { ChevronDown, HardDrive, LoaderCircle, RefreshCw, TriangleAlert } from "lucide-react";
 import { WORKTREE_REF } from "@/lib/jobs/git-ref";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "./Segmented";
@@ -504,14 +504,27 @@ export function DiffPanel({
         {mode === "pr" &&
           (prListState.status === "loaded" ? (
             <div className="space-y-1.5">
-              <Segmented
-                label="Pull request state"
-                size="xs"
-                className="w-full"
-                value={prFilter}
-                onChange={setPrFilter}
-                options={PR_FILTERS}
-              />
+              <div className="flex items-center gap-1">
+                <Segmented
+                  label="Pull request state"
+                  size="xs"
+                  className="min-w-0 flex-1"
+                  value={prFilter}
+                  onChange={setPrFilter}
+                  options={PR_FILTERS}
+                />
+                {/* Fetches the list again from the git server; nothing is re-analysed. */}
+                <button
+                  type="button"
+                  onClick={prListState.reload}
+                  disabled={prListState.reloading}
+                  title="Refresh the pull request list"
+                  aria-label="Refresh the pull request list"
+                  className="shrink-0 rounded p-1 text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-60"
+                >
+                  <RefreshCw className={cn("size-3.5", prListState.reloading && "animate-spin")} />
+                </button>
+              </div>
               {/* A list that fills the column, like the commit picker: one click loads a PR. */}
               {visiblePrs.length === 0 ? (
                 <p className="py-2 text-xs text-muted-foreground">

@@ -25,6 +25,8 @@ interface Declaration {
   callable: boolean;
   isClass: boolean;
   rendersJsx: boolean;
+  /** Only wraps `{children}` in context providers or fragments, with no markup or styling of its own. */
+  passThrough: boolean;
   text: string;
   line: number;
 }
@@ -36,6 +38,45 @@ function containsJsx(node: Node): boolean {
   if (node.type.startsWith("jsx_")) return true;
   for (const child of node.namedChildren) if (child && containsJsx(child)) return true;
   return false;
+}
+
+const STYLE_ATTRIBUTES = new Set(["className", "class", "style", "sx", "css", "tw"]);
+
+/**
+ * `<Ctx.Provider value={…}>{children}</Ctx.Provider>` and the like: every
+ * element is a provider, context or fragment, no attribute styles anything,
+ * there's no text, and the only child expression is `children`. Rendering it
+ * shows nothing, so it isn't worth a preview.
+ */
+function isPassThrough(node: Node): boolean {
+  let rendersChildren = false;
+  const visit = (n: Node): boolean => {
+    switch (n.type) {
+      case "jsx_self_closing_element":
+        return false;
+      case "jsx_opening_element": {
+        const name = n.childForFieldName("name")?.text ?? "";
+        if (name && !/(Provider|Context)$/.test(name)) return false;
+        break;
+      }
+      case "jsx_attribute":
+        if (STYLE_ATTRIBUTES.has(n.namedChildren[0]?.text ?? "")) return false;
+        return true; // values are props for the provider, not rendered
+      case "jsx_text":
+        if (n.text.trim()) return false;
+        break;
+      case "jsx_expression":
+        if (n.parent?.type === "jsx_element") {
+          if (!/^\{\s*(props\.)?children\s*\}$/.test(n.text)) return false;
+          rendersChildren = true;
+          return true;
+        }
+        break;
+    }
+    for (const child of n.namedChildren) if (child && !visit(child)) return false;
+    return true;
+  };
+  return visit(node) && rendersChildren;
 }
 
 /** `memo(() => …)`, `forwardRef(function …)`, `styled(…)`: a call wrapping a function is still callable as a component. */
@@ -51,7 +92,7 @@ function jsDeclarations(root: Node): Declaration[] {
 
   const add = (node: Node, exportName: string | null) => {
     if (TYPE_ONLY.has(node.type)) return;
-    const base = { text: node.text, line: node.startPosition.row + 1, rendersJsx: containsJsx(node) };
+    const base = { text: node.text, line: node.startPosition.row + 1, rendersJsx: containsJsx(node), passThrough: isPassThrough(node) };
     if (node.type === "function_declaration" || node.type === "generator_function_declaration" || node.type === "function_expression") {
       const name = node.childForFieldName("name")?.text ?? (exportName === "default" ? "default" : null);
       if (name) out.set(name, { ...base, name, exportName: exportName === "default" ? "default" : exportName && name, callable: true, isClass: false });
@@ -73,6 +114,7 @@ function jsDeclarations(root: Node): Declaration[] {
           text: node.namedChildren.length > 1 ? declarator.text : node.text,
           line: declarator.startPosition.row + 1,
           rendersJsx: containsJsx(declarator),
+          passThrough: isPassThrough(declarator),
           name: nameNode.text,
           exportName: exportName ? nameNode.text : null,
           callable,
@@ -108,6 +150,7 @@ function jsDeclarations(root: Node): Declaration[] {
           callable,
           isClass: !callable,
           rendersJsx: containsJsx(value),
+          passThrough: isPassThrough(value),
           text: node.text,
           line: node.startPosition.row + 1,
         });
@@ -144,14 +187,14 @@ function pythonDeclarations(root: Node): Declaration[] {
     const name = node.childForFieldName("name")?.text;
     const line = top.startPosition.row + 1;
     if (node.type === "function_definition" && name) {
-      out.push({ name, exportName: name, callable: true, isClass: false, rendersJsx: false, text: top.text, line });
+      out.push({ name, exportName: name, callable: true, isClass: false, rendersJsx: false, passThrough: false, text: top.text, line });
     } else if (node.type === "class_definition" && name) {
-      out.push({ name, exportName: name, callable: false, isClass: true, rendersJsx: false, text: top.text, line });
+      out.push({ name, exportName: name, callable: false, isClass: true, rendersJsx: false, passThrough: false, text: top.text, line });
     } else if (node.type === "expression_statement") {
       const assignment = node.namedChildren[0];
       const left = assignment?.type === "assignment" ? assignment.childForFieldName("left") : null;
       if (left?.type === "identifier") {
-        out.push({ name: left.text, exportName: left.text, callable: false, isClass: false, rendersJsx: false, text: top.text, line });
+        out.push({ name: left.text, exportName: left.text, callable: false, isClass: false, rendersJsx: false, passThrough: false, text: top.text, line });
       }
     }
   }
@@ -226,6 +269,10 @@ export async function detectChangedSymbols(
     if (!decl.callable) return; // constants: their effect shows through the functions that use them
     if (!decl.exportName) {
       skipped.push({ name: label, reason: "not exported, so it can't be called from outside the file" });
+      return;
+    }
+    if (decl.passThrough && kindOf(decl, filePath) === "component") {
+      skipped.push({ name: label, reason: "only passes its children through a context provider — nothing of its own to render" });
       return;
     }
     // A named default export keeps its own name; the harness finds it through `default`.

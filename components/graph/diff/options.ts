@@ -1,7 +1,7 @@
 // What the diff picker offers: branches, pull requests and commits, as the
 // API lists them, and the fetch state of each list.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /** Whether a picked (possibly abbreviated) sha names this commit. */
 export function sameCommit(sha: string, picked: string): boolean {
@@ -73,21 +73,30 @@ export type ListFetchState<T> =
 
 /**
  * A list fetched lazily the first time its mode is open (on mount if it is
- * the initial mode, e.g. arriving via `?base=`/`?head=`), then kept. Falls
- * back to the free-text inputs — rather than an empty dropdown — if the repo
- * isn't linked to GitHub, the request fails, or it comes back empty.
+ * the initial mode, e.g. arriving via `?base=`/`?head=`), then kept until
+ * `reload()`, which fetches it again while the old list stays on screen
+ * (`reloading`). Falls back to the free-text inputs — rather than an empty
+ * dropdown — if the repo isn't linked to GitHub, the request fails, or it
+ * comes back empty.
  */
 export function useLazyList<R extends { linked: boolean; error?: string }, T>(
   active: boolean,
   url: string,
   pick: (json: R) => T[] | undefined
-): ListFetchState<T> {
+): ListFetchState<T> & { reload: () => void; reloading: boolean } {
   const [state, setState] = useState<ListFetchState<T>>({ status: "idle" });
+  const [generation, setGeneration] = useState(0);
+  const [reloading, setReloading] = useState(false);
+  const fetchedGeneration = useRef(-1);
   useEffect(() => {
-    if (!active || state.status !== "idle") return;
+    if (!active || (state.status !== "idle" && fetchedGeneration.current === generation)) return;
+    fetchedGeneration.current = generation;
     let cancelled = false;
-    setState({ status: "loading" });
-    fetch(url)
+    let done = false;
+    const keep = state.status === "loaded";
+    if (keep) setReloading(true);
+    else setState({ status: "loading" });
+    fetch(url, { cache: "no-store" })
       .then((res) => res.json())
       .then((json: R) => {
         if (cancelled) return;
@@ -96,19 +105,29 @@ export function useLazyList<R extends { linked: boolean; error?: string }, T>(
       })
       .catch(() => {
         if (!cancelled) setState({ status: "fallback" });
+      })
+      .finally(() => {
+        done = true;
+        if (!cancelled) setReloading(false);
       });
     return () => {
       cancelled = true;
+      // A fetch cut off midway must run again on the next pass.
+      if (!done) {
+        fetchedGeneration.current = -1;
+        setReloading(false);
+      }
     };
     // `state.status` is intentionally read but not listed: this effect must
-    // run only when the mode or the URL change, not whenever the state *it*
-    // just set changes too. Including it self-triggers a second invocation
-    // the instant `setState({ status: "loading" })` commits — the cleanup
-    // from that first invocation then cancels the in-flight fetch before its
-    // response ever arrives, so the list gets stuck on "loading" forever
-    // (rendering the same fallback input as "fallback", silently, even
-    // though the request actually succeeded). `pick` is a plain accessor.
+    // run only when the mode, the URL or the reload generation change, not
+    // whenever the state *it* just set changes too. Including it
+    // self-triggers a second invocation the instant
+    // `setState({ status: "loading" })` commits — the cleanup from that
+    // first invocation then cancels the in-flight fetch before its response
+    // ever arrives, so the list gets stuck on "loading" forever. `pick` is a
+    // plain accessor.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, url]);
-  return state;
+  }, [active, url, generation]);
+  const reload = useCallback(() => setGeneration((g) => g + 1), []);
+  return { ...state, reload, reloading };
 }

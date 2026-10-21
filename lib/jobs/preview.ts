@@ -54,6 +54,7 @@ import type {
   PreviewMocks,
   PreviewProgress,
   PreviewResult,
+  PreviewRetry,
   PreviewRuntime,
   PreviewServerCall,
   PreviewSide,
@@ -191,11 +192,13 @@ export async function resolvePreviewInputs(options: {
   before: string | null;
   after: string | null;
   given?: PreviewInputs;
+  /** Symbols to ask the model about again, with the inputs and errors of their last run. */
+  retry?: PreviewRetry;
   log: JobLogger;
   /** Called with the symbols the model is asked about, before the call. */
   onAsk?: (names: string[]) => void;
 }): Promise<ResolvedInputs> {
-  const { repoId, filePath, runtime, symbols, detected, before, after, given, log } = options;
+  const { repoId, filePath, runtime, symbols, detected, before, after, given, retry, log } = options;
   const inputs: PreviewInputs = {};
   let source: ResolvedInputs["source"] = "default";
   let note: string | undefined;
@@ -212,7 +215,7 @@ export async function resolvePreviewInputs(options: {
   // The model's earlier cases for a symbol whose source hasn't changed since.
   const inputsCache = readInputsCache(repoId);
   const inputHashes = new Map(needInputs.map((s) => [s.name, symbolInputsHash(filePath, s, detected.sources[s.name])]));
-  const reused = needInputs.filter((s) => inputsCache[inputHashes.get(s.name)!]);
+  const reused = needInputs.filter((s) => !retry?.[s.name] && inputsCache[inputHashes.get(s.name)!]);
   for (const symbol of reused) inputs[symbol.name] = inputsCache[inputHashes.get(symbol.name)!].cases;
   if (reused.length > 0) {
     if (source === "default") source = "ai";
@@ -225,7 +228,9 @@ export async function resolvePreviewInputs(options: {
     if (!config) {
       note = "No AI provider is configured, so each symbol starts with empty inputs. Edit them and run again.";
     } else {
-      const flightKey = [repoId, filePath, ...askFor.map((s) => inputHashes.get(s.name)!)].join("|");
+      const retrying = askFor.filter((s) => retry?.[s.name]).map((s) => s.name);
+      if (retrying.length > 0) log(`asking the AI again, with the last run's errors, for ${retrying.join(", ")}`);
+      const flightKey = [repoId, filePath, ...askFor.map((s) => inputHashes.get(s.name)!), ...(retrying.length ? ["retry", Date.now()] : [])].join("|");
       try {
         let call = inputsInFlight.get(flightKey);
         if (!call) {
@@ -239,6 +244,7 @@ export async function resolvePreviewInputs(options: {
               via: s.via,
               before: detected.sources[s.name]?.before,
               after: detected.sources[s.name]?.after,
+              previousAttempt: retry?.[s.name],
             })),
             fileAfter: after ?? undefined,
             fileBefore: before ?? undefined,
@@ -712,6 +718,7 @@ export async function runPreviewJob(
       before,
       after,
       given: data.inputs,
+      retry: data.retry,
       log,
       onAsk: (names) => progress("inputs", `mocking up inputs for ${names.join(", ")}`),
     });

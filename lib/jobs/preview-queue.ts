@@ -10,7 +10,7 @@
 
 import { createHash } from "node:crypto";
 import { Queue, type Job, type JobState, type JobsOptions } from "./runner";
-import type { PreviewInputs, PreviewMocks, PreviewProgress, PreviewResult, PreviewScanResult } from "@/lib/preview/types";
+import type { PreviewInputs, PreviewMocks, PreviewProgress, PreviewResult, PreviewRetry, PreviewScanResult } from "@/lib/preview/types";
 import { isPendingJobState } from "./queue";
 import { reviewTargetKey, type ReviewTarget } from "./review-queue";
 
@@ -25,6 +25,8 @@ export interface PreviewJobData {
   inputs?: PreviewInputs;
   /** Server responses to reuse (from the last run, or edited); new calls still get mocked. */
   mocks?: PreviewMocks;
+  /** Symbols whose last run failed: the model writes fresh inputs from the errors instead of reusing cached ones. */
+  retry?: PreviewRetry;
 }
 
 export type PreviewJobResult = PreviewResult;

@@ -16,11 +16,12 @@
 // sandbox containers.
 
 import { useMemo, useState } from "react";
-import { LoaderCircle, Play } from "lucide-react";
+import { LoaderCircle, Play, RotateCcw } from "lucide-react";
 import { cn } from "cn";
 import type {
   PreviewInputs,
   PreviewResult,
+  PreviewRetry,
   PreviewSymbolResult,
 } from "@/lib/preview/types";
 import { Spark } from "./Spark";
@@ -65,6 +66,30 @@ const STATUS_WORD: Record<SymbolStatus, { text: (kind: PreviewSymbolResult["kind
   same: { text: () => "same", className: "text-muted-foreground" },
   rendering: { text: () => "rendering…", className: "text-muted-foreground" },
 };
+
+const RETRY_MAX_ERRORS = 8;
+const RETRY_MAX_ERROR_CHARS = 1500;
+
+/** Each symbol that threw on either side, with its inputs and its distinct errors; null when nothing threw. */
+function retryFor(result: PreviewResult): PreviewRetry | null {
+  const retry: PreviewRetry = {};
+  for (const symbol of result.symbols) {
+    if (symbol.pending) continue;
+    const errors = new Set<string>();
+    const add = (side: string, text: string | undefined) => {
+      if (text && errors.size < RETRY_MAX_ERRORS) errors.add(`${side}: ${text.slice(0, RETRY_MAX_ERROR_CHARS)}`);
+    };
+    add("before", symbol.beforeError);
+    add("after", symbol.afterError);
+    for (const c of symbol.cases) {
+      add(`before, case "${c.label}"`, c.before?.threw);
+      add(`after, case "${c.label}"`, c.after?.threw);
+    }
+    const cases = result.inputs[symbol.name];
+    if (errors.size > 0 && cases?.length) retry[symbol.name] = { cases, errors: [...errors] };
+  }
+  return Object.keys(retry).length > 0 ? retry : null;
+}
 
 function verdict(symbols: PreviewSymbolResult[]): { text: string; tone: "warn" | "quiet" } {
   const differing = symbols.filter((s) => ["different", "new", "removed"].includes(statusOf(s)));
@@ -115,6 +140,17 @@ export function PreviewPanel({ repoId, target, filePath, initialSymbol }: Previe
   const job = useJob("preview", (j) => j.repoId === repoId && j.targetKey === jobTargetKey && j.filePath === filePath);
   const progressMessage =
     status?.state === "queued" && job?.state === "queued" && job.positionText ? `Queued, ${job.positionText}` : status?.progress?.message;
+
+  // Symbols that threw, with the inputs they threw on: "Retry with the error" hands both to the model.
+  const retry = useMemo(() => (result ? retryFor(result) : null), [result]);
+
+  const retryWithError = () => {
+    if (!result || !retry) return;
+    // Hand-edited inputs of the symbols that worked stay; the failing ones get fresh ones.
+    const kept = result.inputsSource === "user" ? Object.fromEntries(Object.entries(result.inputs).filter(([name]) => !retry[name])) : undefined;
+    setEdited({});
+    void run(kept, result.mocks, retry);
+  };
 
   const start = () => {
     if (hasEdits && result) {
@@ -171,6 +207,19 @@ export function PreviewPanel({ repoId, target, filePath, initialSymbol }: Previe
   }
 
   const summary = verdict(result.symbols);
+  const retryButton = retry && (
+    <button
+      type="button"
+      onClick={retryWithError}
+      disabled={pending || sandboxDown}
+      title="Run again with new inputs: the model sees the errors the last inputs hit and writes ones that avoid them"
+      className="flex shrink-0 items-center gap-1.5 rounded-sm border border-border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-secondary disabled:opacity-50"
+    >
+      <RotateCcw className="size-3.5" aria-hidden />
+      Retry with the error
+      <Spark title="New inputs are mocked up by the model" />
+    </button>
+  );
 
   return (
     <div className="flex flex-col gap-3 text-xs">
@@ -199,6 +248,7 @@ export function PreviewPanel({ repoId, target, filePath, initialSymbol }: Previe
             </span>
           </p>
         </div>
+        {retryButton}
         {runButton}
       </div>
 
